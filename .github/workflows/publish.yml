@@ -33,6 +33,16 @@ jobs:
       - name: Build
         run: bun run build
 
+      - name: Replace workspace:* with real versions
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "Publishing version: $VERSION"
+          for pkg in packages/tui/package.json packages/cli/package.json packages/plugin/package.json; do
+            sed -i "s|\"workspace:\*\"|\"^${VERSION}\"|g" "$pkg"
+            echo "--- $pkg ---"
+            cat "$pkg"
+          done
+
       - name: Publish @howlerops/iron-rain
         working-directory: packages/core
         run: npm publish --provenance --access public
