@@ -61,28 +61,31 @@ npx @howlerops/iron-rain-cli</code></pre>
         </div>
 
         <div class="step">
-          <h3>Create a config file</h3>
-          <p>Create <code>iron-rain.json</code> in your project root. Here's a minimal config using Ollama (free, local):</p>
-          <pre><code>{
-  <span class="key">"slots"</span>: {
-    <span class="key">"main"</span>:    { <span class="key">"provider"</span>: <span class="str">"ollama"</span>, <span class="key">"model"</span>: <span class="str">"llama3.2"</span> },
-    <span class="key">"explore"</span>: { <span class="key">"provider"</span>: <span class="str">"ollama"</span>, <span class="key">"model"</span>: <span class="str">"llama3.2"</span> },
-    <span class="key">"execute"</span>: { <span class="key">"provider"</span>: <span class="str">"ollama"</span>, <span class="key">"model"</span>: <span class="str">"llama3.2"</span> }
-  },
-  <span class="key">"providers"</span>: {
-    <span class="key">"ollama"</span>: { <span class="key">"apiBase"</span>: <span class="str">"http://localhost:11434"</span> }
-  }
-}</code></pre>
+          <h3>Run the setup wizard</h3>
+          <p>Launch Iron Rain for the first time — if no config file exists, the built-in <strong>onboarding wizard</strong> starts automatically:</p>
+          <pre><code>iron-rain</code></pre>
+          <p>The wizard walks you through four steps:</p>
+          <ol>
+            <li><strong>Select providers</strong> — choose from Ollama (local), Anthropic, OpenAI, Gemini, Claude Code, Codex, or Gemini CLI</li>
+            <li><strong>Enter credentials</strong> — API keys, connection details, or use <code>env:VAR_NAME</code> to reference environment variables</li>
+            <li><strong>Assign model slots</strong> — pick a model for each slot (Main, Explore, Execute)</li>
+            <li><strong>Review &amp; save</strong> — confirm your choices and write <code>iron-rain.json</code></li>
+          </ol>
+
+          <div class="callout tip">
+            <div class="callout-title">Prefer manual config?</div>
+            <p>You can also create <code>iron-rain.json</code> by hand. See the <a href="configuration.html">Configuration reference</a> for the full schema, or the <a href="providers.html">Providers guide</a> for per-provider setup.</p>
+          </div>
 
           <div class="callout info">
-            <div class="callout-title">Using API providers?</div>
-            <p>See the <a href="providers.html">Providers guide</a> for Anthropic, OpenAI, Gemini, and CLI-based setups (Claude Code, Codex, Gemini CLI).</p>
+            <div class="callout-title">Edit config later</div>
+            <p>After onboarding, use the <strong>Settings screen</strong> inside the TUI to change providers, models, and permissions at any time.</p>
           </div>
         </div>
 
         <div class="step">
           <h3>Run your first prompt</h3>
-          <p>Use headless mode to verify everything works:</p>
+          <p>Once the wizard saves your config, you can verify everything works in headless mode:</p>
           <pre><code>iron-rain --headless "Explain what a monad is in one sentence"</code></pre>
           <p>You should see the model's response followed by token and timing stats:</p>
           <pre><code>A monad is a design pattern that wraps values in a context...
@@ -92,7 +95,13 @@ npx @howlerops/iron-rain-cli</code></pre>
 
         <div class="step">
           <h3>Mix models across slots</h3>
-          <p>The real power of Iron Rain is using different models for different tasks. Update your config to assign specialized models:</p>
+          <p>The real power of Iron Rain is using different models for different tasks. During onboarding (or via the Settings screen), assign specialized models to each slot:</p>
+          <ul>
+            <li><strong>Main</strong> (strategy &amp; planning) → e.g. Claude Sonnet</li>
+            <li><strong>Explore</strong> (search &amp; research) → e.g. Ollama qwen2.5-coder:32b (free, local)</li>
+            <li><strong>Execute</strong> (code edits &amp; commands) → e.g. GPT-4o</li>
+          </ul>
+          <p>The equivalent <code>iron-rain.json</code> looks like:</p>
           <pre><code>{
   <span class="key">"slots"</span>: {
     <span class="key">"main"</span>:    { <span class="key">"provider"</span>: <span class="str">"anthropic"</span>, <span class="key">"model"</span>: <span class="str">"claude-sonnet-4-20250514"</span> },
@@ -105,7 +114,7 @@ npx @howlerops/iron-rain-cli</code></pre>
     <span class="key">"ollama"</span>:    { <span class="key">"apiBase"</span>: <span class="str">"http://localhost:11434"</span> }
   }
 }</code></pre>
-          <p>Now planning tasks route to Claude, search tasks to Ollama, and code edits to GPT-4o.</p>
+          <p>Now planning tasks route to Claude, search tasks to Ollama, and code edits to GPT-4o — all automatic.</p>
         </div>
 
         <div class="step">
