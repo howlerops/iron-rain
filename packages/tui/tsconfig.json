@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "jsx": "react-jsx",
+    "jsxImportSource": "@iron-rain/tui",
+    "types": ["node"]
+  },
+  "include": ["src"]
+}

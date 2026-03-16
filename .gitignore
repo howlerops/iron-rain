@@ -1,0 +1,19 @@
+node_modules/
+dist/
+.turbo/
+*.tsbuildinfo
+.howler-agents/
+.claude/
+.mcp.json
+bun.lock
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+*.swp
+*.swo
+.DS_Store

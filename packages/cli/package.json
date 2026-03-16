@@ -1,0 +1,21 @@
+{
+  "name": "@iron-rain/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "iron-rain": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@iron-rain/core": "workspace:*",
+    "@iron-rain/tui": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  }
+}

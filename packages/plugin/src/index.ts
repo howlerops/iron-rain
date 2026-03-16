@@ -1,0 +1,43 @@
+import type {
+  SlotName,
+  SlotConfig,
+  ToolType,
+  EpisodeSummary,
+  OrchestratorTask,
+  IronRainConfig,
+} from '@iron-rain/core';
+
+// Re-export core types for plugin authors
+export type {
+  SlotName,
+  SlotConfig,
+  ToolType,
+  EpisodeSummary,
+  OrchestratorTask,
+  IronRainConfig,
+};
+
+export interface PluginContext {
+  config: IronRainConfig;
+  getSlot(name: SlotName): SlotConfig;
+  dispatch(task: OrchestratorTask): Promise<EpisodeSummary>;
+}
+
+export interface PluginHooks {
+  onInit?(ctx: PluginContext): void | Promise<void>;
+  onBeforeDispatch?(task: OrchestratorTask, ctx: PluginContext): OrchestratorTask | void;
+  onAfterDispatch?(episode: EpisodeSummary, ctx: PluginContext): void;
+  onSlotChange?(slot: SlotName, config: SlotConfig, ctx: PluginContext): void;
+  onDestroy?(ctx: PluginContext): void | Promise<void>;
+}
+
+export interface PluginDefinition {
+  name: string;
+  version: string;
+  description?: string;
+  hooks: PluginHooks;
+}
+
+export function definePlugin(def: PluginDefinition): PluginDefinition {
+  return def;
+}

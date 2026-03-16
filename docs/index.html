@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Iron Rain — Multi-model orchestration for coding agents</title>
+  <meta name="description" content="Open-source multi-model orchestration for terminal-based coding agents. Route tasks across models with Thread Weaving.">
+  <style>
+    :root {
+      --brand-primary: #7928ca;
+      --brand-accent: #ff0080;
+      --slot-main: #00b4d8;
+      --slot-explore: #90e0ef;
+      --slot-execute: #f77f00;
+      --bg: #0d1117;
+      --bg-card: #161b22;
+      --text: #e6edf3;
+      --text-muted: #8b949e;
+      --border: #30363d;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    a { color: var(--brand-accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* Nav */
+    nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1rem 2rem;
+      border-bottom: 1px solid var(--border);
+      backdrop-filter: blur(10px);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: rgba(13,17,23,0.85);
+    }
+    nav .logo {
+      font-size: 1.25rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, var(--brand-primary), var(--brand-accent));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    nav .links { display: flex; gap: 1.5rem; }
+    nav .links a { color: var(--text-muted); font-size: 0.9rem; }
+    nav .links a:hover { color: var(--text); text-decoration: none; }
+
+    /* Hero */
+    .hero {
+      text-align: center;
+      padding: 6rem 2rem 4rem;
+      max-width: 800px;
+      margin: 0 auto;
+    }
+    .hero pre {
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 0.85rem;
+      line-height: 1.4;
+      color: var(--brand-primary);
+      margin-bottom: 1.5rem;
+      white-space: pre;
+    }
+    .hero h1 {
+      font-size: 3rem;
+      font-weight: 800;
+      margin-bottom: 1rem;
+      background: linear-gradient(135deg, var(--text), var(--brand-accent));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .hero p {
+      font-size: 1.25rem;
+      color: var(--text-muted);
+      margin-bottom: 2rem;
+    }
+    .hero-actions { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
+    .btn {
+      display: inline-block;
+      padding: 0.75rem 1.5rem;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 0.95rem;
+      transition: transform 0.15s, box-shadow 0.15s;
+    }
+    .btn:hover { transform: translateY(-1px); text-decoration: none; }
+    .btn-primary {
+      background: linear-gradient(135deg, var(--brand-primary), var(--brand-accent));
+      color: white;
+    }
+    .btn-secondary {
+      border: 1px solid var(--border);
+      color: var(--text);
+      background: var(--bg-card);
+    }
+
+    /* Install box */
+    .install {
+      max-width: 500px;
+      margin: 2rem auto 0;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 0.9rem;
+      color: var(--slot-explore);
+    }
+    .install span { color: var(--text-muted); }
+
+    /* Features */
+    .features {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1.5rem;
+      max-width: 1000px;
+      margin: 4rem auto;
+      padding: 0 2rem;
+    }
+    .feature {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+    }
+    .feature h3 { font-size: 1.1rem; margin-bottom: 0.5rem; }
+    .feature p { color: var(--text-muted); font-size: 0.9rem; }
+    .feature .icon { font-size: 1.5rem; margin-bottom: 0.75rem; display: block; }
+
+    /* Slots section */
+    .slots {
+      max-width: 800px;
+      margin: 3rem auto;
+      padding: 0 2rem;
+    }
+    .slots h2 {
+      text-align: center;
+      font-size: 2rem;
+      margin-bottom: 0.5rem;
+    }
+    .slots .subtitle {
+      text-align: center;
+      color: var(--text-muted);
+      margin-bottom: 2rem;
+    }
+    .slot-cards { display: flex; gap: 1rem; flex-wrap: wrap; }
+    .slot-card {
+      flex: 1;
+      min-width: 220px;
+      background: var(--bg-card);
+      border-radius: 12px;
+      padding: 1.25rem;
+      border-left: 3px solid;
+    }
+    .slot-card.main { border-color: var(--slot-main); }
+    .slot-card.explore { border-color: var(--slot-explore); }
+    .slot-card.execute { border-color: var(--slot-execute); }
+    .slot-card h4 { margin-bottom: 0.5rem; }
+    .slot-card .badge {
+      display: inline-block;
+      font-size: 0.75rem;
+      padding: 0.15rem 0.5rem;
+      border-radius: 4px;
+      margin-bottom: 0.5rem;
+      font-family: monospace;
+    }
+    .slot-card.main .badge { background: rgba(0,180,216,0.15); color: var(--slot-main); }
+    .slot-card.explore .badge { background: rgba(144,224,239,0.15); color: var(--slot-explore); }
+    .slot-card.execute .badge { background: rgba(247,127,0,0.15); color: var(--slot-execute); }
+    .slot-card p { color: var(--text-muted); font-size: 0.85rem; }
+
+    /* Config example */
+    .config-section {
+      max-width: 700px;
+      margin: 3rem auto;
+      padding: 0 2rem;
+    }
+    .config-section h2 {
+      text-align: center;
+      font-size: 2rem;
+      margin-bottom: 1.5rem;
+    }
+    .code-block {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.25rem;
+      overflow-x: auto;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 0.85rem;
+      line-height: 1.6;
+    }
+    .code-block .key { color: var(--slot-explore); }
+    .code-block .str { color: var(--brand-accent); }
+    .code-block .comment { color: var(--text-muted); }
+
+    /* Footer */
+    footer {
+      text-align: center;
+      padding: 3rem 2rem;
+      border-top: 1px solid var(--border);
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      margin-top: 4rem;
+    }
+    footer a { color: var(--brand-primary); }
+
+    @media (max-width: 600px) {
+      .hero h1 { font-size: 2rem; }
+      .hero pre { font-size: 0.65rem; }
+      .slot-cards { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <nav>
+    <span class="logo">Iron Rain</span>
+    <div class="links">
+      <a href="#features">Features</a>
+      <a href="#slots">Model Slots</a>
+      <a href="#config">Config</a>
+      <a href="https://github.com/howlerops/iron-rain">GitHub</a>
+    </div>
+  </nav>
+
+  <section class="hero">
+    <pre>   ____                  ____        _
+  /  _/______  ___      / __ \___ _ (_)___
+ _/ / / __/ _ \/ _ \   / /_/ / _  |/ / _ \
+/___/ /_/  \___/_//_/  / .___/\_,_/_/_//_/
+                      /_/</pre>
+    <h1>Multi-model orchestration for coding agents</h1>
+    <p>Route tasks to the right model at the right time. Use any provider &mdash; Anthropic, OpenAI, Ollama, or any OpenAI-compatible API.</p>
+    <div class="hero-actions">
+      <a href="https://github.com/howlerops/iron-rain" class="btn btn-primary">Get Started</a>
+      <a href="https://github.com/howlerops/iron-rain" class="btn btn-secondary">View Source</a>
+    </div>
+    <div class="install">
+      <span>$</span> git clone https://github.com/howlerops/iron-rain && cd iron-rain && bun install
+    </div>
+  </section>
+
+  <section class="features" id="features">
+    <div class="feature">
+      <span class="icon">&#9876;</span>
+      <h3>Thread Weaving</h3>
+      <p>Orchestrate multiple models in parallel. The main model delegates exploration and execution to specialized slots, then integrates results.</p>
+    </div>
+    <div class="feature">
+      <span class="icon">&#9881;</span>
+      <h3>Any Provider</h3>
+      <p>Works with Anthropic, OpenAI, Ollama, LM Studio, or any OpenAI-compatible API. Mix and match across model slots.</p>
+    </div>
+    <div class="feature">
+      <span class="icon">&#9889;</span>
+      <h3>Tool-aware Routing</h3>
+      <p>Automatically routes file edits to your execute slot, grep/search to explore, and strategy to main. Configurable per tool type.</p>
+    </div>
+    <div class="feature">
+      <span class="icon">&#128640;</span>
+      <h3>Episode Protocol</h3>
+      <p>Every task dispatch produces an episode summary with tokens, duration, files modified, and status. Full observability built in.</p>
+    </div>
+    <div class="feature">
+      <span class="icon">&#127912;</span>
+      <h3>Branded TUI</h3>
+      <p>Purpose-built terminal UI with color-coded model slots, per-message attribution, and a distinctive visual identity.</p>
+    </div>
+    <div class="feature">
+      <span class="icon">&#128268;</span>
+      <h3>Plugin SDK</h3>
+      <p>Extend Iron Rain with plugins. Hook into dispatch lifecycle events, modify tasks, and add custom behaviors.</p>
+    </div>
+  </section>
+
+  <section class="slots" id="slots">
+    <h2>Three Model Slots</h2>
+    <p class="subtitle">Each slot serves a distinct purpose. Assign any model to any slot.</p>
+    <div class="slot-cards">
+      <div class="slot-card main">
+        <span class="badge">main</span>
+        <h4>Strategy &amp; Planning</h4>
+        <p>Handles conversation, planning, and high-level reasoning. Your most capable model goes here.</p>
+      </div>
+      <div class="slot-card explore">
+        <span class="badge">explore</span>
+        <h4>Search &amp; Research</h4>
+        <p>Read-only exploration. Grep, glob, search, and codebase understanding. Can be a fast, cheap model.</p>
+      </div>
+      <div class="slot-card execute">
+        <span class="badge">execute</span>
+        <h4>Edit &amp; Execute</h4>
+        <p>File writes, bash commands, and code generation. Needs a model strong at following precise instructions.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="config-section" id="config">
+    <h2>Simple Configuration</h2>
+    <div class="code-block">
+<span class="comment">// iron-rain.json</span>
+{
+  <span class="key">"slots"</span>: {
+    <span class="key">"main"</span>:    { <span class="key">"provider"</span>: <span class="str">"anthropic"</span>, <span class="key">"model"</span>: <span class="str">"claude-opus-4-6"</span> },
+    <span class="key">"explore"</span>: { <span class="key">"provider"</span>: <span class="str">"ollama"</span>,    <span class="key">"model"</span>: <span class="str">"qwen2.5-coder:32b"</span> },
+    <span class="key">"execute"</span>: { <span class="key">"provider"</span>: <span class="str">"openai"</span>,    <span class="key">"model"</span>: <span class="str">"gpt-4o"</span> }
+  },
+  <span class="key">"providers"</span>: {
+    <span class="key">"anthropic"</span>: { <span class="key">"apiKey"</span>: <span class="str">"env:ANTHROPIC_API_KEY"</span> },
+    <span class="key">"openai"</span>:    { <span class="key">"apiKey"</span>: <span class="str">"env:OPENAI_API_KEY"</span> },
+    <span class="key">"ollama"</span>:    { <span class="key">"apiBase"</span>: <span class="str">"http://localhost:11434"</span> }
+  }
+}
+    </div>
+  </section>
+
+  <footer>
+    <p>Iron Rain is open source under the MIT License.</p>
+    <p>Part of the <a href="https://github.com/howlerops">howlerops</a> ecosystem.</p>
+  </footer>
+</body>
+</html>
