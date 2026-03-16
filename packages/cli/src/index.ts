@@ -2,9 +2,20 @@
 
 import { randomBytes } from 'node:crypto';
 import { loadConfig, findConfigFile, ModelSlotManager, OrchestratorKernel, ProviderRegistry } from '@howlerops/iron-rain';
-import { App, render, SPLASH_ART, TAGLINE } from '@howlerops/iron-rain-tui';
 
 const VERSION = '0.1.0';
+
+const SPLASH_ART = `   ____                  ____        _
+  /  _/______  ___      / __ \\___ _ (_)___
+ _/ / / __/ _ \\/ _ \\   / /_/ / _  |/ / _ \\
+/___/ /_/  \\___/_//_/  / .___/\\_,_/_/_//_/
+                      /_/`;
+
+const TAGLINE = 'Multi-model orchestration for terminal-based coding';
+
+function isBunRuntime(): boolean {
+  return typeof (globalThis as any).Bun !== 'undefined';
+}
 
 function printSplash(): void {
   console.log(SPLASH_ART);
@@ -21,6 +32,9 @@ function printHelp(): void {
   console.log('  iron-rain models              List available models');
   console.log('  iron-rain --version           Show version');
   console.log('  iron-rain --help              Show this help');
+  if (!isBunRuntime()) {
+    console.log('\nNote: TUI mode requires Bun. Install with: bun add -g @howlerops/iron-rain-cli');
+  }
 }
 
 function printConfig(): void {
@@ -64,6 +78,28 @@ async function runHeadless(prompt: string): Promise<void> {
   );
 }
 
+async function launchTUI(): Promise<void> {
+  if (!isBunRuntime()) {
+    printSplash();
+    console.error('Error: TUI mode requires the Bun runtime (OpenTUI uses bun:ffi for native rendering).');
+    console.error('');
+    console.error('To use the TUI, install with Bun:');
+    console.error('  bun add -g @howlerops/iron-rain-cli');
+    console.error('  iron-rain');
+    console.error('');
+    console.error('Or use headless mode (works with Node.js):');
+    console.error('  iron-rain --headless "your prompt here"');
+    process.exit(1);
+  }
+
+  const { App, render } = await import('@howlerops/iron-rain-tui');
+  const config = findConfigFile() ? loadConfig() : undefined;
+  await render(() => App({ config, version: VERSION }), {
+    targetFps: 60,
+    exitOnCtrlC: false,
+  });
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
 
@@ -98,12 +134,8 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Default: launch TUI
-  const config = findConfigFile() ? loadConfig() : undefined;
-  await render(() => App({ config, version: VERSION }), {
-    targetFps: 60,
-    exitOnCtrlC: false,
-  });
+  // Default: launch TUI (requires Bun)
+  await launchTUI();
 }
 
 main().catch((err) => {
