@@ -1,23 +1,27 @@
 export const ironRainTheme = {
   brand: {
-    primary: '#7928ca',
-    accent: '#ff0080',
+    primary: '#c49b21',    // Howlerops gold
+    accent: '#d4b820',     // Bright gold
+    gold: '#c4a035',       // Logo gold
+    darkGold: '#9a7a18',   // Deep gold
+    lightGold: '#d4c066',  // Soft gold
   },
   slots: {
-    main: '#00b4d8',
-    explore: '#90e0ef',
-    execute: '#f77f00',
+    main: '#c49b21',       // Gold — strategy
+    explore: '#d4c066',    // Light gold — research
+    execute: '#e8a317',    // Amber — action
   },
   status: {
     success: '#22c55e',
     warning: '#eab308',
     error: '#ef4444',
-    info: '#06b6d4',
+    info: '#c49b21',
   },
   chrome: {
-    border: '#4a4a4a',
-    muted: '#888888',
-    bg: '#1a1a2e',
+    border: '#3d3d3d',
+    muted: '#737373',
+    bg: '#000000',         // Pure black (howlerops dark mode)
+    card: '#2d2d2d',
     fg: '#e0e0e0',
     dimFg: '#666666',
   },

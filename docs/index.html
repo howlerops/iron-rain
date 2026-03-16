@@ -5,28 +5,36 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Iron Rain — Multi-model orchestration for coding agents</title>
   <meta name="description" content="Open-source multi-model orchestration for terminal-based coding agents. Route tasks across models with Thread Weaving.">
+  <link rel="icon" type="image/png" href="favicon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@300..700&display=swap" rel="stylesheet">
   <style>
     :root {
-      --brand-primary: #7928ca;
-      --brand-accent: #ff0080;
-      --slot-main: #00b4d8;
-      --slot-explore: #90e0ef;
-      --slot-execute: #f77f00;
-      --bg: #0d1117;
-      --bg-card: #161b22;
-      --text: #e6edf3;
-      --text-muted: #8b949e;
-      --border: #30363d;
+      --gold: #c49b21;
+      --gold-bright: #d4b820;
+      --gold-dark: #9a7a18;
+      --gold-light: #d4c066;
+      --gold-soft: #e8d48b;
+      --slot-main: #c49b21;
+      --slot-explore: #d4c066;
+      --slot-execute: #e8a317;
+      --bg: #000000;
+      --bg-card: #1a1a1a;
+      --bg-elevated: #2d2d2d;
+      --text: #e0e0e0;
+      --text-muted: #737373;
+      --border: #3d3d3d;
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+      font-family: 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
       background: var(--bg);
       color: var(--text);
       line-height: 1.6;
     }
-    a { color: var(--brand-accent); text-decoration: none; }
-    a:hover { text-decoration: underline; }
+    a { color: var(--gold); text-decoration: none; }
+    a:hover { color: var(--gold-bright); text-decoration: underline; }
 
     /* Nav */
     nav {
@@ -39,61 +47,76 @@
       position: sticky;
       top: 0;
       z-index: 10;
-      background: rgba(13,17,23,0.85);
+      background: rgba(0,0,0,0.85);
     }
     nav .logo {
-      font-size: 1.25rem;
-      font-weight: 700;
-      background: linear-gradient(135deg, var(--brand-primary), var(--brand-accent));
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: var(--gold);
+    }
+    nav .logo img {
+      width: 28px;
+      height: 28px;
     }
     nav .links { display: flex; gap: 1.5rem; }
-    nav .links a { color: var(--text-muted); font-size: 0.9rem; }
-    nav .links a:hover { color: var(--text); text-decoration: none; }
+    nav .links a { color: var(--text-muted); font-size: 0.85rem; }
+    nav .links a:hover { color: var(--gold); text-decoration: none; }
 
     /* Hero */
     .hero {
       text-align: center;
-      padding: 6rem 2rem 4rem;
+      padding: 5rem 2rem 4rem;
       max-width: 800px;
       margin: 0 auto;
     }
+    .hero .logo-large {
+      width: 100px;
+      height: 100px;
+      margin-bottom: 1.5rem;
+    }
     .hero pre {
-      font-family: 'SF Mono', 'Fira Code', monospace;
-      font-size: 0.85rem;
+      font-family: 'Fira Code', monospace;
+      font-size: 0.8rem;
       line-height: 1.4;
-      color: var(--brand-primary);
+      color: var(--gold);
       margin-bottom: 1.5rem;
       white-space: pre;
     }
     .hero h1 {
-      font-size: 3rem;
-      font-weight: 800;
+      font-size: 2.5rem;
+      font-weight: 700;
       margin-bottom: 1rem;
-      background: linear-gradient(135deg, var(--text), var(--brand-accent));
+      background: linear-gradient(135deg, var(--gold-light), var(--gold), var(--gold-dark));
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
     }
     .hero p {
-      font-size: 1.25rem;
+      font-size: 1rem;
       color: var(--text-muted);
       margin-bottom: 2rem;
+      max-width: 600px;
+      margin-left: auto;
+      margin-right: auto;
     }
     .hero-actions { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
     .btn {
       display: inline-block;
-      padding: 0.75rem 1.5rem;
-      border-radius: 8px;
+      padding: 0.65rem 1.25rem;
+      border-radius: 6px;
       font-weight: 600;
-      font-size: 0.95rem;
+      font-size: 0.85rem;
+      font-family: inherit;
       transition: transform 0.15s, box-shadow 0.15s;
     }
     .btn:hover { transform: translateY(-1px); text-decoration: none; }
     .btn-primary {
-      background: linear-gradient(135deg, var(--brand-primary), var(--brand-accent));
-      color: white;
+      background: linear-gradient(135deg, var(--gold-dark), var(--gold));
+      color: #000;
     }
+    .btn-primary:hover { color: #000; }
     .btn-secondary {
       border: 1px solid var(--border);
       color: var(--text);
@@ -102,36 +125,39 @@
 
     /* Install box */
     .install {
-      max-width: 500px;
+      max-width: 520px;
       margin: 2rem auto 0;
       background: var(--bg-card);
       border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 1rem 1.25rem;
-      font-family: 'SF Mono', 'Fira Code', monospace;
-      font-size: 0.9rem;
-      color: var(--slot-explore);
+      border-radius: 6px;
+      padding: 0.85rem 1.25rem;
+      font-size: 0.8rem;
+      color: var(--gold-light);
+      text-align: left;
     }
     .install span { color: var(--text-muted); }
 
     /* Features */
     .features {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: 1.5rem;
-      max-width: 1000px;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 1.25rem;
+      max-width: 960px;
       margin: 4rem auto;
       padding: 0 2rem;
     }
     .feature {
       background: var(--bg-card);
       border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 1.5rem;
+      border-radius: 8px;
+      padding: 1.25rem;
     }
-    .feature h3 { font-size: 1.1rem; margin-bottom: 0.5rem; }
-    .feature p { color: var(--text-muted); font-size: 0.9rem; }
-    .feature .icon { font-size: 1.5rem; margin-bottom: 0.75rem; display: block; }
+    .feature h3 {
+      font-size: 0.95rem;
+      margin-bottom: 0.5rem;
+      color: var(--gold-light);
+    }
+    .feature p { color: var(--text-muted); font-size: 0.8rem; }
 
     /* Slots section */
     .slots {
@@ -141,64 +167,103 @@
     }
     .slots h2 {
       text-align: center;
-      font-size: 2rem;
+      font-size: 1.75rem;
       margin-bottom: 0.5rem;
+      color: var(--gold);
     }
     .slots .subtitle {
       text-align: center;
       color: var(--text-muted);
       margin-bottom: 2rem;
+      font-size: 0.9rem;
     }
     .slot-cards { display: flex; gap: 1rem; flex-wrap: wrap; }
     .slot-card {
       flex: 1;
       min-width: 220px;
       background: var(--bg-card);
-      border-radius: 12px;
+      border-radius: 8px;
       padding: 1.25rem;
       border-left: 3px solid;
     }
     .slot-card.main { border-color: var(--slot-main); }
     .slot-card.explore { border-color: var(--slot-explore); }
     .slot-card.execute { border-color: var(--slot-execute); }
-    .slot-card h4 { margin-bottom: 0.5rem; }
+    .slot-card h4 { margin-bottom: 0.5rem; font-size: 0.95rem; }
     .slot-card .badge {
       display: inline-block;
-      font-size: 0.75rem;
+      font-size: 0.7rem;
       padding: 0.15rem 0.5rem;
       border-radius: 4px;
       margin-bottom: 0.5rem;
-      font-family: monospace;
     }
-    .slot-card.main .badge { background: rgba(0,180,216,0.15); color: var(--slot-main); }
-    .slot-card.explore .badge { background: rgba(144,224,239,0.15); color: var(--slot-explore); }
-    .slot-card.execute .badge { background: rgba(247,127,0,0.15); color: var(--slot-execute); }
-    .slot-card p { color: var(--text-muted); font-size: 0.85rem; }
+    .slot-card.main .badge { background: rgba(196,155,33,0.15); color: var(--slot-main); }
+    .slot-card.explore .badge { background: rgba(212,192,102,0.15); color: var(--slot-explore); }
+    .slot-card.execute .badge { background: rgba(232,163,23,0.15); color: var(--slot-execute); }
+    .slot-card p { color: var(--text-muted); font-size: 0.8rem; }
 
     /* Config example */
     .config-section {
-      max-width: 700px;
+      max-width: 660px;
       margin: 3rem auto;
       padding: 0 2rem;
     }
     .config-section h2 {
       text-align: center;
-      font-size: 2rem;
+      font-size: 1.75rem;
       margin-bottom: 1.5rem;
+      color: var(--gold);
     }
     .code-block {
       background: var(--bg-card);
       border: 1px solid var(--border);
-      border-radius: 8px;
+      border-radius: 6px;
       padding: 1.25rem;
       overflow-x: auto;
-      font-family: 'SF Mono', 'Fira Code', monospace;
-      font-size: 0.85rem;
+      font-size: 0.8rem;
       line-height: 1.6;
     }
-    .code-block .key { color: var(--slot-explore); }
-    .code-block .str { color: var(--brand-accent); }
+    .code-block .key { color: var(--gold-light); }
+    .code-block .str { color: var(--gold); }
     .code-block .comment { color: var(--text-muted); }
+
+    /* Ecosystem */
+    .ecosystem {
+      max-width: 660px;
+      margin: 3rem auto;
+      padding: 0 2rem;
+      text-align: center;
+    }
+    .ecosystem h2 {
+      font-size: 1.75rem;
+      margin-bottom: 1rem;
+      color: var(--gold);
+    }
+    .ecosystem p {
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      margin-bottom: 1rem;
+    }
+    .ecosystem-links {
+      display: flex;
+      gap: 1rem;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    .eco-link {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.6rem 1rem;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      transition: border-color 0.15s;
+    }
+    .eco-link:hover {
+      border-color: var(--gold-dark);
+      color: var(--gold-light);
+      text-decoration: none;
+    }
 
     /* Footer */
     footer {
@@ -206,21 +271,25 @@
       padding: 3rem 2rem;
       border-top: 1px solid var(--border);
       color: var(--text-muted);
-      font-size: 0.85rem;
+      font-size: 0.8rem;
       margin-top: 4rem;
     }
-    footer a { color: var(--brand-primary); }
+    footer img { width: 24px; height: 24px; vertical-align: middle; margin-right: 0.5rem; }
+    footer a { color: var(--gold-dark); }
 
     @media (max-width: 600px) {
-      .hero h1 { font-size: 2rem; }
-      .hero pre { font-size: 0.65rem; }
+      .hero h1 { font-size: 1.75rem; }
+      .hero pre { font-size: 0.6rem; }
       .slot-cards { flex-direction: column; }
     }
   </style>
 </head>
 <body>
   <nav>
-    <span class="logo">Iron Rain</span>
+    <div class="logo">
+      <img src="assets/howlerops-icon-dark.png" alt="howlerops">
+      <span>Iron Rain</span>
+    </div>
     <div class="links">
       <a href="#features">Features</a>
       <a href="#slots">Model Slots</a>
@@ -230,6 +299,7 @@
   </nav>
 
   <section class="hero">
+    <img class="logo-large" src="assets/howlerops-icon-dark.png" alt="Iron Rain">
     <pre>   ____                  ____        _
   /  _/______  ___      / __ \___ _ (_)___
  _/ / / __/ _ \/ _ \   / /_/ / _  |/ / _ \
@@ -248,32 +318,26 @@
 
   <section class="features" id="features">
     <div class="feature">
-      <span class="icon">&#9876;</span>
       <h3>Thread Weaving</h3>
       <p>Orchestrate multiple models in parallel. The main model delegates exploration and execution to specialized slots, then integrates results.</p>
     </div>
     <div class="feature">
-      <span class="icon">&#9881;</span>
       <h3>Any Provider</h3>
       <p>Works with Anthropic, OpenAI, Ollama, LM Studio, or any OpenAI-compatible API. Mix and match across model slots.</p>
     </div>
     <div class="feature">
-      <span class="icon">&#9889;</span>
       <h3>Tool-aware Routing</h3>
       <p>Automatically routes file edits to your execute slot, grep/search to explore, and strategy to main. Configurable per tool type.</p>
     </div>
     <div class="feature">
-      <span class="icon">&#128640;</span>
       <h3>Episode Protocol</h3>
       <p>Every task dispatch produces an episode summary with tokens, duration, files modified, and status. Full observability built in.</p>
     </div>
     <div class="feature">
-      <span class="icon">&#127912;</span>
       <h3>Branded TUI</h3>
       <p>Purpose-built terminal UI with color-coded model slots, per-message attribution, and a distinctive visual identity.</p>
     </div>
     <div class="feature">
-      <span class="icon">&#128268;</span>
       <h3>Plugin SDK</h3>
       <p>Extend Iron Rain with plugins. Hook into dispatch lifecycle events, modify tasks, and add custom behaviors.</p>
     </div>
@@ -320,8 +384,20 @@
     </div>
   </section>
 
+  <section class="ecosystem">
+    <h2>howlerops Ecosystem</h2>
+    <p>Iron Rain is part of the howlerops family of open-source AI infrastructure tools.</p>
+    <div class="ecosystem-links">
+      <a href="https://github.com/howlerops/howler-agents" class="eco-link">howler-agents</a>
+      <a href="https://github.com/howlerops/recursive-llm-ts" class="eco-link">recursive-llm-ts</a>
+      <a href="https://github.com/howlerops/orochi-db" class="eco-link">orochi-db</a>
+      <a href="https://github.com/howlerops/howler-code" class="eco-link">howler-code</a>
+      <a href="https://github.com/howlerops/neuco" class="eco-link">neuco</a>
+    </div>
+  </section>
+
   <footer>
-    <p>Iron Rain is open source under the MIT License.</p>
+    <p><img src="assets/howlerops-icon.png" alt="">Iron Rain is open source under the MIT License.</p>
     <p>Part of the <a href="https://github.com/howlerops">howlerops</a> ecosystem.</p>
   </footer>
 </body>
