@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@howlerops/iron-rain": "workspace:*",
-    "@howlerops/iron-rain-tui": "workspace:*"
+    "@howlerops/iron-rain-tui": "workspace:*",
+    "@opentui/solid": "^0.1.87"
   },
   "publishConfig": {
     "access": "public"

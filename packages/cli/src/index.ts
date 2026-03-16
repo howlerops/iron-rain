@@ -94,6 +94,16 @@ async function launchTUI(): Promise<void> {
     process.exit(1);
   }
 
+  // Register the OpenTUI solid plugin before importing TUI code.
+  // This redirects solid-js from server build (non-reactive) to client
+  // build (reactive). Without this, Bun's "node" export condition resolves
+  // solid-js to server.js which makes signals static/non-reactive.
+  // @ts-ignore — bun-specific runtime plugin API
+  const { plugin } = await import('bun');
+  // @ts-ignore — bun plugin, no types needed at compile time
+  const { default: solidPlugin } = await import('@opentui/solid/bun-plugin');
+  plugin(solidPlugin);
+
   const { startTUI } = await import('@howlerops/iron-rain-tui');
   const config = findConfigFile() ? loadConfig() : undefined;
   await startTUI({ config, version: VERSION });
