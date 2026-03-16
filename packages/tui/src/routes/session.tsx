@@ -3,7 +3,7 @@ import { useSlate } from '../context/slate-context.js';
 import { SessionView } from '../components/session-view.js';
 import { ironRainTheme, slotLabel } from '../theme/theme.js';
 
-export function SessionRoute(props: { version?: string }) {
+export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
   const [state, actions] = useSlate();
   const [inputValue, setInputValue] = createSignal('');
   const [inputFocused, setInputFocused] = createSignal(true);
@@ -11,6 +11,12 @@ export function SessionRoute(props: { version?: string }) {
   function handleSubmit(value: string) {
     const text = value.trim();
     if (!text) return;
+
+    // Handle slash commands
+    if (text === '/quit' || text === '/exit') {
+      props.onQuit?.();
+      return;
+    }
 
     actions.addMessage({
       id: crypto.randomUUID?.() ?? `${Date.now()}`,
@@ -75,14 +81,9 @@ export function SessionRoute(props: { version?: string }) {
             </text>
           )}
         </box>
-        <box flexDirection="row" gap={2}>
-          <text fg={ironRainTheme.chrome.dimFg}>
-            <b>Ctrl+C</b> quit
-          </text>
-          <text fg={ironRainTheme.chrome.dimFg}>
-            iron-rain {props.version ?? ''}
-          </text>
-        </box>
+        <text fg={ironRainTheme.chrome.dimFg}>
+          iron-rain {props.version ?? ''}
+        </text>
       </box>
     </box>
   );

@@ -65,7 +65,7 @@ function AppContent(props: { initialView: View; version: string }) {
           <SplashScreen version={props.version} />
         </Match>
         <Match when={view() === 'session'}>
-          <SessionRoute version={props.version} />
+          <SessionRoute version={props.version} onQuit={quit} />
         </Match>
       </Switch>
     </box>
