@@ -1,5 +1,5 @@
 import { createSignal, Switch, Match } from 'solid-js';
-import { useKeyboard } from '@opentui/solid';
+import { useKeyboard, useRenderer } from '@opentui/solid';
 import type { IronRainConfig } from '@howlerops/iron-rain';
 import { loadConfig } from '@howlerops/iron-rain';
 import { SlateProvider, useSlate } from './context/slate-context.js';
@@ -17,7 +17,13 @@ type View = 'splash' | 'onboarding' | 'session';
 
 function AppContent(props: { initialView: View; version: string }) {
   const [, actions] = useSlate();
+  const renderer = useRenderer();
   const [view, setView] = createSignal<View>(props.initialView);
+
+  function quit() {
+    renderer?.destroy();
+    process.exit(0);
+  }
 
   // Auto-dismiss splash after 2 seconds
   if (props.initialView === 'splash') {
@@ -34,13 +40,13 @@ function AppContent(props: { initialView: View; version: string }) {
   }
 
   function handleOnboardingQuit() {
-    process.exit(0);
+    quit();
   }
 
   // Global Ctrl+C handler + press any key to skip splash
   useKeyboard((e) => {
     if (e.ctrl && e.name === 'c') {
-      process.exit(0);
+      quit();
     }
     if (view() === 'splash') {
       setView('session');

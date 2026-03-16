@@ -1,5 +1,4 @@
 import { createSignal } from 'solid-js';
-import { useKeyboard } from '@opentui/solid';
 import { useSlate } from '../context/slate-context.js';
 import { SessionView } from '../components/session-view.js';
 import { ModelSlotBar } from '../components/model-slot-bar.js';
@@ -27,13 +26,6 @@ export function SessionRoute() {
     // Dispatch to orchestrator kernel — Main slot handles everything
     actions.dispatch(text);
   }
-
-  // Global keyboard shortcuts
-  useKeyboard((e) => {
-    if (e.ctrl && e.name === 'c') {
-      process.exit(0);
-    }
-  });
 
   return (
     <box flexDirection="column" flexGrow={1}>
