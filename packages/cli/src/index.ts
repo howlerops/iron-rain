@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 
 import { randomBytes } from 'node:crypto';
 import { loadConfig, findConfigFile, ModelSlotManager, OrchestratorKernel, ProviderRegistry } from '@howlerops/iron-rain';
