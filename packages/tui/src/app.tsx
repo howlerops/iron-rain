@@ -6,7 +6,6 @@ import { SlateProvider, useSlate } from './context/slate-context.js';
 import { SplashScreen } from './components/splash-screen.js';
 import { SessionRoute } from './routes/session.js';
 import { OnboardingWizard } from './components/onboarding/index.js';
-import { ironRainTheme } from './theme/theme.js';
 
 export interface AppProps {
   config?: IronRainConfig;
@@ -66,24 +65,9 @@ function AppContent(props: { initialView: View; version: string }) {
           <SplashScreen version={props.version} />
         </Match>
         <Match when={view() === 'session'}>
-          <SessionRoute />
+          <SessionRoute version={props.version} />
         </Match>
       </Switch>
-
-      {/* Status bar */}
-      <box
-        flexDirection="row"
-        justifyContent="space-between"
-        paddingX={1}
-        border
-        borderStyle="rounded"
-        borderColor={ironRainTheme.chrome.border}
-      >
-        <text fg={ironRainTheme.brand.primary}>
-          <b>iron-rain</b>
-        </text>
-        <text fg={ironRainTheme.chrome.muted}>{props.version}</text>
-      </box>
     </box>
   );
 }
