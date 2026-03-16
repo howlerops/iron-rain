@@ -1,4 +1,4 @@
-import { createSignal, Show } from 'solid-js';
+import { createSignal, Switch, Match } from 'solid-js';
 import { useKeyboard } from '@opentui/solid';
 import type { IronRainConfig } from '@howlerops/iron-rain';
 import { findConfigFile, loadConfig } from '@howlerops/iron-rain';
@@ -13,47 +13,56 @@ export interface AppProps {
   version?: string;
 }
 
+type View = 'splash' | 'onboarding' | 'session';
+
 export function App(props: AppProps) {
-  const [showSplash, setShowSplash] = createSignal(true);
-  const hasConfig = () => !!props.config?.slots || !!findConfigFile();
-  const [onboardingComplete, setOnboardingComplete] = createSignal(false);
+  const hasConfig = !!props.config?.slots || !!findConfigFile();
+  const initialView: View = hasConfig ? 'splash' : 'onboarding';
+  const [view, setView] = createSignal<View>(initialView);
   const [activeConfig, setActiveConfig] = createSignal<IronRainConfig | undefined>(props.config);
 
   // Auto-dismiss splash after 2 seconds
-  setTimeout(() => setShowSplash(false), 2000);
+  if (hasConfig) {
+    setTimeout(() => setView('session'), 2000);
+  }
 
   function handleOnboardingComplete(configPath: string) {
     const newConfig = loadConfig();
     setActiveConfig(newConfig);
-    setOnboardingComplete(true);
+    setView('session');
   }
 
   function handleOnboardingQuit() {
     process.exit(0);
   }
 
-  // Global Ctrl+C handler
+  // Global Ctrl+C handler + press any key to skip splash
   useKeyboard((e) => {
     if (e.ctrl && e.name === 'c') {
       process.exit(0);
     }
+    if (view() === 'splash') {
+      setView('session');
+    }
   });
-
-  const needsOnboarding = () => !hasConfig() && !onboardingComplete();
 
   return (
     <SlateProvider config={activeConfig()}>
       <box flexDirection="column" width="100%" height="100%">
-        <Show when={needsOnboarding()} fallback={
-          <Show when={showSplash()} fallback={<SessionRoute />}>
+        <Switch>
+          <Match when={view() === 'onboarding'}>
+            <OnboardingWizard
+              onComplete={handleOnboardingComplete}
+              onQuit={handleOnboardingQuit}
+            />
+          </Match>
+          <Match when={view() === 'splash'}>
             <SplashScreen version={props.version ?? '0.1.0'} />
-          </Show>
-        }>
-          <OnboardingWizard
-            onComplete={handleOnboardingComplete}
-            onQuit={handleOnboardingQuit}
-          />
-        </Show>
+          </Match>
+          <Match when={view() === 'session'}>
+            <SessionRoute />
+          </Match>
+        </Switch>
 
         {/* Status bar */}
         <box
