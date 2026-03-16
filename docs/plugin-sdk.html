@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Plugin SDK — Iron Rain</title>
+  <link rel="icon" type="image/png" href="favicon.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav class="topnav">
+    <a href="index.html" class="logo">
+      <img src="assets/howlerops-icon-dark.png" alt="howlerops">
+      <span>Iron Rain</span>
+    </a>
+    <div class="links">
+      <a href="getting-started.html" class="active">Docs</a>
+      <a href="https://www.npmjs.com/package/@howlerops/iron-rain">npm</a>
+      <a href="https://github.com/howlerops/iron-rain">GitHub</a>
+    </div>
+  </nav>
+
+  <div class="docs-layout">
+    <aside class="sidebar">
+      <div class="section-title">Getting Started</div>
+      <a href="getting-started.html">Quick Start</a>
+
+      <div class="section-title">Guide</div>
+      <a href="configuration.html">Configuration</a>
+      <a href="providers.html">Providers</a>
+      <a href="architecture.html">Architecture</a>
+
+      <div class="section-title">Reference</div>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="plugin-sdk.html" class="active">Plugin SDK</a>
+    </aside>
+
+    <main class="content">
+      <h1>Plugin SDK</h1>
+      <p class="subtitle">Extend Iron Rain with custom hooks that run before, during, and after task dispatch.</p>
+
+      <h2>Installation</h2>
+      <pre><code>npm install @howlerops/iron-rain-plugin</code></pre>
+      <p>The plugin package re-exports all core types, so you don't need to install <code>@howlerops/iron-rain</code> separately.</p>
+
+      <h2>Quick example</h2>
+      <pre><code><span class="kw">import</span> { <span class="fn">definePlugin</span> } <span class="kw">from</span> <span class="str">'@howlerops/iron-rain-plugin'</span>;
+
+<span class="kw">export default</span> <span class="fn">definePlugin</span>({
+  name: <span class="str">'my-logger'</span>,
+  version: <span class="str">'1.0.0'</span>,
+  description: <span class="str">'Logs every dispatch to the console'</span>,
+
+  hooks: {
+    <span class="fn">onInit</span>(ctx) {
+      console.log(<span class="str">'Logger plugin loaded'</span>);
+    },
+
+    <span class="fn">onBeforeDispatch</span>(task, ctx) {
+      console.log(<span class="str">`Dispatching: ${task.prompt.slice(0, 50)}...`</span>);
+      <span class="kw">return</span> task;  <span class="comment">// pass through unchanged</span>
+    },
+
+    <span class="fn">onAfterDispatch</span>(episode, ctx) {
+      console.log(
+        <span class="str">`[${episode.slot}] ${episode.status} — `</span> +
+        <span class="str">`${episode.tokens} tokens, ${episode.duration}ms`</span>
+      );
+    }
+  }
+});</code></pre>
+
+      <h2>Plugin definition</h2>
+      <pre><code><span class="kw">interface</span> <span class="type">PluginDefinition</span> {
+  name: <span class="type">string</span>;          <span class="comment">// Unique plugin name</span>
+  version: <span class="type">string</span>;       <span class="comment">// Semver version</span>
+  description?: <span class="type">string</span>;  <span class="comment">// Human-readable description</span>
+  hooks: <span class="type">PluginHooks</span>;     <span class="comment">// Lifecycle hooks</span>
+}</code></pre>
+      <p>The <code>definePlugin()</code> function is an identity function used for TypeScript type inference. Wrap your plugin in it for full autocompletion.</p>
+
+      <h2>Lifecycle hooks</h2>
+
+      <h3><code>onInit(ctx)</code></h3>
+      <p>Called once when the plugin is loaded. Use it for setup, connections, or logging.</p>
+      <pre><code><span class="fn">onInit</span>(ctx: <span class="type">PluginContext</span>): <span class="kw">void</span> | Promise&lt;<span class="kw">void</span>&gt;;</code></pre>
+
+      <h3><code>onBeforeDispatch(task, ctx)</code></h3>
+      <p>Called before every task is dispatched to a slot worker. You can inspect or mutate the task.</p>
+      <pre><code><span class="fn">onBeforeDispatch</span>(
+  task: <span class="type">OrchestratorTask</span>,
+  ctx: <span class="type">PluginContext</span>
+): <span class="type">OrchestratorTask</span> | <span class="kw">void</span>;</code></pre>
+      <ul>
+        <li>Return a modified <code>OrchestratorTask</code> to change the prompt, target slot, or metadata</li>
+        <li>Return <code>void</code> (or nothing) to pass the task through unchanged</li>
+      </ul>
+
+      <h4>Example: add system prompt to all tasks</h4>
+      <pre><code><span class="fn">onBeforeDispatch</span>(task, ctx) {
+  <span class="kw">return</span> {
+    ...task,
+    metadata: {
+      ...task.metadata,
+      systemPrompt: <span class="str">'Always respond in JSON format'</span>
+    }
+  };
+}</code></pre>
+
+      <h3><code>onAfterDispatch(episode, ctx)</code></h3>
+      <p>Called after every dispatch completes. The episode is read-only — use this for logging, analytics, or side effects.</p>
+      <pre><code><span class="fn">onAfterDispatch</span>(
+  episode: <span class="type">EpisodeSummary</span>,
+  ctx: <span class="type">PluginContext</span>
+): <span class="kw">void</span>;</code></pre>
+
+      <h4>Example: track costs</h4>
+      <pre><code><span class="kw">let</span> totalTokens = <span class="str">0</span>;
+
+<span class="fn">onAfterDispatch</span>(episode, ctx) {
+  totalTokens += episode.tokens;
+  console.log(<span class="str">`Total tokens used: ${totalTokens}`</span>);
+}</code></pre>
+
+      <h3><code>onSlotChange(slot, config, ctx)</code></h3>
+      <p>Called when a slot's model configuration is updated at runtime.</p>
+      <pre><code><span class="fn">onSlotChange</span>(
+  slot: <span class="type">SlotName</span>,
+  config: <span class="type">SlotConfig</span>,
+  ctx: <span class="type">PluginContext</span>
+): <span class="kw">void</span>;</code></pre>
+
+      <h3><code>onDestroy(ctx)</code></h3>
+      <p>Called on shutdown. Use for cleanup — close connections, flush buffers, etc.</p>
+      <pre><code><span class="fn">onDestroy</span>(ctx: <span class="type">PluginContext</span>): <span class="kw">void</span> | Promise&lt;<span class="kw">void</span>&gt;;</code></pre>
+
+      <h2>Plugin context</h2>
+      <p>Every hook receives a <code>PluginContext</code> with access to the running system:</p>
+      <pre><code><span class="kw">interface</span> <span class="type">PluginContext</span> {
+  config: <span class="type">IronRainConfig</span>;                          <span class="comment">// Current config</span>
+  <span class="fn">getSlot</span>(name: <span class="type">SlotName</span>): <span class="type">SlotConfig</span>;              <span class="comment">// Read a slot</span>
+  <span class="fn">dispatch</span>(task: <span class="type">OrchestratorTask</span>): Promise&lt;<span class="type">EpisodeSummary</span>&gt;;  <span class="comment">// Dispatch</span>
+}</code></pre>
+
+      <div class="callout warning">
+        <div class="callout-title">Avoid infinite loops</div>
+        <p>Calling <code>ctx.dispatch()</code> inside <code>onBeforeDispatch</code> or <code>onAfterDispatch</code> can create infinite recursion. Only dispatch from <code>onInit</code> or from external triggers.</p>
+      </div>
+
+      <h2>TypeScript setup</h2>
+      <p>The plugin SDK exports all the types you need:</p>
+      <pre><code><span class="kw">import type</span> {
+  <span class="type">PluginDefinition</span>,
+  <span class="type">PluginHooks</span>,
+  <span class="type">PluginContext</span>,
+  <span class="type">OrchestratorTask</span>,
+  <span class="type">EpisodeSummary</span>,
+  <span class="type">SlotName</span>,
+  <span class="type">SlotConfig</span>,
+  <span class="type">IronRainConfig</span>
+} <span class="kw">from</span> <span class="str">'@howlerops/iron-rain-plugin'</span>;</code></pre>
+
+      <div class="page-nav">
+        <a href="cli-reference.html">
+          <div class="label">Previous</div>
+          <div class="title">CLI Reference</div>
+        </a>
+        <div></div>
+      </div>
+    </main>
+  </div>
+
+  <footer class="docs-footer">
+    Iron Rain is open source under the MIT License. Part of the <a href="https://github.com/howlerops">howlerops</a> ecosystem.
+  </footer>
+</body>
+</html>

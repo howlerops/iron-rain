@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Providers — Iron Rain</title>
+  <link rel="icon" type="image/png" href="favicon.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav class="topnav">
+    <a href="index.html" class="logo">
+      <img src="assets/howlerops-icon-dark.png" alt="howlerops">
+      <span>Iron Rain</span>
+    </a>
+    <div class="links">
+      <a href="getting-started.html" class="active">Docs</a>
+      <a href="https://www.npmjs.com/package/@howlerops/iron-rain">npm</a>
+      <a href="https://github.com/howlerops/iron-rain">GitHub</a>
+    </div>
+  </nav>
+
+  <div class="docs-layout">
+    <aside class="sidebar">
+      <div class="section-title">Getting Started</div>
+      <a href="getting-started.html">Quick Start</a>
+
+      <div class="section-title">Guide</div>
+      <a href="configuration.html">Configuration</a>
+      <a href="providers.html" class="active">Providers</a>
+      <a href="architecture.html">Architecture</a>
+
+      <div class="section-title">Reference</div>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="plugin-sdk.html">Plugin SDK</a>
+    </aside>
+
+    <main class="content">
+      <h1>Providers</h1>
+      <p class="subtitle">Iron Rain supports 7 providers out of the box — both API-based and CLI-based. Use your existing subscriptions.</p>
+
+      <div class="callout info">
+        <div class="callout-title">API vs CLI providers</div>
+        <p><strong>API providers</strong> call model APIs directly via HTTP — you need an API key.<br>
+        <strong>CLI providers</strong> spawn your existing CLI tools (Claude Code, Codex, Gemini CLI) — they use your existing subscription, no API key needed.</p>
+      </div>
+
+      <h2>Ollama (local, free)</h2>
+      <p>Run open-source models locally. No API key, no cost, full privacy.</p>
+      <h4>Setup</h4>
+      <ol>
+        <li>Install Ollama: <a href="https://ollama.com">ollama.com</a></li>
+        <li>Pull a model: <code>ollama pull llama3.2</code></li>
+        <li>Start the server: <code>ollama serve</code></li>
+      </ol>
+      <h4>Config</h4>
+      <pre><code>{
+  <span class="key">"slots"</span>: {
+    <span class="key">"main"</span>: { <span class="key">"provider"</span>: <span class="str">"ollama"</span>, <span class="key">"model"</span>: <span class="str">"llama3.2"</span> }
+  },
+  <span class="key">"providers"</span>: {
+    <span class="key">"ollama"</span>: { <span class="key">"apiBase"</span>: <span class="str">"http://localhost:11434"</span> }
+  }
+}</code></pre>
+      <h4>Popular models</h4>
+      <table>
+        <thead><tr><th>Model</th><th>Size</th><th>Best for</th></tr></thead>
+        <tbody>
+          <tr><td><code>llama3.2</code></td><td>3B</td><td>Fast general tasks</td></tr>
+          <tr><td><code>qwen2.5-coder:32b</code></td><td>32B</td><td>Code generation</td></tr>
+          <tr><td><code>deepseek-coder-v2</code></td><td>16B</td><td>Code understanding</td></tr>
+          <tr><td><code>mistral</code></td><td>7B</td><td>Balanced performance</td></tr>
+        </tbody>
+      </table>
+
+      <h2>Anthropic (API)</h2>
+      <p>Claude models via the Anthropic API.</p>
+      <h4>Setup</h4>
+      <ol>
+        <li>Get an API key at <a href="https://console.anthropic.com">console.anthropic.com</a></li>
+        <li>Set the environment variable: <code>export ANTHROPIC_API_KEY=sk-ant-...</code></li>
+      </ol>
+      <h4>Config</h4>
+      <pre><code>{
+  <span class="key">"slots"</span>: {
+    <span class="key">"main"</span>: { <span class="key">"provider"</span>: <span class="str">"anthropic"</span>, <span class="key">"model"</span>: <span class="str">"claude-sonnet-4-20250514"</span> }
+  },
+  <span class="key">"providers"</span>: {
+    <span class="key">"anthropic"</span>: { <span class="key">"apiKey"</span>: <span class="str">"env:ANTHROPIC_API_KEY"</span> }
+  }
+}</code></pre>
+      <h4>Available models</h4>
+      <table>
+        <thead><tr><th>Model</th><th>Best for</th></tr></thead>
+        <tbody>
+          <tr><td><code>claude-opus-4-6</code></td><td>Complex reasoning, architecture</td></tr>
+          <tr><td><code>claude-sonnet-4-20250514</code></td><td>Balanced speed/quality</td></tr>
+          <tr><td><code>claude-haiku-4-5-20251001</code></td><td>Fast, cheap tasks</td></tr>
+        </tbody>
+      </table>
+
+      <h2>Claude Code (CLI)</h2>
+      <p>Use your existing Claude Code subscription — no API key needed. Iron Rain spawns <code>claude</code> as a subprocess.</p>
+      <h4>Setup</h4>
+      <ol>
+        <li>Install Claude Code: <code>npm install -g @anthropic-ai/claude-code</code></li>
+        <li>Log in: <code>claude login</code></li>
+      </ol>
+      <h4>Config</h4>
+      <pre><code>{
+  <span class="key">"slots"</span>: {
+    <span class="key">"main"</span>: { <span class="key">"provider"</span>: <span class="str">"claude-code"</span>, <span class="key">"model"</span>: <span class="str">"claude-sonnet-4-20250514"</span> }
+  }
+}</code></pre>
+      <div class="callout tip">
+        <div class="callout-title">Custom binary path</div>
+        <p>If <code>claude</code> is not in your PATH, set <code>apiBase</code> to the full path of the binary.</p>
+      </div>
+
+      <h2>OpenAI (API)</h2>
+      <p>GPT models via the OpenAI API.</p>
+      <h4>Setup</h4>
+      <ol>
+        <li>Get an API key at <a href="https://platform.openai.com">platform.openai.com</a></li>
+        <li>Set the environment variable: <code>export OPENAI_API_KEY=sk-...</code></li>
+      </ol>
+      <h4>Config</h4>
+      <pre><code>{
+  <span class="key">"slots"</span>: {
+    <span class="key">"execute"</span>: { <span class="key">"provider"</span>: <span class="str">"openai"</span>, <span class="key">"model"</span>: <span class="str">"gpt-4o"</span> }
+  },
+  <span class="key">"providers"</span>: {
+    <span class="key">"openai"</span>: { <span class="key">"apiKey"</span>: <span class="str">"env:OPENAI_API_KEY"</span> }
+  }
+}</code></pre>
+      <h4>Available models</h4>
+      <table>
+        <thead><tr><th>Model</th><th>Best for</th></tr></thead>
+        <tbody>
+          <tr><td><code>gpt-4o</code></td><td>Balanced, multimodal</td></tr>
+          <tr><td><code>o3</code></td><td>Advanced reasoning</td></tr>
+          <tr><td><code>o4-mini</code></td><td>Fast reasoning</td></tr>
+        </tbody>
+      </table>
+
+      <h2>Codex (CLI)</h2>
+      <p>Use your OpenAI Codex subscription via the CLI.</p>
+      <h4>Setup</h4>
+      <ol>
+        <li>Install Codex: <code>npm install -g @openai/codex</code></li>
+        <li>Log in via the Codex CLI</li>
+      </ol>
+      <h4>Config</h4>
+      <pre><code>{
+  <span class="key">"slots"</span>: {
+    <span class="key">"execute"</span>: { <span class="key">"provider"</span>: <span class="str">"codex"</span>, <span class="key">"model"</span>: <span class="str">"o4-mini"</span> }
+  }
+}</code></pre>
+
+      <h2>Gemini (API)</h2>
+      <p>Google Gemini models via the Generative Language API.</p>
+      <h4>Setup</h4>
+      <ol>
+        <li>Get an API key at <a href="https://aistudio.google.com">AI Studio</a></li>
+        <li>Set the environment variable: <code>export GEMINI_API_KEY=...</code></li>
+      </ol>
+      <h4>Config</h4>
+      <pre><code>{
+  <span class="key">"slots"</span>: {
+    <span class="key">"explore"</span>: { <span class="key">"provider"</span>: <span class="str">"gemini"</span>, <span class="key">"model"</span>: <span class="str">"gemini-2.5-flash"</span> }
+  },
+  <span class="key">"providers"</span>: {
+    <span class="key">"gemini"</span>: { <span class="key">"apiKey"</span>: <span class="str">"env:GEMINI_API_KEY"</span> }
+  }
+}</code></pre>
+      <h4>Available models</h4>
+      <table>
+        <thead><tr><th>Model</th><th>Best for</th></tr></thead>
+        <tbody>
+          <tr><td><code>gemini-2.5-pro</code></td><td>Complex tasks</td></tr>
+          <tr><td><code>gemini-2.5-flash</code></td><td>Fast, balanced</td></tr>
+          <tr><td><code>gemini-2.0-flash</code></td><td>Ultra-fast</td></tr>
+        </tbody>
+      </table>
+
+      <h2>Gemini CLI</h2>
+      <p>Use the Google Gemini CLI with your existing subscription.</p>
+      <h4>Setup</h4>
+      <ol>
+        <li>Install the Gemini CLI</li>
+        <li>Log in via the CLI</li>
+      </ol>
+      <h4>Config</h4>
+      <pre><code>{
+  <span class="key">"slots"</span>: {
+    <span class="key">"explore"</span>: { <span class="key">"provider"</span>: <span class="str">"gemini-cli"</span>, <span class="key">"model"</span>: <span class="str">"gemini-2.5-flash"</span> }
+  }
+}</code></pre>
+
+      <h2>OpenAI-compatible (any provider)</h2>
+      <p>Any provider with an OpenAI-compatible API works out of the box. This includes Groq, Together AI, Fireworks, Azure OpenAI, LM Studio, and many others.</p>
+      <h4>Config</h4>
+      <pre><code>{
+  <span class="key">"slots"</span>: {
+    <span class="key">"explore"</span>: { <span class="key">"provider"</span>: <span class="str">"groq"</span>, <span class="key">"model"</span>: <span class="str">"llama-3.3-70b-versatile"</span> }
+  },
+  <span class="key">"providers"</span>: {
+    <span class="key">"groq"</span>: {
+      <span class="key">"apiKey"</span>: <span class="str">"env:GROQ_API_KEY"</span>,
+      <span class="key">"apiBase"</span>: <span class="str">"https://api.groq.com/openai/v1"</span>
+    }
+  }
+}</code></pre>
+      <div class="callout tip">
+        <div class="callout-title">How it works</div>
+        <p>Any provider name that isn't one of the built-in names (<code>ollama</code>, <code>anthropic</code>, <code>claude-code</code>, <code>codex</code>, <code>gemini</code>, <code>gemini-cli</code>) automatically uses the OpenAI-compatible bridge. Just provide <code>apiKey</code> and <code>apiBase</code>.</p>
+      </div>
+
+      <h2>Recommended slot assignments</h2>
+      <p>Some suggested configurations depending on your setup:</p>
+
+      <h4>All-local (free, private)</h4>
+      <pre><code>{
+  <span class="key">"slots"</span>: {
+    <span class="key">"main"</span>:    { <span class="key">"provider"</span>: <span class="str">"ollama"</span>, <span class="key">"model"</span>: <span class="str">"llama3.2"</span> },
+    <span class="key">"explore"</span>: { <span class="key">"provider"</span>: <span class="str">"ollama"</span>, <span class="key">"model"</span>: <span class="str">"llama3.2"</span> },
+    <span class="key">"execute"</span>: { <span class="key">"provider"</span>: <span class="str">"ollama"</span>, <span class="key">"model"</span>: <span class="str">"qwen2.5-coder:32b"</span> }
+  }
+}</code></pre>
+
+      <h4>Subscription-based (no API keys)</h4>
+      <pre><code>{
+  <span class="key">"slots"</span>: {
+    <span class="key">"main"</span>:    { <span class="key">"provider"</span>: <span class="str">"claude-code"</span>, <span class="key">"model"</span>: <span class="str">"claude-sonnet-4-20250514"</span> },
+    <span class="key">"explore"</span>: { <span class="key">"provider"</span>: <span class="str">"gemini-cli"</span>, <span class="key">"model"</span>: <span class="str">"gemini-2.5-flash"</span> },
+    <span class="key">"execute"</span>: { <span class="key">"provider"</span>: <span class="str">"codex"</span>,      <span class="key">"model"</span>: <span class="str">"o4-mini"</span> }
+  }
+}</code></pre>
+
+      <h4>Power user (mixed API + local)</h4>
+      <pre><code>{
+  <span class="key">"slots"</span>: {
+    <span class="key">"main"</span>:    { <span class="key">"provider"</span>: <span class="str">"anthropic"</span>, <span class="key">"model"</span>: <span class="str">"claude-opus-4-6"</span> },
+    <span class="key">"explore"</span>: { <span class="key">"provider"</span>: <span class="str">"ollama"</span>,    <span class="key">"model"</span>: <span class="str">"qwen2.5-coder:32b"</span> },
+    <span class="key">"execute"</span>: { <span class="key">"provider"</span>: <span class="str">"openai"</span>,    <span class="key">"model"</span>: <span class="str">"gpt-4o"</span> }
+  }
+}</code></pre>
+
+      <div class="page-nav">
+        <a href="configuration.html">
+          <div class="label">Previous</div>
+          <div class="title">Configuration</div>
+        </a>
+        <a href="architecture.html" class="next">
+          <div class="label">Next</div>
+          <div class="title">Architecture</div>
+        </a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="docs-footer">
+    Iron Rain is open source under the MIT License. Part of the <a href="https://github.com/howlerops">howlerops</a> ecosystem.
+  </footer>
+</body>
+</html>

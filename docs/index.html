@@ -8,7 +8,7 @@
   <link rel="icon" type="image/png" href="favicon.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@300..700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@300..700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
       --gold: #c49b21;
@@ -28,10 +28,13 @@
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      font-family: 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       background: var(--bg);
       color: var(--text);
       line-height: 1.6;
+    }
+    code, pre, .mono {
+      font-family: 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     }
     a { color: var(--gold); text-decoration: none; }
     a:hover { color: var(--gold-bright); text-decoration: underline; }
@@ -41,28 +44,27 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 1rem 2rem;
+      padding: 0.75rem 2rem;
       border-bottom: 1px solid var(--border);
       backdrop-filter: blur(10px);
       position: sticky;
       top: 0;
       z-index: 10;
-      background: rgba(0,0,0,0.85);
+      background: rgba(0,0,0,0.9);
     }
     nav .logo {
       display: flex;
       align-items: center;
-      gap: 0.75rem;
-      font-size: 1.1rem;
+      gap: 0.6rem;
+      font-size: 1rem;
       font-weight: 600;
       color: var(--gold);
+      text-decoration: none;
     }
-    nav .logo img {
-      width: 28px;
-      height: 28px;
-    }
-    nav .links { display: flex; gap: 1.5rem; }
-    nav .links a { color: var(--text-muted); font-size: 0.85rem; }
+    nav .logo:hover { text-decoration: none; color: var(--gold-bright); }
+    nav .logo img { width: 24px; height: 24px; }
+    nav .links { display: flex; gap: 1.5rem; align-items: center; }
+    nav .links a { color: var(--text-muted); font-size: 0.85rem; font-weight: 500; }
     nav .links a:hover { color: var(--gold); text-decoration: none; }
 
     /* Hero */
@@ -77,37 +79,38 @@
       height: 100px;
       margin-bottom: 1.5rem;
     }
-    .hero pre {
+    .hero .title-text {
       font-family: 'Fira Code', monospace;
-      font-size: 0.8rem;
-      line-height: 1.4;
+      font-size: 3rem;
+      font-weight: 700;
       color: var(--gold);
-      margin-bottom: 1.5rem;
-      white-space: pre;
+      margin-bottom: 1rem;
+      letter-spacing: -0.02em;
     }
     .hero h1 {
-      font-size: 2.5rem;
+      font-size: 2.25rem;
       font-weight: 700;
       margin-bottom: 1rem;
       background: linear-gradient(135deg, var(--gold-light), var(--gold), var(--gold-dark));
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
+      line-height: 1.3;
     }
     .hero p {
-      font-size: 1rem;
+      font-size: 1.05rem;
       color: var(--text-muted);
       margin-bottom: 2rem;
       max-width: 600px;
       margin-left: auto;
       margin-right: auto;
     }
-    .hero-actions { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
+    .hero-actions { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; margin-bottom: 2rem; }
     .btn {
       display: inline-block;
-      padding: 0.65rem 1.25rem;
+      padding: 0.7rem 1.5rem;
       border-radius: 6px;
       font-weight: 600;
-      font-size: 0.85rem;
+      font-size: 0.9rem;
       font-family: inherit;
       transition: transform 0.15s, box-shadow 0.15s;
     }
@@ -122,20 +125,31 @@
       color: var(--text);
       background: var(--bg-card);
     }
+    .btn-outline {
+      border: 1px solid var(--gold-dark);
+      color: var(--gold);
+      background: transparent;
+    }
 
     /* Install box */
-    .install {
+    .install-group {
       max-width: 520px;
-      margin: 2rem auto 0;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    .install {
       background: var(--bg-card);
       border: 1px solid var(--border);
       border-radius: 6px;
-      padding: 0.85rem 1.25rem;
-      font-size: 0.8rem;
+      padding: 0.75rem 1.25rem;
+      font-family: 'Fira Code', monospace;
+      font-size: 0.82rem;
       color: var(--gold-light);
       text-align: left;
     }
-    .install span { color: var(--text-muted); }
+    .install .prompt { color: var(--text-muted); }
 
     /* Features */
     .features {
@@ -150,14 +164,14 @@
       background: var(--bg-card);
       border: 1px solid var(--border);
       border-radius: 8px;
-      padding: 1.25rem;
+      padding: 1.5rem;
     }
     .feature h3 {
-      font-size: 0.95rem;
+      font-size: 1rem;
       margin-bottom: 0.5rem;
       color: var(--gold-light);
     }
-    .feature p { color: var(--text-muted); font-size: 0.8rem; }
+    .feature p { color: var(--text-muted); font-size: 0.88rem; line-height: 1.6; }
 
     /* Slots section */
     .slots {
@@ -175,7 +189,7 @@
       text-align: center;
       color: var(--text-muted);
       margin-bottom: 2rem;
-      font-size: 0.9rem;
+      font-size: 0.95rem;
     }
     .slot-cards { display: flex; gap: 1rem; flex-wrap: wrap; }
     .slot-card {
@@ -192,7 +206,8 @@
     .slot-card h4 { margin-bottom: 0.5rem; font-size: 0.95rem; }
     .slot-card .badge {
       display: inline-block;
-      font-size: 0.7rem;
+      font-family: 'Fira Code', monospace;
+      font-size: 0.72rem;
       padding: 0.15rem 0.5rem;
       border-radius: 4px;
       margin-bottom: 0.5rem;
@@ -200,7 +215,7 @@
     .slot-card.main .badge { background: rgba(196,155,33,0.15); color: var(--slot-main); }
     .slot-card.explore .badge { background: rgba(212,192,102,0.15); color: var(--slot-explore); }
     .slot-card.execute .badge { background: rgba(232,163,23,0.15); color: var(--slot-execute); }
-    .slot-card p { color: var(--text-muted); font-size: 0.8rem; }
+    .slot-card p { color: var(--text-muted); font-size: 0.85rem; }
 
     /* Config example */
     .config-section {
@@ -217,10 +232,11 @@
     .code-block {
       background: var(--bg-card);
       border: 1px solid var(--border);
-      border-radius: 6px;
+      border-radius: 8px;
       padding: 1.25rem;
       overflow-x: auto;
-      font-size: 0.8rem;
+      font-family: 'Fira Code', monospace;
+      font-size: 0.82rem;
       line-height: 1.6;
     }
     .code-block .key { color: var(--gold-light); }
@@ -241,7 +257,7 @@
     }
     .ecosystem p {
       color: var(--text-muted);
-      font-size: 0.85rem;
+      font-size: 0.9rem;
       margin-bottom: 1rem;
     }
     .ecosystem-links {
@@ -255,7 +271,8 @@
       border: 1px solid var(--border);
       border-radius: 6px;
       padding: 0.6rem 1rem;
-      font-size: 0.8rem;
+      font-family: 'Fira Code', monospace;
+      font-size: 0.82rem;
       color: var(--text-muted);
       transition: border-color 0.15s;
     }
@@ -271,29 +288,29 @@
       padding: 3rem 2rem;
       border-top: 1px solid var(--border);
       color: var(--text-muted);
-      font-size: 0.8rem;
+      font-size: 0.82rem;
       margin-top: 4rem;
     }
     footer img { width: 24px; height: 24px; vertical-align: middle; margin-right: 0.5rem; }
     footer a { color: var(--gold-dark); }
 
     @media (max-width: 600px) {
-      .hero h1 { font-size: 1.75rem; }
-      .hero pre { font-size: 0.6rem; }
+      .hero h1 { font-size: 1.6rem; }
+      .hero .title-text { font-size: 2rem; }
       .slot-cards { flex-direction: column; }
     }
   </style>
 </head>
 <body>
   <nav>
-    <div class="logo">
+    <a href="index.html" class="logo">
       <img src="assets/howlerops-icon-dark.png" alt="howlerops">
       <span>Iron Rain</span>
-    </div>
+    </a>
     <div class="links">
+      <a href="getting-started.html">Docs</a>
       <a href="#features">Features</a>
       <a href="#slots">Model Slots</a>
-      <a href="#config">Config</a>
       <a href="https://www.npmjs.com/package/@howlerops/iron-rain">npm</a>
       <a href="https://github.com/howlerops/iron-rain">GitHub</a>
     </div>
@@ -301,22 +318,21 @@
 
   <section class="hero">
     <img class="logo-large" src="assets/howlerops-icon-dark.png" alt="Iron Rain">
-    <pre>   ____                  ____        _
-  /  _/______  ___      / __ \___ _ (_)___
- _/ / / __/ _ \/ _ \   / /_/ / _  |/ / _ \
-/___/ /_/  \___/_//_/  / .___/\_,_/_/_//_/
-                      /_/</pre>
+    <div class="title-text">Iron Rain</div>
     <h1>Multi-model orchestration for coding agents</h1>
-    <p>Route tasks to the right model at the right time. Use any provider &mdash; Anthropic, OpenAI, Ollama, or any OpenAI-compatible API.</p>
+    <p>Route tasks to the right model at the right time. Use any provider &mdash; Anthropic, OpenAI, Ollama, or your existing CLI subscriptions.</p>
     <div class="hero-actions">
-      <a href="https://www.npmjs.com/package/@howlerops/iron-rain" class="btn btn-primary">View on npm</a>
-      <a href="https://github.com/howlerops/iron-rain" class="btn btn-secondary">View Source</a>
+      <a href="getting-started.html" class="btn btn-primary">Get Started</a>
+      <a href="https://www.npmjs.com/package/@howlerops/iron-rain" class="btn btn-secondary">View on npm</a>
+      <a href="https://github.com/howlerops/iron-rain" class="btn btn-outline">GitHub</a>
     </div>
-    <div class="install">
-      <span>$</span> npm install @howlerops/iron-rain
-    </div>
-    <div class="install" style="margin-top: 0.5rem;">
-      <span>$</span> npx @howlerops/iron-rain-cli
+    <div class="install-group">
+      <div class="install">
+        <span class="prompt">$</span> npm install @howlerops/iron-rain
+      </div>
+      <div class="install">
+        <span class="prompt">$</span> npx @howlerops/iron-rain-cli --headless "Hello world"
+      </div>
     </div>
   </section>
 
@@ -327,7 +343,7 @@
     </div>
     <div class="feature">
       <h3>Any Provider</h3>
-      <p>Works with Anthropic, OpenAI, Ollama, LM Studio, or any OpenAI-compatible API. Mix and match across model slots.</p>
+      <p>Works with Anthropic, OpenAI, Ollama, LM Studio, or any OpenAI-compatible API. Use CLI subscriptions too &mdash; Claude Code, Codex, Gemini CLI.</p>
     </div>
     <div class="feature">
       <h3>Tool-aware Routing</h3>

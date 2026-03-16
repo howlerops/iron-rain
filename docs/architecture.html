@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Architecture — Iron Rain</title>
+  <link rel="icon" type="image/png" href="favicon.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav class="topnav">
+    <a href="index.html" class="logo">
+      <img src="assets/howlerops-icon-dark.png" alt="howlerops">
+      <span>Iron Rain</span>
+    </a>
+    <div class="links">
+      <a href="getting-started.html" class="active">Docs</a>
+      <a href="https://www.npmjs.com/package/@howlerops/iron-rain">npm</a>
+      <a href="https://github.com/howlerops/iron-rain">GitHub</a>
+    </div>
+  </nav>
+
+  <div class="docs-layout">
+    <aside class="sidebar">
+      <div class="section-title">Getting Started</div>
+      <a href="getting-started.html">Quick Start</a>
+
+      <div class="section-title">Guide</div>
+      <a href="configuration.html">Configuration</a>
+      <a href="providers.html">Providers</a>
+      <a href="architecture.html" class="active">Architecture</a>
+
+      <div class="section-title">Reference</div>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="plugin-sdk.html">Plugin SDK</a>
+    </aside>
+
+    <main class="content">
+      <h1>Architecture</h1>
+      <p class="subtitle">How model slots, the orchestrator, bridges, and episodes work together.</p>
+
+      <h2>Overview</h2>
+      <p>Iron Rain is organized in three layers:</p>
+      <pre><code><span class="comment">┌─────────────────────────────────────────────────┐</span>
+<span class="comment">│</span>  <span class="type">CLI / TUI</span>           <span class="comment">User interface layer</span>         <span class="comment">│</span>
+<span class="comment">│</span>  @howlerops/iron-rain-cli                        <span class="comment">│</span>
+<span class="comment">│</span>  @howlerops/iron-rain-tui                        <span class="comment">│</span>
+<span class="comment">├─────────────────────────────────────────────────┤</span>
+<span class="comment">│</span>  <span class="type">Orchestrator</span>        <span class="comment">Dispatch + routing layer</span>    <span class="comment">│</span>
+<span class="comment">│</span>  OrchestratorKernel                              <span class="comment">│</span>
+<span class="comment">│</span>  ├── ModelSlotManager                            <span class="comment">│</span>
+<span class="comment">│</span>  ├── ToolRouter                                  <span class="comment">│</span>
+<span class="comment">│</span>  └── SlotWorker (per slot)                       <span class="comment">│</span>
+<span class="comment">├─────────────────────────────────────────────────┤</span>
+<span class="comment">│</span>  <span class="type">Bridges</span>             <span class="comment">Provider abstraction layer</span>  <span class="comment">│</span>
+<span class="comment">│</span>  AnthropicBridge │ OllamaBridge │ OpenAICompat   <span class="comment">│</span>
+<span class="comment">│</span>  ClaudeCodeBridge │ CodexBridge │ GeminiBridge   <span class="comment">│</span>
+<span class="comment">└─────────────────────────────────────────────────┘</span></code></pre>
+
+      <h2>Model Slots</h2>
+      <p>The <strong>ModelSlotManager</strong> holds three named slots, each assigned to a provider + model pair:</p>
+      <ul>
+        <li><span class="badge main">main</span> — Strategy, planning, high-level reasoning</li>
+        <li><span class="badge explore">explore</span> — Search, read, codebase understanding</li>
+        <li><span class="badge execute">execute</span> — Code edits, bash commands, file writes</li>
+      </ul>
+      <p>Slots can be reassigned at runtime via <code>slots.setSlot()</code> or by modifying the config. The manager is the single source of truth for which model handles which category of work.</p>
+
+      <h3>Key methods</h3>
+      <pre><code><span class="kw">class</span> <span class="type">ModelSlotManager</span> {
+  <span class="fn">getSlot</span>(name: <span class="type">SlotName</span>): <span class="type">SlotConfig</span>;
+  <span class="fn">setSlot</span>(name: <span class="type">SlotName</span>, config: <span class="type">SlotConfig</span>): <span class="kw">void</span>;
+  <span class="fn">cycleSlot</span>(name: <span class="type">SlotName</span>, available: <span class="type">SlotConfig</span>[]): <span class="type">SlotConfig</span>;
+  <span class="fn">getSlotForTool</span>(toolType: <span class="type">ToolType</span>): <span class="type">SlotName</span>;
+  <span class="fn">serialize</span>(): <span class="type">SlotAssignment</span>;
+}</code></pre>
+
+      <h2>Tool Router</h2>
+      <p>The tool router automatically maps tool types to the correct slot:</p>
+      <table>
+        <thead><tr><th>Tool type</th><th>Routed to</th><th>Rationale</th></tr></thead>
+        <tbody>
+          <tr><td><code>edit</code>, <code>write</code>, <code>bash</code></td><td><span class="badge execute">execute</span></td><td>Needs precise instruction following</td></tr>
+          <tr><td><code>grep</code>, <code>glob</code>, <code>read</code>, <code>search</code></td><td><span class="badge explore">explore</span></td><td>Read-only, can use a cheaper model</td></tr>
+          <tr><td><code>strategy</code>, <code>plan</code>, <code>conversation</code></td><td><span class="badge main">main</span></td><td>Needs the most capable model</td></tr>
+        </tbody>
+      </table>
+      <p>You can override routing by setting <code>targetSlot</code> explicitly on an <code>OrchestratorTask</code>.</p>
+
+      <h2>Orchestrator Kernel</h2>
+      <p>The <strong>OrchestratorKernel</strong> is the central dispatch system. It receives tasks, routes them to the correct slot worker, and records episode summaries.</p>
+
+      <h3>Task dispatch flow</h3>
+      <pre><code><span class="comment">1. Task comes in with a toolType (e.g., "edit")</span>
+<span class="comment">2. Tool router maps "edit" → execute slot</span>
+<span class="comment">3. Kernel finds the SlotWorker for execute</span>
+<span class="comment">4. Worker calls the bridge (e.g., OpenAICompatBridge)</span>
+<span class="comment">5. Bridge makes the API call and returns a BridgeResult</span>
+<span class="comment">6. Worker wraps result into a WorkerResult</span>
+<span class="comment">7. Kernel converts it to an EpisodeSummary and logs it</span></code></pre>
+
+      <h3>Key methods</h3>
+      <pre><code><span class="kw">class</span> <span class="type">OrchestratorKernel</span> {
+  <span class="comment">// Dispatch a single task to the appropriate slot</span>
+  <span class="fn">dispatch</span>(task: <span class="type">OrchestratorTask</span>): Promise&lt;<span class="type">EpisodeSummary</span>&gt;;
+
+  <span class="comment">// Dispatch multiple tasks in parallel</span>
+  <span class="fn">orchestrate</span>(tasks: <span class="type">OrchestratorTask</span>[]): Promise&lt;<span class="type">EpisodeSummary</span>[]&gt;;
+
+  <span class="comment">// Merge external episodes into the log</span>
+  <span class="fn">integrate</span>(episodes: <span class="type">EpisodeSummary</span>[]): <span class="kw">void</span>;
+
+  <span class="comment">// Get all recorded episodes</span>
+  <span class="fn">getEpisodes</span>(): ReadonlyArray&lt;<span class="type">EpisodeSummary</span>&gt;;
+
+  <span class="comment">// Re-initialize workers after config change</span>
+  <span class="fn">refreshWorkers</span>(): <span class="kw">void</span>;
+}</code></pre>
+
+      <h3>Parallel orchestration</h3>
+      <p>The <code>orchestrate()</code> method dispatches all tasks in parallel using <code>Promise.allSettled</code>, so tasks on different slots run concurrently. Failed tasks still produce an episode with <code>status: 'failure'</code>.</p>
+
+      <h2>Bridges</h2>
+      <p>Bridges are the abstraction layer between slots and providers. Every bridge implements the <code>CLIBridge</code> interface:</p>
+      <pre><code><span class="kw">interface</span> <span class="type">CLIBridge</span> {
+  name: <span class="type">string</span>;
+  <span class="fn">available</span>(): Promise&lt;<span class="type">boolean</span>&gt;;
+  <span class="fn">execute</span>(prompt: <span class="type">string</span>, options?: <span class="type">BridgeOptions</span>): Promise&lt;<span class="type">BridgeResult</span>&gt;;
+  <span class="fn">stream</span>(prompt: <span class="type">string</span>, options?: <span class="type">BridgeOptions</span>): AsyncIterable&lt;<span class="type">BridgeChunk</span>&gt;;
+}</code></pre>
+
+      <h3>Bridge types</h3>
+      <table>
+        <thead><tr><th>Bridge</th><th>Type</th><th>How it works</th></tr></thead>
+        <tbody>
+          <tr><td><code>AnthropicBridge</code></td><td>API</td><td>Direct HTTP to Anthropic Messages API</td></tr>
+          <tr><td><code>OpenAICompatBridge</code></td><td>API</td><td>HTTP to any OpenAI-compatible endpoint</td></tr>
+          <tr><td><code>OllamaBridge</code></td><td>API</td><td>HTTP to local Ollama server</td></tr>
+          <tr><td><code>GeminiBridge</code></td><td>API</td><td>HTTP to Google Generative Language API</td></tr>
+          <tr><td><code>ClaudeCodeBridge</code></td><td>CLI</td><td>Spawns <code>claude -p</code> subprocess</td></tr>
+          <tr><td><code>CodexBridge</code></td><td>CLI</td><td>Spawns <code>codex exec</code> subprocess</td></tr>
+          <tr><td><code>GeminiCLIBridge</code></td><td>CLI</td><td>Spawns <code>gemini -p</code> subprocess</td></tr>
+        </tbody>
+      </table>
+
+      <h2>Episodes</h2>
+      <p>Every task dispatch produces an <strong>EpisodeSummary</strong> — the unit of observability in Iron Rain.</p>
+      <pre><code><span class="kw">interface</span> <span class="type">EpisodeSummary</span> {
+  id: <span class="type">string</span>;            <span class="comment">// Unique episode ID</span>
+  slot: <span class="type">SlotName</span>;        <span class="comment">// Which slot ran this task</span>
+  task: <span class="type">string</span>;          <span class="comment">// The original prompt</span>
+  result: <span class="type">string</span>;        <span class="comment">// The model's response</span>
+  tokens: <span class="type">number</span>;        <span class="comment">// Total tokens (input + output)</span>
+  duration: <span class="type">number</span>;      <span class="comment">// Time in milliseconds</span>
+  filesModified?: <span class="type">string</span>[];  <span class="comment">// Files changed</span>
+  status: <span class="str">'success'</span> | <span class="str">'failure'</span> | <span class="str">'partial'</span>;
+}</code></pre>
+      <p>Episodes accumulate in the kernel and can be inspected for debugging, cost tracking, or fed into context management systems.</p>
+
+      <h2>Packages</h2>
+      <table>
+        <thead><tr><th>Package</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td><code>@howlerops/iron-rain</code></td><td>Core library — slots, orchestrator, bridges, config. Zero UI deps.</td></tr>
+          <tr><td><code>@howlerops/iron-rain-tui</code></td><td>Terminal UI components built with SolidJS</td></tr>
+          <tr><td><code>@howlerops/iron-rain-cli</code></td><td>CLI binary — launches TUI or runs headless</td></tr>
+          <tr><td><code>@howlerops/iron-rain-plugin</code></td><td>Plugin SDK — hooks and type definitions</td></tr>
+        </tbody>
+      </table>
+
+      <div class="page-nav">
+        <a href="providers.html">
+          <div class="label">Previous</div>
+          <div class="title">Providers</div>
+        </a>
+        <a href="cli-reference.html" class="next">
+          <div class="label">Next</div>
+          <div class="title">CLI Reference</div>
+        </a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="docs-footer">
+    Iron Rain is open source under the MIT License. Part of the <a href="https://github.com/howlerops">howlerops</a> ecosystem.
+  </footer>
+</body>
+</html>

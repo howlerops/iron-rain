@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CLI Reference — Iron Rain</title>
+  <link rel="icon" type="image/png" href="favicon.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav class="topnav">
+    <a href="index.html" class="logo">
+      <img src="assets/howlerops-icon-dark.png" alt="howlerops">
+      <span>Iron Rain</span>
+    </a>
+    <div class="links">
+      <a href="getting-started.html" class="active">Docs</a>
+      <a href="https://www.npmjs.com/package/@howlerops/iron-rain">npm</a>
+      <a href="https://github.com/howlerops/iron-rain">GitHub</a>
+    </div>
+  </nav>
+
+  <div class="docs-layout">
+    <aside class="sidebar">
+      <div class="section-title">Getting Started</div>
+      <a href="getting-started.html">Quick Start</a>
+
+      <div class="section-title">Guide</div>
+      <a href="configuration.html">Configuration</a>
+      <a href="providers.html">Providers</a>
+      <a href="architecture.html">Architecture</a>
+
+      <div class="section-title">Reference</div>
+      <a href="cli-reference.html" class="active">CLI Reference</a>
+      <a href="plugin-sdk.html">Plugin SDK</a>
+    </aside>
+
+    <main class="content">
+      <h1>CLI Reference</h1>
+      <p class="subtitle">Complete reference for the <code>iron-rain</code> command-line tool.</p>
+
+      <h2>Installation</h2>
+      <pre><code><span class="comment"># Install globally</span>
+npm install -g @howlerops/iron-rain-cli
+
+<span class="comment"># Or run without installing</span>
+npx @howlerops/iron-rain-cli
+
+<span class="comment"># Or with bun</span>
+bunx @howlerops/iron-rain-cli</code></pre>
+
+      <h2>Commands</h2>
+
+      <h3><code>iron-rain</code></h3>
+      <p>Launch the interactive TUI (terminal user interface).</p>
+      <pre><code>iron-rain</code></pre>
+      <p>The TUI provides a branded terminal experience with color-coded model slots, per-message attribution, and keyboard-navigable model selection.</p>
+
+      <h3><code>iron-rain --headless &lt;prompt&gt;</code></h3>
+      <p>Run a single prompt without the TUI. Useful for scripting and CI/CD.</p>
+      <pre><code>iron-rain --headless "Explain this function"</code></pre>
+      <p>Output format:</p>
+      <pre><code>&lt;model response&gt;
+
+[success] 142 tokens, 850ms</code></pre>
+      <p>The prompt is dispatched to the <span class="badge main">main</span> slot. Exit code is <code>0</code> on success, <code>1</code> on failure.</p>
+
+      <div class="callout tip">
+        <div class="callout-title">Scripting tip</div>
+        <p>Pipe output or use in shell scripts:</p>
+        <pre><code>result=$(iron-rain --headless "Summarize this diff" 2>/dev/null)
+echo "$result" | head -1</code></pre>
+      </div>
+
+      <h3><code>iron-rain config</code></h3>
+      <p>Print the current resolved configuration as JSON. Useful for debugging.</p>
+      <pre><code>iron-rain config</code></pre>
+      <p>Shows the merged config after file discovery and environment variable resolution. If no config file is found, prints the defaults.</p>
+
+      <h3><code>iron-rain models</code></h3>
+      <p>List all models from the built-in provider registry.</p>
+      <pre><code>iron-rain models</code></pre>
+      <p>Output:</p>
+      <pre><code>anthropic
+  claude-opus-4-6
+  claude-sonnet-4-20250514
+  claude-haiku-4-5-20251001
+
+openai
+  gpt-4o
+  o3
+  o4-mini
+
+ollama
+  llama3.2
+  qwen2.5-coder:32b
+  ...</code></pre>
+
+      <h3><code>iron-rain --version</code></h3>
+      <p>Print the version number.</p>
+      <pre><code>iron-rain --version
+<span class="comment"># 0.1.0</span></code></pre>
+
+      <h3><code>iron-rain --help</code></h3>
+      <p>Show usage information.</p>
+
+      <h2>Flags</h2>
+      <table>
+        <thead><tr><th>Flag</th><th>Short</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>--headless &lt;prompt&gt;</code></td><td></td><td>Run a prompt without the TUI</td></tr>
+          <tr><td><code>--version</code></td><td><code>-v</code></td><td>Show version number</td></tr>
+          <tr><td><code>--help</code></td><td><code>-h</code></td><td>Show help message</td></tr>
+        </tbody>
+      </table>
+
+      <h2>Config file resolution</h2>
+      <p>The CLI searches for a config file in this order, starting from the current working directory and walking up to <code>~</code>:</p>
+      <ol>
+        <li><code>iron-rain.json</code></li>
+        <li><code>iron-rain.jsonc</code></li>
+        <li><code>.iron-rainrc.json</code></li>
+      </ol>
+      <p>See <a href="configuration.html">Configuration</a> for the full schema.</p>
+
+      <h2>Exit codes</h2>
+      <table>
+        <thead><tr><th>Code</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td><code>0</code></td><td>Success</td></tr>
+          <tr><td><code>1</code></td><td>Error (dispatch failure, config error, etc.)</td></tr>
+        </tbody>
+      </table>
+
+      <div class="page-nav">
+        <a href="architecture.html">
+          <div class="label">Previous</div>
+          <div class="title">Architecture</div>
+        </a>
+        <a href="plugin-sdk.html" class="next">
+          <div class="label">Next</div>
+          <div class="title">Plugin SDK</div>
+        </a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="docs-footer">
+    Iron Rain is open source under the MIT License. Part of the <a href="https://github.com/howlerops">howlerops</a> ecosystem.
+  </footer>
+</body>
+</html>

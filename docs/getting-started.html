@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Getting Started — Iron Rain</title>
+  <link rel="icon" type="image/png" href="favicon.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav class="topnav">
+    <a href="index.html" class="logo">
+      <img src="assets/howlerops-icon-dark.png" alt="howlerops">
+      <span>Iron Rain</span>
+    </a>
+    <div class="links">
+      <a href="getting-started.html" class="active">Docs</a>
+      <a href="https://www.npmjs.com/package/@howlerops/iron-rain">npm</a>
+      <a href="https://github.com/howlerops/iron-rain">GitHub</a>
+    </div>
+  </nav>
+
+  <div class="docs-layout">
+    <aside class="sidebar">
+      <div class="section-title">Getting Started</div>
+      <a href="getting-started.html" class="active">Quick Start</a>
+
+      <div class="section-title">Guide</div>
+      <a href="configuration.html">Configuration</a>
+      <a href="providers.html">Providers</a>
+      <a href="architecture.html">Architecture</a>
+
+      <div class="section-title">Reference</div>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="plugin-sdk.html">Plugin SDK</a>
+    </aside>
+
+    <main class="content">
+      <h1>Getting Started</h1>
+      <p class="subtitle">Go from zero to multi-model orchestration in under 5 minutes.</p>
+
+      <div class="callout tip">
+        <div class="callout-title">Prerequisites</div>
+        <p>You need <strong>Node.js 18+</strong> installed. We recommend <a href="https://bun.sh">Bun</a> for speed, but npm/yarn/pnpm all work.</p>
+      </div>
+
+      <div class="steps">
+        <div class="step">
+          <h3>Install Iron Rain</h3>
+          <p>Install the core package and the CLI:</p>
+          <pre><code><span class="comment"># With npm</span>
+npm install @howlerops/iron-rain
+npm install -g @howlerops/iron-rain-cli
+
+<span class="comment"># With bun</span>
+bun add @howlerops/iron-rain
+bun add -g @howlerops/iron-rain-cli
+
+<span class="comment"># Or run the CLI directly without installing</span>
+npx @howlerops/iron-rain-cli</code></pre>
+        </div>
+
+        <div class="step">
+          <h3>Create a config file</h3>
+          <p>Create <code>iron-rain.json</code> in your project root. Here's a minimal config using Ollama (free, local):</p>
+          <pre><code>{
+  <span class="key">"slots"</span>: {
+    <span class="key">"main"</span>:    { <span class="key">"provider"</span>: <span class="str">"ollama"</span>, <span class="key">"model"</span>: <span class="str">"llama3.2"</span> },
+    <span class="key">"explore"</span>: { <span class="key">"provider"</span>: <span class="str">"ollama"</span>, <span class="key">"model"</span>: <span class="str">"llama3.2"</span> },
+    <span class="key">"execute"</span>: { <span class="key">"provider"</span>: <span class="str">"ollama"</span>, <span class="key">"model"</span>: <span class="str">"llama3.2"</span> }
+  },
+  <span class="key">"providers"</span>: {
+    <span class="key">"ollama"</span>: { <span class="key">"apiBase"</span>: <span class="str">"http://localhost:11434"</span> }
+  }
+}</code></pre>
+
+          <div class="callout info">
+            <div class="callout-title">Using API providers?</div>
+            <p>See the <a href="providers.html">Providers guide</a> for Anthropic, OpenAI, Gemini, and CLI-based setups (Claude Code, Codex, Gemini CLI).</p>
+          </div>
+        </div>
+
+        <div class="step">
+          <h3>Run your first prompt</h3>
+          <p>Use headless mode to verify everything works:</p>
+          <pre><code>iron-rain --headless "Explain what a monad is in one sentence"</code></pre>
+          <p>You should see the model's response followed by token and timing stats:</p>
+          <pre><code>A monad is a design pattern that wraps values in a context...
+
+[success] 142 tokens, 850ms</code></pre>
+        </div>
+
+        <div class="step">
+          <h3>Mix models across slots</h3>
+          <p>The real power of Iron Rain is using different models for different tasks. Update your config to assign specialized models:</p>
+          <pre><code>{
+  <span class="key">"slots"</span>: {
+    <span class="key">"main"</span>:    { <span class="key">"provider"</span>: <span class="str">"anthropic"</span>, <span class="key">"model"</span>: <span class="str">"claude-sonnet-4-20250514"</span> },
+    <span class="key">"explore"</span>: { <span class="key">"provider"</span>: <span class="str">"ollama"</span>,    <span class="key">"model"</span>: <span class="str">"qwen2.5-coder:32b"</span> },
+    <span class="key">"execute"</span>: { <span class="key">"provider"</span>: <span class="str">"openai"</span>,    <span class="key">"model"</span>: <span class="str">"gpt-4o"</span> }
+  },
+  <span class="key">"providers"</span>: {
+    <span class="key">"anthropic"</span>: { <span class="key">"apiKey"</span>: <span class="str">"env:ANTHROPIC_API_KEY"</span> },
+    <span class="key">"openai"</span>:    { <span class="key">"apiKey"</span>: <span class="str">"env:OPENAI_API_KEY"</span> },
+    <span class="key">"ollama"</span>:    { <span class="key">"apiBase"</span>: <span class="str">"http://localhost:11434"</span> }
+  }
+}</code></pre>
+          <p>Now planning tasks route to Claude, search tasks to Ollama, and code edits to GPT-4o.</p>
+        </div>
+
+        <div class="step">
+          <h3>Use it programmatically</h3>
+          <p>Import the core package in your TypeScript/JavaScript project:</p>
+          <pre><code><span class="kw">import</span> {
+  ModelSlotManager,
+  OrchestratorKernel,
+  createBridgeForSlot,
+  loadConfig
+} <span class="kw">from</span> <span class="str">'@howlerops/iron-rain'</span>;
+
+<span class="comment">// Load config from iron-rain.json</span>
+<span class="kw">const</span> config = <span class="kw">await</span> <span class="fn">loadConfig</span>();
+<span class="kw">const</span> slots = <span class="kw">new</span> <span class="type">ModelSlotManager</span>(config.slots);
+<span class="kw">const</span> kernel = <span class="kw">new</span> <span class="type">OrchestratorKernel</span>(slots);
+
+<span class="comment">// Dispatch a task</span>
+<span class="kw">const</span> episode = <span class="kw">await</span> kernel.<span class="fn">dispatch</span>({
+  id: <span class="str">'1'</span>,
+  prompt: <span class="str">'Explain this codebase'</span>,
+  toolType: <span class="str">'strategy'</span>  <span class="comment">// routes to 'main' slot</span>
+});
+
+console.log(episode.result);
+console.log(<span class="str">`${episode.tokens} tokens, ${episode.duration}ms`</span>);</code></pre>
+        </div>
+      </div>
+
+      <h2>What's next?</h2>
+      <ul>
+        <li><a href="configuration.html">Configuration Reference</a> — all config options explained</li>
+        <li><a href="providers.html">Provider Setup</a> — detailed guides for each provider</li>
+        <li><a href="architecture.html">Architecture</a> — how slots, orchestration, and episodes work</li>
+        <li><a href="plugin-sdk.html">Plugin SDK</a> — extend Iron Rain with custom hooks</li>
+      </ul>
+
+      <div class="page-nav">
+        <div></div>
+        <a href="configuration.html" class="next">
+          <div class="label">Next</div>
+          <div class="title">Configuration</div>
+        </a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="docs-footer">
+    Iron Rain is open source under the MIT License. Part of the <a href="https://github.com/howlerops">howlerops</a> ecosystem.
+  </footer>
+</body>
+</html>

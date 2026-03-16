@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Configuration — Iron Rain</title>
+  <link rel="icon" type="image/png" href="favicon.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav class="topnav">
+    <a href="index.html" class="logo">
+      <img src="assets/howlerops-icon-dark.png" alt="howlerops">
+      <span>Iron Rain</span>
+    </a>
+    <div class="links">
+      <a href="getting-started.html" class="active">Docs</a>
+      <a href="https://www.npmjs.com/package/@howlerops/iron-rain">npm</a>
+      <a href="https://github.com/howlerops/iron-rain">GitHub</a>
+    </div>
+  </nav>
+
+  <div class="docs-layout">
+    <aside class="sidebar">
+      <div class="section-title">Getting Started</div>
+      <a href="getting-started.html">Quick Start</a>
+
+      <div class="section-title">Guide</div>
+      <a href="configuration.html" class="active">Configuration</a>
+      <a href="providers.html">Providers</a>
+      <a href="architecture.html">Architecture</a>
+
+      <div class="section-title">Reference</div>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="plugin-sdk.html">Plugin SDK</a>
+    </aside>
+
+    <main class="content">
+      <h1>Configuration</h1>
+      <p class="subtitle">All configuration options for Iron Rain, from file discovery to every field.</p>
+
+      <h2>Config file discovery</h2>
+      <p>Iron Rain searches for a config file starting in the current directory, walking up to your home directory. It looks for these filenames in order:</p>
+      <ol>
+        <li><code>iron-rain.json</code></li>
+        <li><code>iron-rain.jsonc</code> (supports comments)</li>
+        <li><code>.iron-rainrc.json</code></li>
+      </ol>
+      <p>The first file found wins. You can place it in your project root for per-project config, or in <code>~</code> for a global default.</p>
+
+      <h2>Full config reference</h2>
+      <pre><code>{
+  <span class="comment">// Model slot assignments (required for multi-model)</span>
+  <span class="key">"slots"</span>: {
+    <span class="key">"main"</span>:    { <span class="key">"provider"</span>: <span class="str">"anthropic"</span>, <span class="key">"model"</span>: <span class="str">"claude-opus-4-6"</span> },
+    <span class="key">"explore"</span>: { <span class="key">"provider"</span>: <span class="str">"ollama"</span>,    <span class="key">"model"</span>: <span class="str">"qwen2.5-coder:32b"</span> },
+    <span class="key">"execute"</span>: { <span class="key">"provider"</span>: <span class="str">"openai"</span>,    <span class="key">"model"</span>: <span class="str">"gpt-4o"</span> }
+  },
+
+  <span class="comment">// Provider credentials</span>
+  <span class="key">"providers"</span>: {
+    <span class="key">"anthropic"</span>: { <span class="key">"apiKey"</span>: <span class="str">"env:ANTHROPIC_API_KEY"</span> },
+    <span class="key">"openai"</span>:    { <span class="key">"apiKey"</span>: <span class="str">"env:OPENAI_API_KEY"</span> },
+    <span class="key">"ollama"</span>:    { <span class="key">"apiBase"</span>: <span class="str">"http://localhost:11434"</span> }
+  },
+
+  <span class="comment">// Tool permissions</span>
+  <span class="key">"permission"</span>: {
+    <span class="key">"*"</span>:    <span class="str">"allow"</span>,
+    <span class="key">"bash"</span>: <span class="str">"ask"</span>,
+    <span class="key">"edit"</span>: <span class="str">"ask"</span>
+  },
+
+  <span class="comment">// Active agent profile</span>
+  <span class="key">"agent"</span>: <span class="str">"build"</span>,
+
+  <span class="comment">// LCM (context management) settings</span>
+  <span class="key">"lcm"</span>: {
+    <span class="key">"enabled"</span>: <span class="kw">true</span>,
+    <span class="key">"episodes"</span>: {
+      <span class="key">"maxEpisodeTokens"</span>: <span class="str">4000</span>
+    }
+  },
+
+  <span class="comment">// TUI theme</span>
+  <span class="key">"theme"</span>: <span class="str">"default"</span>
+}</code></pre>
+
+      <h2>Slots</h2>
+      <p>Each slot routes a category of work to a specific model. There are three slots:</p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Slot</th>
+            <th>Purpose</th>
+            <th>Routed tool types</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="badge main">main</span></td>
+            <td>Strategy, planning, conversation</td>
+            <td><code>strategy</code>, <code>plan</code>, <code>conversation</code></td>
+          </tr>
+          <tr>
+            <td><span class="badge explore">explore</span></td>
+            <td>Search, read, research</td>
+            <td><code>grep</code>, <code>glob</code>, <code>read</code>, <code>search</code></td>
+          </tr>
+          <tr>
+            <td><span class="badge execute">execute</span></td>
+            <td>Write code, run commands</td>
+            <td><code>edit</code>, <code>write</code>, <code>bash</code></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Slot config fields</h3>
+      <table>
+        <thead>
+          <tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>provider</code></td><td>string</td><td>Yes</td><td>Provider name (see <a href="providers.html">Providers</a>)</td></tr>
+          <tr><td><code>model</code></td><td>string</td><td>Yes</td><td>Model identifier for the provider</td></tr>
+          <tr><td><code>apiKey</code></td><td>string</td><td>No</td><td>Override the provider-level API key</td></tr>
+          <tr><td><code>apiBase</code></td><td>string</td><td>No</td><td>Override the provider-level API base URL</td></tr>
+        </tbody>
+      </table>
+
+      <h2>Providers</h2>
+      <p>The <code>providers</code> object maps provider names to their credentials. These are shared across all slots that reference the provider.</p>
+      <table>
+        <thead>
+          <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>apiKey</code></td><td>string</td><td>API key. Use <code>"env:VAR_NAME"</code> to read from environment.</td></tr>
+          <tr><td><code>apiBase</code></td><td>string (URL)</td><td>Base URL for the API endpoint.</td></tr>
+        </tbody>
+      </table>
+
+      <div class="callout tip">
+        <div class="callout-title">Environment variables</div>
+        <p>Use the <code>"env:VAR_NAME"</code> syntax to keep secrets out of your config file. Iron Rain resolves these at runtime. Example: <code>"apiKey": "env:ANTHROPIC_API_KEY"</code></p>
+      </div>
+
+      <h2>Permissions</h2>
+      <p>Control which tools require confirmation before running:</p>
+      <table>
+        <thead>
+          <tr><th>Value</th><th>Behavior</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>"allow"</code></td><td>Execute without confirmation</td></tr>
+          <tr><td><code>"ask"</code></td><td>Prompt the user before executing</td></tr>
+          <tr><td><code>"deny"</code></td><td>Block the tool entirely</td></tr>
+        </tbody>
+      </table>
+      <p>Use <code>"*"</code> as a wildcard key for the default policy, then override specific tools.</p>
+
+      <h2>LCM (Context Management)</h2>
+      <table>
+        <thead>
+          <tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>lcm.enabled</code></td><td>boolean</td><td><code>true</code></td><td>Enable episode tracking and context management</td></tr>
+          <tr><td><code>lcm.episodes.maxEpisodeTokens</code></td><td>number</td><td><code>4000</code></td><td>Maximum tokens per episode summary</td></tr>
+        </tbody>
+      </table>
+
+      <h2>Other fields</h2>
+      <table>
+        <thead>
+          <tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>agent</code></td><td>string</td><td><code>"build"</code></td><td>Active agent profile name</td></tr>
+          <tr><td><code>theme</code></td><td>string</td><td><code>"default"</code></td><td>TUI color theme</td></tr>
+        </tbody>
+      </table>
+
+      <div class="page-nav">
+        <a href="getting-started.html">
+          <div class="label">Previous</div>
+          <div class="title">Getting Started</div>
+        </a>
+        <a href="providers.html" class="next">
+          <div class="label">Next</div>
+          <div class="title">Providers</div>
+        </a>
+      </div>
+    </main>
+  </div>
+
+  <footer class="docs-footer">
+    Iron Rain is open source under the MIT License. Part of the <a href="https://github.com/howlerops">howlerops</a> ecosystem.
+  </footer>
+</body>
+</html>
