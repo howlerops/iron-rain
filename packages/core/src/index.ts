@@ -30,7 +30,7 @@ export { SlotWorker } from './orchestrator/worker.js';
 // Config
 export type { IronRainConfig } from './config/schema.js';
 export { IronRainConfigSchema, parseConfig, resolveEnvValue } from './config/schema.js';
-export { loadConfig, findConfigFile } from './config/loader.js';
+export { loadConfig, findConfigFile, writeConfig } from './config/loader.js';
 
 // Providers
 export { ProviderRegistry } from './providers/registry.js';

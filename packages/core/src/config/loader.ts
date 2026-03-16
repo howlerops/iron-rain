@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { parseConfig, type IronRainConfig } from './schema.js';
 
@@ -71,6 +71,22 @@ export function findConfigFile(cwd?: string): string | null {
   }
 
   return null;
+}
+
+export function writeConfig(config: Partial<IronRainConfig>, cwd?: string): string {
+  const dir = cwd ?? process.cwd();
+  const configPath = findConfigFile(dir) ?? resolve(dir, 'iron-rain.json');
+
+  const output: Record<string, unknown> = {};
+  if (config.slots) output.slots = config.slots;
+  if (config.providers) output.providers = config.providers;
+  if (config.permission) output.permission = config.permission;
+  if (config.agent && config.agent !== 'build') output.agent = config.agent;
+  if (config.lcm) output.lcm = config.lcm;
+  if (config.theme && config.theme !== 'default') output.theme = config.theme;
+
+  writeFileSync(configPath, JSON.stringify(output, null, 2) + '\n', 'utf-8');
+  return configPath;
 }
 
 export function loadConfig(cwd?: string): IronRainConfig {
