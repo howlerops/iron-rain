@@ -2,7 +2,7 @@ import { createContext, useContext, type JSX } from 'solid-js';
 import { createStore } from 'solid-js/store';
 import type { SlotAssignment, SlotName, IronRainConfig, OrchestratorTask, EpisodeSummary } from '@howlerops/iron-rain';
 import { DEFAULT_SLOT_ASSIGNMENT, ModelSlotManager, OrchestratorKernel } from '@howlerops/iron-rain';
-import type { Message } from '../components/session-view.js';
+import type { Message, SlotActivity, SessionStats } from '../components/session-view.js';
 
 export interface SlateState {
   slots: SlotAssignment;
@@ -11,6 +11,7 @@ export interface SlateState {
   isLoading: boolean;
   showSplash: boolean;
   config: IronRainConfig | null;
+  sessionStats: SessionStats;
 }
 
 export interface SlateActions {
@@ -43,6 +44,7 @@ export function SlateProvider(props: { config?: IronRainConfig; children: JSX.El
     isLoading: false,
     showSplash: true,
     config: props.config ?? null,
+    sessionStats: { totalDuration: 0, totalTokens: 0, modelCount: 1, requestCount: 0 },
   });
 
   const actions: SlateActions = {
@@ -63,7 +65,6 @@ export function SlateProvider(props: { config?: IronRainConfig; children: JSX.El
     },
     async dispatch(prompt: string) {
       if (!kernel) {
-        // No kernel available — create one from current slot config
         const slotManager = new ModelSlotManager(state.slots);
         kernel = new OrchestratorKernel(slotManager);
       }
@@ -80,20 +81,40 @@ export function SlateProvider(props: { config?: IronRainConfig; children: JSX.El
 
         const episode: EpisodeSummary = await kernel.dispatch(task);
 
+        // Build slot activity record
+        const activity: SlotActivity = {
+          slot: episode.slot,
+          task: prompt.length > 60 ? prompt.slice(0, 57) + '...' : prompt,
+          status: episode.status === 'failure' ? 'error' : 'done',
+          duration: episode.duration,
+          tokens: episode.tokens,
+        };
+
         setState('messages', (prev) => [...prev, {
           id: episode.id,
           role: 'assistant' as const,
           content: episode.status === 'failure'
-            ? `Error: ${episode.result}`
+            ? `**Error:** ${episode.result}`
             : episode.result,
           slot: episode.slot,
           timestamp: Date.now(),
+          activities: [activity],
+          tokens: episode.tokens,
+          duration: episode.duration,
         }]);
+
+        // Update cumulative stats
+        setState('sessionStats', (prev) => ({
+          totalDuration: prev.totalDuration + episode.duration,
+          totalTokens: prev.totalTokens + episode.tokens,
+          modelCount: prev.modelCount,
+          requestCount: prev.requestCount + 1,
+        }));
       } catch (err) {
         setState('messages', (prev) => [...prev, {
           id: `err-${Date.now()}`,
           role: 'assistant' as const,
-          content: `Error: ${err instanceof Error ? err.message : String(err)}`,
+          content: `**Error:** ${err instanceof Error ? err.message : String(err)}`,
           slot: 'main' as SlotName,
           timestamp: Date.now(),
         }]);

@@ -5,7 +5,7 @@ export { ModelSlotBar } from './model-slot-bar.js';
 export type { ModelSlotBarProps } from './model-slot-bar.js';
 
 export { SessionView } from './session-view.js';
-export type { SessionViewProps, Message } from './session-view.js';
+export type { SessionViewProps, Message, SlotActivity, SessionStats } from './session-view.js';
 
 export { ModelPicker } from './model-picker.js';
 export type { ModelPickerProps, ModelOption } from './model-picker.js';

@@ -22,8 +22,6 @@ export function SessionRoute() {
     });
 
     setInputValue('');
-
-    // Dispatch to orchestrator kernel — Main slot handles everything
     actions.dispatch(text);
   }
 
@@ -39,26 +37,27 @@ export function SessionRoute() {
         stickyScroll
         stickyStart="bottom"
       >
-        <SessionView messages={state.messages} />
+        <SessionView
+          messages={state.messages}
+          stats={state.sessionStats}
+          isLoading={state.isLoading}
+          activeSlot={state.activeSlot}
+        />
       </scrollbox>
       <box paddingX={1} paddingBottom={0}>
-        {state.isLoading ? (
-          <text fg={ironRainTheme.slots[state.activeSlot]}>Thinking...</text>
-        ) : (
-          <input
-            width="100%"
-            focused={inputFocused()}
-            value={inputValue()}
-            placeholder="Type a message... (Ctrl+C to quit)"
-            placeholderColor={ironRainTheme.chrome.muted}
-            textColor={ironRainTheme.chrome.fg}
-            backgroundColor={ironRainTheme.chrome.bg}
-            focusedBackgroundColor="#1a1a1a"
-            focusedTextColor={ironRainTheme.chrome.fg}
-            onSubmit={handleSubmit as any}
-            onInput={setInputValue}
-          />
-        )}
+        <input
+          width="100%"
+          focused={inputFocused()}
+          value={inputValue()}
+          placeholder={state.isLoading ? 'Waiting for response...' : 'Type a message... (Ctrl+C to quit)'}
+          placeholderColor={ironRainTheme.chrome.muted}
+          textColor={ironRainTheme.chrome.fg}
+          backgroundColor={ironRainTheme.chrome.bg}
+          focusedBackgroundColor="#1a1a1a"
+          focusedTextColor={ironRainTheme.chrome.fg}
+          onSubmit={handleSubmit as any}
+          onInput={setInputValue}
+        />
       </box>
     </box>
   );
