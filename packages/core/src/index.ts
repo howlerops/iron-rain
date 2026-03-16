@@ -16,6 +16,10 @@ export type { CLIBridge, BridgeOptions, BridgeResult, BridgeChunk } from './brid
 export { OpenAICompatBridge } from './bridge/openai-compat.js';
 export { OllamaBridge } from './bridge/ollama.js';
 export { AnthropicBridge } from './bridge/anthropic.js';
+export { ClaudeCodeBridge } from './bridge/claude-code.js';
+export { CodexBridge } from './bridge/codex.js';
+export { GeminiBridge } from './bridge/gemini.js';
+export { GeminiCLIBridge } from './bridge/gemini-cli.js';
 export { createBridgeForSlot } from './bridge/index.js';
 
 // Orchestrator

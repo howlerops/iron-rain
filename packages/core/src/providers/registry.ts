@@ -26,6 +26,22 @@ const KNOWN_PROVIDERS: ProviderInfo[] = [
     apiBase: 'http://localhost:11434',
     models: ['qwen2.5-coder:32b', 'llama3.3:70b', 'deepseek-coder-v2:latest'],
   },
+  {
+    name: 'claude-code',
+    models: ['opus', 'sonnet', 'haiku'],
+  },
+  {
+    name: 'codex',
+    models: ['o3', 'o4-mini', 'gpt-4o'],
+  },
+  {
+    name: 'gemini',
+    models: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash'],
+  },
+  {
+    name: 'gemini-cli',
+    models: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash'],
+  },
 ];
 
 export class ProviderRegistry {

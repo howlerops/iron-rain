@@ -84,9 +84,28 @@ API keys can reference environment variables with the `env:` prefix.
 
 Built-in bridge support for:
 
+### API Bridges (direct API calls)
 - **Anthropic** — Claude models via Messages API
 - **OpenAI** — GPT models and any OpenAI-compatible API
 - **Ollama** — Local models via Ollama API
+- **Gemini** — Google Gemini models via Generative Language API
+
+### CLI Bridges (use your existing subscriptions)
+- **Claude Code** — Uses your Claude Pro/Max subscription via the `claude` CLI
+- **Codex** — Uses your OpenAI subscription via the `codex` CLI
+- **Gemini CLI** — Uses your Google subscription via the `gemini` CLI
+
+### Example: Mix API + CLI providers
+
+```json
+{
+  "slots": {
+    "main":    { "provider": "claude-code", "model": "opus" },
+    "explore": { "provider": "gemini-cli",  "model": "gemini-2.5-flash" },
+    "execute": { "provider": "codex",       "model": "o3" }
+  }
+}
+```
 
 ## Development
 
