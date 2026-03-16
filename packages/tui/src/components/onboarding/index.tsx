@@ -2,6 +2,7 @@ import { createSignal } from 'solid-js';
 import { createStore } from 'solid-js/store';
 import type { SlotName, SlotConfig } from '@howlerops/iron-rain';
 import { SLOT_NAMES, writeConfig } from '@howlerops/iron-rain';
+import { useKeyboard } from '@opentui/solid';
 import { ironRainTheme } from '../../theme/theme.js';
 import type { OnboardingStep, OnboardingState, ProviderChoice } from './types.js';
 import { AVAILABLE_PROVIDERS, PROVIDER_MODELS } from './types.js';
@@ -143,30 +144,32 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
     props.onComplete(configPath);
   }
 
-  // Keyboard handler — called by useInput in the parent
-  function handleInput(input: string, key: { name?: string; ctrl?: boolean; shift?: boolean }) {
+  // Keyboard handler using OpenTUI's useKeyboard hook
+  useKeyboard((e) => {
     const step = state.step;
+    const keyName = e.name;
+    const char = e.raw;
 
     // Global quit
-    if (input === 'q' && step === 'welcome') {
+    if (char === 'q' && step === 'welcome') {
       props.onQuit();
       return;
     }
 
     switch (step) {
       case 'welcome': {
-        if (key.name === 'return') nextStep();
+        if (keyName === 'return') nextStep();
         break;
       }
 
       case 'providers': {
-        if (key.name === 'up') {
+        if (keyName === 'up') {
           setProviderCursor(c => Math.max(0, c - 1));
-        } else if (key.name === 'down') {
+        } else if (keyName === 'down') {
           setProviderCursor(c => Math.min(state.providers.length - 1, c + 1));
-        } else if (input === ' ') {
+        } else if (char === ' ') {
           toggleProvider(providerCursor());
-        } else if (key.name === 'return') {
+        } else if (keyName === 'return') {
           if (selectedProviders().length > 0) {
             // Update default slots to use first selected provider's first model
             const first = selectedProviders()[0]!;
@@ -176,7 +179,7 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
             }
             nextStep();
           }
-        } else if (key.name === 'backspace') {
+        } else if (keyName === 'backspace') {
           prevStep();
         }
         break;
@@ -185,7 +188,7 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
       case 'credentials': {
         const providers = needsCredentials();
         if (credEditing()) {
-          if (key.name === 'return') {
+          if (keyName === 'return') {
             // Save the edit
             const provider = providers[credCursor()]!;
             if (provider.requiresKey) {
@@ -193,27 +196,27 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
             }
             setCredEditing(false);
             setCredEditValue('');
-          } else if (key.name === 'backspace') {
+          } else if (keyName === 'backspace') {
             setCredEditValue(v => v.slice(0, -1));
-          } else if (key.name === 'escape') {
+          } else if (keyName === 'escape') {
             setCredEditing(false);
             setCredEditValue('');
-          } else if (input && input.length === 1 && !key.ctrl) {
-            setCredEditValue(v => v + input);
+          } else if (char && char.length === 1) {
+            setCredEditValue(v => v + char);
           }
         } else {
-          if (key.name === 'up') {
+          if (keyName === 'up') {
             setCredCursor(c => Math.max(0, c - 1));
-          } else if (key.name === 'down') {
+          } else if (keyName === 'down') {
             setCredCursor(c => Math.min(providers.length - 1, c + 1));
-          } else if (key.name === 'return') {
+          } else if (keyName === 'return') {
             const provider = providers[credCursor()]!;
             if (provider.requiresKey) {
               setCredEditing(true);
               const existing = state.credentials[provider.id]?.apiKey ?? '';
               setCredEditValue(existing);
             }
-          } else if (key.name === 'tab') {
+          } else if (keyName === 'tab') {
             // Skip — use env var
             const provider = providers[credCursor()]!;
             if (provider.keyEnvVar) {
@@ -224,7 +227,7 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
             } else {
               nextStep();
             }
-          } else if (key.name === 'backspace') {
+          } else if (keyName === 'backspace') {
             prevStep();
           }
         }
@@ -233,11 +236,11 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
 
       case 'slots': {
         const options = modelOptions();
-        if (key.name === 'up') {
+        if (keyName === 'up') {
           setModelCursor(c => Math.max(0, c - 1));
-        } else if (key.name === 'down') {
+        } else if (keyName === 'down') {
           setModelCursor(c => Math.min(options.length - 1, c + 1));
-        } else if (key.name === 'return') {
+        } else if (keyName === 'return') {
           // Assign model to current slot
           const option = options[modelCursor()];
           if (option) {
@@ -250,7 +253,7 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
           } else {
             nextStep();
           }
-        } else if (key.name === 'backspace') {
+        } else if (keyName === 'backspace') {
           if (activeSlotIndex() > 0) {
             setActiveSlotIndex(i => i - 1);
             setModelCursor(0);
@@ -262,15 +265,15 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
       }
 
       case 'summary': {
-        if (key.name === 'return') {
+        if (keyName === 'return') {
           handleSave();
-        } else if (key.name === 'backspace') {
+        } else if (keyName === 'backspace') {
           prevStep();
         }
         break;
       }
     }
-  }
+  });
 
   const configPath = () => {
     const cwd = process.cwd();
@@ -287,12 +290,13 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
           return (
             <box flexDirection="row" gap={0}>
               <text
-                color={isCurrent() ? ironRainTheme.brand.primary : isPast() ? ironRainTheme.status.success : ironRainTheme.chrome.dimFg}
-                bold={isCurrent()}
+                fg={isCurrent() ? ironRainTheme.brand.primary : isPast() ? ironRainTheme.status.success : ironRainTheme.chrome.dimFg}
               >
-                {isPast() ? '✓' : `${i + 1}`}
+                {isCurrent()
+                  ? <b>{isPast() ? '✓' : `${i + 1}`}</b>
+                  : <>{isPast() ? '✓' : `${i + 1}`}</>}
               </text>
-              <text color={ironRainTheme.chrome.dimFg}>
+              <text fg={ironRainTheme.chrome.dimFg}>
                 {i < STEPS.length - 1 ? ' → ' : ''}
               </text>
             </box>

@@ -10,8 +10,10 @@ function SlotIndicator(props: { name: SlotName; model: string; active: boolean }
   const color = ironRainTheme.slots[props.name];
   const prefix = props.active ? '>' : ' ';
   return (
-    <text color={color} bold={props.active}>
-      {prefix} {slotLabel(props.name)}: {props.model}
+    <text fg={color}>
+      {props.active
+        ? <b>{prefix} {slotLabel(props.name)}: {props.model}</b>
+        : <>{prefix} {slotLabel(props.name)}: {props.model}</>}
     </text>
   );
 }
@@ -24,13 +26,13 @@ export function ModelSlotBar(props: ModelSlotBarProps) {
         model={props.slots.main.model}
         active={props.activeSlot === 'main'}
       />
-      <text color={ironRainTheme.chrome.border}>|</text>
+      <text fg={ironRainTheme.chrome.border}>|</text>
       <SlotIndicator
         name="explore"
         model={props.slots.explore.model}
         active={props.activeSlot === 'explore'}
       />
-      <text color={ironRainTheme.chrome.border}>|</text>
+      <text fg={ironRainTheme.chrome.border}>|</text>
       <SlotIndicator
         name="execute"
         model={props.slots.execute.model}

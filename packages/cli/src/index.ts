@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 import { randomBytes } from 'node:crypto';
-import { loadConfig, ModelSlotManager, OrchestratorKernel, ProviderRegistry } from '@howlerops/iron-rain';
-import { SPLASH_ART, TAGLINE } from '@howlerops/iron-rain-tui';
+import { loadConfig, findConfigFile, ModelSlotManager, OrchestratorKernel, ProviderRegistry } from '@howlerops/iron-rain';
+import { App, render, SPLASH_ART, TAGLINE } from '@howlerops/iron-rain-tui';
 
 const VERSION = '0.1.0';
 
@@ -99,10 +99,11 @@ async function main(): Promise<void> {
   }
 
   // Default: launch TUI
-  printSplash();
-  console.log('TUI mode launching...');
-  console.log('(Full TUI rendering requires OpenTUI runtime — coming soon)');
-  console.log('\nUse --headless "prompt" for immediate execution.');
+  const config = findConfigFile() ? loadConfig() : undefined;
+  await render(() => App({ config, version: VERSION }), {
+    targetFps: 60,
+    exitOnCtrlC: false,
+  });
 }
 
 main().catch((err) => {

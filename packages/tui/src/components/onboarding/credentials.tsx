@@ -17,16 +17,16 @@ export function Credentials(props: CredentialsProps) {
 
   return (
     <box flexDirection="column" paddingX={4} paddingY={1}>
-      <text color={ironRainTheme.brand.primary} bold>
-        Provider Credentials
+      <text fg={ironRainTheme.brand.primary}>
+        <b>Provider Credentials</b>
       </text>
-      <text color={ironRainTheme.chrome.muted}>
+      <text fg={ironRainTheme.chrome.muted}>
         Enter API keys or connection details. Use "env:VAR_NAME" to reference environment variables.
       </text>
 
       <box marginY={1} />
 
-      <box flexDirection="column" borderStyle="round" borderColor={ironRainTheme.chrome.border}
+      <box flexDirection="column" border borderStyle="rounded" borderColor={ironRainTheme.chrome.border}
         paddingX={1} paddingY={1}>
         <For each={needsSetup()}>
           {(provider, i) => {
@@ -40,28 +40,27 @@ export function Credentials(props: CredentialsProps) {
             return (
               <box flexDirection="column" marginY={0}>
                 <box flexDirection="row" gap={1}>
-                  <text color={isActive() ? ironRainTheme.brand.primary : ironRainTheme.chrome.dimFg}>
+                  <text fg={isActive() ? ironRainTheme.brand.primary : ironRainTheme.chrome.dimFg}>
                     {isActive() ? '>' : ' '}
                   </text>
-                  <text color={isActive() ? ironRainTheme.chrome.fg : ironRainTheme.chrome.muted}
-                    bold={isActive()}>
-                    {provider.name}
+                  <text fg={isActive() ? ironRainTheme.chrome.fg : ironRainTheme.chrome.muted}>
+                    {isActive() ? <b>{provider.name}</b> : provider.name}
                   </text>
                   {provider.requiresKey && hasEnvKey() && (
-                    <text color={ironRainTheme.status.success}>
+                    <text fg={ironRainTheme.status.success}>
                       (found ${provider.keyEnvVar} in env)
                     </text>
                   )}
                 </box>
                 {provider.requiresKey && (
                   <box flexDirection="row" gap={1} paddingX={3}>
-                    <text color={ironRainTheme.chrome.muted}>API Key:</text>
+                    <text fg={ironRainTheme.chrome.muted}>API Key:</text>
                     {isActive() && props.editing ? (
-                      <text color={ironRainTheme.brand.primary}>
+                      <text fg={ironRainTheme.brand.primary}>
                         {props.editValue}{'_'}
                       </text>
                     ) : (
-                      <text color={cred().apiKey ? ironRainTheme.status.success : ironRainTheme.chrome.dimFg}>
+                      <text fg={cred().apiKey ? ironRainTheme.status.success : ironRainTheme.chrome.dimFg}>
                         {cred().apiKey
                           ? (cred().apiKey!.startsWith('env:') ? cred().apiKey! : '***' + cred().apiKey!.slice(-4))
                           : (hasEnvKey() ? `env:${provider.keyEnvVar}` : 'not set')}
@@ -71,8 +70,8 @@ export function Credentials(props: CredentialsProps) {
                 )}
                 {provider.defaultApiBase && (
                   <box flexDirection="row" gap={1} paddingX={3}>
-                    <text color={ironRainTheme.chrome.muted}>API Base:</text>
-                    <text color={ironRainTheme.status.success}>
+                    <text fg={ironRainTheme.chrome.muted}>API Base:</text>
+                    <text fg={ironRainTheme.status.success}>
                       {cred().apiBase ?? provider.defaultApiBase}
                     </text>
                   </box>
@@ -86,13 +85,13 @@ export function Credentials(props: CredentialsProps) {
       <box marginY={1} />
 
       <box flexDirection="row" gap={2}>
-        <text color={ironRainTheme.brand.primary} bold>
-          [Enter] Edit/Confirm
+        <text fg={ironRainTheme.brand.primary}>
+          <b>[Enter] Edit/Confirm</b>
         </text>
-        <text color={ironRainTheme.brand.primary} bold>
-          [Tab] Skip (use env)
+        <text fg={ironRainTheme.brand.primary}>
+          <b>[Tab] Skip (use env)</b>
         </text>
-        <text color={ironRainTheme.chrome.muted}>
+        <text fg={ironRainTheme.chrome.muted}>
           [Backspace] Back
         </text>
       </box>

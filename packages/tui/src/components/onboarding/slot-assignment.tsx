@@ -30,10 +30,10 @@ export function SlotAssignment(props: SlotAssignmentProps) {
 
   return (
     <box flexDirection="column" paddingX={4} paddingY={1}>
-      <text color={ironRainTheme.brand.primary} bold>
-        Assign Models to Slots
+      <text fg={ironRainTheme.brand.primary}>
+        <b>Assign Models to Slots</b>
       </text>
-      <text color={ironRainTheme.chrome.muted}>
+      <text fg={ironRainTheme.chrome.muted}>
         Choose a model for each slot. Use arrow keys to pick, Enter to confirm.
       </text>
 
@@ -46,13 +46,14 @@ export function SlotAssignment(props: SlotAssignmentProps) {
             const isActive = () => slot === props.activeSlot;
             const config = () => props.slots[slot];
             return (
-              <box flexDirection="column" borderStyle="round"
+              <box flexDirection="column" border
+                borderStyle="rounded"
                 borderColor={isActive() ? slotColor(slot) : ironRainTheme.chrome.border}
                 paddingX={1} paddingY={0} minWidth={25}>
-                <text color={slotColor(slot)} bold>
-                  {isActive() ? '> ' : '  '}{slotLabel(slot)}
+                <text fg={slotColor(slot)}>
+                  <b>{isActive() ? '> ' : '  '}{slotLabel(slot)}</b>
                 </text>
-                <text color={ironRainTheme.chrome.muted}>
+                <text fg={ironRainTheme.chrome.muted}>
                   {config().provider}/{config().model}
                 </text>
               </box>
@@ -64,11 +65,12 @@ export function SlotAssignment(props: SlotAssignmentProps) {
       <box marginY={1} />
 
       {/* Model picker for active slot */}
-      <box flexDirection="column" borderStyle="round"
+      <box flexDirection="column" border
+        borderStyle="rounded"
         borderColor={slotColor(props.activeSlot)}
         paddingX={1} paddingY={1}>
-        <text color={slotColor(props.activeSlot)} bold>
-          Select model for {slotLabel(props.activeSlot)} slot:
+        <text fg={slotColor(props.activeSlot)}>
+          <b>Select model for {slotLabel(props.activeSlot)} slot:</b>
         </text>
         <box marginY={0} />
         <For each={modelOptions()}>
@@ -79,15 +81,14 @@ export function SlotAssignment(props: SlotAssignmentProps) {
               props.slots[props.activeSlot].model === option.model;
             return (
               <box flexDirection="row" gap={1}>
-                <text color={isSelected() ? slotColor(props.activeSlot) : ironRainTheme.chrome.dimFg}>
+                <text fg={isSelected() ? slotColor(props.activeSlot) : ironRainTheme.chrome.dimFg}>
                   {isSelected() ? '>' : ' '}
                 </text>
-                <text color={isSelected() ? ironRainTheme.chrome.fg : ironRainTheme.chrome.muted}
-                  bold={isSelected()}>
-                  {option.provider}/{option.model}
+                <text fg={isSelected() ? ironRainTheme.chrome.fg : ironRainTheme.chrome.muted}>
+                  {isSelected() ? <b>{option.provider}/{option.model}</b> : <>{option.provider}/{option.model}</>}
                 </text>
                 {isCurrent() && (
-                  <text color={ironRainTheme.status.success}>*</text>
+                  <text fg={ironRainTheme.status.success}>*</text>
                 )}
               </box>
             );
@@ -98,10 +99,10 @@ export function SlotAssignment(props: SlotAssignmentProps) {
       <box marginY={1} />
 
       <box flexDirection="row" gap={2}>
-        <text color={ironRainTheme.brand.primary} bold>
-          [Enter] Assign & Next Slot
+        <text fg={ironRainTheme.brand.primary}>
+          <b>[Enter] Assign & Next Slot</b>
         </text>
-        <text color={ironRainTheme.chrome.muted}>
+        <text fg={ironRainTheme.chrome.muted}>
           [Backspace] Back
         </text>
       </box>

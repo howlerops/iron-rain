@@ -63,10 +63,10 @@ export function Settings(props: SettingsProps) {
 
   return (
     <box flexDirection="column" paddingX={4} paddingY={1}>
-      <text color={ironRainTheme.brand.primary} bold>
-        Settings
+      <text fg={ironRainTheme.brand.primary}>
+        <b>Settings</b>
       </text>
-      <text color={ironRainTheme.chrome.muted}>
+      <text fg={ironRainTheme.chrome.muted}>
         Edit your Iron Rain configuration.
       </text>
 
@@ -77,11 +77,8 @@ export function Settings(props: SettingsProps) {
         {sections.map((s) => {
           const isActive = () => s === activeSection();
           return (
-            <text
-              color={isActive() ? ironRainTheme.brand.primary : ironRainTheme.chrome.muted}
-              bold={isActive()}
-            >
-              {isActive() ? `[${s.toUpperCase()}]` : s}
+            <text fg={isActive() ? ironRainTheme.brand.primary : ironRainTheme.chrome.muted}>
+              {isActive() ? <b>{`[${s.toUpperCase()}]`}</b> : s}
             </text>
           );
         })}
@@ -91,9 +88,9 @@ export function Settings(props: SettingsProps) {
 
       {/* Slots section */}
       {activeSection() === 'slots' && (
-        <box flexDirection="column" borderStyle="round" borderColor={ironRainTheme.chrome.border}
+        <box flexDirection="column" border borderStyle="rounded" borderColor={ironRainTheme.chrome.border}
           paddingX={1} paddingY={1}>
-          <text color={ironRainTheme.brand.lightGold} bold>Model Slots</text>
+          <text fg={ironRainTheme.brand.lightGold}><b>Model Slots</b></text>
           <box marginY={0} />
           <For each={slotNames}>
             {(slot, i) => {
@@ -101,13 +98,13 @@ export function Settings(props: SettingsProps) {
               const slotConfig = () => config.slots?.[slot];
               return (
                 <box flexDirection="row" gap={1} paddingX={1}>
-                  <text color={isActive() ? slotColor(slot) : ironRainTheme.chrome.dimFg}>
+                  <text fg={isActive() ? slotColor(slot) : ironRainTheme.chrome.dimFg}>
                     {isActive() ? '>' : ' '}
                   </text>
-                  <text color={slotColor(slot)} bold>
-                    {slotLabel(slot).padEnd(8)}
+                  <text fg={slotColor(slot)}>
+                    <b>{slotLabel(slot).padEnd(8)}</b>
                   </text>
-                  <text color={ironRainTheme.chrome.fg}>
+                  <text fg={ironRainTheme.chrome.fg}>
                     {slotConfig()?.provider ?? '?'}/{slotConfig()?.model ?? '?'}
                   </text>
                 </box>
@@ -116,22 +113,22 @@ export function Settings(props: SettingsProps) {
           </For>
 
           {editing() && (
-            <box flexDirection="column" marginY={1} borderStyle="round"
+            <box flexDirection="column" marginY={1} border
+              borderStyle="rounded"
               borderColor={slotColor(slotNames[slotCursor()]!)} paddingX={1}>
-              <text color={slotColor(slotNames[slotCursor()]!)} bold>
-                Select model for {slotLabel(slotNames[slotCursor()]!)}:
+              <text fg={slotColor(slotNames[slotCursor()]!)}>
+                <b>Select model for {slotLabel(slotNames[slotCursor()]!)}:</b>
               </text>
               <For each={modelOptions()}>
                 {(option, i) => {
                   const isSelected = () => i() === modelCursor();
                   return (
                     <box flexDirection="row" gap={1}>
-                      <text color={isSelected() ? ironRainTheme.brand.primary : ironRainTheme.chrome.dimFg}>
+                      <text fg={isSelected() ? ironRainTheme.brand.primary : ironRainTheme.chrome.dimFg}>
                         {isSelected() ? '>' : ' '}
                       </text>
-                      <text color={isSelected() ? ironRainTheme.chrome.fg : ironRainTheme.chrome.muted}
-                        bold={isSelected()}>
-                        {option.provider}/{option.model}
+                      <text fg={isSelected() ? ironRainTheme.chrome.fg : ironRainTheme.chrome.muted}>
+                        {isSelected() ? <b>{option.provider}/{option.model}</b> : <>{option.provider}/{option.model}</>}
                       </text>
                     </box>
                   );
@@ -144,12 +141,12 @@ export function Settings(props: SettingsProps) {
 
       {/* Providers section */}
       {activeSection() === 'providers' && (
-        <box flexDirection="column" borderStyle="round" borderColor={ironRainTheme.chrome.border}
+        <box flexDirection="column" border borderStyle="rounded" borderColor={ironRainTheme.chrome.border}
           paddingX={1} paddingY={1}>
-          <text color={ironRainTheme.brand.lightGold} bold>Configured Providers</text>
+          <text fg={ironRainTheme.brand.lightGold}><b>Configured Providers</b></text>
           <box marginY={0} />
           {providerIds().length === 0 ? (
-            <text color={ironRainTheme.chrome.muted} paddingX={1}>
+            <text fg={ironRainTheme.chrome.muted} paddingX={1}>
               No providers configured. Run onboarding to set up providers.
             </text>
           ) : (
@@ -158,19 +155,19 @@ export function Settings(props: SettingsProps) {
                 const prov = () => (config.providers ?? {})[pid];
                 return (
                   <box flexDirection="column" paddingX={1}>
-                    <text color={ironRainTheme.chrome.fg} bold>{pid}</text>
+                    <text fg={ironRainTheme.chrome.fg}><b>{pid}</b></text>
                     {prov()?.apiKey && (
                       <box flexDirection="row" gap={1} paddingX={2}>
-                        <text color={ironRainTheme.chrome.muted}>key:</text>
-                        <text color={ironRainTheme.status.success}>
+                        <text fg={ironRainTheme.chrome.muted}>key:</text>
+                        <text fg={ironRainTheme.status.success}>
                           {prov()!.apiKey!.startsWith('env:') ? prov()!.apiKey! : '***'}
                         </text>
                       </box>
                     )}
                     {prov()?.apiBase && (
                       <box flexDirection="row" gap={1} paddingX={2}>
-                        <text color={ironRainTheme.chrome.muted}>base:</text>
-                        <text color={ironRainTheme.status.success}>{prov()!.apiBase}</text>
+                        <text fg={ironRainTheme.chrome.muted}>base:</text>
+                        <text fg={ironRainTheme.status.success}>{prov()!.apiBase}</text>
                       </box>
                     )}
                   </box>
@@ -183,20 +180,20 @@ export function Settings(props: SettingsProps) {
 
       {/* Permissions section */}
       {activeSection() === 'permissions' && (
-        <box flexDirection="column" borderStyle="round" borderColor={ironRainTheme.chrome.border}
+        <box flexDirection="column" border borderStyle="rounded" borderColor={ironRainTheme.chrome.border}
           paddingX={1} paddingY={1}>
-          <text color={ironRainTheme.brand.lightGold} bold>Permissions</text>
+          <text fg={ironRainTheme.brand.lightGold}><b>Permissions</b></text>
           <box marginY={0} />
           {Object.keys(config.permission ?? {}).length === 0 ? (
-            <text color={ironRainTheme.chrome.muted} paddingX={1}>
+            <text fg={ironRainTheme.chrome.muted} paddingX={1}>
               Using default permissions (ask for all tools).
             </text>
           ) : (
             <For each={Object.entries(config.permission ?? {})}>
               {([tool, perm]) => (
                 <box flexDirection="row" gap={1} paddingX={1}>
-                  <text color={ironRainTheme.chrome.fg}>{tool.padEnd(12)}</text>
-                  <text color={
+                  <text fg={ironRainTheme.chrome.fg}>{tool.padEnd(12)}</text>
+                  <text fg={
                     perm === 'allow' ? ironRainTheme.status.success
                     : perm === 'deny' ? ironRainTheme.status.error
                     : ironRainTheme.status.warning
@@ -213,16 +210,16 @@ export function Settings(props: SettingsProps) {
       <box marginY={1} />
 
       <box flexDirection="row" gap={2}>
-        <text color={ironRainTheme.brand.primary} bold>
-          [Tab] Switch Section
+        <text fg={ironRainTheme.brand.primary}>
+          <b>[Tab] Switch Section</b>
         </text>
-        <text color={ironRainTheme.brand.primary} bold>
-          [Enter] Edit
+        <text fg={ironRainTheme.brand.primary}>
+          <b>[Enter] Edit</b>
         </text>
-        <text color={ironRainTheme.status.success} bold>
-          [s] Save
+        <text fg={ironRainTheme.status.success}>
+          <b>[s] Save</b>
         </text>
-        <text color={ironRainTheme.chrome.muted}>
+        <text fg={ironRainTheme.chrome.muted}>
           [Esc] Close
         </text>
       </box>

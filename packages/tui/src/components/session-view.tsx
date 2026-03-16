@@ -24,14 +24,14 @@ function MessageBubble(props: { message: Message }) {
   return (
     <box flexDirection="column" paddingX={1} marginBottom={1}>
       <box flexDirection="row" gap={1}>
-        <text color={borderColor} bold>
-          {isUser ? 'You' : slotLabel(props.message.slot ?? 'main')}
+        <text fg={borderColor}>
+          <b>{isUser ? 'You' : slotLabel(props.message.slot ?? 'main')}</b>
         </text>
-        <text color={ironRainTheme.chrome.dimFg}>
+        <text fg={ironRainTheme.chrome.dimFg}>
           {new Date(props.message.timestamp).toLocaleTimeString()}
         </text>
       </box>
-      <text color={ironRainTheme.chrome.fg}>{props.message.content}</text>
+      <text fg={ironRainTheme.chrome.fg}>{props.message.content}</text>
     </box>
   );
 }

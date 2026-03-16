@@ -1,6 +1,6 @@
 {
   "name": "@howlerops/iron-rain-cli",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "module",
   "bin": {
     "iron-rain": "./dist/index.js"
@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@howlerops/iron-rain": "workspace:*",
-    "@howlerops/iron-rain-tui": "workspace:*"
+    "@howlerops/iron-rain-tui": "workspace:*",
+    "@opentui/solid": "^0.1.87"
   },
   "publishConfig": {
     "access": "public"

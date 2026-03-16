@@ -3,8 +3,8 @@
   "compilerOptions": {
     "outDir": "dist",
     "rootDir": "src",
-    "jsx": "react-jsx",
-    "jsxImportSource": "@howlerops/iron-rain-tui",
+    "jsx": "preserve",
+    "jsxImportSource": "@opentui/solid",
     "types": ["node"]
   },
   "include": ["src"]

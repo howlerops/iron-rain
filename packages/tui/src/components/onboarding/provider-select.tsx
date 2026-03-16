@@ -13,16 +13,16 @@ export interface ProviderSelectProps {
 export function ProviderSelect(props: ProviderSelectProps) {
   return (
     <box flexDirection="column" paddingX={4} paddingY={1}>
-      <text color={ironRainTheme.brand.primary} bold>
-        Select Providers
+      <text fg={ironRainTheme.brand.primary}>
+        <b>Select Providers</b>
       </text>
-      <text color={ironRainTheme.chrome.muted}>
+      <text fg={ironRainTheme.chrome.muted}>
         Choose which model providers you want to use. Select at least one.
       </text>
 
       <box marginY={1} />
 
-      <box flexDirection="column" borderStyle="round" borderColor={ironRainTheme.chrome.border}
+      <box flexDirection="column" border borderStyle="rounded" borderColor={ironRainTheme.chrome.border}
         paddingX={1} paddingY={1}>
         <For each={props.providers}>
           {(provider, i) => {
@@ -35,20 +35,19 @@ export function ProviderSelect(props: ProviderSelectProps) {
 
             return (
               <box flexDirection="row" gap={1}>
-                <text color={isActive() ? ironRainTheme.brand.primary : ironRainTheme.chrome.dimFg}>
+                <text fg={isActive() ? ironRainTheme.brand.primary : ironRainTheme.chrome.dimFg}>
                   {isActive() ? '>' : ' '}
                 </text>
-                <text color={provider.selected ? ironRainTheme.status.success : ironRainTheme.chrome.dimFg}>
+                <text fg={provider.selected ? ironRainTheme.status.success : ironRainTheme.chrome.dimFg}>
                   {provider.selected ? '[x]' : '[ ]'}
                 </text>
-                <text color={isActive() ? ironRainTheme.chrome.fg : ironRainTheme.chrome.muted}
-                  bold={isActive()}>
-                  {provider.name}
+                <text fg={isActive() ? ironRainTheme.chrome.fg : ironRainTheme.chrome.muted}>
+                  {isActive() ? <b>{provider.name}</b> : provider.name}
                 </text>
-                <text color={typeColor} dim>
+                <text fg={typeColor}>
                   ({provider.type})
                 </text>
-                <text color={ironRainTheme.chrome.dimFg}>
+                <text fg={ironRainTheme.chrome.dimFg}>
                   {provider.description}
                 </text>
               </box>
@@ -60,13 +59,13 @@ export function ProviderSelect(props: ProviderSelectProps) {
       <box marginY={1} />
 
       <box flexDirection="row" gap={2}>
-        <text color={ironRainTheme.brand.primary} bold>
-          [Space] Toggle
+        <text fg={ironRainTheme.brand.primary}>
+          <b>[Space] Toggle</b>
         </text>
-        <text color={ironRainTheme.brand.primary} bold>
-          [Enter] Next
+        <text fg={ironRainTheme.brand.primary}>
+          <b>[Enter] Next</b>
         </text>
-        <text color={ironRainTheme.chrome.muted}>
+        <text fg={ironRainTheme.chrome.muted}>
           [Backspace] Back
         </text>
       </box>

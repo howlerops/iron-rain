@@ -8,11 +8,11 @@ export interface SplashScreenProps {
 export function SplashScreen(props: SplashScreenProps) {
   return (
     <box flexDirection="column" alignItems="center" paddingTop={1}>
-      <text color={ironRainTheme.brand.primary} bold>
-        {SPLASH_ART}
+      <text fg={ironRainTheme.brand.primary}>
+        <b>{SPLASH_ART}</b>
       </text>
-      <text color={ironRainTheme.brand.accent}>{TAGLINE}</text>
-      <text color={ironRainTheme.chrome.muted} marginTop={1}>
+      <text fg={ironRainTheme.brand.accent}>{TAGLINE}</text>
+      <text fg={ironRainTheme.chrome.muted} marginTop={1}>
         {props.version}
       </text>
     </box>

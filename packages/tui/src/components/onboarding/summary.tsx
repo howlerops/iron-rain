@@ -18,31 +18,31 @@ export function Summary(props: SummaryProps) {
 
   return (
     <box flexDirection="column" paddingX={4} paddingY={1}>
-      <text color={ironRainTheme.brand.primary} bold>
-        Review Configuration
+      <text fg={ironRainTheme.brand.primary}>
+        <b>Review Configuration</b>
       </text>
-      <text color={ironRainTheme.chrome.muted}>
+      <text fg={ironRainTheme.chrome.muted}>
         Review your setup before saving.
       </text>
 
       <box marginY={1} />
 
       {/* Providers */}
-      <box flexDirection="column" borderStyle="round" borderColor={ironRainTheme.chrome.border}
+      <box flexDirection="column" border borderStyle="rounded" borderColor={ironRainTheme.chrome.border}
         paddingX={1} paddingY={1}>
-        <text color={ironRainTheme.brand.lightGold} bold>Providers</text>
+        <text fg={ironRainTheme.brand.lightGold}><b>Providers</b></text>
         <For each={selectedProviders()}>
           {(provider) => {
             const cred = () => props.credentials[provider.id] ?? {};
             return (
               <box flexDirection="row" gap={1} paddingX={1}>
-                <text color={ironRainTheme.status.success}>+</text>
-                <text color={ironRainTheme.chrome.fg}>{provider.name}</text>
-                <text color={ironRainTheme.chrome.dimFg}>
+                <text fg={ironRainTheme.status.success}>+</text>
+                <text fg={ironRainTheme.chrome.fg}>{provider.name}</text>
+                <text fg={ironRainTheme.chrome.dimFg}>
                   ({provider.type})
                 </text>
                 {cred().apiKey && (
-                  <text color={ironRainTheme.chrome.muted}>
+                  <text fg={ironRainTheme.chrome.muted}>
                     key: {cred().apiKey!.startsWith('env:') ? cred().apiKey! : '***'}
                   </text>
                 )}
@@ -55,18 +55,18 @@ export function Summary(props: SummaryProps) {
       <box marginY={1} />
 
       {/* Slot assignments */}
-      <box flexDirection="column" borderStyle="round" borderColor={ironRainTheme.chrome.border}
+      <box flexDirection="column" border borderStyle="rounded" borderColor={ironRainTheme.chrome.border}
         paddingX={1} paddingY={1}>
-        <text color={ironRainTheme.brand.lightGold} bold>Model Slots</text>
+        <text fg={ironRainTheme.brand.lightGold}><b>Model Slots</b></text>
         <For each={[...SLOT_NAMES]}>
           {(slot) => {
             const config = () => props.slots[slot];
             return (
               <box flexDirection="row" gap={1} paddingX={1}>
-                <text color={slotColor(slot)} bold>
-                  {slotLabel(slot).padEnd(8)}
+                <text fg={slotColor(slot)}>
+                  <b>{slotLabel(slot).padEnd(8)}</b>
                 </text>
-                <text color={ironRainTheme.chrome.fg}>
+                <text fg={ironRainTheme.chrome.fg}>
                   {config().provider}/{config().model}
                 </text>
               </box>
@@ -77,17 +77,17 @@ export function Summary(props: SummaryProps) {
 
       <box marginY={1} />
 
-      <text color={ironRainTheme.chrome.muted}>
+      <text fg={ironRainTheme.chrome.muted}>
         Config will be saved to: {props.configPath}
       </text>
 
       <box marginY={1} />
 
       <box flexDirection="row" gap={2}>
-        <text color={ironRainTheme.status.success} bold>
-          [Enter] Save & Start
+        <text fg={ironRainTheme.status.success}>
+          <b>[Enter] Save & Start</b>
         </text>
-        <text color={ironRainTheme.chrome.muted}>
+        <text fg={ironRainTheme.chrome.muted}>
           [Backspace] Back
         </text>
       </box>

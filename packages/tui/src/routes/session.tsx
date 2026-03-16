@@ -12,7 +12,8 @@ export function SessionRoute() {
       <box
         flexDirection="column"
         flexGrow={1}
-        borderStyle="round"
+        border
+        borderStyle="rounded"
         borderColor={ironRainTheme.chrome.border}
         marginX={1}
       >
@@ -20,9 +21,9 @@ export function SessionRoute() {
       </box>
       <box paddingX={2} paddingY={0}>
         {state.isLoading ? (
-          <text color={ironRainTheme.slots[state.activeSlot]}>Thinking...</text>
+          <text fg={ironRainTheme.slots[state.activeSlot]}>Thinking...</text>
         ) : (
-          <text color={ironRainTheme.chrome.muted}>Type a message or /help for commands</text>
+          <text fg={ironRainTheme.chrome.muted}>Type a message or /help for commands</text>
         )}
       </box>
     </box>

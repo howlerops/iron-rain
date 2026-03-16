@@ -16,24 +16,24 @@ export interface HomeRouteProps {
 export function HomeRoute(props: HomeRouteProps) {
   return (
     <box flexDirection="column" paddingX={2}>
-      <text color={ironRainTheme.brand.primary} bold>
-        Sessions
+      <text fg={ironRainTheme.brand.primary}>
+        <b>Sessions</b>
       </text>
-      <text color={ironRainTheme.chrome.muted} marginBottom={1}>
+      <text fg={ironRainTheme.chrome.muted} marginBottom={1}>
         [n] New session | [enter] Open | [q] Quit
       </text>
 
       {props.sessions.length === 0 ? (
-        <text color={ironRainTheme.chrome.dimFg}>
+        <text fg={ironRainTheme.chrome.dimFg}>
           No sessions yet. Press [n] to start.
         </text>
       ) : (
         props.sessions.map((s) => (
           <box flexDirection="row" gap={2} paddingY={0}>
-            <text color={ironRainTheme.chrome.fg} bold>
-              {s.name}
+            <text fg={ironRainTheme.chrome.fg}>
+              <b>{s.name}</b>
             </text>
-            <text color={ironRainTheme.chrome.dimFg}>
+            <text fg={ironRainTheme.chrome.dimFg}>
               {s.lastMessage.slice(0, 60)}
             </text>
           </box>

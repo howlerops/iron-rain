@@ -9,3 +9,6 @@ export type { Theme } from './theme/theme.js';
 export { SPLASH_ART, TAGLINE } from './theme/splash.js';
 
 export * from './components/index.js';
+
+export { render } from '@opentui/solid';
+export { useKeyboard, useRenderer, useTerminalDimensions } from '@opentui/solid';

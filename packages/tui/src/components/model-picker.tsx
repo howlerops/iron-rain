@@ -17,17 +17,15 @@ export function ModelPicker(props: ModelPickerProps) {
   const color = ironRainTheme.slots[props.slot];
 
   return (
-    <box flexDirection="column" borderStyle="round" borderColor={color} paddingX={1}>
-      <text color={color} bold>
-        Select model for {slotLabel(props.slot)}
+    <box flexDirection="column" border borderStyle="rounded" borderColor={color} paddingX={1}>
+      <text fg={color}>
+        <b>Select model for {slotLabel(props.slot)}</b>
       </text>
       {props.options.map((opt, i) => (
-        <text
-          color={i === props.selectedIndex ? color : ironRainTheme.chrome.fg}
-          bold={i === props.selectedIndex}
-        >
-          {i === props.selectedIndex ? '> ' : '  '}
-          {opt.provider}/{opt.model}
+        <text fg={i === props.selectedIndex ? color : ironRainTheme.chrome.fg}>
+          {i === props.selectedIndex
+            ? <b>{'> '}{opt.provider}/{opt.model}</b>
+            : <>{'  '}{opt.provider}/{opt.model}</>}
         </text>
       ))}
     </box>

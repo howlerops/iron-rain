@@ -53,13 +53,14 @@ export function App(props: AppProps) {
           flexDirection="row"
           justifyContent="space-between"
           paddingX={1}
-          borderStyle="round"
+          border
+          borderStyle="rounded"
           borderColor={ironRainTheme.chrome.border}
         >
-          <text color={ironRainTheme.brand.primary} bold>
-            iron-rain
+          <text fg={ironRainTheme.brand.primary}>
+            <b>iron-rain</b>
           </text>
-          <text color={ironRainTheme.chrome.muted}>{props.version ?? '0.1.0'}</text>
+          <text fg={ironRainTheme.chrome.muted}>{props.version ?? '0.1.0'}</text>
         </box>
       </box>
     </SlateProvider>
