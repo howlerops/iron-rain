@@ -12,3 +12,5 @@ export * from './components/index.js';
 
 export { render } from '@opentui/solid';
 export { useKeyboard, useRenderer, useTerminalDimensions } from '@opentui/solid';
+
+export { startTUI } from './start.js';

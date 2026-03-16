@@ -92,12 +92,9 @@ async function launchTUI(): Promise<void> {
     process.exit(1);
   }
 
-  const { App, render } = await import('@howlerops/iron-rain-tui');
+  const { startTUI } = await import('@howlerops/iron-rain-tui');
   const config = findConfigFile() ? loadConfig() : undefined;
-  await render(() => App({ config, version: VERSION }), {
-    targetFps: 60,
-    exitOnCtrlC: false,
-  });
+  await startTUI({ config, version: VERSION });
 }
 
 async function main(): Promise<void> {
