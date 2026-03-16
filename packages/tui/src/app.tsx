@@ -1,4 +1,5 @@
 import { createSignal, Show } from 'solid-js';
+import { useKeyboard } from '@opentui/solid';
 import type { IronRainConfig } from '@howlerops/iron-rain';
 import { findConfigFile, loadConfig } from '@howlerops/iron-rain';
 import { SlateProvider } from './context/slate-context.js';
@@ -22,7 +23,6 @@ export function App(props: AppProps) {
   setTimeout(() => setShowSplash(false), 2000);
 
   function handleOnboardingComplete(configPath: string) {
-    // Reload the config that was just written
     const newConfig = loadConfig();
     setActiveConfig(newConfig);
     setOnboardingComplete(true);
@@ -31,6 +31,13 @@ export function App(props: AppProps) {
   function handleOnboardingQuit() {
     process.exit(0);
   }
+
+  // Global Ctrl+C handler
+  useKeyboard((e) => {
+    if (e.ctrl && e.name === 'c') {
+      process.exit(0);
+    }
+  });
 
   const needsOnboarding = () => !hasConfig() && !onboardingComplete();
 
