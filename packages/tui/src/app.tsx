@@ -1,8 +1,8 @@
 import { createSignal, Switch, Match } from 'solid-js';
 import { useKeyboard } from '@opentui/solid';
 import type { IronRainConfig } from '@howlerops/iron-rain';
-import { findConfigFile, loadConfig } from '@howlerops/iron-rain';
-import { SlateProvider } from './context/slate-context.js';
+import { loadConfig } from '@howlerops/iron-rain';
+import { SlateProvider, useSlate } from './context/slate-context.js';
 import { SplashScreen } from './components/splash-screen.js';
 import { SessionRoute } from './routes/session.js';
 import { OnboardingWizard } from './components/onboarding/index.js';
@@ -15,20 +15,21 @@ export interface AppProps {
 
 type View = 'splash' | 'onboarding' | 'session';
 
-export function App(props: AppProps) {
-  const hasConfig = !!props.config?.slots || !!findConfigFile();
-  const initialView: View = hasConfig ? 'splash' : 'onboarding';
-  const [view, setView] = createSignal<View>(initialView);
-  const [activeConfig, setActiveConfig] = createSignal<IronRainConfig | undefined>(props.config);
+function AppContent(props: { initialView: View; version: string }) {
+  const [, actions] = useSlate();
+  const [view, setView] = createSignal<View>(props.initialView);
 
   // Auto-dismiss splash after 2 seconds
-  if (hasConfig) {
+  if (props.initialView === 'splash') {
     setTimeout(() => setView('session'), 2000);
   }
 
-  function handleOnboardingComplete(configPath: string) {
+  function handleOnboardingComplete(_configPath: string) {
+    // Load the freshly written config and update slots in context
     const newConfig = loadConfig();
-    setActiveConfig(newConfig);
+    if (newConfig.slots) {
+      actions.updateSlots(newConfig.slots);
+    }
     setView('session');
   }
 
@@ -47,38 +48,51 @@ export function App(props: AppProps) {
   });
 
   return (
-    <SlateProvider config={activeConfig()}>
-      <box flexDirection="column" width="100%" height="100%">
-        <Switch>
-          <Match when={view() === 'onboarding'}>
-            <OnboardingWizard
-              onComplete={handleOnboardingComplete}
-              onQuit={handleOnboardingQuit}
-            />
-          </Match>
-          <Match when={view() === 'splash'}>
-            <SplashScreen version={props.version ?? '0.1.0'} />
-          </Match>
-          <Match when={view() === 'session'}>
-            <SessionRoute />
-          </Match>
-        </Switch>
+    <box flexDirection="column" width="100%" height="100%">
+      <Switch>
+        <Match when={view() === 'onboarding'}>
+          <OnboardingWizard
+            onComplete={handleOnboardingComplete}
+            onQuit={handleOnboardingQuit}
+          />
+        </Match>
+        <Match when={view() === 'splash'}>
+          <SplashScreen version={props.version} />
+        </Match>
+        <Match when={view() === 'session'}>
+          <SessionRoute />
+        </Match>
+      </Switch>
 
-        {/* Status bar */}
-        <box
-          flexDirection="row"
-          justifyContent="space-between"
-          paddingX={1}
-          border
-          borderStyle="rounded"
-          borderColor={ironRainTheme.chrome.border}
-        >
-          <text fg={ironRainTheme.brand.primary}>
-            <b>iron-rain</b>
-          </text>
-          <text fg={ironRainTheme.chrome.muted}>{props.version ?? '0.1.0'}</text>
-        </box>
+      {/* Status bar */}
+      <box
+        flexDirection="row"
+        justifyContent="space-between"
+        paddingX={1}
+        border
+        borderStyle="rounded"
+        borderColor={ironRainTheme.chrome.border}
+      >
+        <text fg={ironRainTheme.brand.primary}>
+          <b>iron-rain</b>
+        </text>
+        <text fg={ironRainTheme.chrome.muted}>{props.version}</text>
       </box>
+    </box>
+  );
+}
+
+export function App(props: AppProps) {
+  // Only skip onboarding if we have a config with actual slot assignments.
+  // findConfigFile() walks up directories and may find unrelated config files,
+  // so we check for real slot data, not just file existence.
+  const hasValidConfig = !!(props.config?.slots && Object.keys(props.config.slots).length > 0);
+  const initialView: View = hasValidConfig ? 'splash' : 'onboarding';
+  const version = props.version ?? '0.1.0';
+
+  return (
+    <SlateProvider config={props.config}>
+      <AppContent initialView={initialView} version={version} />
     </SlateProvider>
   );
 }

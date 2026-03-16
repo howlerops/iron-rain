@@ -18,36 +18,20 @@ export function SessionRoute() {
       id: crypto.randomUUID?.() ?? `${Date.now()}`,
       role: 'user',
       content: text,
-      slot: state.activeSlot,
+      slot: 'main',
       timestamp: Date.now(),
     });
 
     setInputValue('');
 
-    // TODO: dispatch to orchestrator kernel and stream response
-    actions.setLoading(true);
-    setTimeout(() => {
-      actions.addMessage({
-        id: crypto.randomUUID?.() ?? `${Date.now()}-resp`,
-        role: 'assistant',
-        content: `[${state.activeSlot}] Echo: ${text}`,
-        slot: state.activeSlot,
-        timestamp: Date.now(),
-      });
-      actions.setLoading(false);
-    }, 500);
+    // Dispatch to orchestrator kernel — Main slot handles everything
+    actions.dispatch(text);
   }
 
   // Global keyboard shortcuts
   useKeyboard((e) => {
     if (e.ctrl && e.name === 'c') {
       process.exit(0);
-    }
-    // Tab to cycle slots
-    if (e.name === 'tab' && !e.shift) {
-      const slots = ['main', 'explore', 'execute'] as const;
-      const idx = slots.indexOf(state.activeSlot);
-      actions.setActiveSlot(slots[(idx + 1) % slots.length]);
     }
   });
 
@@ -73,7 +57,7 @@ export function SessionRoute() {
             width="100%"
             focused={inputFocused()}
             value={inputValue()}
-            placeholder="Type a message... (Tab to switch slots, Ctrl+C to quit)"
+            placeholder="Type a message... (Ctrl+C to quit)"
             placeholderColor={ironRainTheme.chrome.muted}
             textColor={ironRainTheme.chrome.fg}
             backgroundColor={ironRainTheme.chrome.bg}
