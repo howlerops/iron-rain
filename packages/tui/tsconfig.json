@@ -4,7 +4,7 @@
     "outDir": "dist",
     "rootDir": "src",
     "jsx": "react-jsx",
-    "jsxImportSource": "@iron-rain/tui",
+    "jsxImportSource": "@howlerops/iron-rain-tui",
     "types": ["node"]
   },
   "include": ["src"]

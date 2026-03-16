@@ -1,5 +1,5 @@
 {
-  "name": "@iron-rain/core",
+  "name": "@howlerops/iron-rain",
   "version": "0.1.0",
   "type": "module",
   "main": "dist/index.js",
@@ -18,6 +18,15 @@
   "dependencies": {
     "zod": "^3.24.0"
   },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/howlerops/iron-rain",
+    "directory": "packages/core"
+  },
+  "license": "MIT",
   "devDependencies": {
     "@types/node": "^25.5.0",
     "typescript": "^5.7.0"

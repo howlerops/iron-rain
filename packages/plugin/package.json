@@ -1,5 +1,5 @@
 {
-  "name": "@iron-rain/plugin",
+  "name": "@howlerops/iron-rain-plugin",
   "version": "0.1.0",
   "type": "module",
   "main": "dist/index.js",
@@ -16,8 +16,17 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
-    "@iron-rain/core": "workspace:*"
+    "@howlerops/iron-rain": "workspace:*"
   },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/howlerops/iron-rain",
+    "directory": "packages/plugin"
+  },
+  "license": "MIT",
   "devDependencies": {
     "typescript": "^5.7.0"
   }

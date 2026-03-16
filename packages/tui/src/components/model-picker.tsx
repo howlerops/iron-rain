@@ -1,4 +1,4 @@
-import type { SlotName } from '@iron-rain/core';
+import type { SlotName } from '@howlerops/iron-rain';
 import { ironRainTheme, slotLabel } from '../theme/theme.js';
 
 export interface ModelOption {

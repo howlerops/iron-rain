@@ -1,5 +1,5 @@
 {
-  "name": "@iron-rain/cli",
+  "name": "@howlerops/iron-rain-cli",
   "version": "0.1.0",
   "type": "module",
   "bin": {
@@ -11,9 +11,18 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
-    "@iron-rain/core": "workspace:*",
-    "@iron-rain/tui": "workspace:*"
+    "@howlerops/iron-rain": "workspace:*",
+    "@howlerops/iron-rain-tui": "workspace:*"
   },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/howlerops/iron-rain",
+    "directory": "packages/cli"
+  },
+  "license": "MIT",
   "devDependencies": {
     "typescript": "^5.7.0",
     "@types/node": "^22.0.0"

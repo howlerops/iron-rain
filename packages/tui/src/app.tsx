@@ -1,5 +1,5 @@
 import { createSignal, Show } from 'solid-js';
-import type { IronRainConfig } from '@iron-rain/core';
+import type { IronRainConfig } from '@howlerops/iron-rain';
 import { SlateProvider } from './context/slate-context.js';
 import { SplashScreen } from './components/splash-screen.js';
 import { SessionRoute } from './routes/session.js';

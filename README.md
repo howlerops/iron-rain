@@ -75,10 +75,10 @@ API keys can reference environment variables with the `env:` prefix.
 
 | Package | Description |
 |---------|-------------|
-| `@iron-rain/core` | Model slots, orchestrator, bridges, config — zero UI deps |
-| `@iron-rain/tui` | Terminal UI components (SolidJS + OpenTUI) |
-| `@iron-rain/cli` | CLI entry point |
-| `@iron-rain/plugin` | Plugin SDK for extending Iron Rain |
+| `@howlerops/iron-rain` | Model slots, orchestrator, bridges, config — zero UI deps |
+| `@howlerops/iron-rain-tui` | Terminal UI components (SolidJS + OpenTUI) |
+| `@howlerops/iron-rain-cli` | CLI entry point |
+| `@howlerops/iron-rain-plugin` | Plugin SDK for extending Iron Rain |
 
 ## Providers
 

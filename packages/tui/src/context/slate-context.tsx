@@ -1,7 +1,7 @@
 import { createContext, useContext, type JSX } from 'solid-js';
 import { createStore } from 'solid-js/store';
-import type { SlotAssignment, SlotName, IronRainConfig } from '@iron-rain/core';
-import { DEFAULT_SLOT_ASSIGNMENT } from '@iron-rain/core';
+import type { SlotAssignment, SlotName, IronRainConfig } from '@howlerops/iron-rain';
+import { DEFAULT_SLOT_ASSIGNMENT } from '@howlerops/iron-rain';
 import type { Message } from '../components/session-view.js';
 
 export interface SlateState {

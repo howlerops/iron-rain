@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 import { randomBytes } from 'node:crypto';
-import { loadConfig, ModelSlotManager, OrchestratorKernel, ProviderRegistry } from '@iron-rain/core';
-import { SPLASH_ART, TAGLINE } from '@iron-rain/tui';
+import { loadConfig, ModelSlotManager, OrchestratorKernel, ProviderRegistry } from '@howlerops/iron-rain';
+import { SPLASH_ART, TAGLINE } from '@howlerops/iron-rain-tui';
 
 const VERSION = '0.1.0';
 

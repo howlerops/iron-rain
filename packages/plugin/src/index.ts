@@ -5,7 +5,7 @@ import type {
   EpisodeSummary,
   OrchestratorTask,
   IronRainConfig,
-} from '@iron-rain/core';
+} from '@howlerops/iron-rain';
 
 // Re-export core types for plugin authors
 export type {
