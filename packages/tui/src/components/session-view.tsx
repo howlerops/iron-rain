@@ -57,7 +57,7 @@ export interface SessionViewProps {
   loadingStartTime?: number;
 }
 
-function formatDuration(ms: number): string {
+export function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   const secs = Math.round(ms / 100) / 10;
   if (secs < 60) return `${secs}s`;
@@ -66,7 +66,7 @@ function formatDuration(ms: number): string {
   return `${mins}m ${remainSecs}s`;
 }
 
-function formatTokens(n: number): string {
+export function formatTokens(n: number): string {
   if (n < 1000) return `${n}`;
   return `${(n / 1000).toFixed(1)}k`;
 }
@@ -328,10 +328,6 @@ export function SessionView(props: SessionViewProps) {
           startTime={props.loadingStartTime ?? Date.now()}
         />
       </Show>
-
-      {props.stats && props.stats.requestCount > 0 && (
-        <CumulativeStats stats={props.stats} />
-      )}
     </box>
   );
 }

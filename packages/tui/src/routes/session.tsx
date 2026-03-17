@@ -4,7 +4,7 @@ import { useKeyboard } from "@opentui/solid";
 import { createMemo, createSignal, ErrorBoundary, Match, Show, Switch } from "solid-js";
 import { PlanReview } from "../components/plan-review.js";
 import { PlanView } from "../components/plan-view.js";
-import { SessionView } from "../components/session-view.js";
+import { formatDuration, formatTokens, SessionView } from "../components/session-view.js";
 import { Settings } from "../components/settings.js";
 import { getFilteredCommands, SlashMenu } from "../components/slash-menu.js";
 import { WelcomeScreen } from "../components/welcome-screen.js";
@@ -378,14 +378,28 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
             />
           </Show>
 
-          <box paddingX={1}>
-            <input
+          {/* ── Input row with prompt indicator ───── */}
+          <box
+            flexDirection="row"
+            paddingX={1}
+            gap={1}
+            marginTop={1}
+            border
+            borderStyle="rounded"
+            borderColor={ironRainTheme.chrome.border}
+          >
+            <text fg={ironRainTheme.brand.primary}>
+              <b>{"\u276F"}</b>
+            </text>
+            <textarea
               ref={(el: any) => {
                 inputRef = el;
               }}
               width="100%"
+              minHeight={1}
+              maxHeight={6}
               focused={inputFocused()}
-              value={inputValue()}
+              initialValue=""
               placeholder={
                 actions.isLoading()
                   ? "Add context or press Esc to cancel..."
@@ -406,20 +420,28 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
             />
           </box>
 
-          <box flexDirection="row" paddingX={1} gap={2}>
-            <text fg={ironRainTheme.chrome.dimFg}>
-              {state.slots.main.model}
-            </text>
-            {actions.isLoading() && (
-              <text fg={ironRainTheme.brand.primary}>
-                {`${slotLabel(actions.activeSlot())} working...`}
+          {/* ── Status bar: model (left) · stats (right) ── */}
+          <box flexDirection="row" paddingX={1} justifyContent="space-between">
+            <box flexDirection="row" gap={2}>
+              <text fg={ironRainTheme.chrome.muted}>
+                {state.slots.main.model}
               </text>
-            )}
-            <Show when={mode() === "loop-running"}>
-              <text fg={ironRainTheme.status.warning}>LOOP RUNNING</text>
-            </Show>
-            <Show when={mode() === "plan-executing"}>
-              <text fg={ironRainTheme.status.warning}>PLAN EXECUTING</text>
+              {actions.isLoading() && (
+                <text fg={ironRainTheme.brand.primary}>
+                  {`${slotLabel(actions.activeSlot())} working...`}
+                </text>
+              )}
+              <Show when={mode() === "loop-running"}>
+                <text fg={ironRainTheme.status.warning}>LOOP RUNNING</text>
+              </Show>
+              <Show when={mode() === "plan-executing"}>
+                <text fg={ironRainTheme.status.warning}>PLAN EXECUTING</text>
+              </Show>
+            </box>
+            <Show when={state.sessionStats && state.sessionStats.requestCount > 0}>
+              <text fg={ironRainTheme.chrome.dimFg}>
+                {`${formatDuration(state.sessionStats!.totalDuration)} \u00B7 ${state.sessionStats!.requestCount} req${state.sessionStats!.requestCount !== 1 ? "s" : ""} \u00B7 ${formatTokens(state.sessionStats!.totalTokens)} tokens`}
+              </text>
             </Show>
           </box>
         </box>
