@@ -61,19 +61,7 @@ a:hover { color: var(--gold-bright); text-decoration: underline; }
   text-decoration: none;
 }
 .topnav .logo:hover { text-decoration: none; color: var(--gold-bright); }
-.topnav .logo img { width: 24px; height: 24px; }
-.topnav .logo .ascii-logo {
-  font-family: 'Fira Code', monospace;
-  font-size: 0.38rem;
-  line-height: 1.15;
-  color: var(--gold);
-  margin: 0;
-  padding: 0;
-  background: none;
-  border: none;
-  white-space: pre;
-  letter-spacing: 0;
-}
+.topnav .logo img { width: 36px; height: 36px; }
 .topnav .links { display: flex; gap: 1.25rem; align-items: center; }
 .topnav .links a {
   color: var(--text-muted);
