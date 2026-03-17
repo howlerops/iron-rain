@@ -6,7 +6,7 @@ await Bun.build({
   target: "node",
   format: "esm",
   plugins: [solidPlugin],
-  external: ["@opentui/core", "@opentui/solid", "solid-js", "@howlerops/iron-rain"],
+  external: ["@opentui/core", "@opentui/solid", "solid-js", "@howlerops/iron-rain", "bun:sqlite"],
 });
 
 // Generate type declarations

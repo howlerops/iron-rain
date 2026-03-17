@@ -37,6 +37,20 @@ export class OrchestratorKernel {
     return episode;
   }
 
+  async *dispatchStreaming(task: OrchestratorTask, signal?: AbortSignal): AsyncGenerator<{ type: 'text' | 'tool_use' | 'error' | 'done'; content: string; slot: SlotName; tokens?: { input: number; output: number } }> {
+    const slotName =
+      task.targetSlot ?? (task.toolType ? this.slots.getSlotForTool(task.toolType) : 'main');
+
+    const worker = this.workers.get(slotName);
+    if (!worker) {
+      throw new Error(`No worker for slot: ${slotName}`);
+    }
+
+    for await (const chunk of worker.stream(task, signal)) {
+      yield { ...chunk, slot: slotName };
+    }
+  }
+
   async orchestrate(tasks: OrchestratorTask[]): Promise<EpisodeSummary[]> {
     const results = await Promise.allSettled(tasks.map((t) => this.dispatch(t)));
 

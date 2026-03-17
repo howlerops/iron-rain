@@ -24,8 +24,8 @@ export function ModelPicker(props: ModelPickerProps) {
       {props.options.map((opt, i) => (
         <text fg={i === props.selectedIndex ? color : ironRainTheme.chrome.fg}>
           {i === props.selectedIndex
-            ? <b>{'> '}{opt.provider}/{opt.model}</b>
-            : <>{'  '}{opt.provider}/{opt.model}</>}
+            ? <b>{`> ${opt.provider}/${opt.model}`}</b>
+            : `  ${opt.provider}/${opt.model}`}
         </text>
       ))}
     </box>

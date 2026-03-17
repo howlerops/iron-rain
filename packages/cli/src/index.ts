@@ -1,9 +1,19 @@
 #!/usr/bin/env bun
 
 import { randomBytes } from 'node:crypto';
-import { loadConfig, findConfigFile, ModelSlotManager, OrchestratorKernel, ProviderRegistry } from '@howlerops/iron-rain';
+import {
+  loadConfig,
+  findConfigFile,
+  ModelSlotManager,
+  OrchestratorKernel,
+  ProviderRegistry,
+  checkForUpdate,
+  performUpdate,
+  getVersionInfo,
+  runDiagnostics,
+} from '@howlerops/iron-rain';
 
-const VERSION = '0.1.0';
+const VERSION = '0.1.6';
 
 const SPLASH_ART = [
   '  ___                    ____       _       ',
@@ -16,7 +26,7 @@ const SPLASH_ART = [
 const TAGLINE = 'Multi-model orchestration for terminal-based coding';
 
 function isBunRuntime(): boolean {
-  return typeof (globalThis as any).Bun !== 'undefined';
+  return 'Bun' in globalThis;
 }
 
 function printSplash(): void {
@@ -32,6 +42,9 @@ function printHelp(): void {
   console.log('  iron-rain --headless "task"   Run without TUI');
   console.log('  iron-rain config              Show current config');
   console.log('  iron-rain models              List available models');
+  console.log('  iron-rain update              Check for and install updates');
+  console.log('  iron-rain doctor              Run diagnostics');
+  console.log('  iron-rain version             Show version info');
   console.log('  iron-rain --version           Show version');
   console.log('  iron-rain --help              Show this help');
   if (!isBunRuntime()) {
@@ -52,6 +65,58 @@ function printModels(): void {
       console.log(`  - ${model}`);
     }
   }
+}
+
+async function handleUpdate(): Promise<void> {
+  console.log('Checking for updates...');
+  const result = await checkForUpdate(VERSION);
+
+  if (!result.updateAvailable) {
+    console.log(`Already on latest version (${result.currentVersion}).`);
+    return;
+  }
+
+  console.log(`Update available: ${result.currentVersion} -> ${result.latestVersion}`);
+  console.log('Installing update...');
+
+  const updateResult = await performUpdate();
+  if (updateResult.success) {
+    console.log('Update installed successfully. Restart iron-rain to use the new version.');
+  } else {
+    console.error(`Update failed: ${updateResult.error}`);
+    process.exit(1);
+  }
+}
+
+async function handleDoctor(): Promise<void> {
+  console.log('Running diagnostics...\n');
+
+  let config;
+  try {
+    config = loadConfig();
+  } catch {
+    config = undefined;
+  }
+
+  const checks = await runDiagnostics(config);
+
+  for (const check of checks) {
+    const icon = check.status === 'ok' ? '\u2713' : check.status === 'warn' ? '!' : '\u2717';
+    const color = check.status === 'ok' ? '\x1b[32m' : check.status === 'warn' ? '\x1b[33m' : '\x1b[31m';
+    console.log(`${color}${icon}\x1b[0m ${check.name}: ${check.message}`);
+  }
+
+  const errors = checks.filter(c => c.status === 'error').length;
+  const warns = checks.filter(c => c.status === 'warn').length;
+  console.log(`\n${checks.length} checks: ${checks.length - errors - warns} ok, ${warns} warnings, ${errors} errors`);
+}
+
+function handleVersion(): void {
+  const info = getVersionInfo();
+  console.log(`${info.package} v${info.version}`);
+  console.log(`Bun: ${info.bun}`);
+  console.log(`OS: ${info.os}`);
+  console.log(`Config: ${info.configPath}`);
 }
 
 async function runHeadless(prompt: string): Promise<void> {
@@ -129,6 +194,21 @@ async function main(): Promise<void> {
 
   if (args[0] === 'models') {
     printModels();
+    return;
+  }
+
+  if (args[0] === 'update') {
+    await handleUpdate();
+    return;
+  }
+
+  if (args[0] === 'doctor') {
+    await handleDoctor();
+    return;
+  }
+
+  if (args[0] === 'version') {
+    handleVersion();
     return;
   }
 

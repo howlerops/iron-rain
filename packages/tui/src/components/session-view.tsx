@@ -1,29 +1,23 @@
-import { For } from 'solid-js';
+import { For, Show } from 'solid-js';
 import type { SlotName } from '@howlerops/iron-rain';
+import { SyntaxStyle } from '@opentui/core';
 import { ironRainTheme, slotColor, slotLabel } from '../theme/theme.js';
+import { LoadingIndicator } from './loading-indicator.js';
+import { SubagentGrid } from './subagent-grid.js';
+import type { SubagentActivity, ToolCallEntry } from './subagent-grid.js';
 
-// SyntaxStyle is created lazily at runtime since @opentui/core
-// doesn't export it from the package root's type declarations.
-let _syntaxStyle: any = null;
-function getSyntaxStyle(): any {
-  if (!_syntaxStyle) {
-    try {
-      // @ts-ignore — runtime import, type not available at compile time
-      const { SyntaxStyle } = require('@opentui/core/syntax-style');
-      _syntaxStyle = SyntaxStyle.create();
-    } catch {
-      _syntaxStyle = {};
-    }
-  }
-  return _syntaxStyle;
-}
+const defaultSyntaxStyle = SyntaxStyle.create();
+
+export type { ToolCallEntry };
 
 export interface SlotActivity {
   slot: SlotName;
   task: string;
-  status: 'running' | 'done' | 'error';
+  status: 'running' | 'done' | 'error' | 'interrupted';
   duration?: number;
   tokens?: number;
+  cost?: number;
+  toolCalls?: ToolCallEntry[];
 }
 
 export interface SessionStats {
@@ -31,6 +25,12 @@ export interface SessionStats {
   totalTokens: number;
   modelCount: number;
   requestCount: number;
+}
+
+export interface MessageImage {
+  path: string;
+  name: string;
+  sizeKB: number;
 }
 
 export interface Message {
@@ -42,6 +42,7 @@ export interface Message {
   activities?: SlotActivity[];
   tokens?: number;
   duration?: number;
+  images?: MessageImage[];
 }
 
 export interface SessionViewProps {
@@ -49,6 +50,8 @@ export interface SessionViewProps {
   stats?: SessionStats;
   isLoading?: boolean;
   activeSlot?: SlotName;
+  streamingContent?: string;
+  loadingStartTime?: number;
 }
 
 function formatDuration(ms: number): string {
@@ -72,103 +75,89 @@ function UserMessage(props: { message: Message }) {
         <text fg={ironRainTheme.brand.primary}><b>&gt;</b></text>
         <text fg={ironRainTheme.chrome.fg}>{props.message.content}</text>
       </box>
+      <Show when={props.message.images && props.message.images.length > 0}>
+        <box flexDirection="row" gap={1} paddingLeft={2}>
+          <For each={props.message.images}>
+            {(img) => (
+              <box
+                border
+                borderStyle="rounded"
+                borderColor={ironRainTheme.chrome.border}
+                paddingX={1}
+              >
+                <text fg={ironRainTheme.chrome.muted}>
+                  {`\uD83D\uDDBC ${img.name} (${img.sizeKB}KB)`}
+                </text>
+              </box>
+            )}
+          </For>
+        </box>
+      </Show>
     </box>
   );
 }
 
-function SlotActivityCard(props: { activity: SlotActivity }) {
-  const color = slotColor(props.activity.slot);
-  const dot = props.activity.status === 'done' ? '\u25CF'
-    : props.activity.status === 'error' ? '\u25CF'
-    : '\u25CB';
-  const dotColor = props.activity.status === 'done' ? ironRainTheme.status.success
-    : props.activity.status === 'error' ? ironRainTheme.status.error
-    : ironRainTheme.status.warning;
-
-  const truncatedTask = props.activity.task.length > 40
-    ? props.activity.task.slice(0, 37) + '...'
-    : props.activity.task;
-
-  return (
-    <box
-      flexDirection="column"
-      border
-      borderStyle="rounded"
-      borderColor={ironRainTheme.chrome.border}
-      paddingX={1}
-      marginBottom={0}
-      minWidth={30}
-      maxWidth={50}
-    >
-      <box flexDirection="row" gap={1}>
-        <text fg={dotColor}>{dot}</text>
-        <text fg={color}><b>{slotLabel(props.activity.slot)}</b></text>
-      </box>
-      <text fg={ironRainTheme.chrome.fg} truncate>{truncatedTask}</text>
-      {props.activity.status !== 'running' && (
-        <box flexDirection="row" gap={2}>
-          <text fg={props.activity.status === 'done' ? ironRainTheme.status.success : ironRainTheme.status.error}>
-            {props.activity.status === 'done' ? 'Done' : 'Error'}{props.activity.duration != null ? ` in ${formatDuration(props.activity.duration)}` : ''}
-          </text>
-          {props.activity.tokens != null && (
-            <text fg={ironRainTheme.chrome.dimFg}>{formatTokens(props.activity.tokens)} tokens</text>
-          )}
-        </box>
-      )}
-    </box>
-  );
+/** Convert SlotActivity to SubagentActivity for the grid component */
+function toSubagentActivity(a: SlotActivity): SubagentActivity {
+  return {
+    slot: a.slot,
+    task: a.task,
+    status: a.status,
+    duration: a.duration,
+    tokens: a.tokens,
+    cost: a.cost,
+    toolCalls: a.toolCalls,
+  };
 }
 
 function AssistantMessage(props: { message: Message }) {
-  const color = props.message.slot
-    ? ironRainTheme.slots[props.message.slot]
-    : ironRainTheme.brand.primary;
-
-  const hasActivities = props.message.activities && props.message.activities.length > 0;
-  const doneActivities = props.message.activities?.filter(a => a.status !== 'running') ?? [];
+  const hasActivities = () => props.message.activities && props.message.activities.length > 0;
+  const isMultiAgent = () => props.message.activities && props.message.activities.length > 1;
 
   return (
     <box flexDirection="column" paddingX={1} marginBottom={1}>
-      {/* Activity cards row */}
-      {hasActivities && (
-        <box flexDirection="column" marginBottom={1}>
+      {/* Multi-agent grid for parallel subagent display */}
+      <Show when={isMultiAgent()}>
+        <SubagentGrid
+          activities={props.message.activities!.map(toSubagentActivity)}
+          totalDuration={props.message.duration}
+        />
+      </Show>
+
+      {/* Single-agent activity (simple inline display) */}
+      <Show when={hasActivities() && !isMultiAgent()}>
+        <box flexDirection="row" gap={1} marginBottom={0}>
           <text fg={ironRainTheme.chrome.dimFg}>
-            Dispatched to {doneActivities.length} slot{doneActivities.length !== 1 ? 's' : ''}
+            {(() => {
+              const a = props.message.activities![0];
+              const label = slotLabel(a.slot);
+              const dur = a.duration != null ? ` in ${formatDuration(a.duration)}` : '';
+              const tok = a.tokens != null ? ` \u00B7 ${formatTokens(a.tokens)} tokens` : '';
+              return `${label}${dur}${tok}`;
+            })()}
           </text>
-          <box flexDirection="row" gap={1} flexWrap="wrap">
-            <For each={props.message.activities}>
-              {(activity) => <SlotActivityCard activity={activity} />}
-            </For>
-          </box>
         </box>
-      )}
+      </Show>
 
       {/* Response content with markdown */}
-      <markdown content={props.message.content} syntaxStyle={getSyntaxStyle()} />
+      <markdown content={props.message.content} syntaxStyle={defaultSyntaxStyle} />
 
-      {/* Response stats */}
-      {(props.message.tokens != null || props.message.duration != null) && (
+      {/* Response stats (for messages without activities) */}
+      <Show when={!hasActivities() && (props.message.tokens != null || props.message.duration != null)}>
         <box flexDirection="row" gap={2} marginTop={0}>
           <text fg={ironRainTheme.chrome.dimFg}>
-            {props.message.slot ? slotLabel(props.message.slot) : 'Main'}
-            {props.message.duration != null ? ` \u00B7 ${formatDuration(props.message.duration)}` : ''}
-            {props.message.tokens != null ? ` \u00B7 ${formatTokens(props.message.tokens)} tokens` : ''}
+            {`${props.message.slot ? slotLabel(props.message.slot) : 'Cortex'}${props.message.duration != null ? ` \u00B7 ${formatDuration(props.message.duration)}` : ''}${props.message.tokens != null ? ` \u00B7 ${formatTokens(props.message.tokens)} tokens` : ''}`}
           </text>
         </box>
-      )}
+      </Show>
     </box>
   );
 }
 
-function ThinkingIndicator(props: { slot?: SlotName }) {
-  const color = props.slot
-    ? ironRainTheme.slots[props.slot]
-    : ironRainTheme.brand.primary;
-
+function StreamingMessage(props: { content: string; slot?: SlotName }) {
   return (
-    <box flexDirection="row" gap={1} paddingX={1} marginBottom={1}>
-      <text fg={color}><b>{slotLabel(props.slot ?? 'main')}</b></text>
-      <text fg={ironRainTheme.chrome.muted}>is thinking...</text>
+    <box flexDirection="column" paddingX={1} marginBottom={1}>
+      <markdown content={props.content} syntaxStyle={defaultSyntaxStyle} />
     </box>
   );
 }
@@ -177,9 +166,7 @@ function CumulativeStats(props: { stats: SessionStats }) {
   return (
     <box flexDirection="row" paddingX={1} marginTop={1}>
       <text fg={ironRainTheme.chrome.dimFg}>
-        {'\u2219'} {formatDuration(props.stats.totalDuration)}
-        {' \u00B7 '}{props.stats.requestCount} request{props.stats.requestCount !== 1 ? 's' : ''}
-        {' \u00B7 '}{formatTokens(props.stats.totalTokens)} tokens
+        {`\u2219 ${formatDuration(props.stats.totalDuration)} \u00B7 ${props.stats.requestCount} request${props.stats.requestCount !== 1 ? 's' : ''} \u00B7 ${formatTokens(props.stats.totalTokens)} tokens`}
       </text>
     </box>
   );
@@ -195,7 +182,18 @@ export function SessionView(props: SessionViewProps) {
         }
       </For>
 
-      {props.isLoading && <ThinkingIndicator slot={props.activeSlot} />}
+      {/* Show streaming content as it arrives */}
+      <Show when={props.isLoading && props.streamingContent}>
+        <StreamingMessage content={props.streamingContent!} slot={props.activeSlot} />
+      </Show>
+
+      {/* Animated loading indicator */}
+      <Show when={props.isLoading}>
+        <LoadingIndicator
+          slot={props.activeSlot ?? 'main'}
+          startTime={props.loadingStartTime ?? Date.now()}
+        />
+      </Show>
 
       {props.stats && props.stats.requestCount > 0 && (
         <CumulativeStats stats={props.stats} />

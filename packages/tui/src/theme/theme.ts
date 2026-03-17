@@ -35,9 +35,9 @@ export function slotColor(slot: 'main' | 'explore' | 'execute'): string {
 
 export function slotLabel(slot: 'main' | 'explore' | 'execute'): string {
   const labels = {
-    main: 'Main',
-    explore: 'Explore',
-    execute: 'Execute',
+    main: 'Cortex',
+    explore: 'Scout',
+    execute: 'Forge',
   };
   return labels[slot];
 }

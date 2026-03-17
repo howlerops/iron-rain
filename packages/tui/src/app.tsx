@@ -1,36 +1,100 @@
 import { createSignal, Switch, Match } from 'solid-js';
 import { useKeyboard, useRenderer } from '@opentui/solid';
 import type { IronRainConfig } from '@howlerops/iron-rain';
-import { loadConfig } from '@howlerops/iron-rain';
+import { loadConfig, checkForUpdate } from '@howlerops/iron-rain';
 import { SlateProvider, useSlate } from './context/slate-context.js';
-import { SplashScreen } from './components/splash-screen.js';
 import { SessionRoute } from './routes/session.js';
 import { OnboardingWizard } from './components/onboarding/index.js';
+import { UpdateBanner } from './components/update-banner.js';
 
 export interface AppProps {
   config?: IronRainConfig;
   version?: string;
 }
 
-type View = 'splash' | 'onboarding' | 'session';
+type View = 'onboarding' | 'session';
 
-function AppContent(props: { initialView: View; version: string }) {
+/**
+ * Check provider configs for issues (missing API keys, unreachable endpoints).
+ * Returns a list of warning messages.
+ */
+function checkProviderHealth(config?: IronRainConfig): string[] {
+  const warnings: string[] = [];
+  if (!config?.slots) return warnings;
+
+  const slots = config.slots;
+  const providers = config.providers ?? {};
+
+  for (const [slotName, slotConfig] of Object.entries(slots)) {
+    if (!slotConfig) continue;
+    const { provider, apiKey } = slotConfig;
+
+    // Check if the provider needs an API key
+    const needsKey = ['anthropic', 'openai', 'gemini'].includes(provider);
+    if (!needsKey) continue;
+
+    // Resolve key: check slot-level key, provider-level key, or env var
+    const resolvedKey = apiKey
+      ?? providers[provider]?.apiKey
+      ?? undefined;
+
+    if (!resolvedKey) {
+      warnings.push(`**${slotName}** slot: No API key for ${provider}. Run /settings to configure.`);
+      continue;
+    }
+
+    // If key is an env: reference, check the env var exists
+    if (resolvedKey.startsWith('env:')) {
+      const envVar = resolvedKey.slice(4);
+      if (!process.env[envVar]) {
+        warnings.push(`**${slotName}** slot: Environment variable \`${envVar}\` is not set.`);
+      }
+    }
+  }
+
+  return warnings;
+}
+
+function AppContent(props: { initialView: View; version: string; config?: IronRainConfig }) {
   const [, actions] = useSlate();
   const renderer = useRenderer();
   const [view, setView] = createSignal<View>(props.initialView);
+  const [updateInfo, setUpdateInfo] = createSignal<{ current: string; latest: string } | null>(null);
 
   function quit() {
     renderer?.destroy();
     process.exit(0);
   }
 
-  // Auto-dismiss splash after 2 seconds
-  if (props.initialView === 'splash') {
-    setTimeout(() => setView('session'), 2000);
+  // Run provider health check on session start
+  if (props.initialView === 'session') {
+    setTimeout(() => {
+      const warnings = checkProviderHealth(props.config);
+      if (warnings.length > 0) {
+        actions.addMessage({
+          id: `health-${Date.now()}`,
+          role: 'assistant',
+          content: `**Provider Issues Detected**\n\n${warnings.join('\n')}\n\nType **/settings** to fix provider configuration.`,
+          slot: 'main',
+          timestamp: Date.now(),
+        });
+      }
+    }, 100);
+
+    // Background update check (non-blocking, 5s timeout)
+    const autoCheck = props.config?.updates?.autoCheck !== false;
+    if (autoCheck) {
+      checkForUpdate(props.version).then((result) => {
+        if (result.updateAvailable) {
+          setUpdateInfo({ current: result.currentVersion, latest: result.latestVersion });
+        }
+      }).catch(() => {
+        // Silently fail — update check is best-effort
+      });
+    }
   }
 
   function handleOnboardingComplete(_configPath: string) {
-    // Load the freshly written config and update slots in context
     const newConfig = loadConfig();
     if (newConfig.slots) {
       actions.updateSlots(newConfig.slots);
@@ -42,13 +106,10 @@ function AppContent(props: { initialView: View; version: string }) {
     quit();
   }
 
-  // Global Ctrl+C handler + press any key to skip splash
+  // Global Ctrl+C handler
   useKeyboard((e) => {
     if (e.ctrl && e.name === 'c') {
       quit();
-    }
-    if (view() === 'splash') {
-      setView('session');
     }
   });
 
@@ -61,11 +122,16 @@ function AppContent(props: { initialView: View; version: string }) {
             onQuit={handleOnboardingQuit}
           />
         </Match>
-        <Match when={view() === 'splash'}>
-          <SplashScreen version={props.version} />
-        </Match>
         <Match when={view() === 'session'}>
           <SessionRoute version={props.version} onQuit={quit} />
+          {updateInfo() && (
+            <UpdateBanner
+              currentVersion={updateInfo()!.current}
+              latestVersion={updateInfo()!.latest}
+              visible={true}
+              onDismiss={() => setUpdateInfo(null)}
+            />
+          )}
         </Match>
       </Switch>
     </box>
@@ -73,16 +139,13 @@ function AppContent(props: { initialView: View; version: string }) {
 }
 
 export function App(props: AppProps) {
-  // Only skip onboarding if we have a config with actual slot assignments.
-  // findConfigFile() walks up directories and may find unrelated config files,
-  // so we check for real slot data, not just file existence.
   const hasValidConfig = !!(props.config?.slots && Object.keys(props.config.slots).length > 0);
-  const initialView: View = hasValidConfig ? 'splash' : 'onboarding';
+  const initialView: View = hasValidConfig ? 'session' : 'onboarding';
   const version = props.version ?? '0.1.0';
 
   return (
     <SlateProvider config={props.config}>
-      <AppContent initialView={initialView} version={version} />
+      <AppContent initialView={initialView} version={version} config={props.config} />
     </SlateProvider>
   );
 }

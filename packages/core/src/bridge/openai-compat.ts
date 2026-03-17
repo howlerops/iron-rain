@@ -1,5 +1,7 @@
 import type { CLIBridge, BridgeOptions, BridgeResult, BridgeChunk } from './types.js';
+import { getTextContent } from './types.js';
 import { resolveEnvValue } from '../config/schema.js';
+import { openaiReasoningEffort } from './thinking.js';
 
 export class OpenAICompatBridge implements CLIBridge {
   readonly name: string;
@@ -40,10 +42,15 @@ export class OpenAICompatBridge implements CLIBridge {
           ...(options?.systemPrompt
             ? [{ role: 'system' as const, content: options.systemPrompt }]
             : []),
+          ...(options?.conversationHistory?.map(m => ({ role: m.role as 'user' | 'assistant' | 'system', content: getTextContent(m.content) })) ?? []),
           { role: 'user' as const, content: prompt },
         ],
         max_tokens: options?.maxTokens ?? 4096,
         temperature: options?.temperature ?? 0.7,
+        ...(options?.thinkingLevel ? (() => {
+          const effort = openaiReasoningEffort(options.thinkingLevel!);
+          return effort ? { reasoning_effort: effort } : {};
+        })() : {}),
       }),
       signal: options?.signal,
     });
@@ -82,11 +89,17 @@ export class OpenAICompatBridge implements CLIBridge {
           ...(options?.systemPrompt
             ? [{ role: 'system' as const, content: options.systemPrompt }]
             : []),
+          ...(options?.conversationHistory?.map(m => ({ role: m.role as 'user' | 'assistant' | 'system', content: getTextContent(m.content) })) ?? []),
           { role: 'user' as const, content: prompt },
         ],
         max_tokens: options?.maxTokens ?? 4096,
         temperature: options?.temperature ?? 0.7,
         stream: true,
+        stream_options: { include_usage: true },
+        ...(options?.thinkingLevel ? (() => {
+          const effort = openaiReasoningEffort(options.thinkingLevel!);
+          return effort ? { reasoning_effort: effort } : {};
+        })() : {}),
       }),
       signal: options?.signal,
     });
@@ -104,6 +117,8 @@ export class OpenAICompatBridge implements CLIBridge {
 
     const decoder = new TextDecoder();
     let buffer = '';
+    let inputTokens = 0;
+    let outputTokens = 0;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -117,14 +132,19 @@ export class OpenAICompatBridge implements CLIBridge {
         if (!line.startsWith('data: ')) continue;
         const data = line.slice(6);
         if (data === '[DONE]') {
-          yield { type: 'done', content: '' };
+          yield { type: 'done', content: '', tokens: { input: inputTokens, output: outputTokens } };
           return;
         }
         try {
           const parsed = JSON.parse(data) as {
             choices: Array<{ delta: { content?: string } }>;
+            usage?: { prompt_tokens: number; completion_tokens: number };
           };
-          const content = parsed.choices[0]?.delta?.content;
+          if (parsed.usage) {
+            inputTokens = parsed.usage.prompt_tokens;
+            outputTokens = parsed.usage.completion_tokens;
+          }
+          const content = parsed.choices?.[0]?.delta?.content;
           if (content) {
             yield { type: 'text', content };
           }
@@ -134,6 +154,6 @@ export class OpenAICompatBridge implements CLIBridge {
       }
     }
 
-    yield { type: 'done', content: '' };
+    yield { type: 'done', content: '', tokens: { input: inputTokens, output: outputTokens } };
   }
 }

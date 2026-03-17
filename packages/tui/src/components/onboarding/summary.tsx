@@ -43,7 +43,7 @@ export function Summary(props: SummaryProps) {
                 </text>
                 {cred().apiKey && (
                   <text fg={ironRainTheme.chrome.muted}>
-                    key: {cred().apiKey!.startsWith('env:') ? cred().apiKey! : '***'}
+                    {`key: ${cred().apiKey!.startsWith('env:') ? cred().apiKey! : '***'}`}
                   </text>
                 )}
               </box>
@@ -67,7 +67,7 @@ export function Summary(props: SummaryProps) {
                   <b>{slotLabel(slot).padEnd(8)}</b>
                 </text>
                 <text fg={ironRainTheme.chrome.fg}>
-                  {config().provider}/{config().model}
+                  {`${config().provider}/${config().model}`}
                 </text>
               </box>
             );
@@ -78,7 +78,7 @@ export function Summary(props: SummaryProps) {
       <box marginY={1} />
 
       <text fg={ironRainTheme.chrome.muted}>
-        Config will be saved to: {props.configPath}
+        {`Config will be saved to: ${props.configPath}`}
       </text>
 
       <box marginY={1} />

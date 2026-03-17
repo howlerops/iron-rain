@@ -7,6 +7,8 @@ export interface OrchestratorTask {
   prompt: string;
   toolType?: ToolType;
   targetSlot?: SlotName;
+  systemPrompt?: string;
+  history?: Array<{ role: 'user' | 'assistant'; content: string }>;
   metadata?: Record<string, unknown>;
 }
 

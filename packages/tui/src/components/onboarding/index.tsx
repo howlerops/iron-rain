@@ -1,7 +1,7 @@
-import { createSignal } from 'solid-js';
+import { createSignal, onMount } from 'solid-js';
 import { createStore } from 'solid-js/store';
 import type { SlotName, SlotConfig } from '@howlerops/iron-rain';
-import { SLOT_NAMES, writeConfig } from '@howlerops/iron-rain';
+import { SLOT_NAMES, writeConfig, ModelRegistry } from '@howlerops/iron-rain';
 import { useKeyboard } from '@opentui/solid';
 import { ironRainTheme } from '../../theme/theme.js';
 import type { OnboardingStep, OnboardingState, ProviderChoice } from './types.js';
@@ -35,6 +35,9 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
     slots: defaultSlots(),
   });
 
+  const [dynamicModels, setDynamicModels] = createSignal<Record<string, string[]>>({});
+  const registry = new ModelRegistry(PROVIDER_MODELS);
+
   // Provider select state
   const [providerCursor, setProviderCursor] = createSignal(0);
 
@@ -55,8 +58,9 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
 
   const modelOptions = () => {
     const options: Array<{ provider: string; model: string }> = [];
+    const dynamic = dynamicModels();
     for (const p of selectedProviders()) {
-      const models = PROVIDER_MODELS[p.id] ?? [];
+      const models = dynamic[p.id] ?? PROVIDER_MODELS[p.id] ?? [];
       for (const m of models) {
         options.push({ provider: p.id, model: m });
       }
@@ -78,6 +82,24 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
     if (step === 'slots') {
       setActiveSlotIndex(0);
       setModelCursor(0);
+      // Fetch dynamic models for selected providers
+      const fetchable = ['ollama', 'openai', 'gemini'];
+      const selected = selectedProviders().filter((p) => fetchable.includes(p.id));
+      if (selected.length > 0) {
+        Promise.all(
+          selected.map(async (p) => {
+            const creds = state.credentials[p.id];
+            const models = await registry.getModels(p.id, creds);
+            return [p.id, models] as const;
+          }),
+        ).then((results) => {
+          const fetched: Record<string, string[]> = {};
+          for (const [pid, models] of results) {
+            if (models.length > 0) fetched[pid] = models;
+          }
+          setDynamicModels(fetched);
+        });
+      }
     }
   }
 
@@ -294,7 +316,7 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
               >
                 {isCurrent()
                   ? <b>{isPast() ? '✓' : `${i + 1}`}</b>
-                  : <>{isPast() ? '✓' : `${i + 1}`}</>}
+                  : (isPast() ? '✓' : `${i + 1}`)}
               </text>
               <text fg={ironRainTheme.chrome.dimFg}>
                 {i < STEPS.length - 1 ? ' → ' : ''}

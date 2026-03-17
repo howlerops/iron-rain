@@ -1,4 +1,5 @@
 import type { CLIBridge, BridgeOptions, BridgeResult, BridgeChunk } from './types.js';
+import { getTextContent } from './types.js';
 
 export class OllamaBridge implements CLIBridge {
   readonly name = 'ollama';
@@ -32,6 +33,7 @@ export class OllamaBridge implements CLIBridge {
           ...(options?.systemPrompt
             ? [{ role: 'system' as const, content: options.systemPrompt }]
             : []),
+          ...(options?.conversationHistory?.map(m => ({ role: m.role as string, content: getTextContent(m.content) })) ?? []),
           { role: 'user' as const, content: prompt },
         ],
         stream: false,
@@ -75,6 +77,7 @@ export class OllamaBridge implements CLIBridge {
           ...(options?.systemPrompt
             ? [{ role: 'system' as const, content: options.systemPrompt }]
             : []),
+          ...(options?.conversationHistory?.map(m => ({ role: m.role as string, content: getTextContent(m.content) })) ?? []),
           { role: 'user' as const, content: prompt },
         ],
         stream: true,
@@ -114,12 +117,21 @@ export class OllamaBridge implements CLIBridge {
           const parsed = JSON.parse(line) as {
             message: { content: string };
             done: boolean;
+            prompt_eval_count?: number;
+            eval_count?: number;
           };
           if (parsed.message?.content) {
             yield { type: 'text', content: parsed.message.content };
           }
           if (parsed.done) {
-            yield { type: 'done', content: '' };
+            yield {
+              type: 'done',
+              content: '',
+              tokens: {
+                input: parsed.prompt_eval_count ?? 0,
+                output: parsed.eval_count ?? 0,
+              },
+            };
             return;
           }
         } catch {

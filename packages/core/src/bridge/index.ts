@@ -1,4 +1,6 @@
-export type { CLIBridge, BridgeOptions, BridgeResult, BridgeChunk } from './types.js';
+export type { CLIBridge, BridgeOptions, BridgeResult, BridgeChunk, ChatMessage } from './types.js';
+export { BridgeError, CircuitBreaker } from './errors.js';
+export type { RetryConfig } from './errors.js';
 export { OpenAICompatBridge } from './openai-compat.js';
 export { OllamaBridge } from './ollama.js';
 export { AnthropicBridge } from './anthropic.js';

@@ -48,7 +48,7 @@ export function Credentials(props: CredentialsProps) {
                   </text>
                   {provider.requiresKey && hasEnvKey() && (
                     <text fg={ironRainTheme.status.success}>
-                      (found ${provider.keyEnvVar} in env)
+                      {`(found ${provider.keyEnvVar} in env)`}
                     </text>
                   )}
                 </box>
@@ -57,7 +57,7 @@ export function Credentials(props: CredentialsProps) {
                     <text fg={ironRainTheme.chrome.muted}>API Key:</text>
                     {isActive() && props.editing ? (
                       <text fg={ironRainTheme.brand.primary}>
-                        {props.editValue}{'_'}
+                        {`${props.editValue}_`}
                       </text>
                     ) : (
                       <text fg={cred().apiKey ? ironRainTheme.status.success : ironRainTheme.chrome.dimFg}>

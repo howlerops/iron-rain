@@ -1,5 +1,7 @@
 import type { CLIBridge, BridgeOptions, BridgeResult, BridgeChunk } from './types.js';
+import { getTextContent } from './types.js';
 import { resolveEnvValue } from '../config/schema.js';
+import { geminiThinkingBudget } from './thinking.js';
 
 export class GeminiBridge implements CLIBridge {
   readonly name = 'gemini';
@@ -24,6 +26,11 @@ export class GeminiBridge implements CLIBridge {
       contents.push({ role: 'user', parts: [{ text: options.systemPrompt }] });
       contents.push({ role: 'model', parts: [{ text: 'Understood.' }] });
     }
+    if (options?.conversationHistory) {
+      for (const m of options.conversationHistory) {
+        contents.push({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: getTextContent(m.content) }] });
+      }
+    }
     contents.push({ role: 'user', parts: [{ text: prompt }] });
 
     const res = await fetch(url, {
@@ -34,6 +41,10 @@ export class GeminiBridge implements CLIBridge {
         generationConfig: {
           maxOutputTokens: options?.maxTokens ?? 4096,
           temperature: options?.temperature ?? 0.7,
+          ...(options?.thinkingLevel ? (() => {
+            const budget = geminiThinkingBudget(options.thinkingLevel!);
+            return budget != null ? { thinkingConfig: { thinkingBudget: budget } } : {};
+          })() : {}),
         },
       }),
       signal: options?.signal,
@@ -77,6 +88,11 @@ export class GeminiBridge implements CLIBridge {
       contents.push({ role: 'user', parts: [{ text: options.systemPrompt }] });
       contents.push({ role: 'model', parts: [{ text: 'Understood.' }] });
     }
+    if (options?.conversationHistory) {
+      for (const m of options.conversationHistory) {
+        contents.push({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: getTextContent(m.content) }] });
+      }
+    }
     contents.push({ role: 'user', parts: [{ text: prompt }] });
 
     const res = await fetch(url, {
@@ -87,6 +103,10 @@ export class GeminiBridge implements CLIBridge {
         generationConfig: {
           maxOutputTokens: options?.maxTokens ?? 4096,
           temperature: options?.temperature ?? 0.7,
+          ...(options?.thinkingLevel ? (() => {
+            const budget = geminiThinkingBudget(options.thinkingLevel!);
+            return budget != null ? { thinkingConfig: { thinkingBudget: budget } } : {};
+          })() : {}),
         },
       }),
       signal: options?.signal,
@@ -105,6 +125,8 @@ export class GeminiBridge implements CLIBridge {
 
     const decoder = new TextDecoder();
     let buffer = '';
+    let inputTokens = 0;
+    let outputTokens = 0;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -121,7 +143,15 @@ export class GeminiBridge implements CLIBridge {
             candidates: Array<{
               content: { parts: Array<{ text: string }> };
             }>;
+            usageMetadata?: {
+              promptTokenCount: number;
+              candidatesTokenCount: number;
+            };
           };
+          if (parsed.usageMetadata) {
+            inputTokens = parsed.usageMetadata.promptTokenCount;
+            outputTokens = parsed.usageMetadata.candidatesTokenCount;
+          }
           const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
           if (text) {
             yield { type: 'text', content: text };
@@ -132,6 +162,6 @@ export class GeminiBridge implements CLIBridge {
       }
     }
 
-    yield { type: 'done', content: '' };
+    yield { type: 'done', content: '', tokens: { input: inputTokens, output: outputTokens } };
   }
 }

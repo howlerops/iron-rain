@@ -51,10 +51,10 @@ export function SlotAssignment(props: SlotAssignmentProps) {
                 borderColor={isActive() ? slotColor(slot) : ironRainTheme.chrome.border}
                 paddingX={1} paddingY={0} minWidth={25}>
                 <text fg={slotColor(slot)}>
-                  <b>{isActive() ? '> ' : '  '}{slotLabel(slot)}</b>
+                  <b>{`${isActive() ? '> ' : '  '}${slotLabel(slot)}`}</b>
                 </text>
                 <text fg={ironRainTheme.chrome.muted}>
-                  {config().provider}/{config().model}
+                  {`${config().provider}/${config().model}`}
                 </text>
               </box>
             );
@@ -85,7 +85,7 @@ export function SlotAssignment(props: SlotAssignmentProps) {
                   {isSelected() ? '>' : ' '}
                 </text>
                 <text fg={isSelected() ? ironRainTheme.chrome.fg : ironRainTheme.chrome.muted}>
-                  {isSelected() ? <b>{option.provider}/{option.model}</b> : <>{option.provider}/{option.model}</>}
+                  {isSelected() ? <b>{`${option.provider}/${option.model}`}</b> : `${option.provider}/${option.model}`}
                 </text>
                 {isCurrent() && (
                   <text fg={ironRainTheme.status.success}>*</text>

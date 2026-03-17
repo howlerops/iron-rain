@@ -1,16 +1,39 @@
 {
   "slots": {
-    "main": { "provider": "anthropic", "model": "claude-sonnet-4-20250514" },
-    "explore": { "provider": "anthropic", "model": "claude-sonnet-4-20250514" },
-    "execute": { "provider": "anthropic", "model": "claude-sonnet-4-20250514" }
+    "main": {
+      "provider": "claude-code",
+      "model": "claude-opus-4-6"
+    },
+    "explore": {
+      "provider": "claude-code",
+      "model": "claude-sonnet-4-20250514"
+    },
+    "execute": {
+      "provider": "claude-code",
+      "model": "claude-opus-4-6"
+    }
   },
   "providers": {
-    "anthropic": { "apiKey": "env:ANTHROPIC_API_KEY" },
-    "openai": { "apiKey": "env:OPENAI_API_KEY" },
-    "ollama": { "apiBase": "http://localhost:11434" }
+    "anthropic": {
+      "apiKey": "env:ANTHROPIC_API_KEY"
+    },
+    "openai": {
+      "apiKey": "env:OPENAI_API_KEY"
+    },
+    "ollama": {
+      "apiBase": "http://localhost:11434"
+    },
+    "claude-code": {}
   },
-  "permission": { "*": "allow", "bash": "ask", "edit": "ask" },
-  "agent": "build",
-  "lcm": { "enabled": true, "episodes": { "maxEpisodeTokens": 4000 } },
-  "theme": "default"
+  "permission": {
+    "*": "allow",
+    "bash": "ask",
+    "edit": "ask"
+  },
+  "lcm": {
+    "enabled": true,
+    "episodes": {
+      "maxEpisodeTokens": 4000
+    }
+  }
 }

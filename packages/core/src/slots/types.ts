@@ -1,5 +1,7 @@
 export type SlotName = 'main' | 'explore' | 'execute';
 
+export type ThinkingLevel = 'off' | 'low' | 'medium' | 'high';
+
 export type ToolType =
   | 'edit'
   | 'write'
@@ -17,6 +19,9 @@ export interface SlotConfig {
   model: string;
   apiKey?: string;
   apiBase?: string;
+  thinkingLevel?: ThinkingLevel;
+  systemPrompt?: string;
+  fallback?: SlotConfig;
 }
 
 export type SlotAssignment = Record<SlotName, SlotConfig>;
