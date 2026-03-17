@@ -1,7 +1,7 @@
+export type { VoiceConfig } from "./voice.js";
 export {
+  DEFAULT_VOICE_CONFIG,
   isVoiceAvailable,
   recordAudio,
   transcribeAudio,
-  DEFAULT_VOICE_CONFIG,
 } from "./voice.js";
-export type { VoiceConfig } from "./voice.js";

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { loadIgnoreRules } from "../../context/ignore.js";
 
 const TMP = join(tmpdir(), "iron-rain-test-ignore-" + Date.now());
@@ -29,7 +29,10 @@ describe("loadIgnoreRules", () => {
   it("loads .ironrainignore patterns", () => {
     setup();
     try {
-      writeFileSync(join(TMP, ".ironrainignore"), "node_modules\n*.log\nbuild/");
+      writeFileSync(
+        join(TMP, ".ironrainignore"),
+        "node_modules\n*.log\nbuild/",
+      );
       const filter = loadIgnoreRules(TMP);
       expect(filter.isIgnored("node_modules/foo")).toBe(true);
       expect(filter.isIgnored("error.log")).toBe(true);
@@ -56,7 +59,10 @@ describe("loadIgnoreRules", () => {
   it("handles comment lines and blank lines", () => {
     setup();
     try {
-      writeFileSync(join(TMP, ".ironrainignore"), "# comment\n\nnode_modules\n# another comment");
+      writeFileSync(
+        join(TMP, ".ironrainignore"),
+        "# comment\n\nnode_modules\n# another comment",
+      );
       const filter = loadIgnoreRules(TMP);
       expect(filter.isIgnored("node_modules/pkg")).toBe(true);
       expect(filter.isIgnored("src/file.ts")).toBe(false);

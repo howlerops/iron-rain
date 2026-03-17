@@ -30,7 +30,9 @@ export async function loadPlugins(
   for (const file of files) {
     try {
       const pluginPath = join(pluginDir, file);
-      const mod = (await import(pluginPath)) as { default?: PluginModule } & Partial<PluginModule>;
+      const mod = (await import(pluginPath)) as {
+        default?: PluginModule;
+      } & Partial<PluginModule>;
       const plugin = mod.default ?? mod;
 
       if (!plugin.name) {
@@ -69,7 +71,8 @@ export function createShellHooks(
   hooks: Record<string, string>,
   emitter: HookEmitter,
 ): void {
-  const { execSync } = require("node:child_process") as typeof import("node:child_process");
+  const { execSync } =
+    require("node:child_process") as typeof import("node:child_process");
 
   for (const [event, command] of Object.entries(hooks)) {
     emitter.on(event as HookEvent, async (data) => {

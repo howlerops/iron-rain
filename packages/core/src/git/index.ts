@@ -1,3 +1,5 @@
+export type { Checkpoint } from "./checkpoint.js";
+export { CheckpointManager } from "./checkpoint.js";
 export {
   autoCommit,
   commitIfChanged,
@@ -7,5 +9,3 @@ export {
   stashCreate,
   stashPop,
 } from "./utils.js";
-export { CheckpointManager } from "./checkpoint.js";
-export type { Checkpoint } from "./checkpoint.js";

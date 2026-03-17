@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { buildSystemPrompt, buildEpisodeContext, structuredPrompt } from "../../orchestrator/prompts.js";
+import {
+  buildEpisodeContext,
+  buildSystemPrompt,
+  structuredPrompt,
+} from "../../orchestrator/prompts.js";
 
 describe("buildSystemPrompt", () => {
   it("includes slot role", () => {

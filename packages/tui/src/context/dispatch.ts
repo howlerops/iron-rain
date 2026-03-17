@@ -19,7 +19,11 @@ import {
   ModelSlotManager,
   OrchestratorKernel,
 } from "@howlerops/iron-rain";
-import type { Message, SlotActivity, ToolCallEntry } from "../components/session-view.js";
+import type {
+  Message,
+  SlotActivity,
+  ToolCallEntry,
+} from "../components/session-view.js";
 
 export interface DispatchCallbacks {
   setIsLoading: (v: boolean) => void;
@@ -104,7 +108,9 @@ export class DispatchController {
     callbacks.setStreamingContent("");
     callbacks.setStreamingThinking("");
     callbacks.setStreamingToolCalls([]);
-    callbacks.setStreamingTask(prompt.length > 60 ? prompt.slice(0, 57) + "..." : prompt);
+    callbacks.setStreamingTask(
+      prompt.length > 60 ? prompt.slice(0, 57) + "..." : prompt,
+    );
     callbacks.setLoadingStartTime(Date.now());
 
     const start = Date.now();
@@ -143,21 +149,35 @@ export class DispatchController {
           callbacks.setStreamingThinking(thinkingAccumulated);
         } else if (chunk.type === "text") {
           // Mark thinking complete on first text chunk
-          if (thinkingStarted && thinkingIdx >= 0 && liveToolCalls[thinkingIdx]?.status === "running") {
-            liveToolCalls[thinkingIdx] = { name: "Thinking (complete)", status: "done" };
+          if (
+            thinkingStarted &&
+            thinkingIdx >= 0 &&
+            liveToolCalls[thinkingIdx]?.status === "running"
+          ) {
+            liveToolCalls[thinkingIdx] = {
+              name: "Thinking (complete)",
+              status: "done",
+            };
             callbacks.setStreamingToolCalls([...liveToolCalls]);
           }
           accumulated += chunk.content;
           callbacks.setStreamingContent(accumulated);
         } else if (chunk.type === "tool_use" && chunk.toolCall) {
           if (chunk.toolCall.status === "start") {
-            liveToolCalls.push({ name: chunk.toolCall.name, status: "running" });
+            liveToolCalls.push({
+              name: chunk.toolCall.name,
+              status: "running",
+            });
           } else if (chunk.toolCall.status === "end") {
             const idx = liveToolCalls.findIndex(
-              (tc) => tc.name === chunk.toolCall!.name && tc.status === "running",
+              (tc) =>
+                tc.name === chunk.toolCall!.name && tc.status === "running",
             );
             if (idx >= 0) {
-              liveToolCalls[idx] = { name: chunk.toolCall.name, status: "done" };
+              liveToolCalls[idx] = {
+                name: chunk.toolCall.name,
+                status: "done",
+              };
             }
           }
           callbacks.setStreamingToolCalls([...liveToolCalls]);
@@ -170,10 +190,15 @@ export class DispatchController {
       }
 
       const duration = Date.now() - start;
-      const toolCallCount = liveToolCalls.filter((tc) => tc.name !== "System prompt loaded" && !tc.name.startsWith("Thinking")).length;
-      const finalContent = accumulated || (toolCallCount > 0
-        ? `*Completed ${toolCallCount} tool call${toolCallCount !== 1 ? "s" : ""} with no text response.*`
-        : "(empty response)");
+      const toolCallCount = liveToolCalls.filter(
+        (tc) =>
+          tc.name !== "System prompt loaded" && !tc.name.startsWith("Thinking"),
+      ).length;
+      const finalContent =
+        accumulated ||
+        (toolCallCount > 0
+          ? `*Completed ${toolCallCount} tool call${toolCallCount !== 1 ? "s" : ""} with no text response.*`
+          : "(empty response)");
       const totalMsgTokens = tokenUsage
         ? tokenUsage.input + tokenUsage.output
         : 0;

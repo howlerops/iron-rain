@@ -84,6 +84,12 @@ export abstract class BaseAPIBridge implements CLIBridge {
     }
   }
 
-  abstract execute(prompt: string, options?: BridgeOptions): Promise<BridgeResult>;
-  abstract stream(prompt: string, options?: BridgeOptions): AsyncIterable<BridgeChunk>;
+  abstract execute(
+    prompt: string,
+    options?: BridgeOptions,
+  ): Promise<BridgeResult>;
+  abstract stream(
+    prompt: string,
+    options?: BridgeOptions,
+  ): AsyncIterable<BridgeChunk>;
 }

@@ -23,7 +23,11 @@ import {
 } from "@howlerops/iron-rain";
 import { createContext, createSignal, type JSX, useContext } from "solid-js";
 import { createStore } from "solid-js/store";
-import type { Message, SessionStats, ToolCallEntry } from "../components/session-view.js";
+import type {
+  Message,
+  SessionStats,
+  ToolCallEntry,
+} from "../components/session-view.js";
 import type { SlashCommand } from "../components/slash-menu.js";
 import {
   NullSessionDB,
@@ -138,7 +142,9 @@ export function SlateProvider(props: {
   const [streamingContent, setStreamingContent] = createSignal("");
   const [streamingThinking, setStreamingThinking] = createSignal("");
   const [streamingSystemPrompt, setStreamingSystemPrompt] = createSignal("");
-  const [streamingToolCalls, setStreamingToolCalls] = createSignal<ToolCallEntry[]>([]);
+  const [streamingToolCalls, setStreamingToolCalls] = createSignal<
+    ToolCallEntry[]
+  >([]);
   const [streamingTask, setStreamingTask] = createSignal("");
   const [loadingStartTime, setLoadingStartTime] = createSignal(0);
 
@@ -170,16 +176,21 @@ export function SlateProvider(props: {
   const cwd = process.cwd();
   const rules = props.config?.rules?.disabled ? [] : loadProjectRules(cwd);
   const ignoreFilter = loadIgnoreRules(cwd);
-  const repoMap = props.config?.repoMap?.enabled !== false
-    ? generateRepoMap(cwd, ignoreFilter, props.config?.repoMap?.maxTokens)
-    : "";
+  const repoMap =
+    props.config?.repoMap?.enabled !== false
+      ? generateRepoMap(cwd, ignoreFilter, props.config?.repoMap?.maxTokens)
+      : "";
 
   // Initialize checkpoint manager (Phase 1 T-01)
   const checkpointMgr = new CheckpointManager();
 
   // Initialize cost registry (Phase 2 I-04)
   const costReg = new CostRegistry();
-  costReg.loadFromConfig(props.config?.costs as Record<string, { input: number; output: number }> | undefined);
+  costReg.loadFromConfig(
+    props.config?.costs as
+      | Record<string, { input: number; output: number }>
+      | undefined,
+  );
 
   // Initialize hook emitter (Phase 2 I-05)
   const hooks = new HookEmitter();

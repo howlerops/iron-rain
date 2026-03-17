@@ -1,4 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import type { LoopState } from "./types.js";
 
@@ -17,7 +24,11 @@ export class LoopStorage {
   save(id: string, state: LoopState): void {
     const dir = join(this.baseDir, id);
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "loop.json"), JSON.stringify(state, null, 2), "utf-8");
+    writeFileSync(
+      join(dir, "loop.json"),
+      JSON.stringify(state, null, 2),
+      "utf-8",
+    );
   }
 
   load(id: string): LoopState | null {
@@ -31,7 +42,12 @@ export class LoopStorage {
     }
   }
 
-  list(): Array<{ id: string; want: string; iterations: number; status: string }> {
+  list(): Array<{
+    id: string;
+    want: string;
+    iterations: number;
+    status: string;
+  }> {
     if (!existsSync(this.baseDir)) return [];
 
     const dirs = readdirSync(this.baseDir, { withFileTypes: true })

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { buildReviewPrompt, parseReviewResponse } from "../../review/reviewer.js";
+import {
+  buildReviewPrompt,
+  parseReviewResponse,
+} from "../../review/reviewer.js";
 
 describe("buildReviewPrompt", () => {
   it("returns no-changes message for empty diff", () => {

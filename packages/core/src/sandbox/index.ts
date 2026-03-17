@@ -1,14 +1,23 @@
 import { DockerExecutor } from "./docker.js";
 import { GvisorExecutor } from "./gvisor.js";
 import { SeatbeltExecutor } from "./seatbelt.js";
-import type { SandboxBackend, SandboxConfig, SandboxExecutor } from "./types.js";
+import type {
+  SandboxBackend,
+  SandboxConfig,
+  SandboxExecutor,
+} from "./types.js";
 
-export type { SandboxBackend, SandboxConfig, SandboxExecutor, SandboxResult } from "./types.js";
-export { DEFAULT_SANDBOX_CONFIG } from "./types.js";
-export { SeatbeltExecutor } from "./seatbelt.js";
-export { DockerExecutor, DEFAULT_DOCKER_CONFIG } from "./docker.js";
 export type { DockerConfig } from "./docker.js";
+export { DEFAULT_DOCKER_CONFIG, DockerExecutor } from "./docker.js";
 export { GvisorExecutor } from "./gvisor.js";
+export { SeatbeltExecutor } from "./seatbelt.js";
+export type {
+  SandboxBackend,
+  SandboxConfig,
+  SandboxExecutor,
+  SandboxResult,
+} from "./types.js";
+export { DEFAULT_SANDBOX_CONFIG } from "./types.js";
 
 const executors = new Map<SandboxBackend, SandboxExecutor>([
   ["seatbelt", new SeatbeltExecutor()],

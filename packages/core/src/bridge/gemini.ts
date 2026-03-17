@@ -117,7 +117,8 @@ export class GeminiBridge extends BaseAPIBridge {
     prompt: string,
     options?: BridgeOptions,
   ): Array<{ role: string; parts: Array<{ text: string }> }> {
-    const contents: Array<{ role: string; parts: Array<{ text: string }> }> = [];
+    const contents: Array<{ role: string; parts: Array<{ text: string }> }> =
+      [];
     if (options?.conversationHistory) {
       for (const m of options.conversationHistory) {
         contents.push({

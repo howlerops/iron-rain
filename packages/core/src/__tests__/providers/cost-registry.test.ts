@@ -48,7 +48,9 @@ describe("CostRegistry", () => {
 
   it("returns null cost for unknown models", () => {
     const registry = new CostRegistry();
-    expect(registry.estimateCost("unknown", { input: 100, output: 100 })).toBeNull();
+    expect(
+      registry.estimateCost("unknown", { input: 100, output: 100 }),
+    ).toBeNull();
   });
 
   it("formats cost as dollar string", () => {

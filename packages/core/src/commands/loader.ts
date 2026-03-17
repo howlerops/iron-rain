@@ -4,8 +4,8 @@
  */
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
 import { homedir } from "node:os";
+import { join, resolve } from "node:path";
 
 export interface CustomCommand {
   name: string;
@@ -32,7 +32,10 @@ function parseFrontmatter(content: string): {
     const colonIdx = line.indexOf(":");
     if (colonIdx > 0) {
       const key = line.slice(0, colonIdx).trim();
-      const value = line.slice(colonIdx + 1).trim().replace(/^["']|["']$/g, "");
+      const value = line
+        .slice(colonIdx + 1)
+        .trim()
+        .replace(/^["']|["']$/g, "");
       meta[key] = value;
     }
   }
@@ -45,10 +48,7 @@ function parseFrontmatter(content: string): {
  */
 export function loadCustomCommands(cwd: string): CustomCommand[] {
   const commands: CustomCommand[] = [];
-  const dirs = [
-    resolve(cwd, COMMANDS_DIR),
-    resolve(homedir(), COMMANDS_DIR),
-  ];
+  const dirs = [resolve(cwd, COMMANDS_DIR), resolve(homedir(), COMMANDS_DIR)];
 
   for (const dir of dirs) {
     if (!existsSync(dir)) continue;

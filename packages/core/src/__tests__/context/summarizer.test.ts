@@ -1,5 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { shouldSummarize, truncateWithContext } from "../../context/summarizer.js";
+import {
+  shouldSummarize,
+  truncateWithContext,
+} from "../../context/summarizer.js";
 
 describe("shouldSummarize", () => {
   it("returns false for short output", () => {

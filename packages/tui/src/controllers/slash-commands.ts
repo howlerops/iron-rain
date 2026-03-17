@@ -1,14 +1,14 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  SkillExecutor,
-  generateRepoMap,
-  getStagedDiff,
-  getBranchDiff,
-  buildReviewPrompt,
-  loadIgnoreRules,
-} from "@howlerops/iron-rain";
 import type { SlotName } from "@howlerops/iron-rain";
+import {
+  buildReviewPrompt,
+  generateRepoMap,
+  getBranchDiff,
+  getStagedDiff,
+  loadIgnoreRules,
+  SkillExecutor,
+} from "@howlerops/iron-rain";
 import { SLASH_COMMANDS } from "../components/slash-menu.js";
 import { getSessionDB } from "../context/slate-context.js";
 import type { SessionContext } from "./context.js";
@@ -16,14 +16,17 @@ import type { SessionContext } from "./context.js";
 function levenshtein(a: string, b: string): number {
   const m = a.length;
   const n = b.length;
-  const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+  const dp: number[][] = Array.from({ length: m + 1 }, () =>
+    Array(n + 1).fill(0),
+  );
   for (let i = 0; i <= m; i++) dp[i][0] = i;
   for (let j = 0; j <= n; j++) dp[0][j] = j;
   for (let i = 1; i <= m; i++) {
     for (let j = 1; j <= n; j++) {
-      dp[i][j] = a[i - 1] === b[j - 1]
-        ? dp[i - 1][j - 1]
-        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+      dp[i][j] =
+        a[i - 1] === b[j - 1]
+          ? dp[i - 1][j - 1]
+          : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
     }
   }
   return dp[m][n];
@@ -34,7 +37,8 @@ export async function handleBasicSlashCommand(
   args: string[],
   context: SessionContext,
 ): Promise<boolean> {
-  const { actions, addSystemMessage, setMode, onQuit, skillCommands, state } = context;
+  const { actions, addSystemMessage, setMode, onQuit, skillCommands, state } =
+    context;
 
   if (command === "/quit" || command === "/exit") {
     onQuit?.();
@@ -179,7 +183,9 @@ export async function handleBasicSlashCommand(
   }
 
   if (command === "/model") {
-    const lines = Object.entries(state.slots).map(([slot, cfg]) => `- **${slot}**: ${cfg.model}`);
+    const lines = Object.entries(state.slots).map(
+      ([slot, cfg]) => `- **${slot}**: ${cfg.model}`,
+    );
     addSystemMessage(`## Models\n${lines.join("\n")}`);
     return true;
   }
@@ -244,13 +250,20 @@ export async function handleBasicSlashCommand(
           `**Dependencies:** ${deps.slice(0, 15).join(", ")}${deps.length > 15 ? ` (+${deps.length - 15} more)` : ""}`,
           `**Dev Dependencies:** ${devDeps.slice(0, 10).join(", ")}${devDeps.length > 10 ? ` (+${devDeps.length - 10} more)` : ""}`,
         );
-      } catch { /* skip */ }
+      } catch {
+        /* skip */
+      }
     }
 
     // Check for key config files
     const configFiles = [
-      "tsconfig.json", "biome.json", ".eslintrc.js", "turbo.json",
-      "Dockerfile", "docker-compose.yml", ".github/workflows/ci.yml",
+      "tsconfig.json",
+      "biome.json",
+      ".eslintrc.js",
+      "turbo.json",
+      "Dockerfile",
+      "docker-compose.yml",
+      ".github/workflows/ci.yml",
     ];
     const found = configFiles.filter((f) => existsSync(join(cwd, f)));
     if (found.length > 0) {
@@ -266,11 +279,11 @@ export async function handleBasicSlashCommand(
         ["structure", "init", "architecture"],
       );
       if (meta.length > 0) {
-        db.addLesson(
-          meta.join("\n"),
-          "/init",
-          ["dependencies", "init", "tech-stack"],
-        );
+        db.addLesson(meta.join("\n"), "/init", [
+          "dependencies",
+          "init",
+          "tech-stack",
+        ]);
       }
     }
 
@@ -289,7 +302,9 @@ export async function handleBasicSlashCommand(
       meta.length > 0 ? `## Project Metadata\n${meta.join("\n")}` : "",
       "",
       "Be concise and actionable. Do NOT suggest changes unless they would meaningfully improve the codebase.",
-    ].filter(Boolean).join("\n");
+    ]
+      .filter(Boolean)
+      .join("\n");
 
     await actions.dispatch(prompt);
     return true;
@@ -309,7 +324,10 @@ export async function handleBasicSlashCommand(
   return false;
 }
 
-export async function handleSlashCommand(text: string, context: SessionContext): Promise<boolean> {
+export async function handleSlashCommand(
+  text: string,
+  context: SessionContext,
+): Promise<boolean> {
   const [command, ...args] = text.trim().split(/\s+/);
 
   if (await handleBasicSlashCommand(command, args, context)) {
@@ -320,7 +338,9 @@ export async function handleSlashCommand(text: string, context: SessionContext):
   if (skill) {
     const skillArgs = text.slice(skill.command!.length).trim();
     context.addSystemMessage(`Running skill: **${skill.name}**...`);
-    const kernel = context.actions.getDispatcher().ensureKernel(context.state.slots);
+    const kernel = context.actions
+      .getDispatcher()
+      .ensureKernel(context.state.slots);
     const executor = new SkillExecutor(kernel);
     try {
       const episode = await executor.execute(skill, skillArgs || undefined);
@@ -336,7 +356,11 @@ export async function handleSlashCommand(text: string, context: SessionContext):
   // Unknown command — suggest closest match
   const allCmds = [...SLASH_COMMANDS, ...(context.skillCommands?.() ?? [])];
   const suggestions = allCmds
-    .map((c) => ({ name: c.name, description: c.description, dist: levenshtein(command, c.name) }))
+    .map((c) => ({
+      name: c.name,
+      description: c.description,
+      dist: levenshtein(command, c.name),
+    }))
     .filter((s) => s.dist <= 3)
     .sort((a, b) => a.dist - b.dist);
 

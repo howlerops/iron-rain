@@ -27,10 +27,7 @@ export class GvisorExecutor implements SandboxExecutor {
     config: SandboxConfig,
   ): { command: string; args: string[] } {
     const cwd = process.cwd();
-    const runscArgs = [
-      "do",
-      `--root=${cwd}`,
-    ];
+    const runscArgs = ["do", `--root=${cwd}`];
 
     if (!config.allowNetwork) {
       runscArgs.push("--network=none");

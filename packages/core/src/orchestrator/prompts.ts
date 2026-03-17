@@ -40,7 +40,9 @@ export function buildSystemPrompt(
 
   // Lessons learned
   if (context?.lessons && context.lessons.length > 0) {
-    parts.push(`## Lessons Learned\n${context.lessons.map((l) => `- ${l}`).join("\n")}`);
+    parts.push(
+      `## Lessons Learned\n${context.lessons.map((l) => `- ${l}`).join("\n")}`,
+    );
   }
 
   // MCP tools

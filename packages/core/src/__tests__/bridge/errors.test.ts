@@ -2,14 +2,15 @@ import { describe, expect, test } from "bun:test";
 
 import {
   BridgeError,
-  CircuitBreaker,
   backoffDelay,
+  CircuitBreaker,
 } from "../../bridge/errors.js";
 
 describe("BridgeError", () => {
   test("isRetryable is true for 429", () => {
-    expect(new BridgeError("rate limited", 429, "demo").isRetryable())
-      .toBe(true);
+    expect(new BridgeError("rate limited", 429, "demo").isRetryable()).toBe(
+      true,
+    );
   });
 
   test("isRetryable is true for 500-599", () => {
@@ -18,8 +19,9 @@ describe("BridgeError", () => {
   });
 
   test("isRetryable is false for other 400-499", () => {
-    expect(new BridgeError("bad request", 400, "demo").isRetryable())
-      .toBe(false);
+    expect(new BridgeError("bad request", 400, "demo").isRetryable()).toBe(
+      false,
+    );
     expect(new BridgeError("not found", 404, "demo").isRetryable()).toBe(false);
   });
 });

@@ -7,7 +7,10 @@ const DEFAULT_MAX_CHARS = 8000; // ~2000 tokens
 /**
  * Check if output exceeds the summarization threshold.
  */
-export function shouldSummarize(output: string, maxChars = DEFAULT_MAX_CHARS): boolean {
+export function shouldSummarize(
+  output: string,
+  maxChars = DEFAULT_MAX_CHARS,
+): boolean {
   return output.length > maxChars;
 }
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { loadProjectRules } from "../../rules/loader.js";
 
 const TMP = join(tmpdir(), "iron-rain-test-rules-" + Date.now());
@@ -28,7 +28,10 @@ describe("loadProjectRules", () => {
   it("loads IRON-RAIN.md from project root", () => {
     setup();
     try {
-      writeFileSync(join(TMP, "IRON-RAIN.md"), "# Rule 1\nAlways use TypeScript");
+      writeFileSync(
+        join(TMP, "IRON-RAIN.md"),
+        "# Rule 1\nAlways use TypeScript",
+      );
       const rules = loadProjectRules(TMP);
       expect(rules.length).toBe(1);
       expect(rules[0]).toContain("Always use TypeScript");

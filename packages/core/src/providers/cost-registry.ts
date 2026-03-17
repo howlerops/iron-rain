@@ -4,7 +4,7 @@
  */
 
 interface ModelPricing {
-  input: number;  // $ per million input tokens
+  input: number; // $ per million input tokens
   output: number; // $ per million output tokens
 }
 
@@ -20,7 +20,7 @@ const DEFAULT_PRICING: Record<string, ModelPricing> = {
   // OpenAI
   "gpt-4o": { input: 2.5, output: 10 },
   "gpt-4o-mini": { input: 0.15, output: 0.6 },
-  "o3": { input: 10, output: 40 },
+  o3: { input: 10, output: 40 },
   "o3-mini": { input: 1.1, output: 4.4 },
   "o4-mini": { input: 1.1, output: 4.4 },
 
@@ -42,7 +42,9 @@ export class CostRegistry {
   /**
    * Load custom pricing from config.
    */
-  loadFromConfig(costs?: Record<string, { input: number; output: number }>): void {
+  loadFromConfig(
+    costs?: Record<string, { input: number; output: number }>,
+  ): void {
     if (!costs) return;
     for (const [model, pricing] of Object.entries(costs)) {
       this.customPricing[model] = pricing;

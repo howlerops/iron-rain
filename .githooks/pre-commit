@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -e
+
+echo "Pre-commit: Running biome check..."
+bunx biome check .
+
+echo "Pre-commit: Running typecheck..."
+bun run typecheck
+
+echo "Pre-commit: All checks passed."

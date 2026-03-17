@@ -1,6 +1,6 @@
 import { resolveEnvValue } from "../config/schema.js";
-import { anthropicThinkingBudget } from "./thinking.js";
 import { BaseAPIBridge } from "./base-api.js";
+import { anthropicThinkingBudget } from "./thinking.js";
 import type { BridgeChunk, BridgeOptions, BridgeResult } from "./types.js";
 
 export class AnthropicBridge extends BaseAPIBridge {
@@ -122,7 +122,12 @@ export class AnthropicBridge extends BaseAPIBridge {
             content_block?: { type: string; id?: string; name?: string };
             index?: number;
             message?: { usage?: { input_tokens?: number } };
-            delta?: { type: string; text?: string; thinking?: string; partial_json?: string };
+            delta?: {
+              type: string;
+              text?: string;
+              thinking?: string;
+              partial_json?: string;
+            };
             usage?: { output_tokens?: number };
           };
           if (
@@ -159,31 +164,59 @@ export class AnthropicBridge extends BaseAPIBridge {
                   const filePath = input.file_path ?? input.path;
                   if (filePath && typeof filePath === "string") {
                     enrichedName = `${tool.name} ${filePath.split("/").pop()}`;
-                  } else if (input.pattern && typeof input.pattern === "string") {
-                    const p = input.pattern.length > 30 ? input.pattern.slice(0, 27) + "..." : input.pattern;
+                  } else if (
+                    input.pattern &&
+                    typeof input.pattern === "string"
+                  ) {
+                    const p =
+                      input.pattern.length > 30
+                        ? input.pattern.slice(0, 27) + "..."
+                        : input.pattern;
                     enrichedName = `${tool.name} ${p}`;
-                  } else if (input.command && typeof input.command === "string") {
-                    const c = input.command.length > 40 ? input.command.slice(0, 37) + "..." : input.command;
+                  } else if (
+                    input.command &&
+                    typeof input.command === "string"
+                  ) {
+                    const c =
+                      input.command.length > 40
+                        ? input.command.slice(0, 37) + "..."
+                        : input.command;
                     enrichedName = `${tool.name}: ${c}`;
                   }
-                } catch { /* partial JSON, keep original name */ }
+                } catch {
+                  /* partial JSON, keep original name */
+                }
               }
               activeToolBlocks.delete(parsed.index);
               toolInputBuffers.delete(parsed.index);
               yield {
                 type: "tool_use" as const,
                 content: enrichedName,
-                toolCall: { id: tool.id, name: enrichedName, status: "end" as const },
+                toolCall: {
+                  id: tool.id,
+                  name: enrichedName,
+                  status: "end" as const,
+                },
               };
             }
           }
           if (parsed.type === "content_block_delta") {
-            if (parsed.delta?.type === "input_json_delta" && parsed.delta?.partial_json && parsed.index != null) {
+            if (
+              parsed.delta?.type === "input_json_delta" &&
+              parsed.delta?.partial_json &&
+              parsed.index != null
+            ) {
               const buf = toolInputBuffers.get(parsed.index);
               if (buf != null) {
-                toolInputBuffers.set(parsed.index, buf + parsed.delta.partial_json);
+                toolInputBuffers.set(
+                  parsed.index,
+                  buf + parsed.delta.partial_json,
+                );
               }
-            } else if (parsed.delta?.type === "thinking_delta" && parsed.delta?.thinking) {
+            } else if (
+              parsed.delta?.type === "thinking_delta" &&
+              parsed.delta?.thinking
+            ) {
               yield { type: "thinking", content: parsed.delta.thinking };
             } else if (parsed.delta?.text) {
               yield { type: "text", content: parsed.delta.text };

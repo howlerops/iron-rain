@@ -20,7 +20,11 @@ export async function fetchRemoteConfig(
   force = false,
 ): Promise<RemoteConfigResult | null> {
   // Return cached if still fresh
-  if (!force && cachedRemote && Date.now() - cachedRemote.fetchedAt < CACHE_TTL_MS) {
+  if (
+    !force &&
+    cachedRemote &&
+    Date.now() - cachedRemote.fetchedAt < CACHE_TTL_MS
+  ) {
     return cachedRemote;
   }
 

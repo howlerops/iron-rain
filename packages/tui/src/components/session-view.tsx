@@ -179,8 +179,20 @@ function truncateText(text: string, maxLen: number): string {
 }
 
 const SPINNER_FRAMES = [
-  "\u2581", "\u2582", "\u2583", "\u2584", "\u2585", "\u2586", "\u2587", "\u2588",
-  "\u2587", "\u2586", "\u2585", "\u2584", "\u2583", "\u2582",
+  "\u2581",
+  "\u2582",
+  "\u2583",
+  "\u2584",
+  "\u2585",
+  "\u2586",
+  "\u2587",
+  "\u2588",
+  "\u2587",
+  "\u2586",
+  "\u2585",
+  "\u2584",
+  "\u2583",
+  "\u2582",
 ];
 
 function StreamingAgentCard(props: {
@@ -201,7 +213,10 @@ function StreamingAgentCard(props: {
     setFrame((f) => (f + 1) % SPINNER_FRAMES.length);
     setElapsed(Math.floor((Date.now() - props.startTime) / 1000));
   }, 80);
-  onCleanup(() => { disposed = true; clearInterval(timer); });
+  onCleanup(() => {
+    disposed = true;
+    clearInterval(timer);
+  });
 
   const elapsedStr = () => {
     const s = elapsed();
@@ -276,9 +291,7 @@ function StreamingAgentCard(props: {
       {/* Content preview */}
       <Show when={contentPreview()}>
         <box paddingLeft={1} marginTop={0}>
-          <text fg={ironRainTheme.chrome.muted}>
-            {`> ${contentPreview()}`}
-          </text>
+          <text fg={ironRainTheme.chrome.muted}>{`> ${contentPreview()}`}</text>
         </box>
       </Show>
 

@@ -3,7 +3,10 @@
  * V1: macOS-only using `rec` (SoX) + `whisper.cpp` or system speech recognition.
  */
 
-import { execSync, type ExecSyncOptionsWithStringEncoding } from "node:child_process";
+import {
+  type ExecSyncOptionsWithStringEncoding,
+  execSync,
+} from "node:child_process";
 import { existsSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,12 +25,20 @@ export const DEFAULT_VOICE_CONFIG: VoiceConfig = {
 /**
  * Check if voice recording tools are available.
  */
-export function isVoiceAvailable(): { available: boolean; engine: string; reason?: string } {
+export function isVoiceAvailable(): {
+  available: boolean;
+  engine: string;
+  reason?: string;
+} {
   // Check for SoX (rec command)
   try {
     execSync("which rec", { stdio: "pipe" });
   } catch {
-    return { available: false, engine: "none", reason: "SoX not installed (brew install sox)" };
+    return {
+      available: false,
+      engine: "none",
+      reason: "SoX not installed (brew install sox)",
+    };
   }
 
   // Check for whisper
@@ -39,7 +50,11 @@ export function isVoiceAvailable(): { available: boolean; engine: string; reason
     if (process.platform === "darwin") {
       return { available: true, engine: "system" };
     }
-    return { available: false, engine: "none", reason: "No transcription engine available" };
+    return {
+      available: false,
+      engine: "none",
+      reason: "No transcription engine available",
+    };
   }
 }
 
@@ -66,7 +81,10 @@ export function recordAudio(durationSeconds: number = 10): string {
 /**
  * Transcribe audio using the configured engine.
  */
-export function transcribeAudio(audioPath: string, config: VoiceConfig): string {
+export function transcribeAudio(
+  audioPath: string,
+  config: VoiceConfig,
+): string {
   if (!existsSync(audioPath)) {
     throw new Error(`Audio file not found: ${audioPath}`);
   }

@@ -8,24 +8,29 @@ interface SymbolEntry {
 }
 
 const SOURCE_EXTENSIONS = new Set([
-  ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
-  ".py", ".rs", ".go", ".java", ".rb", ".c", ".cpp", ".h",
+  ".ts",
+  ".tsx",
+  ".js",
+  ".jsx",
+  ".mjs",
+  ".cjs",
+  ".py",
+  ".rs",
+  ".go",
+  ".java",
+  ".rb",
+  ".c",
+  ".cpp",
+  ".h",
 ]);
 
 const EXPORT_PATTERNS: Record<string, RegExp[]> = {
   typescript: [
     /export\s+(?:default\s+)?(?:class|function|const|let|var|interface|type|enum|abstract\s+class)\s+(\w+)/g,
   ],
-  python: [
-    /^(?:class|def)\s+(\w+)/gm,
-  ],
-  rust: [
-    /pub\s+(?:fn|struct|enum|trait|type|mod|const)\s+(\w+)/g,
-  ],
-  go: [
-    /^func\s+(\w+)/gm,
-    /^type\s+(\w+)/gm,
-  ],
+  python: [/^(?:class|def)\s+(\w+)/gm],
+  rust: [/pub\s+(?:fn|struct|enum|trait|type|mod|const)\s+(\w+)/g],
+  go: [/^func\s+(\w+)/gm, /^type\s+(\w+)/gm],
 };
 
 /**
@@ -48,9 +53,8 @@ export function generateRepoMap(
   let charCount = 0;
 
   for (const entry of entries) {
-    const symbolStr = entry.symbols.length > 0
-      ? ` → ${entry.symbols.join(", ")}`
-      : "";
+    const symbolStr =
+      entry.symbols.length > 0 ? ` → ${entry.symbols.join(", ")}` : "";
     const line = `${entry.file}${symbolStr}`;
 
     if (charCount + line.length + 1 > charBudget) break;
@@ -78,7 +82,12 @@ function walkDir(
   }
 
   for (const item of items) {
-    if (item.startsWith(".") || item === "node_modules" || item === "dist" || item === "build") {
+    if (
+      item.startsWith(".") ||
+      item === "node_modules" ||
+      item === "dist" ||
+      item === "build"
+    ) {
       continue;
     }
 

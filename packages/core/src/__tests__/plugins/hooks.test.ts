@@ -25,15 +25,21 @@ describe("HookEmitter", () => {
     await emitter.emit("onToolCall", { tool: "read_file" });
     expect(eventData).toBeTruthy();
     expect((eventData as { event: string }).event).toBe("onToolCall");
-    expect((eventData as { payload: { tool: string } }).payload.tool).toBe("read_file");
+    expect((eventData as { payload: { tool: string } }).payload.tool).toBe(
+      "read_file",
+    );
   });
 
   it("supports multiple handlers for same event", async () => {
     const emitter = new HookEmitter();
     const calls: number[] = [];
 
-    emitter.on("onCommit", () => { calls.push(1); });
-    emitter.on("onCommit", () => { calls.push(2); });
+    emitter.on("onCommit", () => {
+      calls.push(1);
+    });
+    emitter.on("onCommit", () => {
+      calls.push(2);
+    });
 
     await emitter.emit("onCommit");
     expect(calls).toEqual([1, 2]);
@@ -43,7 +49,9 @@ describe("HookEmitter", () => {
     const emitter = new HookEmitter();
     let count = 0;
 
-    const unsub = emitter.on("onError", () => { count++; });
+    const unsub = emitter.on("onError", () => {
+      count++;
+    });
     await emitter.emit("onError");
     expect(count).toBe(1);
 
@@ -56,8 +64,12 @@ describe("HookEmitter", () => {
     const emitter = new HookEmitter();
     let count = 0;
 
-    emitter.on("onSessionEnd", () => { count++; });
-    emitter.on("onSessionEnd", () => { count++; });
+    emitter.on("onSessionEnd", () => {
+      count++;
+    });
+    emitter.on("onSessionEnd", () => {
+      count++;
+    });
     emitter.off("onSessionEnd");
 
     await emitter.emit("onSessionEnd");

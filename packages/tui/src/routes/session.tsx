@@ -1,19 +1,30 @@
 import type { Plan } from "@howlerops/iron-rain";
 import { loadConfig, parseReferences } from "@howlerops/iron-rain";
 import { useKeyboard } from "@opentui/solid";
-import { createMemo, createSignal, ErrorBoundary, Match, Show, Switch } from "solid-js";
+import {
+  createMemo,
+  createSignal,
+  ErrorBoundary,
+  Match,
+  Show,
+  Switch,
+} from "solid-js";
 import { PlanReview } from "../components/plan-review.js";
 import { PlanView } from "../components/plan-view.js";
-import { formatDuration, formatTokens, SessionView } from "../components/session-view.js";
+import {
+  formatDuration,
+  formatTokens,
+  SessionView,
+} from "../components/session-view.js";
 import { Settings } from "../components/settings.js";
 import { getFilteredCommands, SlashMenu } from "../components/slash-menu.js";
 import { WelcomeScreen } from "../components/welcome-screen.js";
+import { useSlate } from "../context/slate-context.js";
 import type { SessionContext, SessionMode } from "../controllers/context.js";
 import { LoopController } from "../controllers/loop-controller.js";
 import { PlanController } from "../controllers/plan-controller.js";
 import { handleSlashCommand as handleSlashCommandController } from "../controllers/slash-commands.js";
 import { handleSystemCommand } from "../controllers/system-commands.js";
-import { useSlate } from "../context/slate-context.js";
 import { ironRainTheme, slotLabel } from "../theme/theme.js";
 
 export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
@@ -62,7 +73,13 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
   async function handleSlashCommand(text: string): Promise<boolean> {
     const context = sessionContext();
 
-    if (await handleSystemCommand({ text, addSystemMessage, version: props.version })) {
+    if (
+      await handleSystemCommand({
+        text,
+        addSystemMessage,
+        version: props.version,
+      })
+    ) {
       return true;
     }
 
@@ -122,7 +139,9 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
         }
         clearInput();
         addSystemMessage(`Regenerating plan with feedback: *${text}*`);
-        await planController.generatePlan(`${plan.description}\n\nFeedback: ${text}`);
+        await planController.generatePlan(
+          `${plan.description}\n\nFeedback: ${text}`,
+        );
         return;
       }
     }
@@ -438,7 +457,9 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
                 <text fg={ironRainTheme.status.warning}>PLAN EXECUTING</text>
               </Show>
             </box>
-            <Show when={state.sessionStats && state.sessionStats.requestCount > 0}>
+            <Show
+              when={state.sessionStats && state.sessionStats.requestCount > 0}
+            >
               <text fg={ironRainTheme.chrome.dimFg}>
                 {`${formatDuration(state.sessionStats!.totalDuration)} \u00B7 ${state.sessionStats!.requestCount} req${state.sessionStats!.requestCount !== 1 ? "s" : ""} \u00B7 ${formatTokens(state.sessionStats!.totalTokens)} tokens`}
               </text>

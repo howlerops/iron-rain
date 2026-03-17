@@ -253,7 +253,10 @@ async function resolveImage(
   return null;
 }
 
-async function resolveGit(cmd: string, cwd: string): Promise<ResolvedReference | null> {
+async function resolveGit(
+  cmd: string,
+  cwd: string,
+): Promise<ResolvedReference | null> {
   // Only allow whitelisted subcommands
   const subcommand = cmd.split(/[\s-]/)[0];
   if (!GIT_WHITELIST.has(subcommand)) {

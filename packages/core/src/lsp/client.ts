@@ -32,7 +32,9 @@ export const DEFAULT_LSP_CONFIG: LSPClientConfig = {
 /**
  * Auto-detect which language servers might be available.
  */
-export function detectLanguageServers(cwd: string): Record<string, LSPServerConfig> {
+export function detectLanguageServers(
+  cwd: string,
+): Record<string, LSPServerConfig> {
   const servers: Record<string, LSPServerConfig> = {};
 
   if (existsSync(resolve(cwd, "tsconfig.json"))) {
@@ -42,7 +44,10 @@ export function detectLanguageServers(cwd: string): Record<string, LSPServerConf
     };
   }
 
-  if (existsSync(resolve(cwd, "pyproject.toml")) || existsSync(resolve(cwd, "setup.py"))) {
+  if (
+    existsSync(resolve(cwd, "pyproject.toml")) ||
+    existsSync(resolve(cwd, "setup.py"))
+  ) {
     servers.python = {
       command: "pylsp",
       args: [],
@@ -127,13 +132,19 @@ export class LSPClient {
     this.process = null;
   }
 
-  private sendNotification(method: string, params: Record<string, unknown>): void {
+  private sendNotification(
+    method: string,
+    params: Record<string, unknown>,
+  ): void {
     const msg = JSON.stringify({ jsonrpc: "2.0", method, params });
     const header = `Content-Length: ${Buffer.byteLength(msg)}\r\n\r\n`;
     this.process?.stdin?.write(header + msg);
   }
 
-  private sendRequest(method: string, params: Record<string, unknown>): Promise<unknown> {
+  private sendRequest(
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<unknown> {
     return new Promise((resolve, reject) => {
       const id = this.nextId++;
       const msg = JSON.stringify({ jsonrpc: "2.0", id, method, params });

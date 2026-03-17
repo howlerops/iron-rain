@@ -1,6 +1,6 @@
-import type { OrchestratorKernel } from "../orchestrator/kernel.js";
 import type { ChatMessage } from "../bridge/types.js";
 import { getTextContent } from "../bridge/types.js";
+import type { OrchestratorKernel } from "../orchestrator/kernel.js";
 
 export interface Lesson {
   id: string;
@@ -96,7 +96,9 @@ export class AutoLearner {
    */
   filterRelevant(lessons: Lesson[], prompt: string, maxCount = 10): Lesson[] {
     const promptLower = prompt.toLowerCase();
-    const promptWords = new Set(promptLower.split(/\W+/).filter((w) => w.length > 3));
+    const promptWords = new Set(
+      promptLower.split(/\W+/).filter((w) => w.length > 3),
+    );
 
     const scored = lessons.map((lesson) => {
       let score = 0;

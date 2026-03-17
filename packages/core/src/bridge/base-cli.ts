@@ -1,6 +1,11 @@
 import { spawn } from "node:child_process";
 import { BridgeError } from "./errors.js";
-import type { BridgeChunk, BridgeOptions, BridgeResult, CLIBridge } from "./types.js";
+import type {
+  BridgeChunk,
+  BridgeOptions,
+  BridgeResult,
+  CLIBridge,
+} from "./types.js";
 
 export abstract class BaseCLIBridge implements CLIBridge {
   readonly name: string;
@@ -60,6 +65,12 @@ export abstract class BaseCLIBridge implements CLIBridge {
     });
   }
 
-  abstract execute(prompt: string, options?: BridgeOptions): Promise<BridgeResult>;
-  abstract stream(prompt: string, options?: BridgeOptions): AsyncIterable<BridgeChunk>;
+  abstract execute(
+    prompt: string,
+    options?: BridgeOptions,
+  ): Promise<BridgeResult>;
+  abstract stream(
+    prompt: string,
+    options?: BridgeOptions,
+  ): AsyncIterable<BridgeChunk>;
 }

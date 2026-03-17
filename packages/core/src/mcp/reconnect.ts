@@ -17,7 +17,10 @@ export const DEFAULT_RECONNECT_CONFIG: ReconnectConfig = {
 /**
  * Calculate backoff delay with jitter for reconnection attempts.
  */
-export function reconnectDelay(attempt: number, config: ReconnectConfig): number {
+export function reconnectDelay(
+  attempt: number,
+  config: ReconnectConfig,
+): number {
   const exponential = config.baseDelayMs * 2 ** attempt;
   const capped = Math.min(exponential, config.maxDelayMs);
   const jitter = capped * (0.5 + Math.random() * 0.5);
@@ -27,9 +30,9 @@ export function reconnectDelay(attempt: number, config: ReconnectConfig): number
 /**
  * Detect duplicate tool names across MCP servers and namespace them.
  */
-export function namespaceDuplicateTools<T extends { name: string; server: string }>(
-  tools: T[],
-): T[] {
+export function namespaceDuplicateTools<
+  T extends { name: string; server: string },
+>(tools: T[]): T[] {
   const nameCount = new Map<string, number>();
   for (const tool of tools) {
     nameCount.set(tool.name, (nameCount.get(tool.name) ?? 0) + 1);
@@ -64,7 +67,9 @@ export function resolveToolName(
   }
 
   // Try first match by plain name
-  const plain = tools.find((t) => t.name === name || t.name.endsWith(`.${name}`));
+  const plain = tools.find(
+    (t) => t.name === name || t.name.endsWith(`.${name}`),
+  );
   if (plain) return { server: plain.server, toolName: plain.name };
 
   return null;

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expandTemplate, loadCustomCommands } from "../../commands/loader.js";
 
 const TMP = join(tmpdir(), "iron-rain-test-commands-" + Date.now());
@@ -68,12 +68,18 @@ Deploy the application with these arguments: $ARGUMENTS`,
 
 describe("expandTemplate", () => {
   it("replaces $ARGUMENTS placeholder", () => {
-    const result = expandTemplate("Review $ARGUMENTS for issues", "src/auth.ts");
+    const result = expandTemplate(
+      "Review $ARGUMENTS for issues",
+      "src/auth.ts",
+    );
     expect(result).toBe("Review src/auth.ts for issues");
   });
 
   it("handles multiple $ARGUMENTS placeholders", () => {
-    const result = expandTemplate("File: $ARGUMENTS\nCheck: $ARGUMENTS", "test.ts");
+    const result = expandTemplate(
+      "File: $ARGUMENTS\nCheck: $ARGUMENTS",
+      "test.ts",
+    );
     expect(result).toBe("File: test.ts\nCheck: test.ts");
   });
 

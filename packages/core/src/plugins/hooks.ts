@@ -48,7 +48,10 @@ export class HookEmitter {
   /**
    * Emit an event to all registered handlers.
    */
-  async emit(event: HookEvent, payload: Record<string, unknown> = {}): Promise<void> {
+  async emit(
+    event: HookEvent,
+    payload: Record<string, unknown> = {},
+  ): Promise<void> {
     const handlers = this.handlers.get(event);
     if (!handlers || handlers.length === 0) return;
 

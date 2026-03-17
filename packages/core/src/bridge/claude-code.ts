@@ -24,11 +24,17 @@ function toolDisplayName(name: string, input?: Record<string, any>): string {
     return `${name} ${base}`;
   }
   if (input.pattern && typeof input.pattern === "string") {
-    const p = input.pattern.length > 30 ? input.pattern.slice(0, 27) + "..." : input.pattern;
+    const p =
+      input.pattern.length > 30
+        ? input.pattern.slice(0, 27) + "..."
+        : input.pattern;
     return `${name} ${p}`;
   }
   if (input.command && typeof input.command === "string") {
-    const c = input.command.length > 40 ? input.command.slice(0, 37) + "..." : input.command;
+    const c =
+      input.command.length > 40
+        ? input.command.slice(0, 37) + "..."
+        : input.command;
     return `${name}: ${c}`;
   }
   return name;
@@ -169,85 +175,103 @@ export class ClaudeCodeBridge extends BaseCLIBridge {
     const activeTools = new Map<string, string>(); // id -> label
 
     try {
-    for await (const chunk of reader) {
-      buffer += chunk.toString();
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
+      for await (const chunk of reader) {
+        buffer += chunk.toString();
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
 
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        chunkCount++;
-        try {
-          const parsed = JSON.parse(line) as Record<string, any>;
-          debugLog(`stream: line ${chunkCount} type=${parsed.type}`);
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          chunkCount++;
+          try {
+            const parsed = JSON.parse(line) as Record<string, any>;
+            debugLog(`stream: line ${chunkCount} type=${parsed.type}`);
 
-          if (parsed.type === "assistant" && parsed.message?.content) {
-            const content = parsed.message.content;
-            if (Array.isArray(content)) {
-              for (const block of content) {
-                if (block.type === "text" && block.text) {
-                  debugLog(`stream: yielding text (${block.text.length} chars)`);
-                  yieldCount++;
-                  yield { type: "text", content: block.text };
-                } else if (block.type === "tool_use" && block.name && block.id) {
-                  const label = toolDisplayName(block.name, block.input);
-                  activeTools.set(block.id, label);
-                  yield {
-                    type: "tool_use" as const,
-                    content: label,
-                    toolCall: { id: block.id, name: label, status: "start" as const },
-                  };
+            if (parsed.type === "assistant" && parsed.message?.content) {
+              const content = parsed.message.content;
+              if (Array.isArray(content)) {
+                for (const block of content) {
+                  if (block.type === "text" && block.text) {
+                    debugLog(
+                      `stream: yielding text (${block.text.length} chars)`,
+                    );
+                    yieldCount++;
+                    yield { type: "text", content: block.text };
+                  } else if (
+                    block.type === "tool_use" &&
+                    block.name &&
+                    block.id
+                  ) {
+                    const label = toolDisplayName(block.name, block.input);
+                    activeTools.set(block.id, label);
+                    yield {
+                      type: "tool_use" as const,
+                      content: label,
+                      toolCall: {
+                        id: block.id,
+                        name: label,
+                        status: "start" as const,
+                      },
+                    };
+                  }
                 }
               }
-            }
-          } else if (
-            parsed.type === "content_block_delta" &&
-            parsed.delta?.text
-          ) {
-            yieldCount++;
-            yield { type: "text", content: parsed.delta.text };
-          } else if (parsed.type === "tool_result" || (parsed.type === "assistant" && parsed.message?.content && Array.isArray(parsed.message.content) && parsed.message.content.some((b: any) => b.type === "tool_result"))) {
-            // Handle tool_result events — mark corresponding tool as ended
-            const toolUseId = parsed.tool_use_id ?? parsed.content?.tool_use_id;
-            if (toolUseId && activeTools.has(toolUseId)) {
-              const name = activeTools.get(toolUseId)!;
-              activeTools.delete(toolUseId);
-              yield {
-                type: "tool_use" as const,
-                content: name,
-                toolCall: { id: toolUseId, name, status: "end" as const },
-              };
-            }
-          } else if (parsed.type === "result") {
-            // Close any remaining active tools before done
-            for (const [id, name] of activeTools) {
-              yield {
-                type: "tool_use" as const,
-                content: name,
-                toolCall: { id, name, status: "end" as const },
-              };
-            }
-            activeTools.clear();
-            if (parsed.session_id) this.sessionId = parsed.session_id;
-            debugLog(
-              `stream: result event, subtype=${parsed.subtype}, yieldCount=${yieldCount}`,
-            );
-            if (
-              yieldCount === 0 &&
-              parsed.result &&
-              typeof parsed.result === "string"
+            } else if (
+              parsed.type === "content_block_delta" &&
+              parsed.delta?.text
             ) {
-              yield { type: "text", content: parsed.result };
+              yieldCount++;
+              yield { type: "text", content: parsed.delta.text };
+            } else if (
+              parsed.type === "tool_result" ||
+              (parsed.type === "assistant" &&
+                parsed.message?.content &&
+                Array.isArray(parsed.message.content) &&
+                parsed.message.content.some(
+                  (b: any) => b.type === "tool_result",
+                ))
+            ) {
+              // Handle tool_result events — mark corresponding tool as ended
+              const toolUseId =
+                parsed.tool_use_id ?? parsed.content?.tool_use_id;
+              if (toolUseId && activeTools.has(toolUseId)) {
+                const name = activeTools.get(toolUseId)!;
+                activeTools.delete(toolUseId);
+                yield {
+                  type: "tool_use" as const,
+                  content: name,
+                  toolCall: { id: toolUseId, name, status: "end" as const },
+                };
+              }
+            } else if (parsed.type === "result") {
+              // Close any remaining active tools before done
+              for (const [id, name] of activeTools) {
+                yield {
+                  type: "tool_use" as const,
+                  content: name,
+                  toolCall: { id, name, status: "end" as const },
+                };
+              }
+              activeTools.clear();
+              if (parsed.session_id) this.sessionId = parsed.session_id;
+              debugLog(
+                `stream: result event, subtype=${parsed.subtype}, yieldCount=${yieldCount}`,
+              );
+              if (
+                yieldCount === 0 &&
+                parsed.result &&
+                typeof parsed.result === "string"
+              ) {
+                yield { type: "text", content: parsed.result };
+              }
+              yield { type: "done", content: "" };
+              return;
             }
-            yield { type: "done", content: "" };
-            return;
+          } catch (e: any) {
+            debugLog(`stream: parse error: ${e.message}`);
           }
-        } catch (e: any) {
-          debugLog(`stream: parse error: ${e.message}`);
         }
       }
-    }
-
     } catch (err) {
       // AbortError when signal fires — not a real error
       if (options?.signal?.aborted) {

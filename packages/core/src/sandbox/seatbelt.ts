@@ -51,9 +51,7 @@ export class SeatbeltExecutor implements SandboxExecutor {
       // Allow reading from anywhere
       "(allow file-read*)",
       // Allow writing only to specific paths
-      ...writePaths.map(
-        (p) => `(allow file-write* (subpath "${p}"))`,
-      ),
+      ...writePaths.map((p) => `(allow file-write* (subpath "${p}"))`),
       // Allow executing binaries
       "(allow process-exec)",
     ];
@@ -63,8 +61,8 @@ export class SeatbeltExecutor implements SandboxExecutor {
       lines.push("(allow network*)");
     } else {
       // Allow localhost only
-      lines.push("(allow network* (local ip \"localhost:*\"))");
-      lines.push("(allow network* (remote ip \"localhost:*\"))");
+      lines.push('(allow network* (local ip "localhost:*"))');
+      lines.push('(allow network* (remote ip "localhost:*"))');
     }
 
     const profile = lines.join("\n");
