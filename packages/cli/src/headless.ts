@@ -3,7 +3,7 @@
  * Used for CI, scripting, and piped workflows.
  */
 
-import type { OrchestratorKernel } from "@iron-rain/core";
+import type { OrchestratorKernel } from "@howlerops/iron-rain";
 
 export type OutputFormat = "text" | "json";
 
