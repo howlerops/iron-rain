@@ -15,16 +15,20 @@ Route tasks to the right model at the right time. Use any provider — Anthropic
 ## Quick Start
 
 ```bash
-git clone https://github.com/howlerops/iron-rain
-cd iron-rain
-bun install
-bun run build
+# One-line install
+curl -fsSL https://raw.githubusercontent.com/howlerops/iron-rain/main/scripts/install.sh | bash
+
+# Or install manually
+npm install -g @howlerops/iron-rain-cli
+
+# Launch the TUI
+iron-rain
 ```
 
 ### Run headless
 
 ```bash
-node packages/cli/dist/index.js --headless "Explain this codebase"
+iron-rain --headless "Explain this codebase"
 ```
 
 ### Commands
@@ -41,12 +45,23 @@ iron-rain --help             Show help
 ### TUI Slash Commands
 
 ```
+/plan <desc>                 Generate PRD + task breakdown
+/plans                       List saved plans
+/resume                      Resume paused plan
+/loop <desc> --until "cond"  Iterative execution loop
+/loop-status                 Show loop progress
+/loop-pause / /loop-resume   Control active loop
+/context add|list|remove     Manage context directories
+/lessons                     Show persistent memory
+/skills                      List available skills
+/mcp                         Show MCP server status
 /settings                    Open settings
+/help                        Show all commands
+/version                     Show version info
+/update                      Check for updates
+/doctor                      Run diagnostics
 /clear                       Clear session
 /new                         New session
-/context add <path>          Add context directory
-/context list                List context directories
-/context remove <path>       Remove context directory
 /quit or /exit               Exit
 ```
 
@@ -54,11 +69,11 @@ iron-rain --help             Show help
 
 Iron Rain uses a three-slot model orchestration system:
 
-| Slot | Purpose | Routes |
-|------|---------|--------|
-| **Main** | Strategy, planning, conversation | `strategy`, `plan`, `conversation` |
-| **Explore** | Search, read, research | `grep`, `glob`, `read`, `search` |
-| **Execute** | Edit, write, run commands | `edit`, `write`, `bash` |
+| Slot | Agent | Purpose | Routes |
+|------|-------|---------|--------|
+| **main** | Cortex | Strategy, planning, conversation | `strategy`, `plan`, `conversation` |
+| **explore** | Scout | Search, read, research | `grep`, `glob`, `read`, `search` |
+| **execute** | Forge | Edit, write, run commands | `edit`, `write`, `bash` |
 
 Each slot can be assigned to any model from any provider. The orchestrator automatically routes tool calls to the appropriate slot.
 
@@ -118,6 +133,45 @@ Built-in bridge support for:
   }
 }
 ```
+
+## Plan & Execute
+
+Generate a PRD and task breakdown, review it, then execute automatically:
+
+```
+/plan Add user authentication with JWT tokens
+```
+
+Cortex generates a PRD and task list. Review with `approve`, `reject`, or `edit <feedback>`. On approval, Forge executes tasks sequentially with auto-commit support. Plans are saved to `.iron-rain/plans/` and can be resumed with `/resume`.
+
+## Iterative Loop
+
+Run a task repeatedly until a condition is met:
+
+```
+/loop Fix all failing tests --until "ALL TESTS PASSING"
+```
+
+Each iteration sees prior results. If stuck for 3+ iterations, the loop auto-suggests a different strategy. Control with `/loop-pause` and `/loop-resume`.
+
+## Skills
+
+Iron Rain discovers markdown skill files from `.iron-rain/skills/`, `~/.iron-rain/skills/`, and `.claude/skills/`. Skills become slash commands:
+
+```
+/skills              # List all skills
+/<skill-name> [args] # Execute a skill
+```
+
+## Lessons (Persistent Memory)
+
+Cross-session memory stored in SQLite (`~/.iron-rain/sessions.db`):
+
+```
+/lessons             # Show saved lessons
+```
+
+Lessons survive session resets and can be injected into prompts for continuity.
 
 ## @ Context References
 

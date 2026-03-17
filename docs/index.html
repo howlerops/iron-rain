@@ -328,10 +328,10 @@
     </div>
     <div class="install-group">
       <div class="install">
-        <span class="prompt">$</span> npm install @howlerops/iron-rain
+        <span class="prompt">$</span> curl -fsSL https://raw.githubusercontent.com/howlerops/iron-rain/main/scripts/install.sh | bash
       </div>
       <div class="install">
-        <span class="prompt">$</span> npx @howlerops/iron-rain-cli --headless "Hello world"
+        <span class="prompt">$</span> iron-rain
       </div>
     </div>
   </section>
@@ -350,8 +350,20 @@
       <p>Automatically routes file edits to your execute slot, grep/search to explore, and strategy to main. Configurable per tool type.</p>
     </div>
     <div class="feature">
-      <h3>Episode Protocol</h3>
-      <p>Every task dispatch produces an episode summary with tokens, duration, files modified, and status. Full observability built in.</p>
+      <h3>Plan &amp; Execute</h3>
+      <p>Generate a PRD and task breakdown with <code>/plan</code>. Review, approve, and auto-execute through Forge with optional auto-commit per task.</p>
+    </div>
+    <div class="feature">
+      <h3>Iterative Loop</h3>
+      <p>Run tasks repeatedly with <code>/loop</code> until a condition is met. Auto-detects when stuck and suggests new strategies.</p>
+    </div>
+    <div class="feature">
+      <h3>Skills &amp; MCP</h3>
+      <p>Auto-discover markdown skill files as slash commands. Connect MCP servers for external tool integration.</p>
+    </div>
+    <div class="feature">
+      <h3>Persistent Memory</h3>
+      <p>SQLite-backed sessions with cross-session lessons. Thinking level control (off/low/medium/high) per slot across all providers.</p>
     </div>
     <div class="feature">
       <h3>@ Context References</h3>
@@ -376,17 +388,17 @@
     <p class="subtitle">Each slot serves a distinct purpose. Assign any model to any slot.</p>
     <div class="slot-cards">
       <div class="slot-card main">
-        <span class="badge">main</span>
+        <span class="badge">Cortex</span>
         <h4>Strategy &amp; Planning</h4>
         <p>Handles conversation, planning, and high-level reasoning. Your most capable model goes here.</p>
       </div>
       <div class="slot-card explore">
-        <span class="badge">explore</span>
+        <span class="badge">Scout</span>
         <h4>Search &amp; Research</h4>
         <p>Read-only exploration. Grep, glob, search, and codebase understanding. Can be a fast, cheap model.</p>
       </div>
       <div class="slot-card execute">
-        <span class="badge">execute</span>
+        <span class="badge">Forge</span>
         <h4>Edit &amp; Execute</h4>
         <p>File writes, bash commands, and code generation. Needs a model strong at following precise instructions.</p>
       </div>

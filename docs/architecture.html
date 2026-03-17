@@ -63,9 +63,9 @@
       <h2>Model Slots</h2>
       <p>The <strong>ModelSlotManager</strong> holds three named slots, each assigned to a provider + model pair:</p>
       <ul>
-        <li><span class="badge main">main</span> — Strategy, planning, high-level reasoning</li>
-        <li><span class="badge explore">explore</span> — Search, read, codebase understanding</li>
-        <li><span class="badge execute">execute</span> — Code edits, bash commands, file writes</li>
+        <li><span class="badge main">Cortex</span> (main) — Strategy, planning, high-level reasoning</li>
+        <li><span class="badge explore">Scout</span> (explore) — Search, read, codebase understanding</li>
+        <li><span class="badge execute">Forge</span> (execute) — Code edits, bash commands, file writes</li>
       </ul>
       <p>Slots can be reassigned at runtime via <code>slots.setSlot()</code> or by modifying the config. The manager is the single source of truth for which model handles which category of work.</p>
 
@@ -83,9 +83,9 @@
       <table>
         <thead><tr><th>Tool type</th><th>Routed to</th><th>Rationale</th></tr></thead>
         <tbody>
-          <tr><td><code>edit</code>, <code>write</code>, <code>bash</code></td><td><span class="badge execute">execute</span></td><td>Needs precise instruction following</td></tr>
-          <tr><td><code>grep</code>, <code>glob</code>, <code>read</code>, <code>search</code></td><td><span class="badge explore">explore</span></td><td>Read-only, can use a cheaper model</td></tr>
-          <tr><td><code>strategy</code>, <code>plan</code>, <code>conversation</code></td><td><span class="badge main">main</span></td><td>Needs the most capable model</td></tr>
+          <tr><td><code>edit</code>, <code>write</code>, <code>bash</code></td><td><span class="badge execute">Forge</span></td><td>Needs precise instruction following</td></tr>
+          <tr><td><code>grep</code>, <code>glob</code>, <code>read</code>, <code>search</code></td><td><span class="badge explore">Scout</span></td><td>Read-only, can use a cheaper model</td></tr>
+          <tr><td><code>strategy</code>, <code>plan</code>, <code>conversation</code></td><td><span class="badge main">Cortex</span></td><td>Needs the most capable model</td></tr>
         </tbody>
       </table>
       <p>You can override routing by setting <code>targetSlot</code> explicitly on an <code>OrchestratorTask</code>.</p>
@@ -190,6 +190,60 @@
 
       <h2>Multimodal Support</h2>
       <p>Bridges support multimodal <code>ChatMessage</code> content. The <code>MessageContent</code> type is a union of <code>string</code> and <code>Array&lt;TextContent | ImageContent&gt;</code>. Image references are encoded as base64 and passed through to providers that support vision (Anthropic, OpenAI, Gemini). Other providers receive the text-only portion via the <code>getTextContent()</code> helper.</p>
+
+      <h2>Planner</h2>
+      <p>The planner subsystem (<code>packages/core/src/planner/</code>) provides two high-level execution patterns:</p>
+
+      <h3>Plan Generation &amp; Execution</h3>
+      <pre><code><span class="comment">1. /plan "Add auth" → PlanGenerator</span>
+<span class="comment">2. Cortex generates PRD (system prompt pass)</span>
+<span class="comment">3. Cortex breaks PRD into tasks (JSON array)</span>
+<span class="comment">4. User reviews: approve / reject / edit</span>
+<span class="comment">5. PlanExecutor runs tasks sequentially via Forge</span>
+<span class="comment">6. Each task gets prior results as context</span>
+<span class="comment">7. Optional auto-commit after each task</span></code></pre>
+      <p>Plans are stored in <code>.iron-rain/plans/&lt;id&gt;/</code> and can be paused, resumed, or listed.</p>
+
+      <h3>Ralph Loop (iterative execution)</h3>
+      <p>The <code>RalphLoop</code> runs a task repeatedly until a completion condition is met. Each iteration includes prior actions as context, enabling progressive refinement. If stuck for 3+ iterations, it auto-suggests a different approach.</p>
+      <pre><code><span class="comment">1. /loop "Fix tests" --until "ALL TESTS PASSING"</span>
+<span class="comment">2. Iteration 1: Forge attempts fix → check condition</span>
+<span class="comment">3. Iteration 2: Forge sees prior result → tries again</span>
+<span class="comment">4. ... until condition is met or max iterations reached</span></code></pre>
+
+      <h2>Context Compaction (RLM)</h2>
+      <p>Long conversations are automatically managed using a Retrieval-augmented Language Model pattern:</p>
+      <ul>
+        <li><strong>Hot window</strong> — last 6 messages kept verbatim</li>
+        <li><strong>Cold archive</strong> — older messages summarized into a compact form</li>
+        <li><strong>RLM retrieval</strong> — keyword-based relevance scoring pulls relevant old messages back into context</li>
+      </ul>
+      <p>Compaction triggers when the message count exceeds 8 (configurable). Token estimation uses ~4 chars = 1 token.</p>
+
+      <h2>Error Handling &amp; Resilience</h2>
+      <p>All bridges use a shared error handling layer:</p>
+      <ul>
+        <li><strong>BridgeError</strong> — typed errors with status code and provider name</li>
+        <li><strong>Exponential backoff</strong> — with jitter (50-100% of computed delay), retries on 429 and 5xx errors</li>
+        <li><strong>Circuit breaker</strong> — opens after 5 consecutive failures, auto-resets after 60 seconds</li>
+      </ul>
+
+      <h2>Skills System</h2>
+      <p>Skills are markdown files with YAML frontmatter that extend Iron Rain with custom slash commands.</p>
+      <ul>
+        <li><strong>Auto-discovery</strong> — scans <code>.iron-rain/skills/</code>, <code>~/.iron-rain/skills/</code>, and <code>.claude/skills/</code></li>
+        <li><strong>Execution</strong> — skill instructions are injected into the system prompt for the dispatch</li>
+        <li><strong>Registration</strong> — skills appear in the slash command menu and <code>/skills</code> list</li>
+      </ul>
+
+      <h2>Session Persistence</h2>
+      <p>The TUI uses a <strong>SQLite database</strong> (<code>~/.iron-rain/sessions.db</code>) for persistence:</p>
+      <ul>
+        <li><strong>Sessions</strong> — stored with model, timestamps, and message history</li>
+        <li><strong>Lessons</strong> — persistent cross-session memory with optional TTL and full-text search</li>
+        <li><strong>Activities</strong> — subagent activities per message (slot, task, status, duration, tokens)</li>
+      </ul>
+      <p>Falls back to a no-op <code>NullSessionDB</code> in non-Bun environments.</p>
 
       <h2>Mid-Stream Context Injection</h2>
       <p>The <strong>DispatchController</strong> supports pausing a streaming response to inject additional user context:</p>

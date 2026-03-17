@@ -76,8 +76,17 @@
     <span class="key">"edit"</span>: <span class="str">"ask"</span>
   },
 
+  <span class="comment">// Thinking levels per slot</span>
+  <span class="comment">// "off" | "low" | "medium" | "high"</span>
+
   <span class="comment">// Active agent profile</span>
   <span class="key">"agent"</span>: <span class="str">"build"</span>,
+
+  <span class="comment">// Auto-update settings</span>
+  <span class="key">"updates"</span>: {
+    <span class="key">"autoCheck"</span>: <span class="kw">true</span>,
+    <span class="key">"channel"</span>: <span class="str">"stable"</span>
+  },
 
   <span class="comment">// LCM (context management) settings</span>
   <span class="key">"lcm"</span>: {
@@ -115,17 +124,17 @@
         </thead>
         <tbody>
           <tr>
-            <td><span class="badge main">main</span></td>
+            <td><span class="badge main">Cortex</span> (main)</td>
             <td>Strategy, planning, conversation</td>
             <td><code>strategy</code>, <code>plan</code>, <code>conversation</code></td>
           </tr>
           <tr>
-            <td><span class="badge explore">explore</span></td>
+            <td><span class="badge explore">Scout</span> (explore)</td>
             <td>Search, read, research</td>
             <td><code>grep</code>, <code>glob</code>, <code>read</code>, <code>search</code></td>
           </tr>
           <tr>
-            <td><span class="badge execute">execute</span></td>
+            <td><span class="badge execute">Forge</span> (execute)</td>
             <td>Write code, run commands</td>
             <td><code>edit</code>, <code>write</code>, <code>bash</code></td>
           </tr>
@@ -142,8 +151,25 @@
           <tr><td><code>model</code></td><td>string</td><td>Yes</td><td>Model identifier for the provider</td></tr>
           <tr><td><code>apiKey</code></td><td>string</td><td>No</td><td>Override the provider-level API key</td></tr>
           <tr><td><code>apiBase</code></td><td>string</td><td>No</td><td>Override the provider-level API base URL</td></tr>
+          <tr><td><code>thinkingLevel</code></td><td>string</td><td>No</td><td>Reasoning depth: <code>"off"</code>, <code>"low"</code>, <code>"medium"</code>, or <code>"high"</code></td></tr>
+          <tr><td><code>systemPrompt</code></td><td>string</td><td>No</td><td>Custom system prompt for this slot</td></tr>
         </tbody>
       </table>
+
+      <h3>Thinking levels</h3>
+      <p>Set <code>thinkingLevel</code> per slot to control reasoning depth. Each provider maps this to its native parameter:</p>
+      <table>
+        <thead>
+          <tr><th>Level</th><th>Anthropic (<code>budget_tokens</code>)</th><th>OpenAI (<code>reasoning_effort</code>)</th><th>Gemini (<code>thinkingBudget</code>)</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>off</code></td><td>disabled</td><td>disabled</td><td>disabled</td></tr>
+          <tr><td><code>low</code></td><td>4,096</td><td>low</td><td>4,096</td></tr>
+          <tr><td><code>medium</code></td><td>16,384</td><td>medium</td><td>12,288</td></tr>
+          <tr><td><code>high</code></td><td>32,768</td><td>high</td><td>24,576</td></tr>
+        </tbody>
+      </table>
+      <p>You can also change thinking levels at runtime from the Settings screen.</p>
 
       <h2>Providers</h2>
       <p>The <code>providers</code> object maps provider names to their credentials. These are shared across all slots that reference the provider.</p>

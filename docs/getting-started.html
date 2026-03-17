@@ -47,7 +47,14 @@
       <div class="steps">
         <div class="step">
           <h3>Install Iron Rain</h3>
-          <p>Install the core package and the CLI:</p>
+          <p>The quickest way to install is the one-line curl installer:</p>
+          <pre><code>curl -fsSL https://raw.githubusercontent.com/howlerops/iron-rain/main/scripts/install.sh | bash</code></pre>
+          <p>This auto-detects your OS, installs Bun if needed, and installs the <code>iron-rain</code> CLI globally.</p>
+
+          <div class="callout tip">
+            <div class="callout-title">Manual install</div>
+            <p>You can also install manually with your preferred package manager:</p>
+          </div>
           <pre><code><span class="comment"># With npm</span>
 npm install @howlerops/iron-rain
 npm install -g @howlerops/iron-rain-cli
@@ -97,9 +104,9 @@ npx @howlerops/iron-rain-cli</code></pre>
           <h3>Mix models across slots</h3>
           <p>The real power of Iron Rain is using different models for different tasks. During onboarding (or via the Settings screen), assign specialized models to each slot:</p>
           <ul>
-            <li><strong>Main</strong> (strategy &amp; planning) → e.g. Claude Sonnet</li>
-            <li><strong>Explore</strong> (search &amp; research) → e.g. Ollama qwen2.5-coder:32b (free, local)</li>
-            <li><strong>Execute</strong> (code edits &amp; commands) → e.g. GPT-4o</li>
+            <li><strong>Cortex</strong> (strategy &amp; planning) → e.g. Claude Sonnet</li>
+            <li><strong>Scout</strong> (search &amp; research) → e.g. Ollama qwen2.5-coder:32b (free, local)</li>
+            <li><strong>Forge</strong> (code edits &amp; commands) → e.g. GPT-4o</li>
           </ul>
           <p>The equivalent <code>iron-rain.json</code> looks like:</p>
           <pre><code>{
@@ -167,6 +174,15 @@ console.log(<span class="str">`${episode.tokens} tokens, ${episode.duration}ms`<
         <div class="step">
           <h3>Inject context mid-stream</h3>
           <p>While the agent is streaming a response, type additional instructions and press <strong>Enter</strong>. The stream pauses, your context is injected, and the agent continues with the updated information. Press <strong>Esc</strong> to cancel entirely.</p>
+        </div>
+
+        <div class="step">
+          <h3>Plan &amp; execute complex tasks</h3>
+          <p>For larger features, use the built-in planner:</p>
+          <pre><code>/plan Add user authentication with JWT tokens</code></pre>
+          <p><span class="badge main">Cortex</span> generates a PRD and breaks it into tasks. Review with <code>approve</code>, <code>reject</code>, or <code>edit &lt;feedback&gt;</code>. Once approved, <span class="badge execute">Forge</span> executes each task sequentially with auto-commit support.</p>
+          <p>For iterative work, use the loop command:</p>
+          <pre><code>/loop Fix failing tests --until "ALL TESTS PASSING"</code></pre>
         </div>
       </div>
 

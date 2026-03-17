@@ -41,13 +41,13 @@
 
       <h2>Installation</h2>
       <pre><code><span class="comment"># Install globally</span>
+curl -fsSL https://raw.githubusercontent.com/howlerops/iron-rain/main/scripts/install.sh | bash
+
+<span class="comment"># Or install manually</span>
 npm install -g @howlerops/iron-rain-cli
 
 <span class="comment"># Or run without installing</span>
-npx @howlerops/iron-rain-cli
-
-<span class="comment"># Or with bun</span>
-bunx @howlerops/iron-rain-cli</code></pre>
+npx @howlerops/iron-rain-cli</code></pre>
 
       <h2>Commands</h2>
 
@@ -64,7 +64,7 @@ bunx @howlerops/iron-rain-cli</code></pre>
       <pre><code>&lt;model response&gt;
 
 [success] 142 tokens, 850ms</code></pre>
-      <p>The prompt is dispatched to the <span class="badge main">main</span> slot. Exit code is <code>0</code> on success, <code>1</code> on failure.</p>
+      <p>The prompt is dispatched to <span class="badge main">Cortex</span> (main slot). Exit code is <code>0</code> on success, <code>1</code> on failure.</p>
 
       <div class="callout tip">
         <div class="callout-title">Scripting tip</div>
@@ -106,17 +106,103 @@ ollama
       <p>Show usage information.</p>
 
       <h2>Slash Commands</h2>
-      <p>Inside the TUI, type <code>/</code> to open the slash command menu. Available commands:</p>
+      <p>Inside the TUI, type <code>/</code> to open the slash command menu. All available commands:</p>
+
+      <h3>Session</h3>
       <table>
         <thead><tr><th>Command</th><th>Description</th></tr></thead>
         <tbody>
-          <tr><td><code>/settings</code></td><td>Open the settings screen</td></tr>
-          <tr><td><code>/clear</code></td><td>Clear the current session</td></tr>
+          <tr><td><code>/clear</code></td><td>Clear the current session messages</td></tr>
           <tr><td><code>/new</code></td><td>Start a new session</td></tr>
-          <tr><td><code>/context</code></td><td>Manage context directories (see below)</td></tr>
           <tr><td><code>/quit</code> or <code>/exit</code></td><td>Exit Iron Rain</td></tr>
         </tbody>
       </table>
+
+      <h3>Planning &amp; Loops</h3>
+      <table>
+        <thead><tr><th>Command</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>/plan &lt;description&gt;</code></td><td>Generate a PRD and task breakdown for a feature</td></tr>
+          <tr><td><code>/plans</code></td><td>List saved plans</td></tr>
+          <tr><td><code>/resume</code></td><td>Resume a paused plan</td></tr>
+          <tr><td><code>/loop &lt;desc&gt; --until "&lt;condition&gt;"</code></td><td>Start an iterative execution loop</td></tr>
+          <tr><td><code>/loop-status</code></td><td>Show current loop progress</td></tr>
+          <tr><td><code>/loop-pause</code></td><td>Pause the active loop</td></tr>
+          <tr><td><code>/loop-resume</code></td><td>Resume a paused loop</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Context &amp; Memory</h3>
+      <table>
+        <thead><tr><th>Command</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>/context add &lt;path&gt;</code></td><td>Add a directory to the context scope</td></tr>
+          <tr><td><code>/context list</code></td><td>Show added context directories</td></tr>
+          <tr><td><code>/context remove &lt;path&gt;</code></td><td>Remove a context directory</td></tr>
+          <tr><td><code>/lessons</code></td><td>Show persistent lessons learned (cross-session memory)</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Skills &amp; Tools</h3>
+      <table>
+        <thead><tr><th>Command</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>/skills</code></td><td>List available skills (grouped by source)</td></tr>
+          <tr><td><code>/mcp</code></td><td>Show MCP server status and connected tools</td></tr>
+          <tr><td><code>/&lt;skill-command&gt; [args]</code></td><td>Execute any registered custom skill</td></tr>
+        </tbody>
+      </table>
+
+      <h3>System</h3>
+      <table>
+        <thead><tr><th>Command</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>/settings</code></td><td>Open the settings screen (models, providers, about)</td></tr>
+          <tr><td><code>/help</code></td><td>Show all available commands</td></tr>
+          <tr><td><code>/version</code></td><td>Show version and system info</td></tr>
+          <tr><td><code>/update</code></td><td>Check for and install updates</td></tr>
+          <tr><td><code>/doctor</code></td><td>Run system diagnostics</td></tr>
+        </tbody>
+      </table>
+
+      <h2>Plan Workflow</h2>
+      <p>Iron Rain has a built-in planner that generates a PRD and task breakdown, then executes tasks sequentially through the <span class="badge execute">Forge</span> slot.</p>
+
+      <h3>Generate a plan</h3>
+      <pre><code>/plan Add user authentication with JWT tokens</code></pre>
+      <p>This runs two LLM passes through <span class="badge main">Cortex</span>:</p>
+      <ol>
+        <li><strong>PRD generation</strong> — produces a Product Requirements Document</li>
+        <li><strong>Task breakdown</strong> — splits the PRD into executable tasks with titles, descriptions, acceptance criteria, and target files</li>
+      </ol>
+
+      <h3>Review and approve</h3>
+      <p>After generation, the plan enters review mode. You can:</p>
+      <ul>
+        <li>Type <code>approve</code> (or <code>a</code>) — start execution</li>
+        <li>Type <code>reject</code> (or <code>r</code>) — discard the plan</li>
+        <li>Type <code>edit &lt;feedback&gt;</code> (or <code>e &lt;feedback&gt;</code>) — regenerate with your feedback</li>
+      </ul>
+
+      <h3>Execution</h3>
+      <p>Once approved, tasks run sequentially. Each task gets the prior task's output as context. Plans support:</p>
+      <ul>
+        <li><strong>Auto-commit</strong> — optional git commit after each task</li>
+        <li><strong>Pause/Resume</strong> — use <code>/resume</code> to continue a paused plan</li>
+        <li><strong>Saved plans</strong> — use <code>/plans</code> to list saved plans</li>
+      </ul>
+      <p>Plans are stored in <code>.iron-rain/plans/&lt;id&gt;/</code>.</p>
+
+      <h2>Iterative Loop</h2>
+      <p>The loop command runs a task iteratively until a completion condition is met:</p>
+      <pre><code>/loop Fix all failing tests --until "ALL TESTS PASSING"</code></pre>
+      <p>Each iteration:</p>
+      <ol>
+        <li>Runs the task through <span class="badge execute">Forge</span> with context from prior iterations</li>
+        <li>Checks if the completion condition is met via LLM evaluation</li>
+        <li>Stops when the condition is true or max iterations reached (default: 10)</li>
+      </ol>
+      <p>If the loop detects it's stuck (3+ iterations with no progress), it automatically suggests a different strategy. Use <code>/loop-pause</code> and <code>/loop-resume</code> to control execution.</p>
 
       <h3><code>/context</code> — manage context directories</h3>
       <p>Add external directories to your session's context scope. Files inside these directories can be referenced with <code>@</code> mentions.</p>
