@@ -105,6 +105,82 @@ ollama
       <h3><code>iron-rain --help</code></h3>
       <p>Show usage information.</p>
 
+      <h2>Slash Commands</h2>
+      <p>Inside the TUI, type <code>/</code> to open the slash command menu. Available commands:</p>
+      <table>
+        <thead><tr><th>Command</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>/settings</code></td><td>Open the settings screen</td></tr>
+          <tr><td><code>/clear</code></td><td>Clear the current session</td></tr>
+          <tr><td><code>/new</code></td><td>Start a new session</td></tr>
+          <tr><td><code>/context</code></td><td>Manage context directories (see below)</td></tr>
+          <tr><td><code>/quit</code> or <code>/exit</code></td><td>Exit Iron Rain</td></tr>
+        </tbody>
+      </table>
+
+      <h3><code>/context</code> — manage context directories</h3>
+      <p>Add external directories to your session's context scope. Files inside these directories can be referenced with <code>@</code> mentions.</p>
+      <pre><code><span class="comment"># Add a directory</span>
+/context add ../other-project
+
+<span class="comment"># List added directories</span>
+/context list
+
+<span class="comment"># Remove a directory</span>
+/context remove ../other-project</code></pre>
+      <p>Directories are resolved to absolute paths and validated on add. They persist for the current session.</p>
+
+      <h2>@ References</h2>
+      <p>Use <code>@</code> prefixes to inject files, directories, git state, or images into your prompt context.</p>
+
+      <h3>File references</h3>
+      <pre><code><span class="comment"># Relative path (starts with ./ or ../)</span>
+@./src/index.ts explain this file
+
+<span class="comment"># Explicit file: prefix</span>
+@file:package.json what dependencies do we use?</code></pre>
+      <p>File contents are injected into the system prompt wrapped in <code>&lt;file path="..."&gt;</code> tags. Maximum file size: 100KB.</p>
+
+      <h3>Directory references</h3>
+      <pre><code>@dir:src/components/ what's the structure here?</code></pre>
+      <p>Injects a listing of files and subdirectories, prefixed with <code>d</code> (directory) or <code>f</code> (file).</p>
+
+      <h3>Git references</h3>
+      <pre><code>@git:diff what changed?
+@git:status are there uncommitted files?
+@git:log show recent commits</code></pre>
+      <p>Supported git commands: <code>diff</code>, <code>status</code>, <code>log</code>, <code>branch</code>, <code>stash</code>. Each runs with a 5-second timeout.</p>
+
+      <h3>Image references</h3>
+      <pre><code>@./screenshot.png what does this UI show?
+@image:mockup.jpg implement this design</code></pre>
+      <p>Images are read as base64 and passed to the model as multimodal content (when the provider supports it). Supported formats: PNG, JPG, JPEG, GIF, WebP, SVG. Maximum size: 20MB.</p>
+
+      <h3>Slot routing</h3>
+      <pre><code><span class="comment"># Route to a specific slot (must be first word)</span>
+@cortex explain the architecture
+@scout search for all TODO comments
+@forge refactor this function</code></pre>
+      <p>Slot routing (<code>@cortex</code>/<code>@scout</code>/<code>@forge</code>) is detected only when the <code>@</code> token is a bare word at the start of the message. File-style references (<code>@./</code>, <code>@file:</code>, etc.) are always treated as context injection.</p>
+
+      <h3>Multiple references</h3>
+      <pre><code>@./README.md @git:diff explain the recent changes relative to the README</code></pre>
+      <p>You can combine multiple <code>@</code> references in a single message. All resolved content is injected into the system prompt.</p>
+
+      <h2>Mid-stream context injection</h2>
+      <p>While the agent is streaming a response, you can type additional context and press <strong>Enter</strong> to inject it mid-stream:</p>
+      <ol>
+        <li>The current stream is paused and the partial response is saved</li>
+        <li>Your new text is added as a user message</li>
+        <li>The agent resumes with the full updated history</li>
+      </ol>
+      <p>Press <strong>Esc</strong> to cancel the stream entirely instead.</p>
+
+      <div class="callout tip">
+        <div class="callout-title">Status bar hint</div>
+        <p>While streaming, the status bar shows: <code>(Xs · esc to cancel · enter to add context)</code></p>
+      </div>
+
       <h2>Flags</h2>
       <table>
         <thead><tr><th>Flag</th><th>Short</th><th>Description</th></tr></thead>

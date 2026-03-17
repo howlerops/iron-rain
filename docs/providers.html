@@ -45,6 +45,11 @@
         <strong>CLI providers</strong> spawn your existing CLI tools (Claude Code, Codex, Gemini CLI) — they use your existing subscription, no API key needed.</p>
       </div>
 
+      <div class="callout tip">
+        <div class="callout-title">Multimodal support</div>
+        <p>API providers (Anthropic, OpenAI, Gemini) support <strong>image references</strong> via <code>@./image.png</code> or <code>@image:path</code>. Images are base64-encoded and sent as multimodal content. CLI and Ollama bridges receive the text-only portion.</p>
+      </div>
+
       <h2>Ollama (local, free)</h2>
       <p>Run open-source models locally. No API key, no cost, full privacy.</p>
       <h4>Setup</h4>

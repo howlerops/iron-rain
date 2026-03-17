@@ -52,6 +52,9 @@
 <span class="comment">│</span>  ├── ToolRouter                                  <span class="comment">│</span>
 <span class="comment">│</span>  └── SlotWorker (per slot)                       <span class="comment">│</span>
 <span class="comment">├─────────────────────────────────────────────────┤</span>
+<span class="comment">│</span>  <span class="type">Context</span>             <span class="comment">@ references + injection</span>   <span class="comment">│</span>
+<span class="comment">│</span>  parseReferences │ DispatchController            <span class="comment">│</span>
+<span class="comment">├─────────────────────────────────────────────────┤</span>
 <span class="comment">│</span>  <span class="type">Bridges</span>             <span class="comment">Provider abstraction layer</span>  <span class="comment">│</span>
 <span class="comment">│</span>  AnthropicBridge │ OllamaBridge │ OpenAICompat   <span class="comment">│</span>
 <span class="comment">│</span>  ClaudeCodeBridge │ CodexBridge │ GeminiBridge   <span class="comment">│</span>
@@ -157,12 +160,62 @@
 }</code></pre>
       <p>Episodes accumulate in the kernel and can be inspected for debugging, cost tracking, or fed into context management systems.</p>
 
+      <h2>Context References</h2>
+      <p>The <strong>context reference system</strong> lets users inject external context into prompts using <code>@</code> prefixes. This is handled by the <code>parseReferences()</code> function in the core package.</p>
+      <pre><code><span class="comment">┌─────────────────────────────────────────────────┐</span>
+<span class="comment">│</span>  <span class="type">User Input</span>                                      <span class="comment">│</span>
+<span class="comment">│</span>  "@./file.ts @git:diff explain changes"          <span class="comment">│</span>
+<span class="comment">├─────────────────────────────────────────────────┤</span>
+<span class="comment">│</span>  <span class="type">parseReferences()</span>                               <span class="comment">│</span>
+<span class="comment">│</span>  ├── Detect slot routing (@cortex, @scout...)    <span class="comment">│</span>
+<span class="comment">│</span>  ├── Resolve file refs → read + wrap in tags     <span class="comment">│</span>
+<span class="comment">│</span>  ├── Resolve dir refs → listing                  <span class="comment">│</span>
+<span class="comment">│</span>  ├── Resolve git refs → exec whitelisted cmds    <span class="comment">│</span>
+<span class="comment">│</span>  └── Resolve image refs → base64 encode          <span class="comment">│</span>
+<span class="comment">├─────────────────────────────────────────────────┤</span>
+<span class="comment">│</span>  <span class="type">DispatchController.buildTask()</span>                  <span class="comment">│</span>
+<span class="comment">│</span>  Injects resolved content into system prompt     <span class="comment">│</span>
+<span class="comment">└─────────────────────────────────────────────────┘</span></code></pre>
+
+      <h3>Reference types</h3>
+      <table>
+        <thead><tr><th>Type</th><th>Syntax</th><th>Resolved as</th></tr></thead>
+        <tbody>
+          <tr><td>File</td><td><code>@./path</code> or <code>@file:path</code></td><td>File contents in <code>&lt;file&gt;</code> tags (100KB max)</td></tr>
+          <tr><td>Directory</td><td><code>@dir:path</code></td><td>Directory listing in <code>&lt;directory&gt;</code> tags</td></tr>
+          <tr><td>Git</td><td><code>@git:cmd</code></td><td>Git command output in <code>&lt;git&gt;</code> tags (5s timeout)</td></tr>
+          <tr><td>Image</td><td><code>@image:path</code> or <code>@./img.png</code></td><td>Base64 data for multimodal models (20MB max)</td></tr>
+        </tbody>
+      </table>
+
+      <h2>Multimodal Support</h2>
+      <p>Bridges support multimodal <code>ChatMessage</code> content. The <code>MessageContent</code> type is a union of <code>string</code> and <code>Array&lt;TextContent | ImageContent&gt;</code>. Image references are encoded as base64 and passed through to providers that support vision (Anthropic, OpenAI, Gemini). Other providers receive the text-only portion via the <code>getTextContent()</code> helper.</p>
+
+      <h2>Mid-Stream Context Injection</h2>
+      <p>The <strong>DispatchController</strong> supports pausing a streaming response to inject additional user context:</p>
+      <ol>
+        <li>User submits text while the agent is streaming</li>
+        <li><code>injectAndContinue()</code> aborts the current stream</li>
+        <li>The partial response is saved as an assistant message</li>
+        <li>A continuation prompt is dispatched with the full updated history</li>
+      </ol>
+      <p>This enables iterative refinement without losing the agent's partial work.</p>
+
+      <h2>Subagent Display</h2>
+      <p>When tasks run across multiple slots, the TUI shows a responsive <strong>SubagentGrid</strong> — a flex-wrap grid of cards showing:</p>
+      <ul>
+        <li>Status dot (running/done/error/interrupted) with slot label</li>
+        <li>Task title and tool-call tree with checkmark/error markers</li>
+        <li>Footer with duration, token count, and cost</li>
+      </ul>
+      <p>Cards adapt to terminal width via <code>flexGrow</code> + <code>minWidth</code>.</p>
+
       <h2>Packages</h2>
       <table>
         <thead><tr><th>Package</th><th>Purpose</th></tr></thead>
         <tbody>
-          <tr><td><code>@howlerops/iron-rain</code></td><td>Core library — slots, orchestrator, bridges, config. Zero UI deps.</td></tr>
-          <tr><td><code>@howlerops/iron-rain-tui</code></td><td>Terminal UI components built with SolidJS</td></tr>
+          <tr><td><code>@howlerops/iron-rain</code></td><td>Core library — slots, orchestrator, bridges, context references, config. Zero UI deps.</td></tr>
+          <tr><td><code>@howlerops/iron-rain-tui</code></td><td>Terminal UI components built with SolidJS — session view, subagent grid, settings</td></tr>
           <tr><td><code>@howlerops/iron-rain-cli</code></td><td>CLI binary — launches TUI or runs headless</td></tr>
           <tr><td><code>@howlerops/iron-rain-plugin</code></td><td>Plugin SDK — hooks and type definitions</td></tr>
         </tbody>

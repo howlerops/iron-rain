@@ -38,6 +38,18 @@ iron-rain --version          Show version
 iron-rain --help             Show help
 ```
 
+### TUI Slash Commands
+
+```
+/settings                    Open settings
+/clear                       Clear session
+/new                         New session
+/context add <path>          Add context directory
+/context list                List context directories
+/context remove <path>       Remove context directory
+/quit or /exit               Exit
+```
+
 ## Architecture
 
 Iron Rain uses a three-slot model orchestration system:
@@ -106,6 +118,42 @@ Built-in bridge support for:
   }
 }
 ```
+
+## @ Context References
+
+Inject files, directories, git state, or images into any prompt:
+
+```
+@./src/index.ts explain this file
+@git:diff what changed?
+@dir:src/components/ what's the structure?
+@./screenshot.png implement this design
+```
+
+| Syntax | Resolves to |
+|--------|-------------|
+| `@./path` or `@file:path` | File contents (100KB max) |
+| `@dir:path` | Directory listing |
+| `@git:diff\|status\|log\|branch\|stash` | Git command output |
+| `@./image.png` or `@image:path` | Base64 image for multimodal models |
+
+Multiple references can be combined in a single message. Slot routing (`@cortex`, `@scout`, `@forge`) is preserved — bare words at the start route to slots, while path-style references inject context.
+
+## Context Directories
+
+Add external directories to your session scope with the `/context` command:
+
+```
+/context add ../other-project
+/context list
+/context remove ../other-project
+```
+
+Files in added directories can then be referenced with `@` mentions.
+
+## Mid-Stream Context Injection
+
+While the agent is streaming, type additional context and press **Enter** to inject it. The response pauses, your text is added to the history, and the agent resumes with the updated context. Press **Esc** to cancel the stream entirely.
 
 ## Development
 

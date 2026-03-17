@@ -144,11 +144,38 @@ console.log(<span class="str">`${episode.tokens} tokens, ${episode.duration}ms`<
         </div>
       </div>
 
+        <div class="step">
+          <h3>Use @ references for context</h3>
+          <p>Inject files, directories, git state, or images directly into your prompt with <code>@</code> prefixes:</p>
+          <pre><code><span class="comment"># Inject a file's contents</span>
+@./src/index.ts explain this file
+
+<span class="comment"># Inject git diff</span>
+@git:diff what changed?
+
+<span class="comment"># Inject a directory listing</span>
+@dir:src/components/ what's the structure?
+
+<span class="comment"># Attach an image for multimodal models</span>
+@./screenshot.png implement this design
+
+<span class="comment"># Combine multiple references</span>
+@./README.md @git:status summarize the project state</code></pre>
+          <p>You can also add external directories to the context scope with <code>/context add ../path</code>.</p>
+        </div>
+
+        <div class="step">
+          <h3>Inject context mid-stream</h3>
+          <p>While the agent is streaming a response, type additional instructions and press <strong>Enter</strong>. The stream pauses, your context is injected, and the agent continues with the updated information. Press <strong>Esc</strong> to cancel entirely.</p>
+        </div>
+      </div>
+
       <h2>What's next?</h2>
       <ul>
         <li><a href="configuration.html">Configuration Reference</a> — all config options explained</li>
         <li><a href="providers.html">Provider Setup</a> — detailed guides for each provider</li>
         <li><a href="architecture.html">Architecture</a> — how slots, orchestration, and episodes work</li>
+        <li><a href="cli-reference.html">CLI Reference</a> — slash commands, @ references, and keyboard shortcuts</li>
         <li><a href="plugin-sdk.html">Plugin SDK</a> — extend Iron Rain with custom hooks</li>
       </ul>
 

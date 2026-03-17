@@ -87,6 +87,17 @@
     }
   },
 
+  <span class="comment">// MCP servers</span>
+  <span class="key">"mcpServers"</span>: {
+    <span class="key">"my-server"</span>: { <span class="key">"command"</span>: <span class="str">"node"</span>, <span class="key">"args"</span>: [<span class="str">"./server.js"</span>] }
+  },
+
+  <span class="comment">// Skill discovery</span>
+  <span class="key">"skills"</span>: {
+    <span class="key">"autoDiscover"</span>: <span class="kw">true</span>,
+    <span class="key">"paths"</span>: [<span class="str">"./custom-skills"</span>]
+  },
+
   <span class="comment">// TUI theme</span>
   <span class="key">"theme"</span>: <span class="str">"default"</span>
 }</code></pre>
@@ -173,6 +184,45 @@
         <tbody>
           <tr><td><code>lcm.enabled</code></td><td>boolean</td><td><code>true</code></td><td>Enable episode tracking and context management</td></tr>
           <tr><td><code>lcm.episodes.maxEpisodeTokens</code></td><td>number</td><td><code>4000</code></td><td>Maximum tokens per episode summary</td></tr>
+        </tbody>
+      </table>
+
+      <h2>MCP Servers</h2>
+      <p>Iron Rain can connect to <a href="https://modelcontextprotocol.io/">MCP (Model Context Protocol)</a> servers. Tool descriptions from connected servers are injected into the system prompt automatically.</p>
+      <pre><code>{
+  <span class="key">"mcpServers"</span>: {
+    <span class="key">"my-server"</span>: {
+      <span class="key">"command"</span>: <span class="str">"node"</span>,
+      <span class="key">"args"</span>: [<span class="str">"./mcp-server.js"</span>]
+    }
+  }
+}</code></pre>
+      <table>
+        <thead>
+          <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>command</code></td><td>string</td><td>Command to launch the MCP server</td></tr>
+          <tr><td><code>args</code></td><td>string[]</td><td>Arguments to pass to the command</td></tr>
+        </tbody>
+      </table>
+      <p>Connections are established at startup (non-blocking). Tool descriptions are merged into the system prompt for every dispatch.</p>
+
+      <h2>Skills</h2>
+      <p>Iron Rain discovers and loads skill files from your project. Skills provide slash commands that extend the TUI.</p>
+      <pre><code>{
+  <span class="key">"skills"</span>: {
+    <span class="key">"autoDiscover"</span>: <span class="kw">true</span>,
+    <span class="key">"paths"</span>: [<span class="str">"./custom-skills"</span>]
+  }
+}</code></pre>
+      <table>
+        <thead>
+          <tr><th>Field</th><th>Type</th><th>Default</th><th>Description</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>skills.autoDiscover</code></td><td>boolean</td><td><code>true</code></td><td>Automatically discover skill files in standard locations</td></tr>
+          <tr><td><code>skills.paths</code></td><td>string[]</td><td><code>[]</code></td><td>Additional directories to search for skill files</td></tr>
         </tbody>
       </table>
 

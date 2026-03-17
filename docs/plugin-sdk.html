@@ -157,8 +157,23 @@
   <span class="type">EpisodeSummary</span>,
   <span class="type">SlotName</span>,
   <span class="type">SlotConfig</span>,
-  <span class="type">IronRainConfig</span>
+  <span class="type">IronRainConfig</span>,
+  <span class="type">ChatMessage</span>,
+  <span class="type">MessageContent</span>,
+  <span class="type">ResolvedReference</span>
 } <span class="kw">from</span> <span class="str">'@howlerops/iron-rain-plugin'</span>;</code></pre>
+      <p>The core package also exports context reference utilities:</p>
+      <pre><code><span class="kw">import</span> {
+  <span class="fn">parseReferences</span>,
+  <span class="fn">getTextContent</span>
+} <span class="kw">from</span> <span class="str">'@howlerops/iron-rain'</span>;
+
+<span class="kw">import type</span> {
+  <span class="type">ResolvedReference</span>,
+  <span class="type">ParsedInput</span>,
+  <span class="type">ImageContent</span>,
+  <span class="type">TextContent</span>
+} <span class="kw">from</span> <span class="str">'@howlerops/iron-rain'</span>;</code></pre>
 
       <div class="page-nav">
         <a href="cli-reference.html">
