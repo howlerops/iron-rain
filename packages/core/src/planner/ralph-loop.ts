@@ -1,19 +1,35 @@
 /**
  * Ralph Wiggum Loop — iterative task execution until a completion condition is met.
  */
-import { execSync } from 'node:child_process';
-import type { OrchestratorKernel } from '../orchestrator/kernel.js';
-import type { LoopConfig, LoopState, LoopIteration, LoopCallbacks } from './types.js';
-import { buildLoopIterationPrompt, buildCompletionCheckPrompt } from './prompts.js';
+
+import { autoCommit } from "../git/utils.js";
+import type { OrchestratorKernel } from "../orchestrator/kernel.js";
+import {
+  buildCompletionCheckPrompt,
+  buildLoopIterationPrompt,
+} from "./prompts.js";
+import { PlanStorage } from "./storage.js";
+import type {
+  LoopCallbacks,
+  LoopConfig,
+  LoopIteration,
+  LoopState,
+} from "./types.js";
 
 export class RalphLoop {
   private kernel: OrchestratorKernel;
   private callbacks: LoopCallbacks;
+  private storage: PlanStorage;
   private paused = false;
 
-  constructor(kernel: OrchestratorKernel, callbacks: LoopCallbacks) {
+  constructor(
+    kernel: OrchestratorKernel,
+    callbacks: LoopCallbacks,
+    storage?: PlanStorage,
+  ) {
     this.kernel = kernel;
     this.callbacks = callbacks;
+    this.storage = storage ?? new PlanStorage();
   }
 
   async run(config: LoopConfig, signal?: AbortSignal): Promise<LoopState> {
@@ -21,7 +37,7 @@ export class RalphLoop {
       id: crypto.randomUUID?.() ?? `loop-${Date.now()}`,
       config,
       iterations: [],
-      status: 'running',
+      status: "running",
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
@@ -30,7 +46,7 @@ export class RalphLoop {
 
     for (let i = 0; i < config.maxIterations; i++) {
       if (signal?.aborted || this.paused) {
-        state.status = 'paused';
+        state.status = "paused";
         break;
       }
 
@@ -44,13 +60,13 @@ export class RalphLoop {
           completionPromise: config.completionPromise,
           iterationIndex: i,
           maxIterations: config.maxIterations,
-          priorActions: state.iterations.map(it => it.action),
+          priorActions: state.iterations.map((it) => it.action),
         });
 
         const episode = await this.kernel.dispatch({
           id: `loop-${state.id}-iter-${i}`,
           prompt,
-          targetSlot: 'execute',
+          targetSlot: "execute",
           systemPrompt: `You are Forge, working iteratively to achieve a goal. This is iteration ${i + 1} of ${config.maxIterations}.`,
         });
 
@@ -59,11 +75,16 @@ export class RalphLoop {
         // Auto-commit if enabled
         let commitHash: string | undefined;
         if (config.autoCommit) {
-          commitHash = this.autoCommit(`loop iteration ${i + 1}: ${config.want.slice(0, 50)}`);
+          commitHash = autoCommit(
+            `loop iteration ${i + 1}: ${config.want.slice(0, 50)}`,
+          );
         }
 
         // Check completion
-        const completionMet = await this.checkCompletion(config.completionPromise, episode.result);
+        const completionMet = await this.checkCompletion(
+          config.completionPromise,
+          episode.result,
+        );
 
         const iteration: LoopIteration = {
           index: i,
@@ -80,14 +101,14 @@ export class RalphLoop {
         this.callbacks.onIterationComplete?.(iteration);
 
         if (completionMet) {
-          state.status = 'completed';
+          state.status = "completed";
           break;
         }
       } catch (err) {
         const iteration: LoopIteration = {
           index: i,
           action: `Error: ${err instanceof Error ? err.message : String(err)}`,
-          result: '',
+          result: "",
           completionMet: false,
           duration: Date.now() - start,
           tokens: 0,
@@ -97,8 +118,8 @@ export class RalphLoop {
       }
     }
 
-    if (state.status === 'running') {
-      state.status = 'failed'; // Max iterations reached without completion
+    if (state.status === "running") {
+      state.status = "failed"; // Max iterations reached without completion
     }
 
     state.updatedAt = Date.now();
@@ -113,7 +134,7 @@ export class RalphLoop {
   async resume(state: LoopState, signal?: AbortSignal): Promise<LoopState> {
     const remaining = state.config.maxIterations - state.iterations.length;
     if (remaining <= 0) {
-      state.status = 'failed';
+      state.status = "failed";
       return state;
     }
 
@@ -124,11 +145,11 @@ export class RalphLoop {
 
     // Create a new loop with existing iterations as context
     this.paused = false;
-    state.status = 'running';
+    state.status = "running";
 
     for (let i = state.iterations.length; i < state.config.maxIterations; i++) {
       if (signal?.aborted || this.paused) {
-        state.status = 'paused';
+        state.status = "paused";
         break;
       }
 
@@ -140,23 +161,26 @@ export class RalphLoop {
         completionPromise: state.config.completionPromise,
         iterationIndex: i,
         maxIterations: state.config.maxIterations,
-        priorActions: state.iterations.map(it => it.action),
+        priorActions: state.iterations.map((it) => it.action),
       });
 
       try {
         const episode = await this.kernel.dispatch({
           id: `loop-${state.id}-iter-${i}`,
           prompt,
-          targetSlot: 'execute',
+          targetSlot: "execute",
         });
 
         const duration = Date.now() - start;
         let commitHash: string | undefined;
         if (state.config.autoCommit) {
-          commitHash = this.autoCommit(`loop iteration ${i + 1}`);
+          commitHash = autoCommit(`loop iteration ${i + 1}`);
         }
 
-        const completionMet = await this.checkCompletion(state.config.completionPromise, episode.result);
+        const completionMet = await this.checkCompletion(
+          state.config.completionPromise,
+          episode.result,
+        );
 
         const iteration: LoopIteration = {
           index: i,
@@ -173,7 +197,7 @@ export class RalphLoop {
         this.callbacks.onIterationComplete?.(iteration);
 
         if (completionMet) {
-          state.status = 'completed';
+          state.status = "completed";
           break;
         }
       } catch {
@@ -181,33 +205,26 @@ export class RalphLoop {
       }
     }
 
-    if (state.status === 'running') state.status = 'failed';
+    if (state.status === "running") state.status = "failed";
     state.updatedAt = Date.now();
     this.callbacks.onComplete?.(state);
     return state;
   }
 
-  private async checkCompletion(promise: string, lastResult: string): Promise<boolean> {
+  private async checkCompletion(
+    promise: string,
+    lastResult: string,
+  ): Promise<boolean> {
     try {
       const prompt = buildCompletionCheckPrompt(promise, lastResult);
       const episode = await this.kernel.dispatch({
         id: `completion-check-${Date.now()}`,
         prompt,
-        targetSlot: 'main',
+        targetSlot: "main",
       });
-      return episode.result.toUpperCase().startsWith('TRUE');
+      return episode.result.toUpperCase().startsWith("TRUE");
     } catch {
       return false;
-    }
-  }
-
-  private autoCommit(message: string): string | undefined {
-    try {
-      execSync('git add -A', { stdio: 'pipe' });
-      execSync(`git commit -m ${JSON.stringify(`iron-rain: ${message}`)} --allow-empty`, { stdio: 'pipe' });
-      return execSync('git rev-parse --short HEAD', { stdio: 'pipe' }).toString().trim();
-    } catch {
-      return undefined;
     }
   }
 }

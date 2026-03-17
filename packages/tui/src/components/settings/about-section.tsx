@@ -1,9 +1,11 @@
-import { ironRainTheme } from '../../theme/theme.js';
+import { ironRainTheme } from "../../theme/theme.js";
 
 export function AboutSection() {
   return (
     <box flexDirection="column" paddingX={1}>
-      <text fg={ironRainTheme.brand.primary}><b>Iron Rain</b></text>
+      <text fg={ironRainTheme.brand.primary}>
+        <b>Iron Rain</b>
+      </text>
       <text fg={ironRainTheme.chrome.muted}>
         Multi-model orchestration for terminal-based coding
       </text>

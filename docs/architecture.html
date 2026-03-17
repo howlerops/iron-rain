@@ -11,7 +11,12 @@
   <nav class="topnav">
     <a href="index.html" class="logo">
       <img src="assets/howlerops-icon-dark.png" alt="howlerops">
-      <span>Iron Rain</span>
+      <pre class="ascii-logo">╭━━╮╭━━━╮╭━━━╮╭━╮╱╭╮   ╭━━━╮╭━━━╮╭━━╮╭━╮╱╭╮
+╰┫┣╯┃╭━╮┃┃╭━╮┃┃┃╰╮┃┃   ┃╭━╮┃┃╭━╮┃╰┫┣╯┃┃╰╮┃┃
+╱┃┃╱┃╰━╯┃┃┃╱┃┃┃╭╮╰╯┃   ┃╰━╯┃┃┃╱┃┃╱┃┃╱┃╭╮╰╯┃
+╱┃┃╱┃╭╮╭╯┃┃╱┃┃┃┃╰╮┃┃   ┃╭╮╭╯┃╰━╯┃╱┃┃╱┃┃╰╮┃┃
+╭┫┣╮┃┃┃╰╮┃╰━╯┃┃┃╱┃┃┃   ┃┃┃╰╮┃╭━╮┃╭┫┣╮┃┃╱┃┃┃
+╰━━╯╰╯╰━╯╰━━━╯╰╯╱╰━╯   ╰╯╰━╯╰╯╱╰╯╰━━╯╰╯╱╰━╯</pre>
     </a>
     <div class="links">
       <a href="getting-started.html" class="active">Docs</a>
@@ -131,6 +136,16 @@
   <span class="fn">execute</span>(prompt: <span class="type">string</span>, options?: <span class="type">BridgeOptions</span>): Promise&lt;<span class="type">BridgeResult</span>&gt;;
   <span class="fn">stream</span>(prompt: <span class="type">string</span>, options?: <span class="type">BridgeOptions</span>): AsyncIterable&lt;<span class="type">BridgeChunk</span>&gt;;
 }</code></pre>
+
+      <h3>Streaming chunks</h3>
+      <p>The <code>stream()</code> method yields <code>BridgeChunk</code> objects with structured tool call data:</p>
+      <pre><code><span class="kw">interface</span> <span class="type">BridgeChunk</span> {
+  type: <span class="str">"text"</span> | <span class="str">"thinking"</span> | <span class="str">"tool_use"</span> | <span class="str">"error"</span> | <span class="str">"done"</span>;
+  content: <span class="type">string</span>;
+  tokens?: { input: <span class="type">number</span>; output: <span class="type">number</span> };
+  toolCall?: { id: <span class="type">string</span>; name: <span class="type">string</span>; status: <span class="str">"start"</span> | <span class="str">"end"</span> };
+}</code></pre>
+      <p>Tool call chunks carry enriched display names (e.g. <code>Read schema.ts</code> instead of just <code>Read</code>) derived from tool input arguments like <code>file_path</code>, <code>pattern</code>, or <code>command</code>. The pipeline flows: Bridge &rarr; <code>SlotWorker.stream()</code> &rarr; <code>OrchestratorKernel.dispatchStreaming()</code> &rarr; <code>DispatchController</code> &rarr; UI signals.</p>
 
       <h3>Bridge types</h3>
       <table>
@@ -263,6 +278,17 @@
         <li>Footer with duration, token count, and cost</li>
       </ul>
       <p>Cards adapt to terminal width via <code>flexGrow</code> + <code>minWidth</code>.</p>
+
+      <h3>Streaming Agent Card</h3>
+      <p>During active streaming, a <strong>StreamingAgentCard</strong> replaces the simple spinner with a live-updating bordered card that shows:</p>
+      <ul>
+        <li>Animated spinner with slot label and truncated task description</li>
+        <li>Tool call tree with <code>├/└</code> connectors and <code>✓/✗/→</code> status indicators</li>
+        <li>Lifecycle phases: "System prompt loaded", "Thinking..." entries</li>
+        <li>Truncated content preview as text streams in</li>
+        <li>Live elapsed timer with cancel/inject hints</li>
+      </ul>
+      <p>The <code>DispatchController</code> accumulates tool calls from <code>tool_use</code> chunks during streaming and copies them into the final <code>SlotActivity.toolCalls</code> for the completed message display.</p>
 
       <h2>Packages</h2>
       <table>

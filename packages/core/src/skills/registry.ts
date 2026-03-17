@@ -1,8 +1,9 @@
 /**
  * Skill Registry — manages loaded skills and provides lookup.
  */
-import type { Skill } from './types.js';
-import { discoverSkills } from './loader.js';
+
+import { discoverSkills } from "./loader.js";
+import type { Skill } from "./types.js";
 
 export class SkillRegistry {
   private skills = new Map<string, Skill>();
@@ -44,7 +45,7 @@ export class SkillRegistry {
   grouped(): Map<string, Skill[]> {
     const groups = new Map<string, Skill[]>();
     for (const skill of this.skills.values()) {
-      const label = skill.source.split(':')[0] || 'Unknown';
+      const label = skill.source.split(":")[0] || "Unknown";
       const list = groups.get(label) ?? [];
       list.push(skill);
       groups.set(label, list);
@@ -57,8 +58,8 @@ export class SkillRegistry {
    */
   getCommands(): Array<{ name: string; description: string }> {
     return this.list()
-      .filter(s => s.command)
-      .map(s => ({ name: s.command!, description: s.description }));
+      .filter((s) => s.command)
+      .map((s) => ({ name: s.command!, description: s.description }));
   }
 
   clear(): void {

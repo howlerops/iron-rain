@@ -1,9 +1,9 @@
 /**
  * Plan Generator — generates PRD + task breakdown via Cortex (main slot).
  */
-import type { OrchestratorKernel } from '../orchestrator/kernel.js';
-import type { Plan, PlanTask } from './types.js';
-import { PRD_SYSTEM_PROMPT, TASK_BREAKDOWN_PROMPT } from './prompts.js';
+import type { OrchestratorKernel } from "../orchestrator/kernel.js";
+import { PRD_SYSTEM_PROMPT, TASK_BREAKDOWN_PROMPT } from "./prompts.js";
+import type { Plan, PlanTask } from "./types.js";
 
 export class PlanGenerator {
   private kernel: OrchestratorKernel;
@@ -26,20 +26,20 @@ export class PlanGenerator {
     const prdEpisode = await this.kernel.dispatch({
       id: `${planId}-prd`,
       prompt: prdPrompt,
-      targetSlot: 'main',
+      targetSlot: "main",
       systemPrompt: PRD_SYSTEM_PROMPT,
     });
 
-    const prd = prdEpisode.result || '';
+    const prd = prdEpisode.result || "";
 
     // Step 2: Break down into tasks
     const taskEpisode = await this.kernel.dispatch({
       id: `${planId}-tasks`,
       prompt: `${TASK_BREAKDOWN_PROMPT}\n\n## PRD\n${prd}`,
-      targetSlot: 'main',
+      targetSlot: "main",
     });
 
-    const tasks = this.parseTasks(taskEpisode.result || '[]', planId);
+    const tasks = this.parseTasks(taskEpisode.result || "[]", planId);
 
     // Extract title from PRD (first heading or first line)
     const titleMatch = prd.match(/^#\s+(.+)$/m);
@@ -51,11 +51,16 @@ export class PlanGenerator {
       description: want,
       prd,
       tasks,
-      status: 'review',
+      status: "review",
       autoCommit: true,
       createdAt: Date.now(),
       updatedAt: Date.now(),
-      stats: { tasksCompleted: 0, tasksFailed: 0, totalDuration: 0, totalTokens: 0 },
+      stats: {
+        tasksCompleted: 0,
+        tasksFailed: 0,
+        totalDuration: 0,
+        totalTokens: 0,
+      },
     };
   }
 
@@ -63,12 +68,15 @@ export class PlanGenerator {
    * Stream PRD generation for live display.
    */
   async *streamPRD(want: string, signal?: AbortSignal) {
-    yield* this.kernel.dispatchStreaming({
-      id: `prd-stream-${Date.now()}`,
-      prompt: want,
-      targetSlot: 'main',
-      systemPrompt: PRD_SYSTEM_PROMPT,
-    }, signal);
+    yield* this.kernel.dispatchStreaming(
+      {
+        id: `prd-stream-${Date.now()}`,
+        prompt: want,
+        targetSlot: "main",
+        systemPrompt: PRD_SYSTEM_PROMPT,
+      },
+      signal,
+    );
   }
 
   private parseTasks(raw: string, planId: string): PlanTask[] {
@@ -90,7 +98,7 @@ export class PlanGenerator {
         title: t.title,
         description: t.description,
         acceptanceCriteria: t.acceptanceCriteria ?? [],
-        status: 'pending' as const,
+        status: "pending" as const,
         targetFiles: t.targetFiles,
       }));
     } catch {

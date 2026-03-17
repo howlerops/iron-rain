@@ -1,6 +1,11 @@
-import type { SlotName, SlotConfig, SlotAssignment, ToolType } from './types.js';
-import { DEFAULT_SLOT_ASSIGNMENT } from './defaults.js';
-import { getSlotForTool } from '../router/tool-router.js';
+import { getSlotForTool } from "../router/tool-router.js";
+import { DEFAULT_SLOT_ASSIGNMENT } from "./defaults.js";
+import type {
+  SlotAssignment,
+  SlotConfig,
+  SlotName,
+  ToolType,
+} from "./types.js";
 
 export class ModelSlotManager {
   private slots: SlotAssignment;

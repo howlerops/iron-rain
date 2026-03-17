@@ -63,6 +63,18 @@
     }
     nav .logo:hover { text-decoration: none; color: var(--gold-bright); }
     nav .logo img { width: 24px; height: 24px; }
+    nav .logo .ascii-logo {
+      font-family: 'Fira Code', monospace;
+      font-size: 0.38rem;
+      line-height: 1.15;
+      color: var(--gold);
+      margin: 0;
+      padding: 0;
+      background: none;
+      border: none;
+      white-space: pre;
+      letter-spacing: 0;
+    }
     nav .links { display: flex; gap: 1.5rem; align-items: center; }
     nav .links a { color: var(--text-muted); font-size: 0.85rem; font-weight: 500; }
     nav .links a:hover { color: var(--gold); text-decoration: none; }
@@ -305,7 +317,12 @@
   <nav>
     <a href="index.html" class="logo">
       <img src="assets/howlerops-icon-dark.png" alt="howlerops">
-      <span>Iron Rain</span>
+      <pre class="ascii-logo">╭━━╮╭━━━╮╭━━━╮╭━╮╱╭╮   ╭━━━╮╭━━━╮╭━━╮╭━╮╱╭╮
+╰┫┣╯┃╭━╮┃┃╭━╮┃┃┃╰╮┃┃   ┃╭━╮┃┃╭━╮┃╰┫┣╯┃┃╰╮┃┃
+╱┃┃╱┃╰━╯┃┃┃╱┃┃┃╭╮╰╯┃   ┃╰━╯┃┃┃╱┃┃╱┃┃╱┃╭╮╰╯┃
+╱┃┃╱┃╭╮╭╯┃┃╱┃┃┃┃╰╮┃┃   ┃╭╮╭╯┃╰━╯┃╱┃┃╱┃┃╰╮┃┃
+╭┫┣╮┃┃┃╰╮┃╰━╯┃┃┃╱┃┃┃   ┃┃┃╰╮┃╭━╮┃╭┫┣╮┃┃╱┃┃┃
+╰━━╯╰╯╰━╯╰━━━╯╰╯╱╰━╯   ╰╯╰━╯╰╯╱╰╯╰━━╯╰╯╱╰━╯</pre>
     </a>
     <div class="links">
       <a href="getting-started.html">Docs</a>
@@ -318,7 +335,12 @@
 
   <section class="hero">
     <img class="logo-large" src="assets/howlerops-icon-dark.png" alt="Iron Rain">
-    <div class="title-text">Iron Rain</div>
+    <pre class="title-text" style="font-size:0.9rem;line-height:1.15;text-align:left;display:inline-block;letter-spacing:0;">╭━━╮╭━━━╮╭━━━╮╭━╮╱╭╮   ╭━━━╮╭━━━╮╭━━╮╭━╮╱╭╮
+╰┫┣╯┃╭━╮┃┃╭━╮┃┃┃╰╮┃┃   ┃╭━╮┃┃╭━╮┃╰┫┣╯┃┃╰╮┃┃
+╱┃┃╱┃╰━╯┃┃┃╱┃┃┃╭╮╰╯┃   ┃╰━╯┃┃┃╱┃┃╱┃┃╱┃╭╮╰╯┃
+╱┃┃╱┃╭╮╭╯┃┃╱┃┃┃┃╰╮┃┃   ┃╭╮╭╯┃╰━╯┃╱┃┃╱┃┃╰╮┃┃
+╭┫┣╮┃┃┃╰╮┃╰━╯┃┃┃╱┃┃┃   ┃┃┃╰╮┃╭━╮┃╭┫┣╮┃┃╱┃┃┃
+╰━━╯╰╯╰━╯╰━━━╯╰╯╱╰━╯   ╰╯╰━╯╰╯╱╰╯╰━━╯╰╯╱╰━╯</pre>
     <h1>Multi-model orchestration for coding agents</h1>
     <p>Route tasks to the right model at the right time. Use any provider &mdash; Anthropic, OpenAI, Ollama, or your existing CLI subscriptions.</p>
     <div class="hero-actions">
@@ -380,6 +402,38 @@
     <div class="feature">
       <h3>Plugin SDK</h3>
       <p>Extend Iron Rain with plugins. Hook into dispatch lifecycle events, modify tasks, and add custom behaviors.</p>
+    </div>
+    <div class="feature">
+      <h3>Project Init</h3>
+      <p>Run <code>/init</code> to analyze your codebase &mdash; maps repo structure, extracts tech stack and conventions, and stores findings as persistent lessons.</p>
+    </div>
+    <div class="feature">
+      <h3>Code Review</h3>
+      <p>Review staged changes or branch diffs with <code>/review</code>. Get structured feedback on bugs, security, performance, and style.</p>
+    </div>
+    <div class="feature">
+      <h3>Checkpoints &amp; Undo</h3>
+      <p>Git-based checkpoint system with <code>/undo</code> to restore previous states. Automatic checkpoints during plan execution.</p>
+    </div>
+    <div class="feature">
+      <h3>Cost Tracking</h3>
+      <p>Per-model cost registry with configurable input/output token pricing. Track spend across slots and sessions.</p>
+    </div>
+    <div class="feature">
+      <h3>Project Rules</h3>
+      <p>Define coding standards in <code>IRON-RAIN.md</code> or <code>.iron-rain/rules/</code>. Rules are injected into every system prompt automatically.</p>
+    </div>
+    <div class="feature">
+      <h3>Repo Map</h3>
+      <p>Auto-generated repository map with file structure and extracted symbols. Gives the model structural awareness of your codebase.</p>
+    </div>
+    <div class="feature">
+      <h3>Sandbox Execution</h3>
+      <p>Run commands in isolated sandboxes &mdash; macOS Seatbelt, Docker, or gVisor. Control network access and write paths.</p>
+    </div>
+    <div class="feature">
+      <h3>Fuzzy Commands</h3>
+      <p>Mistype a command? Iron Rain suggests the closest match using Levenshtein distance. <code>/upgade</code> &rarr; "Did you mean <strong>/update</strong>?"</p>
     </div>
   </section>
 

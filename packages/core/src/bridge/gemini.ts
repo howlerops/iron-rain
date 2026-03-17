@@ -1,59 +1,36 @@
-import type { CLIBridge, BridgeOptions, BridgeResult, BridgeChunk } from './types.js';
-import { getTextContent } from './types.js';
-import { resolveEnvValue } from '../config/schema.js';
-import { geminiThinkingBudget } from './thinking.js';
+import { resolveEnvValue } from "../config/schema.js";
+import { BaseAPIBridge } from "./base-api.js";
+import { geminiThinkingBudget } from "./thinking.js";
+import type { BridgeChunk, BridgeOptions, BridgeResult } from "./types.js";
+import { getTextContent } from "./types.js";
 
-export class GeminiBridge implements CLIBridge {
-  readonly name = 'gemini';
-  private apiKey: string;
-  private model: string;
-
+export class GeminiBridge extends BaseAPIBridge {
   constructor(opts: { apiKey: string; model: string }) {
-    this.apiKey = resolveEnvValue(opts.apiKey);
-    this.model = opts.model;
+    super({
+      name: "gemini",
+      apiKey: resolveEnvValue(opts.apiKey),
+      model: opts.model,
+    });
   }
 
-  async available(): Promise<boolean> {
-    return this.apiKey.length > 0;
-  }
-
-  async execute(prompt: string, options?: BridgeOptions): Promise<BridgeResult> {
+  async execute(
+    prompt: string,
+    options?: BridgeOptions,
+  ): Promise<BridgeResult> {
     const start = Date.now();
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent?key=${this.apiKey}`;
 
-    const contents = [];
-    if (options?.systemPrompt) {
-      contents.push({ role: 'user', parts: [{ text: options.systemPrompt }] });
-      contents.push({ role: 'model', parts: [{ text: 'Understood.' }] });
-    }
-    if (options?.conversationHistory) {
-      for (const m of options.conversationHistory) {
-        contents.push({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: getTextContent(m.content) }] });
-      }
-    }
-    contents.push({ role: 'user', parts: [{ text: prompt }] });
+    const contents = this.buildContents(prompt, options);
+    const body = this.buildRequestBody(contents, options);
 
     const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents,
-        generationConfig: {
-          maxOutputTokens: options?.maxTokens ?? 4096,
-          temperature: options?.temperature ?? 0.7,
-          ...(options?.thinkingLevel ? (() => {
-            const budget = geminiThinkingBudget(options.thinkingLevel!);
-            return budget != null ? { thinkingConfig: { thinkingBudget: budget } } : {};
-          })() : {}),
-        },
-      }),
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
       signal: options?.signal,
     });
 
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Gemini API error (${res.status}): ${text}`);
-    }
+    await this.assertOk(res);
 
     const data = (await res.json()) as {
       candidates: Array<{
@@ -65,9 +42,8 @@ export class GeminiBridge implements CLIBridge {
       };
     };
 
-    const text = data.candidates?.[0]?.content?.parts
-      ?.map((p) => p.text)
-      .join('') ?? '';
+    const text =
+      data.candidates?.[0]?.content?.parts?.map((p) => p.text).join("") ?? "";
 
     return {
       content: text,
@@ -80,64 +56,29 @@ export class GeminiBridge implements CLIBridge {
     };
   }
 
-  async *stream(prompt: string, options?: BridgeOptions): AsyncIterable<BridgeChunk> {
+  async *stream(
+    prompt: string,
+    options?: BridgeOptions,
+  ): AsyncIterable<BridgeChunk> {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:streamGenerateContent?key=${this.apiKey}&alt=sse`;
 
-    const contents = [];
-    if (options?.systemPrompt) {
-      contents.push({ role: 'user', parts: [{ text: options.systemPrompt }] });
-      contents.push({ role: 'model', parts: [{ text: 'Understood.' }] });
-    }
-    if (options?.conversationHistory) {
-      for (const m of options.conversationHistory) {
-        contents.push({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: getTextContent(m.content) }] });
-      }
-    }
-    contents.push({ role: 'user', parts: [{ text: prompt }] });
+    const contents = this.buildContents(prompt, options);
+    const body = this.buildRequestBody(contents, options);
 
     const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents,
-        generationConfig: {
-          maxOutputTokens: options?.maxTokens ?? 4096,
-          temperature: options?.temperature ?? 0.7,
-          ...(options?.thinkingLevel ? (() => {
-            const budget = geminiThinkingBudget(options.thinkingLevel!);
-            return budget != null ? { thinkingConfig: { thinkingBudget: budget } } : {};
-          })() : {}),
-        },
-      }),
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
       signal: options?.signal,
     });
 
-    if (!res.ok) {
-      yield { type: 'error', content: `Gemini API error: ${res.status}` };
-      return;
-    }
+    await this.assertOk(res);
 
-    const reader = res.body?.getReader();
-    if (!reader) {
-      yield { type: 'error', content: 'No response body' };
-      return;
-    }
+    this.resetTokenCounts();
 
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let inputTokens = 0;
-    let outputTokens = 0;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
+    try {
+      for await (const line of this.streamSSE(res)) {
+        if (!line.startsWith("data: ")) continue;
         try {
           const parsed = JSON.parse(line.slice(6)) as {
             candidates: Array<{
@@ -149,19 +90,67 @@ export class GeminiBridge implements CLIBridge {
             };
           };
           if (parsed.usageMetadata) {
-            inputTokens = parsed.usageMetadata.promptTokenCount;
-            outputTokens = parsed.usageMetadata.candidatesTokenCount;
+            this.setInputTokens(parsed.usageMetadata.promptTokenCount);
+            this.setOutputTokens(parsed.usageMetadata.candidatesTokenCount);
           }
           const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
           if (text) {
-            yield { type: 'text', content: text };
+            yield { type: "text", content: text };
           }
         } catch {
           // skip malformed
         }
       }
+    } catch {
+      yield { type: "error", content: "No response body" };
+      return;
     }
 
-    yield { type: 'done', content: '', tokens: { input: inputTokens, output: outputTokens } };
+    yield {
+      type: "done",
+      content: "",
+      tokens: this.getTokenCounts(),
+    };
+  }
+
+  private buildContents(
+    prompt: string,
+    options?: BridgeOptions,
+  ): Array<{ role: string; parts: Array<{ text: string }> }> {
+    const contents: Array<{ role: string; parts: Array<{ text: string }> }> = [];
+    if (options?.conversationHistory) {
+      for (const m of options.conversationHistory) {
+        contents.push({
+          role: m.role === "assistant" ? "model" : "user",
+          parts: [{ text: getTextContent(m.content) }],
+        });
+      }
+    }
+    contents.push({ role: "user", parts: [{ text: prompt }] });
+    return contents;
+  }
+
+  private buildRequestBody(
+    contents: Array<{ role: string; parts: Array<{ text: string }> }>,
+    options?: BridgeOptions,
+  ): Record<string, unknown> {
+    return {
+      contents,
+      ...(options?.systemPrompt
+        ? { system_instruction: { parts: [{ text: options.systemPrompt }] } }
+        : {}),
+      generationConfig: {
+        maxOutputTokens: options?.maxTokens ?? 4096,
+        temperature: options?.temperature ?? 0.7,
+        ...(options?.thinkingLevel
+          ? (() => {
+              const budget = geminiThinkingBudget(options.thinkingLevel!);
+              return budget != null
+                ? { thinkingConfig: { thinkingBudget: budget } }
+                : {};
+            })()
+          : {}),
+      },
+    };
   }
 }

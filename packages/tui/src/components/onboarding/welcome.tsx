@@ -1,4 +1,4 @@
-import { ironRainTheme } from '../../theme/theme.js';
+import { ironRainTheme } from "../../theme/theme.js";
 
 export interface WelcomeProps {
   onNext: () => void;
@@ -16,8 +16,14 @@ export function Welcome(props: WelcomeProps) {
 
       <box marginY={1} />
 
-      <box flexDirection="column" paddingX={2} paddingY={1}
-        border borderStyle="rounded" borderColor={ironRainTheme.chrome.border}>
+      <box
+        flexDirection="column"
+        paddingX={2}
+        paddingY={1}
+        border
+        borderStyle="rounded"
+        borderColor={ironRainTheme.chrome.border}
+      >
         <text fg={ironRainTheme.chrome.fg}>
           Welcome! Let's set up Iron Rain in a few quick steps:
         </text>
@@ -48,9 +54,7 @@ export function Welcome(props: WelcomeProps) {
         <text fg={ironRainTheme.brand.primary}>
           <b>[Enter] Continue</b>
         </text>
-        <text fg={ironRainTheme.chrome.muted}>
-          [q] Quit
-        </text>
+        <text fg={ironRainTheme.chrome.muted}>[q] Quit</text>
       </box>
     </box>
   );

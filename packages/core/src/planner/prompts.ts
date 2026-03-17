@@ -30,22 +30,26 @@ Respond with ONLY a JSON array in this exact format:
   }
 ]`;
 
-export function buildTaskExecutionPrompt(task: {
-  title: string;
-  description: string;
-  acceptanceCriteria: string[];
-  targetFiles?: string[];
-}, prdContext: string, priorResults: string[]): string {
+export function buildTaskExecutionPrompt(
+  task: {
+    title: string;
+    description: string;
+    acceptanceCriteria: string[];
+    targetFiles?: string[];
+  },
+  prdContext: string,
+  priorResults: string[],
+): string {
   const parts = [
     `## TASK: ${task.title}`,
     `\n${task.description}`,
     `\n### Acceptance Criteria`,
-    ...task.acceptanceCriteria.map(c => `- ${c}`),
+    ...task.acceptanceCriteria.map((c) => `- ${c}`),
   ];
 
   if (task.targetFiles?.length) {
     parts.push(`\n### Target Files`);
-    parts.push(...task.targetFiles.map(f => `- ${f}`));
+    parts.push(...task.targetFiles.map((f) => `- ${f}`));
   }
 
   parts.push(`\n### PRD Context\n${prdContext}`);
@@ -61,7 +65,7 @@ export function buildTaskExecutionPrompt(task: {
 Implement this task completely. Write all necessary code changes.
 After implementation, briefly describe what was done.`);
 
-  return parts.join('\n');
+  return parts.join("\n");
 }
 
 export function buildLoopIterationPrompt(config: {
@@ -93,10 +97,13 @@ You have been iterating for ${config.priorActions.length} rounds. If prior appro
   parts.push(`\n## INSTRUCTIONS
 Make progress toward the goal. Describe what you did and the outcome.`);
 
-  return parts.join('\n');
+  return parts.join("\n");
 }
 
-export function buildCompletionCheckPrompt(completionPromise: string, lastResult: string): string {
+export function buildCompletionCheckPrompt(
+  completionPromise: string,
+  lastResult: string,
+): string {
   return `Evaluate whether this condition is now TRUE:
 
 **Condition:** "${completionPromise}"

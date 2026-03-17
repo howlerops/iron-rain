@@ -1,77 +1,71 @@
-import { spawn } from 'node:child_process';
-import type { CLIBridge, BridgeOptions, BridgeResult, BridgeChunk } from './types.js';
+import { BaseCLIBridge } from "./base-cli.js";
+import { BridgeError } from "./errors.js";
+import type { BridgeChunk, BridgeOptions, BridgeResult } from "./types.js";
 
-export class CodexBridge implements CLIBridge {
-  readonly name = 'codex';
-  private model: string;
-  private binaryPath: string;
-
+export class CodexBridge extends BaseCLIBridge {
   constructor(opts: { model?: string; binaryPath?: string }) {
-    this.model = opts.model ?? 'o3';
-    this.binaryPath = opts.binaryPath ?? 'codex';
-  }
-
-  async available(): Promise<boolean> {
-    return new Promise((resolve) => {
-      const proc = spawn(this.binaryPath, ['--version'], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: 5000,
-      });
-      proc.on('close', (code) => resolve(code === 0));
-      proc.on('error', () => resolve(false));
+    super({
+      name: "codex",
+      model: opts.model ?? "o3",
+      binaryPath: opts.binaryPath ?? "codex",
     });
   }
 
-  async execute(prompt: string, options?: BridgeOptions): Promise<BridgeResult> {
+  async execute(
+    prompt: string,
+    options?: BridgeOptions,
+  ): Promise<BridgeResult> {
     const start = Date.now();
-    const args = [
-      'exec',
-      prompt,
-      '-c', `model="${this.model}"`,
-    ];
+    const args = ["exec", prompt, "-c", `model="${this.model}"`];
 
-    return new Promise((resolve, reject) => {
-      const proc = spawn(this.binaryPath, args, {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        signal: options?.signal,
-      });
+    try {
+      const { stdout, stderr, exitCode } = await this.spawnAndCollect(
+        args,
+        options?.signal,
+      );
 
-      let stdout = '';
-      let stderr = '';
+      const duration = Date.now() - start;
 
-      proc.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
-      proc.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+      if (exitCode !== 0) {
+        throw new BridgeError(
+          `Codex exited with code ${exitCode}: ${stderr}`,
+          exitCode,
+          this.name,
+        );
+      }
 
-      proc.on('close', (code) => {
-        const duration = Date.now() - start;
-
-        if (code !== 0) {
-          reject(new Error(`Codex exited with code ${code}: ${stderr}`));
-          return;
-        }
-
-        resolve({
-          content: stdout.trim(),
-          tokens: { input: 0, output: 0 },
-          model: this.model,
-          duration,
-        });
-      });
-
-      proc.on('error', (err) => {
-        reject(new Error(`Failed to spawn codex: ${err.message}`));
-      });
-    });
+      return {
+        content: stdout.trim(),
+        tokens: { input: 0, output: 0 },
+        model: this.model,
+        duration,
+      };
+    } catch (err) {
+      if (err instanceof BridgeError) {
+        throw err;
+      }
+      throw new BridgeError(
+        `Failed to spawn codex: ${err instanceof Error ? err.message : String(err)}`,
+        -1,
+        this.name,
+      );
+    }
   }
 
-  async *stream(prompt: string, options?: BridgeOptions): AsyncIterable<BridgeChunk> {
+  async *stream(
+    prompt: string,
+    options?: BridgeOptions,
+  ): AsyncIterable<BridgeChunk> {
     // Codex exec doesn't support streaming — execute and yield all at once
     try {
       const result = await this.execute(prompt, options);
-      yield { type: 'text', content: result.content };
+      yield { type: "text", content: result.content };
     } catch (err) {
-      yield { type: 'error', content: err instanceof Error ? err.message : String(err) };
+      yield {
+        type: "error",
+        content: err instanceof Error ? err.message : String(err),
+      };
     }
-    yield { type: 'done', content: '' };
+    yield { type: "done", content: "" };
   }
 }

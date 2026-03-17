@@ -1,10 +1,11 @@
 /**
  * Skill Executor — runs a skill by injecting its instructions into the system prompt.
  */
-import type { Skill } from './types.js';
-import type { OrchestratorKernel } from '../orchestrator/kernel.js';
-import type { OrchestratorTask } from '../orchestrator/types.js';
-import type { EpisodeSummary } from '../episodes/protocol.js';
+
+import type { EpisodeSummary } from "../episodes/protocol.js";
+import type { OrchestratorKernel } from "../orchestrator/kernel.js";
+import type { OrchestratorTask } from "../orchestrator/types.js";
+import type { Skill } from "./types.js";
 
 export class SkillExecutor {
   private kernel: OrchestratorKernel;
@@ -35,7 +36,7 @@ export class SkillExecutor {
     return {
       id: crypto.randomUUID?.() ?? `skill-${Date.now()}`,
       prompt,
-      targetSlot: 'main',
+      targetSlot: "main",
       systemPrompt: `${skill.content}\n\n---\nYou are executing the "${skill.name}" skill. Follow the instructions above precisely.`,
     };
   }

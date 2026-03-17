@@ -2,8 +2,20 @@
  * Plan workflow types — PRD-driven task execution.
  */
 
-export type PlanStatus = 'drafting' | 'review' | 'approved' | 'executing' | 'completed' | 'failed' | 'paused';
-export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'skipped';
+export type PlanStatus =
+  | "drafting"
+  | "review"
+  | "approved"
+  | "executing"
+  | "completed"
+  | "failed"
+  | "paused";
+export type TaskStatus =
+  | "pending"
+  | "in_progress"
+  | "completed"
+  | "failed"
+  | "skipped";
 
 export interface PlanTask {
   id: string;
@@ -65,7 +77,7 @@ export interface LoopState {
   id: string;
   config: LoopConfig;
   iterations: LoopIteration[];
-  status: 'running' | 'completed' | 'failed' | 'paused';
+  status: "running" | "completed" | "failed" | "paused";
   createdAt: number;
   updatedAt: number;
 }

@@ -1,101 +1,103 @@
-import { spawn } from 'node:child_process';
-import type { CLIBridge, BridgeOptions, BridgeResult, BridgeChunk } from './types.js';
+import { spawn } from "node:child_process";
+import { BaseCLIBridge } from "./base-cli.js";
+import { BridgeError } from "./errors.js";
+import type { BridgeChunk, BridgeOptions, BridgeResult } from "./types.js";
 
-export class GeminiCLIBridge implements CLIBridge {
-  readonly name = 'gemini-cli';
-  private model: string;
-  private binaryPath: string;
-
+export class GeminiCLIBridge extends BaseCLIBridge {
   constructor(opts: { model?: string; binaryPath?: string }) {
-    this.model = opts.model ?? 'gemini-2.5-pro';
-    this.binaryPath = opts.binaryPath ?? 'gemini';
-  }
-
-  async available(): Promise<boolean> {
-    return new Promise((resolve) => {
-      const proc = spawn(this.binaryPath, ['--version'], {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: 5000,
-      });
-      proc.on('close', (code) => resolve(code === 0));
-      proc.on('error', () => resolve(false));
+    super({
+      name: "gemini-cli",
+      model: opts.model ?? "gemini-2.5-pro",
+      binaryPath: opts.binaryPath ?? "gemini",
     });
   }
 
-  async execute(prompt: string, options?: BridgeOptions): Promise<BridgeResult> {
+  async execute(
+    prompt: string,
+    options?: BridgeOptions,
+  ): Promise<BridgeResult> {
     const start = Date.now();
     const args = [
-      '-p', prompt,
-      '--output-format', 'json',
-      '--model', this.model,
+      "-p",
+      prompt,
+      "--output-format",
+      "json",
+      "--model",
+      this.model,
     ];
 
-    return new Promise((resolve, reject) => {
-      const proc = spawn(this.binaryPath, args, {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        signal: options?.signal,
-      });
+    try {
+      const { stdout, stderr, exitCode } = await this.spawnAndCollect(
+        args,
+        options?.signal,
+      );
+      const duration = Date.now() - start;
 
-      let stdout = '';
-      let stderr = '';
+      if (exitCode !== 0) {
+        throw new BridgeError(
+          `Gemini CLI exited with code ${exitCode}: ${stderr}`,
+          exitCode,
+          this.name,
+        );
+      }
 
-      proc.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
-      proc.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+      try {
+        const data = JSON.parse(stdout) as {
+          result?: string;
+          response?: string;
+        };
 
-      proc.on('close', (code) => {
-        const duration = Date.now() - start;
-
-        if (code !== 0) {
-          reject(new Error(`Gemini CLI exited with code ${code}: ${stderr}`));
-          return;
-        }
-
-        try {
-          const data = JSON.parse(stdout) as {
-            result?: string;
-            response?: string;
-          };
-
-          resolve({
-            content: data.result ?? data.response ?? stdout.trim(),
-            tokens: { input: 0, output: 0 },
-            model: this.model,
-            duration,
-          });
-        } catch {
-          resolve({
-            content: stdout.trim(),
-            tokens: { input: 0, output: 0 },
-            model: this.model,
-            duration,
-          });
-        }
-      });
-
-      proc.on('error', (err) => {
-        reject(new Error(`Failed to spawn gemini: ${err.message}`));
-      });
-    });
+        return {
+          content: data.result ?? data.response ?? stdout.trim(),
+          tokens: { input: 0, output: 0 },
+          model: this.model,
+          duration,
+        };
+      } catch {
+        return {
+          content: stdout.trim(),
+          tokens: { input: 0, output: 0 },
+          model: this.model,
+          duration,
+        };
+      }
+    } catch (err) {
+      if (err instanceof BridgeError) {
+        throw err;
+      }
+      throw new BridgeError(
+        `Failed to spawn gemini: ${err instanceof Error ? err.message : String(err)}`,
+        -1,
+        this.name,
+      );
+    }
   }
 
-  async *stream(prompt: string, options?: BridgeOptions): AsyncIterable<BridgeChunk> {
+  async *stream(
+    prompt: string,
+    options?: BridgeOptions,
+  ): AsyncIterable<BridgeChunk> {
     const args = [
-      '-p', prompt,
-      '--output-format', 'stream-json',
-      '--model', this.model,
+      "-p",
+      prompt,
+      "--output-format",
+      "stream-json",
+      "--model",
+      this.model,
     ];
 
     const proc = spawn(this.binaryPath, args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
+      env: this.buildSpawnEnv(),
+      stdio: ["ignore", "pipe", "pipe"],
       signal: options?.signal,
     });
 
-    let buffer = '';
+    let buffer = "";
 
     for await (const chunk of proc.stdout) {
       buffer += chunk.toString();
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
 
       for (const line of lines) {
         if (!line.trim()) continue;
@@ -107,17 +109,19 @@ export class GeminiCLIBridge implements CLIBridge {
           };
 
           if (parsed.content || parsed.text) {
-            yield { type: 'text', content: parsed.content ?? parsed.text ?? '' };
+            yield {
+              type: "text",
+              content: parsed.content ?? parsed.text ?? "",
+            };
           }
         } catch {
-          // Raw text output
           if (line.trim()) {
-            yield { type: 'text', content: line };
+            yield { type: "text", content: line };
           }
         }
       }
     }
 
-    yield { type: 'done', content: '' };
+    yield { type: "done", content: "" };
   }
 }

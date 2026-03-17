@@ -1,6 +1,6 @@
-import { render } from '@opentui/solid';
-import { App } from './app.js';
-import type { AppProps } from './app.js';
+import { render } from "@opentui/solid";
+import type { AppProps } from "./app.js";
+import { App } from "./app.js";
 
 /**
  * Launch the TUI. This is compiled with the solid plugin so that App

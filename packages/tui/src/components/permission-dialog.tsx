@@ -1,4 +1,4 @@
-import { ironRainTheme } from '../theme/theme.js';
+import { ironRainTheme } from "../theme/theme.js";
 
 export interface PermissionDialogProps {
   tool: string;

@@ -1,5 +1,5 @@
-import type { SlotName } from '../slots/types.js';
-import type { EpisodeSummary } from '../episodes/protocol.js';
+import type { EpisodeSummary } from "../episodes/protocol.js";
+import type { SlotName } from "../slots/types.js";
 
 const SLOT_ROLES: Record<SlotName, string> = {
   main: `You are Cortex, the primary orchestrator. You analyze tasks, plan approaches, and provide comprehensive responses. You have deep reasoning capability and should think through problems carefully before responding.`,
@@ -7,7 +7,18 @@ const SLOT_ROLES: Record<SlotName, string> = {
   execute: `You are Forge, specialized in execution. You write code, run commands, and make changes. Be precise, write clean code, and explain what you changed.`,
 };
 
-export function buildSystemPrompt(slot: SlotName, custom?: string): string {
+export interface SystemPromptContext {
+  rules?: string[];
+  repoMap?: string;
+  lessons?: string[];
+  mcpTools?: string;
+}
+
+export function buildSystemPrompt(
+  slot: SlotName,
+  custom?: string,
+  context?: SystemPromptContext,
+): string {
   const parts: string[] = [];
 
   // Role instruction
@@ -17,16 +28,39 @@ export function buildSystemPrompt(slot: SlotName, custom?: string): string {
   const cwd = process.cwd();
   parts.push(`Working directory: ${cwd}`);
 
+  // Project rules
+  if (context?.rules && context.rules.length > 0) {
+    parts.push(`## Project Rules\n${context.rules.join("\n\n---\n\n")}`);
+  }
+
+  // Repository map
+  if (context?.repoMap) {
+    parts.push(`## Repository Map\n${context.repoMap}`);
+  }
+
+  // Lessons learned
+  if (context?.lessons && context.lessons.length > 0) {
+    parts.push(`## Lessons Learned\n${context.lessons.map((l) => `- ${l}`).join("\n")}`);
+  }
+
+  // MCP tools
+  if (context?.mcpTools) {
+    parts.push(context.mcpTools);
+  }
+
   // Custom prompt override/append
   if (custom) {
     parts.push(custom);
   }
 
-  return parts.join('\n\n');
+  return parts.join("\n\n");
 }
 
-export function buildEpisodeContext(episodes: EpisodeSummary[], maxTokenBudget = 4000): string {
-  if (episodes.length === 0) return '';
+export function buildEpisodeContext(
+  episodes: EpisodeSummary[],
+  maxTokenBudget = 4000,
+): string {
+  if (episodes.length === 0) return "";
 
   // Estimate ~4 chars per token, walk backwards to fit budget
   let charBudget = maxTokenBudget * 4;
@@ -34,14 +68,14 @@ export function buildEpisodeContext(episodes: EpisodeSummary[], maxTokenBudget =
 
   for (let i = episodes.length - 1; i >= 0 && charBudget > 0; i--) {
     const ep = episodes[i];
-    const summary = `[${ep.slot}] ${ep.task} → ${ep.status}${ep.result ? ': ' + ep.result.slice(0, 200) : ''}`;
+    const summary = `[${ep.slot}] ${ep.task} → ${ep.status}${ep.result ? ": " + ep.result.slice(0, 200) : ""}`;
     if (summary.length > charBudget) break;
     charBudget -= summary.length;
     included.unshift(summary);
   }
 
-  if (included.length === 0) return '';
-  return `## Previous actions this session\n${included.join('\n')}`;
+  if (included.length === 0) return "";
+  return `## Previous actions this session\n${included.join("\n")}`;
 }
 
 /**
@@ -57,5 +91,5 @@ export function structuredPrompt(opts: {
   if (opts.context) parts.push(`## CONTEXT\n${opts.context}`);
   if (opts.episodes) parts.push(opts.episodes);
   if (opts.output) parts.push(`## OUTPUT FORMAT\n${opts.output}`);
-  return parts.join('\n\n');
+  return parts.join("\n\n");
 }

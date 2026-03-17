@@ -1,6 +1,6 @@
-import { For } from 'solid-js';
-import { ironRainTheme } from '../../theme/theme.js';
-import type { ProviderChoice } from './types.js';
+import { For } from "solid-js";
+import { ironRainTheme } from "../../theme/theme.js";
+import type { ProviderChoice } from "./types.js";
 
 export interface CredentialsProps {
   providers: ProviderChoice[];
@@ -13,7 +13,10 @@ export interface CredentialsProps {
 }
 
 export function Credentials(props: CredentialsProps) {
-  const needsSetup = () => props.providers.filter(p => p.selected && (p.requiresKey || p.defaultApiBase));
+  const needsSetup = () =>
+    props.providers.filter(
+      (p) => p.selected && (p.requiresKey || p.defaultApiBase),
+    );
 
   return (
     <box flexDirection="column" paddingX={4} paddingY={1}>
@@ -21,29 +24,49 @@ export function Credentials(props: CredentialsProps) {
         <b>Provider Credentials</b>
       </text>
       <text fg={ironRainTheme.chrome.muted}>
-        Enter API keys or connection details. Use "env:VAR_NAME" to reference environment variables.
+        Enter API keys or connection details. Use "env:VAR_NAME" to reference
+        environment variables.
       </text>
 
       <box marginY={1} />
 
-      <box flexDirection="column" border borderStyle="rounded" borderColor={ironRainTheme.chrome.border}
-        paddingX={1} paddingY={1}>
+      <box
+        flexDirection="column"
+        border
+        borderStyle="rounded"
+        borderColor={ironRainTheme.chrome.border}
+        paddingX={1}
+        paddingY={1}
+      >
         <For each={needsSetup()}>
           {(provider, i) => {
             const isActive = () => i() === props.cursorIndex;
             const cred = () => props.credentials[provider.id] ?? {};
             const hasEnvKey = () => {
-              if (provider.keyEnvVar && process.env[provider.keyEnvVar]) return true;
+              if (provider.keyEnvVar && process.env[provider.keyEnvVar])
+                return true;
               return false;
             };
 
             return (
               <box flexDirection="column" marginY={0}>
                 <box flexDirection="row" gap={1}>
-                  <text fg={isActive() ? ironRainTheme.brand.primary : ironRainTheme.chrome.dimFg}>
-                    {isActive() ? '>' : ' '}
+                  <text
+                    fg={
+                      isActive()
+                        ? ironRainTheme.brand.primary
+                        : ironRainTheme.chrome.dimFg
+                    }
+                  >
+                    {isActive() ? ">" : " "}
                   </text>
-                  <text fg={isActive() ? ironRainTheme.chrome.fg : ironRainTheme.chrome.muted}>
+                  <text
+                    fg={
+                      isActive()
+                        ? ironRainTheme.chrome.fg
+                        : ironRainTheme.chrome.muted
+                    }
+                  >
                     {isActive() ? <b>{provider.name}</b> : provider.name}
                   </text>
                   {provider.requiresKey && hasEnvKey() && (
@@ -60,10 +83,20 @@ export function Credentials(props: CredentialsProps) {
                         {`${props.editValue}_`}
                       </text>
                     ) : (
-                      <text fg={cred().apiKey ? ironRainTheme.status.success : ironRainTheme.chrome.dimFg}>
+                      <text
+                        fg={
+                          cred().apiKey
+                            ? ironRainTheme.status.success
+                            : ironRainTheme.chrome.dimFg
+                        }
+                      >
                         {cred().apiKey
-                          ? (cred().apiKey!.startsWith('env:') ? cred().apiKey! : '***' + cred().apiKey!.slice(-4))
-                          : (hasEnvKey() ? `env:${provider.keyEnvVar}` : 'not set')}
+                          ? cred().apiKey!.startsWith("env:")
+                            ? cred().apiKey!
+                            : "***" + cred().apiKey!.slice(-4)
+                          : hasEnvKey()
+                            ? `env:${provider.keyEnvVar}`
+                            : "not set"}
                       </text>
                     )}
                   </box>
@@ -91,9 +124,7 @@ export function Credentials(props: CredentialsProps) {
         <text fg={ironRainTheme.brand.primary}>
           <b>[Tab] Skip (use env)</b>
         </text>
-        <text fg={ironRainTheme.chrome.muted}>
-          [Backspace] Back
-        </text>
+        <text fg={ironRainTheme.chrome.muted}>[Backspace] Back</text>
       </box>
     </box>
   );

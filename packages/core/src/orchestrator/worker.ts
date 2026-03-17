@@ -1,8 +1,14 @@
-import type { SlotConfig, SlotName, ThinkingLevel } from '../slots/types.js';
-import type { OrchestratorTask, WorkerResult } from './types.js';
-import type { CLIBridge, BridgeChunk } from '../bridge/types.js';
-import { createBridgeForSlot } from '../bridge/index.js';
-import { BridgeError, CircuitBreaker, DEFAULT_RETRY_CONFIG, backoffDelay, type RetryConfig } from '../bridge/errors.js';
+import {
+  BridgeError,
+  backoffDelay,
+  CircuitBreaker,
+  DEFAULT_RETRY_CONFIG,
+  type RetryConfig,
+} from "../bridge/errors.js";
+import { createBridgeForSlot } from "../bridge/index.js";
+import type { BridgeChunk, CLIBridge } from "../bridge/types.js";
+import type { SlotConfig, SlotName, ThinkingLevel } from "../slots/types.js";
+import type { OrchestratorTask, WorkerResult } from "./types.js";
 
 export class SlotWorker {
   private bridge: CLIBridge;
@@ -23,7 +29,10 @@ export class SlotWorker {
     }
   }
 
-  async execute(task: OrchestratorTask, signal?: AbortSignal): Promise<WorkerResult> {
+  async execute(
+    task: OrchestratorTask,
+    signal?: AbortSignal,
+  ): Promise<WorkerResult> {
     const start = Date.now();
     const opts = {
       signal,
@@ -40,10 +49,10 @@ export class SlotWorker {
       return {
         taskId: task.id,
         slot: this.slot,
-        content: '',
+        content: "",
         tokens: { input: 0, output: 0 },
         duration: Date.now() - start,
-        status: 'failure',
+        status: "failure",
         error: `Circuit breaker open for slot ${this.slot} after ${this.circuitBreaker.failures} consecutive failures`,
       };
     }
@@ -62,19 +71,20 @@ export class SlotWorker {
           content: result.content,
           tokens: result.tokens,
           duration: result.duration,
-          status: 'success',
+          status: "success",
         };
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
         this.circuitBreaker.recordFailure();
 
         // Only retry if retryable
-        const isRetryable = err instanceof BridgeError ? err.isRetryable() : false;
+        const isRetryable =
+          err instanceof BridgeError ? err.isRetryable() : false;
         if (!isRetryable || attempt === this.retryConfig.maxRetries) break;
 
         // Wait before retry
         const delay = backoffDelay(attempt, this.retryConfig);
-        await new Promise(r => setTimeout(r, delay));
+        await new Promise((r) => setTimeout(r, delay));
       }
     }
 
@@ -86,15 +96,19 @@ export class SlotWorker {
     return {
       taskId: task.id,
       slot: this.slot,
-      content: '',
+      content: "",
       tokens: { input: 0, output: 0 },
       duration: Date.now() - start,
-      status: 'failure',
-      error: lastError?.message ?? 'Unknown error',
+      status: "failure",
+      error: lastError?.message ?? "Unknown error",
     };
   }
 
-  private async executeFallback(task: OrchestratorTask, signal: AbortSignal | undefined, start: number): Promise<WorkerResult> {
+  private async executeFallback(
+    task: OrchestratorTask,
+    signal: AbortSignal | undefined,
+    start: number,
+  ): Promise<WorkerResult> {
     try {
       const result = await this.fallbackBridge!.execute(task.prompt, {
         signal,
@@ -107,22 +121,25 @@ export class SlotWorker {
         content: result.content,
         tokens: result.tokens,
         duration: result.duration,
-        status: 'success',
+        status: "success",
       };
     } catch (err) {
       return {
         taskId: task.id,
         slot: this.slot,
-        content: '',
+        content: "",
         tokens: { input: 0, output: 0 },
         duration: Date.now() - start,
-        status: 'failure',
+        status: "failure",
         error: `Fallback also failed: ${err instanceof Error ? err.message : String(err)}`,
       };
     }
   }
 
-  async *stream(task: OrchestratorTask, signal?: AbortSignal): AsyncGenerator<BridgeChunk> {
+  async *stream(
+    task: OrchestratorTask,
+    signal?: AbortSignal,
+  ): AsyncGenerator<BridgeChunk> {
     const opts = {
       signal,
       thinkingLevel: this.thinkingLevel,
@@ -140,25 +157,43 @@ export class SlotWorker {
       return;
     }
 
-    try {
-      yield* this.bridge.stream(task.prompt, opts);
-      this.circuitBreaker.recordSuccess();
-    } catch (err) {
-      this.circuitBreaker.recordFailure();
+    // Retry loop for stream (mirrors execute retry logic)
+    let lastError: Error | null = null;
+    for (let attempt = 0; attempt <= this.retryConfig.maxRetries; attempt++) {
+      if (signal?.aborted) break;
 
-      // Try fallback on stream failure
-      if (this.fallbackBridge) {
-        yield { type: 'text', content: '*Switching to fallback model...*\n\n' };
-        yield* this.fallbackBridge.stream(task.prompt, {
-          signal,
-          systemPrompt: task.systemPrompt ?? this.systemPrompt,
-          conversationHistory: task.history,
-        });
+      try {
+        yield* this.bridge.stream(task.prompt, opts);
+        this.circuitBreaker.recordSuccess();
         return;
-      }
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        this.circuitBreaker.recordFailure();
 
-      yield { type: 'error', content: err instanceof Error ? err.message : String(err) };
-      yield { type: 'done', content: '' };
+        const isRetryable =
+          err instanceof BridgeError ? err.isRetryable() : false;
+        if (!isRetryable || attempt === this.retryConfig.maxRetries) break;
+
+        const delay = backoffDelay(attempt, this.retryConfig);
+        await new Promise((r) => setTimeout(r, delay));
+      }
     }
+
+    // Try fallback on exhausted retries
+    if (this.fallbackBridge) {
+      yield { type: "text", content: "*Switching to fallback model...*\n\n" };
+      yield* this.fallbackBridge.stream(task.prompt, {
+        signal,
+        systemPrompt: task.systemPrompt ?? this.systemPrompt,
+        conversationHistory: task.history,
+      });
+      return;
+    }
+
+    yield {
+      type: "error",
+      content: lastError?.message ?? "Unknown error",
+    };
+    yield { type: "done", content: "" };
   }
 }

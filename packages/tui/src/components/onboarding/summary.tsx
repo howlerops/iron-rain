@@ -1,8 +1,8 @@
-import { For } from 'solid-js';
-import type { SlotName, SlotConfig } from '@howlerops/iron-rain';
-import { SLOT_NAMES } from '@howlerops/iron-rain';
-import { ironRainTheme, slotColor, slotLabel } from '../../theme/theme.js';
-import type { ProviderChoice } from './types.js';
+import type { SlotConfig, SlotName } from "@howlerops/iron-rain";
+import { SLOT_NAMES } from "@howlerops/iron-rain";
+import { For } from "solid-js";
+import { ironRainTheme, slotColor, slotLabel } from "../../theme/theme.js";
+import type { ProviderChoice } from "./types.js";
 
 export interface SummaryProps {
   providers: ProviderChoice[];
@@ -14,7 +14,7 @@ export interface SummaryProps {
 }
 
 export function Summary(props: SummaryProps) {
-  const selectedProviders = () => props.providers.filter(p => p.selected);
+  const selectedProviders = () => props.providers.filter((p) => p.selected);
 
   return (
     <box flexDirection="column" paddingX={4} paddingY={1}>
@@ -28,9 +28,17 @@ export function Summary(props: SummaryProps) {
       <box marginY={1} />
 
       {/* Providers */}
-      <box flexDirection="column" border borderStyle="rounded" borderColor={ironRainTheme.chrome.border}
-        paddingX={1} paddingY={1}>
-        <text fg={ironRainTheme.brand.lightGold}><b>Providers</b></text>
+      <box
+        flexDirection="column"
+        border
+        borderStyle="rounded"
+        borderColor={ironRainTheme.chrome.border}
+        paddingX={1}
+        paddingY={1}
+      >
+        <text fg={ironRainTheme.brand.lightGold}>
+          <b>Providers</b>
+        </text>
         <For each={selectedProviders()}>
           {(provider) => {
             const cred = () => props.credentials[provider.id] ?? {};
@@ -38,12 +46,10 @@ export function Summary(props: SummaryProps) {
               <box flexDirection="row" gap={1} paddingX={1}>
                 <text fg={ironRainTheme.status.success}>+</text>
                 <text fg={ironRainTheme.chrome.fg}>{provider.name}</text>
-                <text fg={ironRainTheme.chrome.dimFg}>
-                  ({provider.type})
-                </text>
+                <text fg={ironRainTheme.chrome.dimFg}>({provider.type})</text>
                 {cred().apiKey && (
                   <text fg={ironRainTheme.chrome.muted}>
-                    {`key: ${cred().apiKey!.startsWith('env:') ? cred().apiKey! : '***'}`}
+                    {`key: ${cred().apiKey!.startsWith("env:") ? cred().apiKey! : "***"}`}
                   </text>
                 )}
               </box>
@@ -55,9 +61,17 @@ export function Summary(props: SummaryProps) {
       <box marginY={1} />
 
       {/* Slot assignments */}
-      <box flexDirection="column" border borderStyle="rounded" borderColor={ironRainTheme.chrome.border}
-        paddingX={1} paddingY={1}>
-        <text fg={ironRainTheme.brand.lightGold}><b>Model Slots</b></text>
+      <box
+        flexDirection="column"
+        border
+        borderStyle="rounded"
+        borderColor={ironRainTheme.chrome.border}
+        paddingX={1}
+        paddingY={1}
+      >
+        <text fg={ironRainTheme.brand.lightGold}>
+          <b>Model Slots</b>
+        </text>
         <For each={[...SLOT_NAMES]}>
           {(slot) => {
             const config = () => props.slots[slot];
@@ -87,9 +101,7 @@ export function Summary(props: SummaryProps) {
         <text fg={ironRainTheme.status.success}>
           <b>[Enter] Save & Start</b>
         </text>
-        <text fg={ironRainTheme.chrome.muted}>
-          [Backspace] Back
-        </text>
+        <text fg={ironRainTheme.chrome.muted}>[Backspace] Back</text>
       </box>
     </box>
   );

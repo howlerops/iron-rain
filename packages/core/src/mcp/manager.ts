@@ -2,8 +2,9 @@
  * MCP Manager — manages multiple MCP server connections.
  * Loads config from .mcp.json or iron-rain.json mcpServers field.
  */
-import { MCPClient } from './client.js';
-import type { MCPServerConfig, MCPTool, MCPToolResult } from './types.js';
+import { MCPClient } from "./client.js";
+import { namespaceDuplicateTools } from "./reconnect.js";
+import type { MCPServerConfig, MCPTool, MCPToolResult } from "./types.js";
 
 export interface MCPManagerConfig {
   mcpServers?: Record<string, MCPServerConfig>;
@@ -66,15 +67,18 @@ export class MCPManager {
     for (const client of this.clients.values()) {
       tools.push(...client.getCachedTools());
     }
-    return tools;
+    return namespaceDuplicateTools(tools);
   }
 
   /**
    * Call a tool by name, routing to the correct server.
    */
-  async callTool(name: string, args: Record<string, unknown> = {}): Promise<MCPToolResult> {
+  async callTool(
+    name: string,
+    args: Record<string, unknown> = {},
+  ): Promise<MCPToolResult> {
     for (const client of this.clients.values()) {
-      const tool = client.getCachedTools().find(t => t.name === name);
+      const tool = client.getCachedTools().find((t) => t.name === name);
       if (tool) {
         return client.callTool(name, args);
       }
@@ -87,7 +91,7 @@ export class MCPManager {
    */
   getToolDescriptions(): string {
     const tools = this.getAllTools();
-    if (tools.length === 0) return '';
+    if (tools.length === 0) return "";
 
     const byServer = new Map<string, MCPTool[]>();
     for (const tool of tools) {
@@ -96,7 +100,7 @@ export class MCPManager {
       byServer.set(tool.server, list);
     }
 
-    const parts: string[] = ['## Available MCP Tools'];
+    const parts: string[] = ["## Available MCP Tools"];
     for (const [server, serverTools] of byServer) {
       parts.push(`\n### ${server}`);
       for (const tool of serverTools) {
@@ -104,14 +108,18 @@ export class MCPManager {
       }
     }
 
-    return parts.join('\n');
+    return parts.join("\n");
   }
 
   /**
    * Get status of all configured/connected servers.
    */
   getStatus(): Array<{ name: string; connected: boolean; toolCount: number }> {
-    const status: Array<{ name: string; connected: boolean; toolCount: number }> = [];
+    const status: Array<{
+      name: string;
+      connected: boolean;
+      toolCount: number;
+    }> = [];
     for (const name of Object.keys(this.config)) {
       const client = this.clients.get(name);
       status.push({

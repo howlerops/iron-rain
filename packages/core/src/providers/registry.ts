@@ -1,4 +1,4 @@
-import type { SlotConfig } from '../slots/types.js';
+import type { SlotConfig } from "../slots/types.js";
 
 export interface ProviderInfo {
   name: string;
@@ -8,39 +8,39 @@ export interface ProviderInfo {
 
 const KNOWN_PROVIDERS: ProviderInfo[] = [
   {
-    name: 'anthropic',
+    name: "anthropic",
     models: [
-      'claude-opus-4-6',
-      'claude-sonnet-4-6',
-      'claude-sonnet-4-20250514',
-      'claude-haiku-4-5-20251001',
+      "claude-opus-4-6",
+      "claude-sonnet-4-6",
+      "claude-sonnet-4-20250514",
+      "claude-haiku-4-5-20251001",
     ],
   },
   {
-    name: 'openai',
-    apiBase: 'https://api.openai.com/v1',
-    models: ['gpt-4o', 'gpt-4o-mini', 'o3', 'o4-mini'],
+    name: "openai",
+    apiBase: "https://api.openai.com/v1",
+    models: ["gpt-4o", "gpt-4o-mini", "o3", "o4-mini"],
   },
   {
-    name: 'ollama',
-    apiBase: 'http://localhost:11434',
-    models: ['qwen2.5-coder:32b', 'llama3.3:70b', 'deepseek-coder-v2:latest'],
+    name: "ollama",
+    apiBase: "http://localhost:11434",
+    models: ["qwen2.5-coder:32b", "llama3.3:70b", "deepseek-coder-v2:latest"],
   },
   {
-    name: 'claude-code',
-    models: ['opus', 'sonnet', 'haiku'],
+    name: "claude-code",
+    models: ["opus", "sonnet", "haiku"],
   },
   {
-    name: 'codex',
-    models: ['o3', 'o4-mini', 'gpt-4o'],
+    name: "codex",
+    models: ["o3", "o4-mini", "gpt-4o"],
   },
   {
-    name: 'gemini',
-    models: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash'],
+    name: "gemini",
+    models: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"],
   },
   {
-    name: 'gemini-cli',
-    models: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash'],
+    name: "gemini-cli",
+    models: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"],
   },
 ];
 

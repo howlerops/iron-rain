@@ -1,5 +1,5 @@
-import { Show } from 'solid-js';
-import { ironRainTheme } from '../theme/theme.js';
+import { Show } from "solid-js";
+import { ironRainTheme } from "../theme/theme.js";
 
 export interface UpdateBannerProps {
   currentVersion: string;

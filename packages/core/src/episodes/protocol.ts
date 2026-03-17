@@ -1,5 +1,5 @@
-import type { SlotName } from '../slots/types.js';
-import { generateId } from '../utils/id.js';
+import type { SlotName } from "../slots/types.js";
+import { generateId } from "../utils/id.js";
 
 export interface EpisodeSummary {
   id: string;
@@ -9,11 +9,11 @@ export interface EpisodeSummary {
   tokens: number;
   duration: number;
   filesModified?: string[];
-  status: 'success' | 'failure' | 'partial';
+  status: "success" | "failure" | "partial";
 }
 
 export function createEpisodeSummary(
-  partial: Omit<EpisodeSummary, 'id'>,
+  partial: Omit<EpisodeSummary, "id">,
 ): EpisodeSummary {
   return {
     id: generateId(),

@@ -1,15 +1,34 @@
-import { createSignal, createMemo, Switch, Match, For, onMount } from 'solid-js';
-import { createStore } from 'solid-js/store';
-import { useKeyboard } from '@opentui/solid';
-import type { SlotName, SlotConfig, IronRainConfig, ThinkingLevel } from '@howlerops/iron-rain';
-import { SLOT_NAMES, writeConfig, ModelRegistry } from '@howlerops/iron-rain';
-import { ironRainTheme } from '../theme/theme.js';
-import { AVAILABLE_PROVIDERS, PROVIDER_MODELS } from './onboarding/types.js';
-import { ModelsSection, THINKING_LEVELS, type ModelOption } from './settings/models-section.js';
-import { ProvidersSection, type ProviderListItem } from './settings/providers-section.js';
-import { AboutSection } from './settings/about-section.js';
+import type {
+  IronRainConfig,
+  SlotConfig,
+  SlotName,
+  ThinkingLevel,
+} from "@howlerops/iron-rain";
+import { ModelRegistry, SLOT_NAMES, writeConfig } from "@howlerops/iron-rain";
+import { useKeyboard } from "@opentui/solid";
+import {
+  createMemo,
+  createSignal,
+  For,
+  Match,
+  onMount,
+  Switch,
+} from "solid-js";
+import { createStore } from "solid-js/store";
+import { ironRainTheme } from "../theme/theme.js";
+import { AVAILABLE_PROVIDERS, PROVIDER_MODELS } from "./onboarding/types.js";
+import { AboutSection } from "./settings/about-section.js";
+import {
+  type ModelOption,
+  ModelsSection,
+  THINKING_LEVELS,
+} from "./settings/models-section.js";
+import {
+  type ProviderListItem,
+  ProvidersSection,
+} from "./settings/providers-section.js";
 
-export type SettingsSection = 'models' | 'providers' | 'about';
+export type SettingsSection = "models" | "providers" | "about";
 
 export interface SettingsProps {
   config: IronRainConfig;
@@ -18,23 +37,27 @@ export interface SettingsProps {
   initialSection?: SettingsSection;
 }
 
-const SECTIONS: SettingsSection[] = ['models', 'providers', 'about'];
+const SECTIONS: SettingsSection[] = ["models", "providers", "about"];
 const SECTION_LABELS: Record<SettingsSection, string> = {
-  models: 'Models',
-  providers: 'Providers',
-  about: 'About',
+  models: "Models",
+  providers: "Providers",
+  about: "About",
 };
 
 export function Settings(props: SettingsProps) {
-  const [activeSection, setActiveSection] = createSignal<SettingsSection>(props.initialSection ?? 'models');
+  const [activeSection, setActiveSection] = createSignal<SettingsSection>(
+    props.initialSection ?? "models",
+  );
   const [cursor, setCursor] = createSignal(0);
   const [editing, setEditing] = createSignal(false);
   const [editCursor, setEditCursor] = createSignal(0);
   const [editingKey, setEditingKey] = createSignal(false);
-  const [keyBuffer, setKeyBuffer] = createSignal('');
+  const [keyBuffer, setKeyBuffer] = createSignal("");
   const [editingThinking, setEditingThinking] = createSignal(false);
   const [thinkingCursor, setThinkingCursor] = createSignal(0);
-  const [dynamicModels, setDynamicModels] = createSignal<Record<string, string[]>>({});
+  const [dynamicModels, setDynamicModels] = createSignal<
+    Record<string, string[]>
+  >({});
   const [modelsLoading, setModelsLoading] = createSignal(false);
 
   const registry = new ModelRegistry(PROVIDER_MODELS);
@@ -50,7 +73,7 @@ export function Settings(props: SettingsProps) {
     const providers = config.providers ?? {};
     const fetched: Record<string, string[]> = {};
     await Promise.all(
-      ['ollama', 'openai', 'gemini']
+      ["ollama", "openai", "gemini"]
         .filter((pid) => providers[pid])
         .map(async (pid) => {
           const models = await registry.getModels(pid, providers[pid]);
@@ -74,8 +97,12 @@ export function Settings(props: SettingsProps) {
       for (const slot of slotNames) {
         const sc = config.slots[slot];
         if (sc) {
-          for (const m of dynamic[sc.provider] ?? PROVIDER_MODELS[sc.provider] ?? []) {
-            if (!options.some(o => o.provider === sc.provider && o.model === m)) {
+          for (const m of dynamic[sc.provider] ??
+            PROVIDER_MODELS[sc.provider] ??
+            []) {
+            if (
+              !options.some((o) => o.provider === sc.provider && o.model === m)
+            ) {
               options.push({ provider: sc.provider, model: m });
             }
           }
@@ -87,7 +114,7 @@ export function Settings(props: SettingsProps) {
 
   const providerList = createMemo((): ProviderListItem[] => {
     const configured = Object.keys(config.providers ?? {});
-    return AVAILABLE_PROVIDERS.map(p => ({
+    return AVAILABLE_PROVIDERS.map((p) => ({
       ...p,
       configured: configured.includes(p.id),
       apiKey: (config.providers ?? {})[p.id]?.apiKey,
@@ -97,15 +124,20 @@ export function Settings(props: SettingsProps) {
 
   function maxCursorForSection(): number {
     switch (activeSection()) {
-      case 'models': return slotNames.length - 1;
-      case 'providers': return providerList().length - 1;
-      default: return 0;
+      case "models":
+        return slotNames.length - 1;
+      case "providers":
+        return providerList().length - 1;
+      default:
+        return 0;
     }
   }
 
   function cycleSection(dir: 1 | -1) {
     const idx = SECTIONS.indexOf(activeSection());
-    setActiveSection(SECTIONS[(idx + dir + SECTIONS.length) % SECTIONS.length]!);
+    setActiveSection(
+      SECTIONS[(idx + dir + SECTIONS.length) % SECTIONS.length]!,
+    );
     setCursor(0);
     setEditing(false);
     setEditingKey(false);
@@ -115,7 +147,7 @@ export function Settings(props: SettingsProps) {
     const opt = modelOptions()[optionIdx];
     if (!opt) return;
     const slot = slotNames[slotIdx]!;
-    setConfig('slots', slot, {
+    setConfig("slots", slot, {
       provider: opt.provider,
       model: opt.model,
       apiKey: (config.providers ?? {})[opt.provider]?.apiKey,
@@ -132,7 +164,7 @@ export function Settings(props: SettingsProps) {
     for (const slot of slotNames) {
       const sc = config.slots?.[slot];
       if (!sc || !configuredProviders.includes(sc.provider)) {
-        setConfig('slots', slot, {
+        setConfig("slots", slot, {
           provider: providerId,
           model: defaultModel,
           apiBase: (config.providers ?? {})[providerId]?.apiBase,
@@ -147,14 +179,14 @@ export function Settings(props: SettingsProps) {
     if (prov.configured) {
       const providers = { ...(config.providers ?? {}) };
       delete providers[prov.id];
-      setConfig('providers', providers);
+      setConfig("providers", providers);
     } else if (prov.requiresKey) {
       setEditingKey(true);
-      setKeyBuffer('');
+      setKeyBuffer("");
     } else {
       const providers = { ...(config.providers ?? {}) };
       providers[prov.id] = { apiBase: prov.defaultApiBase };
-      setConfig('providers', providers);
+      setConfig("providers", providers);
       autoAssignSlotsToProvider(prov.id);
     }
   }
@@ -163,45 +195,61 @@ export function Settings(props: SettingsProps) {
     const prov = providerList()[idx];
     if (!prov) return;
     const key = keyBuffer().trim();
-    if (!key) { setEditingKey(false); return; }
+    if (!key) {
+      setEditingKey(false);
+      return;
+    }
     const providers = { ...(config.providers ?? {}) };
-    providers[prov.id] = { apiKey: key, apiBase: prov.apiBase ?? prov.defaultApiBase };
-    setConfig('providers', providers);
+    providers[prov.id] = {
+      apiKey: key,
+      apiBase: prov.apiBase ?? prov.defaultApiBase,
+    };
+    setConfig("providers", providers);
     autoAssignSlotsToProvider(prov.id);
     setEditingKey(false);
-    setKeyBuffer('');
+    setKeyBuffer("");
   }
 
   useKeyboard((e) => {
     // API key text entry mode
     if (editingKey()) {
-      if (e.name === 'return') commitApiKey(cursor());
-      else if (e.name === 'escape') { setEditingKey(false); setKeyBuffer(''); }
-      else if (e.name === 'backspace') setKeyBuffer(k => k.slice(0, -1));
-      else if (e.raw && e.raw.length === 1 && !e.ctrl && !e.meta) setKeyBuffer(k => k + e.raw);
+      if (e.name === "return") commitApiKey(cursor());
+      else if (e.name === "escape") {
+        setEditingKey(false);
+        setKeyBuffer("");
+      } else if (e.name === "backspace") setKeyBuffer((k) => k.slice(0, -1));
+      else if (e.raw && e.raw.length === 1 && !e.ctrl && !e.meta)
+        setKeyBuffer((k) => k + e.raw);
       e.preventDefault();
       return;
     }
 
     // Model picker sub-menu
     if (editing()) {
-      if (e.name === 'escape') setEditing(false);
-      else if (e.name === 'up') setEditCursor(c => Math.max(0, c - 1));
-      else if (e.name === 'down') setEditCursor(c => Math.min(modelOptions().length - 1, c + 1));
-      else if (e.name === 'return') selectModelForSlot(cursor(), editCursor());
+      if (e.name === "escape") setEditing(false);
+      else if (e.name === "up") setEditCursor((c) => Math.max(0, c - 1));
+      else if (e.name === "down")
+        setEditCursor((c) => Math.min(modelOptions().length - 1, c + 1));
+      else if (e.name === "return") selectModelForSlot(cursor(), editCursor());
       e.preventDefault();
       return;
     }
 
     // Thinking level picker
     if (editingThinking()) {
-      if (e.name === 'escape') setEditingThinking(false);
-      else if (e.name === 'up') setThinkingCursor(c => Math.max(0, c - 1));
-      else if (e.name === 'down') setThinkingCursor(c => Math.min(THINKING_LEVELS.length - 1, c + 1));
-      else if (e.name === 'return') {
+      if (e.name === "escape") setEditingThinking(false);
+      else if (e.name === "up") setThinkingCursor((c) => Math.max(0, c - 1));
+      else if (e.name === "down")
+        setThinkingCursor((c) => Math.min(THINKING_LEVELS.length - 1, c + 1));
+      else if (e.name === "return") {
         const slot = slotNames[cursor()]!;
         const level = THINKING_LEVELS[thinkingCursor()]!;
-        setConfig('slots', slot, 'thinkingLevel', level === 'off' ? undefined : level);
+        setConfig(
+          "slots",
+          slot,
+          "thinkingLevel",
+          level === "off" ? undefined : level,
+        );
         setEditingThinking(false);
       }
       e.preventDefault();
@@ -209,35 +257,71 @@ export function Settings(props: SettingsProps) {
     }
 
     // Main settings nav
-    if (e.name === 'escape') { props.onClose(); e.preventDefault(); return; }
-    if (e.name === 'tab') { cycleSection(e.shift ? -1 : 1); e.preventDefault(); return; }
-    if (e.name === 'up') { setCursor(c => Math.max(0, c - 1)); e.preventDefault(); return; }
-    if (e.name === 'down') { setCursor(c => Math.min(maxCursorForSection(), c + 1)); e.preventDefault(); return; }
-    if (e.name === 'return') {
-      if (activeSection() === 'models') { setEditing(true); setEditCursor(0); }
-      else if (activeSection() === 'providers') toggleProvider(cursor());
+    if (e.name === "escape") {
+      props.onClose();
       e.preventDefault();
       return;
     }
-    if (e.raw === 't' && activeSection() === 'models') {
+    if (e.name === "tab") {
+      cycleSection(e.shift ? -1 : 1);
+      e.preventDefault();
+      return;
+    }
+    if (e.name === "up") {
+      setCursor((c) => Math.max(0, c - 1));
+      e.preventDefault();
+      return;
+    }
+    if (e.name === "down") {
+      setCursor((c) => Math.min(maxCursorForSection(), c + 1));
+      e.preventDefault();
+      return;
+    }
+    if (e.name === "return") {
+      if (activeSection() === "models") {
+        setEditing(true);
+        setEditCursor(0);
+      } else if (activeSection() === "providers") toggleProvider(cursor());
+      e.preventDefault();
+      return;
+    }
+    if (e.raw === "t" && activeSection() === "models") {
       setEditingThinking(true);
       const slot = slotNames[cursor()]!;
-      setThinkingCursor(THINKING_LEVELS.indexOf(config.slots?.[slot]?.thinkingLevel ?? 'off'));
+      setThinkingCursor(
+        THINKING_LEVELS.indexOf(config.slots?.[slot]?.thinkingLevel ?? "off"),
+      );
       e.preventDefault();
       return;
     }
-    if (e.raw === 's') { writeConfig(config); props.onSave(config); e.preventDefault(); }
+    if (e.raw === "s") {
+      writeConfig(config);
+      props.onSave(config);
+      e.preventDefault();
+    }
   });
 
   return (
     <box flexDirection="column" paddingX={2} paddingY={1} flexGrow={1}>
-      <text fg={ironRainTheme.brand.primary}><b>Settings</b></text>
+      <text fg={ironRainTheme.brand.primary}>
+        <b>Settings</b>
+      </text>
 
       <box flexDirection="row" gap={2} marginTop={1}>
         <For each={SECTIONS}>
           {(s) => (
-            <text fg={s === activeSection() ? ironRainTheme.brand.primary : ironRainTheme.chrome.muted}>
-              {s === activeSection() ? <b>{`[${SECTION_LABELS[s]}]`}</b> : SECTION_LABELS[s]}
+            <text
+              fg={
+                s === activeSection()
+                  ? ironRainTheme.brand.primary
+                  : ironRainTheme.chrome.muted
+              }
+            >
+              {s === activeSection() ? (
+                <b>{`[${SECTION_LABELS[s]}]`}</b>
+              ) : (
+                SECTION_LABELS[s]
+              )}
             </text>
           )}
         </For>
@@ -246,7 +330,7 @@ export function Settings(props: SettingsProps) {
       <box marginY={1} />
 
       <Switch>
-        <Match when={activeSection() === 'models'}>
+        <Match when={activeSection() === "models"}>
           <ModelsSection
             slots={config.slots}
             cursor={cursor()}
@@ -258,7 +342,7 @@ export function Settings(props: SettingsProps) {
             modelsLoading={modelsLoading()}
           />
         </Match>
-        <Match when={activeSection() === 'providers'}>
+        <Match when={activeSection() === "providers"}>
           <ProvidersSection
             providers={providerList()}
             cursor={cursor()}
@@ -266,7 +350,7 @@ export function Settings(props: SettingsProps) {
             keyBuffer={keyBuffer()}
           />
         </Match>
-        <Match when={activeSection() === 'about'}>
+        <Match when={activeSection() === "about"}>
           <AboutSection />
         </Match>
       </Switch>
@@ -275,8 +359,10 @@ export function Settings(props: SettingsProps) {
       <box flexDirection="row" gap={2} paddingX={1}>
         <text fg={ironRainTheme.chrome.dimFg}>{`Tab section`}</text>
         <text fg={ironRainTheme.chrome.dimFg}>{`\u2191\u2193 navigate`}</text>
-        <text fg={ironRainTheme.chrome.dimFg}>{`Enter ${activeSection() === 'models' ? 'edit' : 'toggle'}`}</text>
-        {activeSection() === 'models' && (
+        <text
+          fg={ironRainTheme.chrome.dimFg}
+        >{`Enter ${activeSection() === "models" ? "edit" : "toggle"}`}</text>
+        {activeSection() === "models" && (
           <text fg={ironRainTheme.chrome.dimFg}>{`t thinking`}</text>
         )}
         <text fg={ironRainTheme.chrome.dimFg}>{`s save`}</text>

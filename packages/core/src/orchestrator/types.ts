@@ -1,6 +1,6 @@
-import type { SlotName, ToolType } from '../slots/types.js';
-import type { EpisodeSummary } from '../episodes/protocol.js';
-import { generateId } from '../utils/id.js';
+import type { EpisodeSummary } from "../episodes/protocol.js";
+import type { SlotName, ToolType } from "../slots/types.js";
+import { generateId } from "../utils/id.js";
 
 export interface OrchestratorTask {
   id: string;
@@ -8,7 +8,7 @@ export interface OrchestratorTask {
   toolType?: ToolType;
   targetSlot?: SlotName;
   systemPrompt?: string;
-  history?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  history?: Array<{ role: "user" | "assistant"; content: string }>;
   metadata?: Record<string, unknown>;
 }
 
@@ -19,7 +19,7 @@ export interface WorkerResult {
   tokens: { input: number; output: number };
   duration: number;
   filesModified?: string[];
-  status: 'success' | 'failure' | 'partial';
+  status: "success" | "failure" | "partial";
   error?: string;
 }
 
@@ -31,7 +31,7 @@ export function taskToEpisode(
     id: generateId(),
     slot: result.slot,
     task: task.prompt,
-    result: result.content || result.error || '',
+    result: result.content || result.error || "",
     tokens: result.tokens.input + result.tokens.output,
     duration: result.duration,
     filesModified: result.filesModified,

@@ -7,14 +7,17 @@ export class BridgeError extends Error {
 
   constructor(message: string, statusCode: number, provider: string) {
     super(message);
-    this.name = 'BridgeError';
+    this.name = "BridgeError";
     this.statusCode = statusCode;
     this.provider = provider;
   }
 
   /** Server errors (5xx) and rate limits (429) are retryable */
   isRetryable(): boolean {
-    return this.statusCode === 429 || (this.statusCode >= 500 && this.statusCode < 600);
+    return (
+      this.statusCode === 429 ||
+      (this.statusCode >= 500 && this.statusCode < 600)
+    );
   }
 }
 
@@ -84,4 +87,19 @@ export class CircuitBreaker {
   get failures(): number {
     return this.consecutiveFailures;
   }
+}
+
+/**
+ * Factory for creating BridgeError from an HTTP response.
+ */
+export function createBridgeError(
+  provider: string,
+  status: number,
+  body: string,
+): BridgeError {
+  return new BridgeError(
+    `${provider} API error (${status}): ${body}`,
+    status,
+    provider,
+  );
 }

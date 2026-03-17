@@ -1,4 +1,4 @@
-import { ironRainTheme } from '../theme/theme.js';
+import { ironRainTheme } from "../theme/theme.js";
 
 export interface WelcomeScreenProps {
   model: string;
@@ -16,7 +16,11 @@ export function WelcomeScreen(props: WelcomeScreenProps) {
       <ascii_font
         text="Iron Rain"
         font="slick"
-        color={[ironRainTheme.brand.darkGold, ironRainTheme.brand.primary, ironRainTheme.brand.accent]}
+        color={[
+          ironRainTheme.brand.darkGold,
+          ironRainTheme.brand.primary,
+          ironRainTheme.brand.accent,
+        ]}
       />
       <text fg={ironRainTheme.chrome.muted}>
         Multi-model orchestration for terminal-based coding
@@ -33,7 +37,8 @@ export function WelcomeScreen(props: WelcomeScreenProps) {
 
       <box flexDirection="column" alignItems="center" marginTop={2}>
         <text fg={ironRainTheme.chrome.dimFg}>
-          Try: "Explain this codebase" · "Fix the failing tests" · "Refactor auth module"
+          Try: "Explain this codebase" · "Fix the failing tests" · "Refactor
+          auth module"
         </text>
         <text fg={ironRainTheme.chrome.dimFg} marginTop={1}>
           {`Type /help for commands`}

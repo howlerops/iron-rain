@@ -1,14 +1,15 @@
-import type { CLIBridge, BridgeOptions, BridgeResult, BridgeChunk } from './types.js';
-import { getTextContent } from './types.js';
+import { BaseAPIBridge } from "./base-api.js";
+import type { BridgeChunk, BridgeOptions, BridgeResult } from "./types.js";
+import { getTextContent } from "./types.js";
 
-export class OllamaBridge implements CLIBridge {
-  readonly name = 'ollama';
-  private apiBase: string;
-  private model: string;
-
+export class OllamaBridge extends BaseAPIBridge {
   constructor(opts: { apiBase?: string; model: string }) {
-    this.apiBase = opts.apiBase ?? 'http://localhost:11434';
-    this.model = opts.model;
+    super({
+      name: "ollama",
+      apiBase: opts.apiBase ?? "http://localhost:11434",
+      apiKey: "",
+      model: opts.model,
+    });
   }
 
   async available(): Promise<boolean> {
@@ -22,19 +23,25 @@ export class OllamaBridge implements CLIBridge {
     }
   }
 
-  async execute(prompt: string, options?: BridgeOptions): Promise<BridgeResult> {
+  async execute(
+    prompt: string,
+    options?: BridgeOptions,
+  ): Promise<BridgeResult> {
     const start = Date.now();
     const res = await fetch(`${this.apiBase}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: this.model,
         messages: [
           ...(options?.systemPrompt
-            ? [{ role: 'system' as const, content: options.systemPrompt }]
+            ? [{ role: "system" as const, content: options.systemPrompt }]
             : []),
-          ...(options?.conversationHistory?.map(m => ({ role: m.role as string, content: getTextContent(m.content) })) ?? []),
-          { role: 'user' as const, content: prompt },
+          ...(options?.conversationHistory?.map((m) => ({
+            role: m.role as string,
+            content: getTextContent(m.content),
+          })) ?? []),
+          { role: "user" as const, content: prompt },
         ],
         stream: false,
         options: {
@@ -45,10 +52,7 @@ export class OllamaBridge implements CLIBridge {
       signal: options?.signal,
     });
 
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Ollama API error (${res.status}): ${text}`);
-    }
+    await this.assertOk(res);
 
     const data = (await res.json()) as {
       message: { content: string };
@@ -67,18 +71,24 @@ export class OllamaBridge implements CLIBridge {
     };
   }
 
-  async *stream(prompt: string, options?: BridgeOptions): AsyncIterable<BridgeChunk> {
+  async *stream(
+    prompt: string,
+    options?: BridgeOptions,
+  ): AsyncIterable<BridgeChunk> {
     const res = await fetch(`${this.apiBase}/api/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: this.model,
         messages: [
           ...(options?.systemPrompt
-            ? [{ role: 'system' as const, content: options.systemPrompt }]
+            ? [{ role: "system" as const, content: options.systemPrompt }]
             : []),
-          ...(options?.conversationHistory?.map(m => ({ role: m.role as string, content: getTextContent(m.content) })) ?? []),
-          { role: 'user' as const, content: prompt },
+          ...(options?.conversationHistory?.map((m) => ({
+            role: m.role as string,
+            content: getTextContent(m.content),
+          })) ?? []),
+          { role: "user" as const, content: prompt },
         ],
         stream: true,
         options: {
@@ -89,29 +99,12 @@ export class OllamaBridge implements CLIBridge {
       signal: options?.signal,
     });
 
-    if (!res.ok) {
-      yield { type: 'error', content: `Ollama API error: ${res.status}` };
-      return;
-    }
+    await this.assertOk(res);
 
-    const reader = res.body?.getReader();
-    if (!reader) {
-      yield { type: 'error', content: 'No response body' };
-      return;
-    }
+    this.resetTokenCounts();
 
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-
-      for (const line of lines) {
+    try {
+      for await (const line of this.streamSSE(res)) {
         if (!line.trim()) continue;
         try {
           const parsed = JSON.parse(line) as {
@@ -121,16 +114,15 @@ export class OllamaBridge implements CLIBridge {
             eval_count?: number;
           };
           if (parsed.message?.content) {
-            yield { type: 'text', content: parsed.message.content };
+            yield { type: "text", content: parsed.message.content };
           }
           if (parsed.done) {
+            this.setInputTokens(parsed.prompt_eval_count ?? 0);
+            this.setOutputTokens(parsed.eval_count ?? 0);
             yield {
-              type: 'done',
-              content: '',
-              tokens: {
-                input: parsed.prompt_eval_count ?? 0,
-                output: parsed.eval_count ?? 0,
-              },
+              type: "done",
+              content: "",
+              tokens: this.getTokenCounts(),
             };
             return;
           }
@@ -138,8 +130,11 @@ export class OllamaBridge implements CLIBridge {
           // skip malformed
         }
       }
+    } catch {
+      yield { type: "error", content: "No response body" };
+      return;
     }
 
-    yield { type: 'done', content: '' };
+    yield { type: "done", content: "" };
   }
 }

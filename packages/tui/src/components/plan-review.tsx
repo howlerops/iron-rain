@@ -1,6 +1,6 @@
-import { For } from 'solid-js';
-import { ironRainTheme } from '../theme/theme.js';
-import type { Plan } from '@howlerops/iron-rain';
+import type { Plan } from "@howlerops/iron-rain";
+import { For } from "solid-js";
+import { ironRainTheme } from "../theme/theme.js";
 
 export interface PlanReviewProps {
   plan: Plan;

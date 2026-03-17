@@ -3,11 +3,12 @@
 Multi-model orchestration for terminal-based coding agents.
 
 ```
-   ____                  ____        _
-  /  _/______  ___      / __ \___ _ (_)___
- _/ / / __/ _ \/ _ \   / /_/ / _  |/ / _ \
-/___/ /_/  \___/_//_/  / .___/\_,_/_/_//_/
-                      /_/
+╭━━╮╭━━━╮╭━━━╮╭━╮╱╭╮   ╭━━━╮╭━━━╮╭━━╮╭━╮╱╭╮
+╰┫┣╯┃╭━╮┃┃╭━╮┃┃┃╰╮┃┃   ┃╭━╮┃┃╭━╮┃╰┫┣╯┃┃╰╮┃┃
+╱┃┃╱┃╰━╯┃┃┃╱┃┃┃╭╮╰╯┃   ┃╰━╯┃┃┃╱┃┃╱┃┃╱┃╭╮╰╯┃
+╱┃┃╱┃╭╮╭╯┃┃╱┃┃┃┃╰╮┃┃   ┃╭╮╭╯┃╰━╯┃╱┃┃╱┃┃╰╮┃┃
+╭┫┣╮┃┃┃╰╮┃╰━╯┃┃┃╱┃┃┃   ┃┃┃╰╮┃╭━╮┃╭┫┣╮┃┃╱┃┃┃
+╰━━╯╰╯╰━╯╰━━━╯╰╯╱╰━╯   ╰╯╰━╯╰╯╱╰╯╰━━╯╰╯╱╰━╯
 ```
 
 Route tasks to the right model at the right time. Use any provider — Anthropic, OpenAI, Ollama, or any OpenAI-compatible API.
@@ -45,16 +46,22 @@ iron-rain --help             Show help
 ### TUI Slash Commands
 
 ```
+/init                        Analyze project structure + architecture review
 /plan <desc>                 Generate PRD + task breakdown
 /plans                       List saved plans
 /resume                      Resume paused plan
 /loop <desc> --until "cond"  Iterative execution loop
 /loop-status                 Show loop progress
 /loop-pause / /loop-resume   Control active loop
+/review [branch]             Code review (staged or branch diff)
+/undo                        Restore last checkpoint
 /context add|list|remove     Manage context directories
 /lessons                     Show persistent memory
 /skills                      List available skills
 /mcp                         Show MCP server status
+/model                       Show model assignments
+/slot [name]                 Show or set active slot
+/stats                       Show session statistics
 /settings                    Open settings
 /help                        Show all commands
 /version                     Show version info
@@ -205,9 +212,113 @@ Add external directories to your session scope with the `/context` command:
 
 Files in added directories can then be referenced with `@` mentions.
 
+## Project Init
+
+Analyze your codebase in one command:
+
+```
+/init
+```
+
+Maps your repo structure, reads package metadata, detects config files, and dispatches an architecture review. Findings are stored as persistent lessons that survive across sessions.
+
+## Code Review
+
+Review staged changes or branch diffs:
+
+```
+/review          # Review staged changes
+/review main     # Review diff against main
+```
+
+Gets structured feedback on bugs, security, performance, and style.
+
+## Checkpoints & Undo
+
+Git-based checkpoint system for safe plan execution:
+
+```
+/undo            # Restore last checkpoint
+```
+
+Each plan task creates a checkpoint before execution. Restore any time with `/undo`.
+
+## Project Rules
+
+Define coding standards that are injected into every system prompt:
+
+- `IRON-RAIN.md` — project root rules file
+- `CLAUDE.md` — also supported (Claude Code compatibility)
+- `.iron-rain/rules/*.md` — additional rule files
+
+Disable with `"rules": { "disabled": true }` in config.
+
+## Repo Map
+
+Auto-generated repository map injected into system prompts. Walks the directory tree (respecting `.ironrainignore` and `.gitignore`), extracts symbols (functions, classes, exports), and truncates to a configurable token budget.
+
+Configure in `iron-rain.json`:
+
+```json
+{
+  "repoMap": { "enabled": true, "maxTokens": 2000 }
+}
+```
+
+## Cost Tracking
+
+Per-model cost registry tracks input/output token pricing across all slots:
+
+```json
+{
+  "costs": {
+    "custom-model": { "input": 0.001, "output": 0.002 }
+  }
+}
+```
+
+Built-in models have default pricing. Override or add custom models in config.
+
+## Sandbox Execution
+
+Run commands in isolated sandboxes:
+
+```json
+{
+  "sandbox": {
+    "backend": "docker",
+    "allowNetwork": false,
+    "docker": { "image": "node:20-slim", "memoryLimit": "2g" }
+  }
+}
+```
+
+Backends: `none` (default), `seatbelt` (macOS), `docker`, `gvisor`.
+
 ## Mid-Stream Context Injection
 
 While the agent is streaming, type additional context and press **Enter** to inject it. The response pauses, your text is added to the history, and the agent resumes with the updated context. Press **Esc** to cancel the stream entirely.
+
+## Remote Config
+
+Fetch and merge team-wide config at startup:
+
+```json
+{
+  "configUrl": "https://example.com/team-iron-rain.json"
+}
+```
+
+Local values take precedence over remote.
+
+## Fuzzy Command Suggestions
+
+Mistype a command? Iron Rain suggests the closest match:
+
+```
+> /upgade
+Unknown command: /upgade. Did you mean /update? (Check for and install updates)
+```
 
 ## Development
 
@@ -215,6 +326,7 @@ While the agent is streaming, type additional context and press **Enter** to inj
 bun install
 bun run build       # Build all packages
 bun run typecheck   # Type check all packages
+bun test            # Run all tests
 ```
 
 ## License

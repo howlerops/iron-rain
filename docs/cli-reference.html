@@ -11,7 +11,12 @@
   <nav class="topnav">
     <a href="index.html" class="logo">
       <img src="assets/howlerops-icon-dark.png" alt="howlerops">
-      <span>Iron Rain</span>
+      <pre class="ascii-logo">╭━━╮╭━━━╮╭━━━╮╭━╮╱╭╮   ╭━━━╮╭━━━╮╭━━╮╭━╮╱╭╮
+╰┫┣╯┃╭━╮┃┃╭━╮┃┃┃╰╮┃┃   ┃╭━╮┃┃╭━╮┃╰┫┣╯┃┃╰╮┃┃
+╱┃┃╱┃╰━╯┃┃┃╱┃┃┃╭╮╰╯┃   ┃╰━╯┃┃┃╱┃┃╱┃┃╱┃╭╮╰╯┃
+╱┃┃╱┃╭╮╭╯┃┃╱┃┃┃┃╰╮┃┃   ┃╭╮╭╯┃╰━╯┃╱┃┃╱┃┃╰╮┃┃
+╭┫┣╮┃┃┃╰╮┃╰━╯┃┃┃╱┃┃┃   ┃┃┃╰╮┃╭━╮┃╭┫┣╮┃┃╱┃┃┃
+╰━━╯╰╯╰━╯╰━━━╯╰╯╱╰━╯   ╰╯╰━╯╰╯╱╰╯╰━━╯╰╯╱╰━╯</pre>
     </a>
     <div class="links">
       <a href="getting-started.html" class="active">Docs</a>
@@ -132,6 +137,16 @@ ollama
         </tbody>
       </table>
 
+      <h3>Project Tools</h3>
+      <table>
+        <thead><tr><th>Command</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>/init</code></td><td>Analyze project structure, extract tech stack, conventions, and architecture. Stores findings as persistent lessons.</td></tr>
+          <tr><td><code>/review</code></td><td>Review staged changes for bugs, security, and style. Use <code>/review main</code> to diff against a branch.</td></tr>
+          <tr><td><code>/undo</code></td><td>Restore the last git checkpoint created during plan execution or manual save.</td></tr>
+        </tbody>
+      </table>
+
       <h3>Context &amp; Memory</h3>
       <table>
         <thead><tr><th>Command</th><th>Description</th></tr></thead>
@@ -150,6 +165,16 @@ ollama
           <tr><td><code>/skills</code></td><td>List available skills (grouped by source)</td></tr>
           <tr><td><code>/mcp</code></td><td>Show MCP server status and connected tools</td></tr>
           <tr><td><code>/&lt;skill-command&gt; [args]</code></td><td>Execute any registered custom skill</td></tr>
+        </tbody>
+      </table>
+
+      <h3>Model &amp; Slot Info</h3>
+      <table>
+        <thead><tr><th>Command</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>/model</code></td><td>Show current model assignments for all slots</td></tr>
+          <tr><td><code>/slot</code></td><td>Show the active slot. Use <code>/slot main</code> to switch.</td></tr>
+          <tr><td><code>/stats</code></td><td>Show session statistics (requests, tokens, duration)</td></tr>
         </tbody>
       </table>
 
@@ -266,6 +291,33 @@ ollama
         <div class="callout-title">Status bar hint</div>
         <p>While streaming, the status bar shows: <code>(Xs · esc to cancel · enter to add context)</code></p>
       </div>
+
+      <h2>Project Init</h2>
+      <p>The <code>/init</code> command analyzes your project and creates a knowledge base for Iron Rain:</p>
+      <pre><code>/init</code></pre>
+      <p>This command:</p>
+      <ol>
+        <li>Generates a <strong>repo map</strong> — file tree with extracted symbols (functions, classes, exports)</li>
+        <li>Reads <code>package.json</code> for dependencies and project metadata</li>
+        <li>Detects config files (tsconfig.json, biome.json, Dockerfile, CI workflows, etc.)</li>
+        <li>Stores findings as <strong>persistent lessons</strong> in the session database</li>
+        <li>Dispatches an architecture review to the model with recommendations (only if warranted)</li>
+      </ol>
+      <p>Run <code>/init</code> once when starting work on a new project. The stored lessons persist across sessions.</p>
+
+      <h2>Code Review</h2>
+      <p>Review code changes with structured feedback:</p>
+      <pre><code><span class="comment"># Review staged changes</span>
+/review
+
+<span class="comment"># Review diff against a branch</span>
+/review main</code></pre>
+      <p>The review prompt asks the model to evaluate changes for bugs, security vulnerabilities, performance issues, and style. Output includes severity ratings and specific line references.</p>
+
+      <h2>Checkpoints &amp; Undo</h2>
+      <p>Iron Rain creates git-based checkpoints during plan execution. Use <code>/undo</code> to restore the last checkpoint:</p>
+      <pre><code>/undo</code></pre>
+      <p>Checkpoints are lightweight git commits that can be restored instantly. Each plan task creates a checkpoint before execution.</p>
 
       <h2>Flags</h2>
       <table>

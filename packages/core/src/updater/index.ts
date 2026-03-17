@@ -1,15 +1,14 @@
-export {
-  checkForUpdate,
-  performUpdate,
-  isNewerVersion,
-  getCurrentVersion,
-  getVersionInfo,
-  runDiagnostics,
-} from './version-check.js';
-
 export type {
+  DoctorCheck,
   UpdateCheckResult,
   UpdateResult,
   VersionInfo,
-  DoctorCheck,
-} from './version-check.js';
+} from "./version-check.js";
+export {
+  checkForUpdate,
+  getCurrentVersion,
+  getVersionInfo,
+  isNewerVersion,
+  performUpdate,
+  runDiagnostics,
+} from "./version-check.js";

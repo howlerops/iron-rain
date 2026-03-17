@@ -1,4 +1,4 @@
-import type { ProviderInfo } from './registry.js';
+import type { ProviderInfo } from "./registry.js";
 
 interface CacheEntry {
   models: string[];
@@ -52,17 +52,19 @@ export class ModelRegistry {
       let models: string[] | null = null;
 
       switch (providerId) {
-        case 'ollama':
-          models = await this.fetchOllama(credentials?.apiBase ?? 'http://localhost:11434');
-          break;
-        case 'openai':
-          models = await this.fetchOpenAI(
-            credentials?.apiBase ?? 'https://api.openai.com/v1',
-            credentials?.apiKey ?? '',
+        case "ollama":
+          models = await this.fetchOllama(
+            credentials?.apiBase ?? "http://localhost:11434",
           );
           break;
-        case 'gemini':
-          models = await this.fetchGemini(credentials?.apiKey ?? '');
+        case "openai":
+          models = await this.fetchOpenAI(
+            credentials?.apiBase ?? "https://api.openai.com/v1",
+            credentials?.apiKey ?? "",
+          );
+          break;
+        case "gemini":
+          models = await this.fetchGemini(credentials?.apiKey ?? "");
           break;
       }
 
@@ -86,7 +88,10 @@ export class ModelRegistry {
     return data.models?.map((m) => m.name) ?? [];
   }
 
-  private async fetchOpenAI(apiBase: string, apiKey: string): Promise<string[]> {
+  private async fetchOpenAI(
+    apiBase: string,
+    apiKey: string,
+  ): Promise<string[]> {
     if (!apiKey) return [];
     const res = await fetch(`${apiBase}/models`, {
       headers: { Authorization: `Bearer ${apiKey}` },
@@ -114,10 +119,10 @@ export class ModelRegistry {
     return (data.models ?? [])
       .filter(
         (m) =>
-          m.name.includes('gemini') &&
-          m.supportedGenerationMethods?.includes('generateContent'),
+          m.name.includes("gemini") &&
+          m.supportedGenerationMethods?.includes("generateContent"),
       )
-      .map((m) => m.name.replace('models/', ''));
+      .map((m) => m.name.replace("models/", ""));
   }
 
   clearCache(providerId?: string) {

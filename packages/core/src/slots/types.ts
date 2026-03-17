@@ -1,18 +1,18 @@
-export type SlotName = 'main' | 'explore' | 'execute';
+export type SlotName = "main" | "explore" | "execute";
 
-export type ThinkingLevel = 'off' | 'low' | 'medium' | 'high';
+export type ThinkingLevel = "off" | "low" | "medium" | "high";
 
 export type ToolType =
-  | 'edit'
-  | 'write'
-  | 'bash'
-  | 'grep'
-  | 'glob'
-  | 'read'
-  | 'search'
-  | 'strategy'
-  | 'plan'
-  | 'conversation';
+  | "edit"
+  | "write"
+  | "bash"
+  | "grep"
+  | "glob"
+  | "read"
+  | "search"
+  | "strategy"
+  | "plan"
+  | "conversation";
 
 export interface SlotConfig {
   provider: string;
@@ -26,4 +26,8 @@ export interface SlotConfig {
 
 export type SlotAssignment = Record<SlotName, SlotConfig>;
 
-export const SLOT_NAMES: readonly SlotName[] = ['main', 'explore', 'execute'] as const;
+export const SLOT_NAMES: readonly SlotName[] = [
+  "main",
+  "explore",
+  "execute",
+] as const;

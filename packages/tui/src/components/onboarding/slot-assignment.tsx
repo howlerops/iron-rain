@@ -1,9 +1,9 @@
-import { For } from 'solid-js';
-import type { SlotName, SlotConfig } from '@howlerops/iron-rain';
-import { SLOT_NAMES } from '@howlerops/iron-rain';
-import { ironRainTheme, slotColor, slotLabel } from '../../theme/theme.js';
-import type { ProviderChoice } from './types.js';
-import { PROVIDER_MODELS } from './types.js';
+import type { SlotConfig, SlotName } from "@howlerops/iron-rain";
+import { SLOT_NAMES } from "@howlerops/iron-rain";
+import { For } from "solid-js";
+import { ironRainTheme, slotColor, slotLabel } from "../../theme/theme.js";
+import type { ProviderChoice } from "./types.js";
+import { PROVIDER_MODELS } from "./types.js";
 
 export interface SlotAssignmentProps {
   providers: ProviderChoice[];
@@ -15,7 +15,7 @@ export interface SlotAssignmentProps {
 }
 
 export function SlotAssignment(props: SlotAssignmentProps) {
-  const selectedProviders = () => props.providers.filter(p => p.selected);
+  const selectedProviders = () => props.providers.filter((p) => p.selected);
 
   const modelOptions = () => {
     const options: Array<{ provider: string; model: string }> = [];
@@ -46,12 +46,19 @@ export function SlotAssignment(props: SlotAssignmentProps) {
             const isActive = () => slot === props.activeSlot;
             const config = () => props.slots[slot];
             return (
-              <box flexDirection="column" border
+              <box
+                flexDirection="column"
+                border
                 borderStyle="rounded"
-                borderColor={isActive() ? slotColor(slot) : ironRainTheme.chrome.border}
-                paddingX={1} paddingY={0} minWidth={25}>
+                borderColor={
+                  isActive() ? slotColor(slot) : ironRainTheme.chrome.border
+                }
+                paddingX={1}
+                paddingY={0}
+                minWidth={25}
+              >
                 <text fg={slotColor(slot)}>
-                  <b>{`${isActive() ? '> ' : '  '}${slotLabel(slot)}`}</b>
+                  <b>{`${isActive() ? "> " : "  "}${slotLabel(slot)}`}</b>
                 </text>
                 <text fg={ironRainTheme.chrome.muted}>
                   {`${config().provider}/${config().model}`}
@@ -65,10 +72,14 @@ export function SlotAssignment(props: SlotAssignmentProps) {
       <box marginY={1} />
 
       {/* Model picker for active slot */}
-      <box flexDirection="column" border
+      <box
+        flexDirection="column"
+        border
         borderStyle="rounded"
         borderColor={slotColor(props.activeSlot)}
-        paddingX={1} paddingY={1}>
+        paddingX={1}
+        paddingY={1}
+      >
         <text fg={slotColor(props.activeSlot)}>
           <b>Select model for {slotLabel(props.activeSlot)} slot:</b>
         </text>
@@ -81,11 +92,27 @@ export function SlotAssignment(props: SlotAssignmentProps) {
               props.slots[props.activeSlot].model === option.model;
             return (
               <box flexDirection="row" gap={1}>
-                <text fg={isSelected() ? slotColor(props.activeSlot) : ironRainTheme.chrome.dimFg}>
-                  {isSelected() ? '>' : ' '}
+                <text
+                  fg={
+                    isSelected()
+                      ? slotColor(props.activeSlot)
+                      : ironRainTheme.chrome.dimFg
+                  }
+                >
+                  {isSelected() ? ">" : " "}
                 </text>
-                <text fg={isSelected() ? ironRainTheme.chrome.fg : ironRainTheme.chrome.muted}>
-                  {isSelected() ? <b>{`${option.provider}/${option.model}`}</b> : `${option.provider}/${option.model}`}
+                <text
+                  fg={
+                    isSelected()
+                      ? ironRainTheme.chrome.fg
+                      : ironRainTheme.chrome.muted
+                  }
+                >
+                  {isSelected() ? (
+                    <b>{`${option.provider}/${option.model}`}</b>
+                  ) : (
+                    `${option.provider}/${option.model}`
+                  )}
                 </text>
                 {isCurrent() && (
                   <text fg={ironRainTheme.status.success}>*</text>
@@ -102,9 +129,7 @@ export function SlotAssignment(props: SlotAssignmentProps) {
         <text fg={ironRainTheme.brand.primary}>
           <b>[Enter] Assign & Next Slot</b>
         </text>
-        <text fg={ironRainTheme.chrome.muted}>
-          [Backspace] Back
-        </text>
+        <text fg={ironRainTheme.chrome.muted}>[Backspace] Back</text>
       </box>
     </box>
   );

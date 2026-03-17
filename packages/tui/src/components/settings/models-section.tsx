@@ -1,9 +1,14 @@
-import { Show, For } from 'solid-js';
-import type { SlotName, SlotConfig, ThinkingLevel } from '@howlerops/iron-rain';
-import { SLOT_NAMES } from '@howlerops/iron-rain';
-import { ironRainTheme, slotColor, slotLabel } from '../../theme/theme.js';
+import type { SlotConfig, SlotName, ThinkingLevel } from "@howlerops/iron-rain";
+import { SLOT_NAMES } from "@howlerops/iron-rain";
+import { For, Show } from "solid-js";
+import { ironRainTheme, slotColor, slotLabel } from "../../theme/theme.js";
 
-export const THINKING_LEVELS: ThinkingLevel[] = ['off', 'low', 'medium', 'high'];
+export const THINKING_LEVELS: ThinkingLevel[] = [
+  "off",
+  "low",
+  "medium",
+  "high",
+];
 
 export interface ModelOption {
   provider: string;
@@ -34,19 +39,27 @@ export function ModelsSection(props: ModelsSectionProps) {
         {(slot, i) => {
           const isActive = () => i() === props.cursor;
           const sc = () => props.slots?.[slot];
-          const thinking = () => sc()?.thinkingLevel ?? 'off';
+          const thinking = () => sc()?.thinkingLevel ?? "off";
           return (
             <box flexDirection="row" gap={1} paddingX={1}>
-              <text fg={isActive() ? slotColor(slot) : ironRainTheme.chrome.dimFg}>
-                {isActive() ? '\u25B8' : ' '}
+              <text
+                fg={isActive() ? slotColor(slot) : ironRainTheme.chrome.dimFg}
+              >
+                {isActive() ? "\u25B8" : " "}
               </text>
               <text fg={slotColor(slot)}>
                 <b>{slotLabel(slot).padEnd(8)}</b>
               </text>
               <text fg={ironRainTheme.chrome.fg}>
-                {`${sc()?.provider ?? '\u2014'}/${sc()?.model ?? '\u2014'}`}
+                {`${sc()?.provider ?? "\u2014"}/${sc()?.model ?? "\u2014"}`}
               </text>
-              <text fg={thinking() !== 'off' ? ironRainTheme.brand.primary : ironRainTheme.chrome.dimFg}>
+              <text
+                fg={
+                  thinking() !== "off"
+                    ? ironRainTheme.brand.primary
+                    : ironRainTheme.chrome.dimFg
+                }
+              >
                 {`[${thinking()}]`}
               </text>
             </box>
@@ -69,11 +82,27 @@ export function ModelsSection(props: ModelsSectionProps) {
               const isSel = () => i() === props.editCursor;
               return (
                 <box flexDirection="row" gap={1} paddingX={1}>
-                  <text fg={isSel() ? ironRainTheme.brand.primary : ironRainTheme.chrome.dimFg}>
-                    {isSel() ? '\u25B8' : ' '}
+                  <text
+                    fg={
+                      isSel()
+                        ? ironRainTheme.brand.primary
+                        : ironRainTheme.chrome.dimFg
+                    }
+                  >
+                    {isSel() ? "\u25B8" : " "}
                   </text>
-                  <text fg={isSel() ? ironRainTheme.chrome.fg : ironRainTheme.chrome.muted}>
-                    {isSel() ? <b>{`${option.provider}/${option.model}`}</b> : `${option.provider}/${option.model}`}
+                  <text
+                    fg={
+                      isSel()
+                        ? ironRainTheme.chrome.fg
+                        : ironRainTheme.chrome.muted
+                    }
+                  >
+                    {isSel() ? (
+                      <b>{`${option.provider}/${option.model}`}</b>
+                    ) : (
+                      `${option.provider}/${option.model}`
+                    )}
                   </text>
                 </box>
               );
@@ -95,10 +124,22 @@ export function ModelsSection(props: ModelsSectionProps) {
               const isSel = () => i() === props.thinkingCursor;
               return (
                 <box flexDirection="row" gap={1} paddingX={1}>
-                  <text fg={isSel() ? ironRainTheme.brand.primary : ironRainTheme.chrome.dimFg}>
-                    {isSel() ? '\u25B8' : ' '}
+                  <text
+                    fg={
+                      isSel()
+                        ? ironRainTheme.brand.primary
+                        : ironRainTheme.chrome.dimFg
+                    }
+                  >
+                    {isSel() ? "\u25B8" : " "}
                   </text>
-                  <text fg={isSel() ? ironRainTheme.chrome.fg : ironRainTheme.chrome.muted}>
+                  <text
+                    fg={
+                      isSel()
+                        ? ironRainTheme.chrome.fg
+                        : ironRainTheme.chrome.muted
+                    }
+                  >
                     {isSel() ? <b>{level}</b> : level}
                   </text>
                 </box>

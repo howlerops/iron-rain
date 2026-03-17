@@ -13,6 +13,7 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
+    "lint": "biome check src/",
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {

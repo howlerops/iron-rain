@@ -1,5 +1,5 @@
-import { Show, For } from 'solid-js';
-import { ironRainTheme } from '../../theme/theme.js';
+import { For, Show } from "solid-js";
+import { ironRainTheme } from "../../theme/theme.js";
 
 export interface ProviderListItem {
   id: string;
@@ -29,16 +29,30 @@ export function ProvidersSection(props: ProvidersSectionProps) {
       <For each={props.providers}>
         {(prov, i) => {
           const isActive = () => i() === props.cursor;
-          const icon = prov.configured ? '\u2713' : '\u25CB';
-          const iconColor = prov.configured ? ironRainTheme.status.success : ironRainTheme.chrome.dimFg;
+          const icon = prov.configured ? "\u2713" : "\u25CB";
+          const iconColor = prov.configured
+            ? ironRainTheme.status.success
+            : ironRainTheme.chrome.dimFg;
           return (
             <box flexDirection="column">
               <box flexDirection="row" gap={1} paddingX={1}>
-                <text fg={isActive() ? ironRainTheme.brand.primary : ironRainTheme.chrome.dimFg}>
-                  {isActive() ? '\u25B8' : ' '}
+                <text
+                  fg={
+                    isActive()
+                      ? ironRainTheme.brand.primary
+                      : ironRainTheme.chrome.dimFg
+                  }
+                >
+                  {isActive() ? "\u25B8" : " "}
                 </text>
                 <text fg={iconColor}>{icon}</text>
-                <text fg={isActive() ? ironRainTheme.chrome.fg : ironRainTheme.chrome.muted}>
+                <text
+                  fg={
+                    isActive()
+                      ? ironRainTheme.chrome.fg
+                      : ironRainTheme.chrome.muted
+                  }
+                >
                   {isActive() ? <b>{prov.name}</b> : prov.name}
                 </text>
                 <text fg={ironRainTheme.chrome.dimFg}>{prov.description}</text>
@@ -47,15 +61,23 @@ export function ProvidersSection(props: ProvidersSectionProps) {
                 <box flexDirection="row" gap={1} paddingX={4}>
                   <text fg={ironRainTheme.chrome.dimFg}>key:</text>
                   <text fg={ironRainTheme.status.success}>
-                    {prov.apiKey!.startsWith('env:') ? prov.apiKey! : `${prov.apiKey!.slice(0, 8)}...`}
+                    {prov.apiKey!.startsWith("env:")
+                      ? prov.apiKey!
+                      : `${prov.apiKey!.slice(0, 8)}...`}
                   </text>
                 </box>
               </Show>
               <Show when={isActive() && props.editingKey}>
                 <box flexDirection="row" gap={1} paddingX={4}>
                   <text fg={ironRainTheme.brand.primary}>API key:</text>
-                  <text fg={props.keyBuffer ? ironRainTheme.chrome.fg : ironRainTheme.chrome.muted}>
-                    {props.keyBuffer || 'type key or env:VAR_NAME'}
+                  <text
+                    fg={
+                      props.keyBuffer
+                        ? ironRainTheme.chrome.fg
+                        : ironRainTheme.chrome.muted
+                    }
+                  >
+                    {props.keyBuffer || "type key or env:VAR_NAME"}
                   </text>
                   <text fg={ironRainTheme.chrome.muted}>_</text>
                 </box>

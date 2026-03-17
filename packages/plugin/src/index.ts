@@ -1,20 +1,20 @@
 import type {
-  SlotName,
-  SlotConfig,
-  ToolType,
   EpisodeSummary,
-  OrchestratorTask,
   IronRainConfig,
-} from '@howlerops/iron-rain';
+  OrchestratorTask,
+  SlotConfig,
+  SlotName,
+  ToolType,
+} from "@howlerops/iron-rain";
 
 // Re-export core types for plugin authors
 export type {
-  SlotName,
-  SlotConfig,
-  ToolType,
   EpisodeSummary,
-  OrchestratorTask,
   IronRainConfig,
+  OrchestratorTask,
+  SlotConfig,
+  SlotName,
+  ToolType,
 };
 
 export interface PluginContext {
@@ -25,7 +25,10 @@ export interface PluginContext {
 
 export interface PluginHooks {
   onInit?(ctx: PluginContext): void | Promise<void>;
-  onBeforeDispatch?(task: OrchestratorTask, ctx: PluginContext): OrchestratorTask | void;
+  onBeforeDispatch?(
+    task: OrchestratorTask,
+    ctx: PluginContext,
+  ): OrchestratorTask | void;
   onAfterDispatch?(episode: EpisodeSummary, ctx: PluginContext): void;
   onSlotChange?(slot: SlotName, config: SlotConfig, ctx: PluginContext): void;
   onDestroy?(ctx: PluginContext): void | Promise<void>;

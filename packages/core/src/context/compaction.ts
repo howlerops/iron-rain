@@ -11,7 +11,7 @@
  */
 
 export interface CompactedMessage {
-  role: 'user' | 'assistant';
+  role: "user" | "assistant";
   content: string;
   /** Original message ID for deduplication */
   originalId?: string;
@@ -59,29 +59,126 @@ function estimateTokens(text: string): number {
  */
 function extractKeywords(text: string): Set<string> {
   const STOP_WORDS = new Set([
-    'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
-    'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
-    'should', 'may', 'might', 'shall', 'can', 'need', 'must', 'that',
-    'this', 'these', 'those', 'it', 'its', 'i', 'me', 'my', 'we', 'our',
-    'you', 'your', 'he', 'she', 'they', 'them', 'and', 'or', 'but', 'if',
-    'then', 'else', 'when', 'at', 'by', 'for', 'with', 'about', 'to',
-    'from', 'in', 'on', 'of', 'not', 'no', 'so', 'up', 'out', 'just',
-    'also', 'than', 'too', 'very', 'what', 'how', 'why', 'who', 'which',
-    'where', 'there', 'here', 'all', 'each', 'every', 'both', 'few',
-    'more', 'most', 'some', 'any', 'such', 'only', 'own', 'same', 'as',
-    'into', 'through', 'during', 'before', 'after', 'above', 'below',
-    'between', 'under', 'again', 'further', 'once', 'please', 'thanks',
+    "the",
+    "a",
+    "an",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "being",
+    "have",
+    "has",
+    "had",
+    "do",
+    "does",
+    "did",
+    "will",
+    "would",
+    "could",
+    "should",
+    "may",
+    "might",
+    "shall",
+    "can",
+    "need",
+    "must",
+    "that",
+    "this",
+    "these",
+    "those",
+    "it",
+    "its",
+    "i",
+    "me",
+    "my",
+    "we",
+    "our",
+    "you",
+    "your",
+    "he",
+    "she",
+    "they",
+    "them",
+    "and",
+    "or",
+    "but",
+    "if",
+    "then",
+    "else",
+    "when",
+    "at",
+    "by",
+    "for",
+    "with",
+    "about",
+    "to",
+    "from",
+    "in",
+    "on",
+    "of",
+    "not",
+    "no",
+    "so",
+    "up",
+    "out",
+    "just",
+    "also",
+    "than",
+    "too",
+    "very",
+    "what",
+    "how",
+    "why",
+    "who",
+    "which",
+    "where",
+    "there",
+    "here",
+    "all",
+    "each",
+    "every",
+    "both",
+    "few",
+    "more",
+    "most",
+    "some",
+    "any",
+    "such",
+    "only",
+    "own",
+    "same",
+    "as",
+    "into",
+    "through",
+    "during",
+    "before",
+    "after",
+    "above",
+    "below",
+    "between",
+    "under",
+    "again",
+    "further",
+    "once",
+    "please",
+    "thanks",
   ]);
 
   const words = text.toLowerCase().match(/\b[a-z]{3,}\b/g) ?? [];
-  return new Set(words.filter(w => !STOP_WORDS.has(w)));
+  return new Set(words.filter((w) => !STOP_WORDS.has(w)));
 }
 
 /**
  * Score how relevant an archived message is to the current query.
  * Uses keyword overlap (Jaccard-like scoring).
  */
-function relevanceScore(queryKeywords: Set<string>, messageKeywords: Set<string>): number {
+function relevanceScore(
+  queryKeywords: Set<string>,
+  messageKeywords: Set<string>,
+): number {
   if (queryKeywords.size === 0 || messageKeywords.size === 0) return 0;
   let overlap = 0;
   for (const kw of queryKeywords) {
@@ -95,17 +192,18 @@ function relevanceScore(queryKeywords: Set<string>, messageKeywords: Set<string>
  * Uses a simple extractive approach — no LLM call needed.
  */
 function compactMessages(messages: CompactedMessage[]): string {
-  if (messages.length === 0) return '';
+  if (messages.length === 0) return "";
 
   const parts: string[] = [];
   for (const msg of messages) {
-    const preview = msg.content.length > 120
-      ? msg.content.slice(0, 117) + '...'
-      : msg.content;
+    const preview =
+      msg.content.length > 120
+        ? msg.content.slice(0, 117) + "..."
+        : msg.content;
     parts.push(`[${msg.role}] ${preview}`);
   }
 
-  return `[Summary of ${messages.length} earlier messages]\n${parts.join('\n')}`;
+  return `[Summary of ${messages.length} earlier messages]\n${parts.join("\n")}`;
 }
 
 /**
@@ -126,7 +224,10 @@ export function buildContextWindow(
     return {
       systemParts: [],
       messages: allMessages,
-      estimatedTokens: allMessages.reduce((sum, m) => sum + estimateTokens(m.content), 0),
+      estimatedTokens: allMessages.reduce(
+        (sum, m) => sum + estimateTokens(m.content),
+        0,
+      ),
       compactedCount: 0,
     };
   }
@@ -149,13 +250,15 @@ export function buildContextWindow(
   const retrievedIndices = new Set(
     coldWithScores
       .slice(0, config.rlmRetrievalCount)
-      .filter(s => s.score > 0)
-      .map(s => s.idx),
+      .filter((s) => s.score > 0)
+      .map((s) => s.idx),
   );
 
   // Build the context: summary + retrieved + hot
   const systemParts: string[] = [];
-  const unretrievedCold = coldMessages.filter((_, i) => !retrievedIndices.has(i));
+  const unretrievedCold = coldMessages.filter(
+    (_, i) => !retrievedIndices.has(i),
+  );
 
   if (unretrievedCold.length > 0) {
     systemParts.push(compactMessages(unretrievedCold));
@@ -163,11 +266,12 @@ export function buildContextWindow(
 
   const retrievedMessages: CompactedMessage[] = coldMessages
     .filter((_, i) => retrievedIndices.has(i))
-    .map(m => ({ ...m, isCompacted: false }));
+    .map((m) => ({ ...m, isCompacted: false }));
 
   const finalMessages = [...retrievedMessages, ...hotMessages];
 
-  const totalTokens = systemParts.reduce((sum, p) => sum + estimateTokens(p), 0) +
+  const totalTokens =
+    systemParts.reduce((sum, p) => sum + estimateTokens(p), 0) +
     finalMessages.reduce((sum, m) => sum + estimateTokens(m.content), 0);
 
   return {

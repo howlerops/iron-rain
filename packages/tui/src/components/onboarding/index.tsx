@@ -1,41 +1,53 @@
-import { createSignal, onMount } from 'solid-js';
-import { createStore } from 'solid-js/store';
-import type { SlotName, SlotConfig } from '@howlerops/iron-rain';
-import { SLOT_NAMES, writeConfig, ModelRegistry } from '@howlerops/iron-rain';
-import { useKeyboard } from '@opentui/solid';
-import { ironRainTheme } from '../../theme/theme.js';
-import type { OnboardingStep, OnboardingState, ProviderChoice } from './types.js';
-import { AVAILABLE_PROVIDERS, PROVIDER_MODELS } from './types.js';
-import { Welcome } from './welcome.js';
-import { ProviderSelect } from './provider-select.js';
-import { Credentials } from './credentials.js';
-import { SlotAssignment } from './slot-assignment.js';
-import { Summary } from './summary.js';
+import type { SlotConfig, SlotName } from "@howlerops/iron-rain";
+import { ModelRegistry, SLOT_NAMES, writeConfig } from "@howlerops/iron-rain";
+import { useKeyboard } from "@opentui/solid";
+import { createSignal, onMount } from "solid-js";
+import { createStore } from "solid-js/store";
+import { ironRainTheme } from "../../theme/theme.js";
+import { Credentials } from "./credentials.js";
+import { ProviderSelect } from "./provider-select.js";
+import { SlotAssignment } from "./slot-assignment.js";
+import { Summary } from "./summary.js";
+import type {
+  OnboardingState,
+  OnboardingStep,
+  ProviderChoice,
+} from "./types.js";
+import { AVAILABLE_PROVIDERS, PROVIDER_MODELS } from "./types.js";
+import { Welcome } from "./welcome.js";
 
 export interface OnboardingWizardProps {
   onComplete: (configPath: string) => void;
   onQuit: () => void;
 }
 
-const STEPS: OnboardingStep[] = ['welcome', 'providers', 'credentials', 'slots', 'summary'];
+const STEPS: OnboardingStep[] = [
+  "welcome",
+  "providers",
+  "credentials",
+  "slots",
+  "summary",
+];
 
 function defaultSlots(): Record<SlotName, SlotConfig> {
   return {
-    main: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
-    explore: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
-    execute: { provider: 'anthropic', model: 'claude-sonnet-4-20250514' },
+    main: { provider: "anthropic", model: "claude-sonnet-4-20250514" },
+    explore: { provider: "anthropic", model: "claude-sonnet-4-20250514" },
+    execute: { provider: "anthropic", model: "claude-sonnet-4-20250514" },
   };
 }
 
 export function OnboardingWizard(props: OnboardingWizardProps) {
   const [state, setState] = createStore<OnboardingState>({
-    step: 'welcome',
-    providers: AVAILABLE_PROVIDERS.map(p => ({ ...p })),
+    step: "welcome",
+    providers: AVAILABLE_PROVIDERS.map((p) => ({ ...p })),
     credentials: {},
     slots: defaultSlots(),
   });
 
-  const [dynamicModels, setDynamicModels] = createSignal<Record<string, string[]>>({});
+  const [dynamicModels, setDynamicModels] = createSignal<
+    Record<string, string[]>
+  >({});
   const registry = new ModelRegistry(PROVIDER_MODELS);
 
   // Provider select state
@@ -44,7 +56,7 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
   // Credentials state
   const [credCursor, setCredCursor] = createSignal(0);
   const [credEditing, setCredEditing] = createSignal(false);
-  const [credEditValue, setCredEditValue] = createSignal('');
+  const [credEditValue, setCredEditValue] = createSignal("");
 
   // Slot assignment state
   const [activeSlotIndex, setActiveSlotIndex] = createSignal(0);
@@ -54,7 +66,7 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
 
   const activeSlot = (): SlotName => slotNames[activeSlotIndex()]!;
 
-  const selectedProviders = () => state.providers.filter(p => p.selected);
+  const selectedProviders = () => state.providers.filter((p) => p.selected);
 
   const modelOptions = () => {
     const options: Array<{ provider: string; model: string }> = [];
@@ -69,22 +81,26 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
   };
 
   const needsCredentials = () =>
-    state.providers.filter(p => p.selected && (p.requiresKey || p.defaultApiBase));
+    state.providers.filter(
+      (p) => p.selected && (p.requiresKey || p.defaultApiBase),
+    );
 
   function goToStep(step: OnboardingStep) {
-    setState('step', step);
+    setState("step", step);
     // Reset cursors when entering a step
-    if (step === 'providers') setProviderCursor(0);
-    if (step === 'credentials') {
+    if (step === "providers") setProviderCursor(0);
+    if (step === "credentials") {
       setCredCursor(0);
       setCredEditing(false);
     }
-    if (step === 'slots') {
+    if (step === "slots") {
       setActiveSlotIndex(0);
       setModelCursor(0);
       // Fetch dynamic models for selected providers
-      const fetchable = ['ollama', 'openai', 'gemini'];
-      const selected = selectedProviders().filter((p) => fetchable.includes(p.id));
+      const fetchable = ["ollama", "openai", "gemini"];
+      const selected = selectedProviders().filter((p) =>
+        fetchable.includes(p.id),
+      );
       if (selected.length > 0) {
         Promise.all(
           selected.map(async (p) => {
@@ -108,8 +124,8 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
     if (idx < STEPS.length - 1) {
       const next = STEPS[idx + 1]!;
       // Skip credentials if no providers need setup
-      if (next === 'credentials' && needsCredentials().length === 0) {
-        goToStep('slots');
+      if (next === "credentials" && needsCredentials().length === 0) {
+        goToStep("slots");
       } else {
         goToStep(next);
       }
@@ -121,8 +137,8 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
     if (idx > 0) {
       const prev = STEPS[idx - 1]!;
       // Skip credentials if no providers need setup
-      if (prev === 'credentials' && needsCredentials().length === 0) {
-        goToStep('providers');
+      if (prev === "credentials" && needsCredentials().length === 0) {
+        goToStep("providers");
       } else {
         goToStep(prev);
       }
@@ -130,15 +146,15 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
   }
 
   function toggleProvider(index: number) {
-    setState('providers', index, 'selected', (v) => !v);
+    setState("providers", index, "selected", (v) => !v);
   }
 
   function setCredential(providerId: string, key: string, value: string) {
-    setState('credentials', providerId, (prev) => ({ ...prev, [key]: value }));
+    setState("credentials", providerId, (prev) => ({ ...prev, [key]: value }));
   }
 
   function setSlotConfig(slot: SlotName, provider: string, model: string) {
-    setState('slots', slot, { provider, model });
+    setState("slots", slot, { provider, model });
   }
 
   function handleSave() {
@@ -173,96 +189,96 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
     const char = e.raw;
 
     // Global quit
-    if (char === 'q' && step === 'welcome') {
+    if (char === "q" && step === "welcome") {
       props.onQuit();
       return;
     }
 
     switch (step) {
-      case 'welcome': {
-        if (keyName === 'return') nextStep();
+      case "welcome": {
+        if (keyName === "return") nextStep();
         break;
       }
 
-      case 'providers': {
-        if (keyName === 'up') {
-          setProviderCursor(c => Math.max(0, c - 1));
-        } else if (keyName === 'down') {
-          setProviderCursor(c => Math.min(state.providers.length - 1, c + 1));
-        } else if (char === ' ') {
+      case "providers": {
+        if (keyName === "up") {
+          setProviderCursor((c) => Math.max(0, c - 1));
+        } else if (keyName === "down") {
+          setProviderCursor((c) => Math.min(state.providers.length - 1, c + 1));
+        } else if (char === " ") {
           toggleProvider(providerCursor());
-        } else if (keyName === 'return') {
+        } else if (keyName === "return") {
           if (selectedProviders().length > 0) {
             // Update default slots to use first selected provider's first model
             const first = selectedProviders()[0]!;
-            const firstModel = PROVIDER_MODELS[first.id]?.[0] ?? '';
+            const firstModel = PROVIDER_MODELS[first.id]?.[0] ?? "";
             for (const s of slotNames) {
               setSlotConfig(s, first.id, firstModel);
             }
             nextStep();
           }
-        } else if (keyName === 'backspace') {
+        } else if (keyName === "backspace") {
           prevStep();
         }
         break;
       }
 
-      case 'credentials': {
+      case "credentials": {
         const providers = needsCredentials();
         if (credEditing()) {
-          if (keyName === 'return') {
+          if (keyName === "return") {
             // Save the edit
             const provider = providers[credCursor()]!;
             if (provider.requiresKey) {
-              setCredential(provider.id, 'apiKey', credEditValue());
+              setCredential(provider.id, "apiKey", credEditValue());
             }
             setCredEditing(false);
-            setCredEditValue('');
-          } else if (keyName === 'backspace') {
-            setCredEditValue(v => v.slice(0, -1));
-          } else if (keyName === 'escape') {
+            setCredEditValue("");
+          } else if (keyName === "backspace") {
+            setCredEditValue((v) => v.slice(0, -1));
+          } else if (keyName === "escape") {
             setCredEditing(false);
-            setCredEditValue('');
+            setCredEditValue("");
           } else if (char && char.length === 1) {
-            setCredEditValue(v => v + char);
+            setCredEditValue((v) => v + char);
           }
         } else {
-          if (keyName === 'up') {
-            setCredCursor(c => Math.max(0, c - 1));
-          } else if (keyName === 'down') {
-            setCredCursor(c => Math.min(providers.length - 1, c + 1));
-          } else if (keyName === 'return') {
+          if (keyName === "up") {
+            setCredCursor((c) => Math.max(0, c - 1));
+          } else if (keyName === "down") {
+            setCredCursor((c) => Math.min(providers.length - 1, c + 1));
+          } else if (keyName === "return") {
             const provider = providers[credCursor()]!;
             if (provider.requiresKey) {
               setCredEditing(true);
-              const existing = state.credentials[provider.id]?.apiKey ?? '';
+              const existing = state.credentials[provider.id]?.apiKey ?? "";
               setCredEditValue(existing);
             }
-          } else if (keyName === 'tab') {
+          } else if (keyName === "tab") {
             // Skip — use env var
             const provider = providers[credCursor()]!;
             if (provider.keyEnvVar) {
-              setCredential(provider.id, 'apiKey', `env:${provider.keyEnvVar}`);
+              setCredential(provider.id, "apiKey", `env:${provider.keyEnvVar}`);
             }
             if (credCursor() < providers.length - 1) {
-              setCredCursor(c => c + 1);
+              setCredCursor((c) => c + 1);
             } else {
               nextStep();
             }
-          } else if (keyName === 'backspace') {
+          } else if (keyName === "backspace") {
             prevStep();
           }
         }
         break;
       }
 
-      case 'slots': {
+      case "slots": {
         const options = modelOptions();
-        if (keyName === 'up') {
-          setModelCursor(c => Math.max(0, c - 1));
-        } else if (keyName === 'down') {
-          setModelCursor(c => Math.min(options.length - 1, c + 1));
-        } else if (keyName === 'return') {
+        if (keyName === "up") {
+          setModelCursor((c) => Math.max(0, c - 1));
+        } else if (keyName === "down") {
+          setModelCursor((c) => Math.min(options.length - 1, c + 1));
+        } else if (keyName === "return") {
           // Assign model to current slot
           const option = options[modelCursor()];
           if (option) {
@@ -270,14 +286,14 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
           }
           // Move to next slot or next step
           if (activeSlotIndex() < slotNames.length - 1) {
-            setActiveSlotIndex(i => i + 1);
+            setActiveSlotIndex((i) => i + 1);
             setModelCursor(0);
           } else {
             nextStep();
           }
-        } else if (keyName === 'backspace') {
+        } else if (keyName === "backspace") {
           if (activeSlotIndex() > 0) {
-            setActiveSlotIndex(i => i - 1);
+            setActiveSlotIndex((i) => i - 1);
             setModelCursor(0);
           } else {
             prevStep();
@@ -286,10 +302,10 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
         break;
       }
 
-      case 'summary': {
-        if (keyName === 'return') {
+      case "summary": {
+        if (keyName === "return") {
           handleSave();
-        } else if (keyName === 'backspace') {
+        } else if (keyName === "backspace") {
           prevStep();
         }
         break;
@@ -312,14 +328,24 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
           return (
             <box flexDirection="row" gap={0}>
               <text
-                fg={isCurrent() ? ironRainTheme.brand.primary : isPast() ? ironRainTheme.status.success : ironRainTheme.chrome.dimFg}
+                fg={
+                  isCurrent()
+                    ? ironRainTheme.brand.primary
+                    : isPast()
+                      ? ironRainTheme.status.success
+                      : ironRainTheme.chrome.dimFg
+                }
               >
-                {isCurrent()
-                  ? <b>{isPast() ? '✓' : `${i + 1}`}</b>
-                  : (isPast() ? '✓' : `${i + 1}`)}
+                {isCurrent() ? (
+                  <b>{isPast() ? "✓" : `${i + 1}`}</b>
+                ) : isPast() ? (
+                  "✓"
+                ) : (
+                  `${i + 1}`
+                )}
               </text>
               <text fg={ironRainTheme.chrome.dimFg}>
-                {i < STEPS.length - 1 ? ' → ' : ''}
+                {i < STEPS.length - 1 ? " → " : ""}
               </text>
             </box>
           );
@@ -327,10 +353,8 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
       </box>
 
       {/* Current step */}
-      {state.step === 'welcome' && (
-        <Welcome onNext={() => nextStep()} />
-      )}
-      {state.step === 'providers' && (
+      {state.step === "welcome" && <Welcome onNext={() => nextStep()} />}
+      {state.step === "providers" && (
         <ProviderSelect
           providers={state.providers}
           cursorIndex={providerCursor()}
@@ -339,7 +363,7 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
           onBack={() => prevStep()}
         />
       )}
-      {state.step === 'credentials' && (
+      {state.step === "credentials" && (
         <Credentials
           providers={state.providers}
           credentials={state.credentials}
@@ -350,7 +374,7 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
           onBack={() => prevStep()}
         />
       )}
-      {state.step === 'slots' && (
+      {state.step === "slots" && (
         <SlotAssignment
           providers={state.providers}
           slots={state.slots}
@@ -360,7 +384,7 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
           onBack={() => prevStep()}
         />
       )}
-      {state.step === 'summary' && (
+      {state.step === "summary" && (
         <Summary
           providers={state.providers}
           credentials={state.credentials}
