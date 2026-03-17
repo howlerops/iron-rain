@@ -1,9 +1,9 @@
-import type { SlotName } from '../slots/types.js';
-import type { ModelSlotManager } from '../slots/slot-manager.js';
-import type { OrchestratorTask, WorkerResult } from './types.js';
-import type { EpisodeSummary } from '../episodes/protocol.js';
-import { taskToEpisode } from './types.js';
-import { SlotWorker } from './worker.js';
+import type { EpisodeSummary } from "../episodes/protocol.js";
+import type { ModelSlotManager } from "../slots/slot-manager.js";
+import type { SlotName } from "../slots/types.js";
+import type { OrchestratorTask, WorkerResult } from "./types.js";
+import { taskToEpisode } from "./types.js";
+import { SlotWorker } from "./worker.js";
 
 export class OrchestratorKernel {
   private slots: ModelSlotManager;
@@ -18,13 +18,17 @@ export class OrchestratorKernel {
   private initWorkers(): void {
     const assignment = this.slots.getAllSlots();
     for (const [name, config] of Object.entries(assignment)) {
-      this.workers.set(name as SlotName, new SlotWorker(name as SlotName, config));
+      this.workers.set(
+        name as SlotName,
+        new SlotWorker(name as SlotName, config),
+      );
     }
   }
 
   async dispatch(task: OrchestratorTask): Promise<EpisodeSummary> {
     const slotName =
-      task.targetSlot ?? (task.toolType ? this.slots.getSlotForTool(task.toolType) : 'main');
+      task.targetSlot ??
+      (task.toolType ? this.slots.getSlotForTool(task.toolType) : "main");
 
     const worker = this.workers.get(slotName);
     if (!worker) {
@@ -37,9 +41,19 @@ export class OrchestratorKernel {
     return episode;
   }
 
-  async *dispatchStreaming(task: OrchestratorTask, signal?: AbortSignal): AsyncGenerator<{ type: 'text' | 'tool_use' | 'error' | 'done'; content: string; slot: SlotName; tokens?: { input: number; output: number } }> {
+  async *dispatchStreaming(
+    task: OrchestratorTask,
+    signal?: AbortSignal,
+  ): AsyncGenerator<{
+    type: "text" | "thinking" | "tool_use" | "error" | "done";
+    content: string;
+    slot: SlotName;
+    tokens?: { input: number; output: number };
+    toolCall?: { id: string; name: string; status: "start" | "end" };
+  }> {
     const slotName =
-      task.targetSlot ?? (task.toolType ? this.slots.getSlotForTool(task.toolType) : 'main');
+      task.targetSlot ??
+      (task.toolType ? this.slots.getSlotForTool(task.toolType) : "main");
 
     const worker = this.workers.get(slotName);
     if (!worker) {
@@ -52,10 +66,15 @@ export class OrchestratorKernel {
   }
 
   async orchestrate(tasks: OrchestratorTask[]): Promise<EpisodeSummary[]> {
-    const results = await Promise.allSettled(tasks.map((t) => this.dispatch(t)));
+    const results = await Promise.allSettled(
+      tasks.map((t) => this.dispatch(t)),
+    );
 
     return results
-      .filter((r): r is PromiseFulfilledResult<EpisodeSummary> => r.status === 'fulfilled')
+      .filter(
+        (r): r is PromiseFulfilledResult<EpisodeSummary> =>
+          r.status === "fulfilled",
+      )
       .map((r) => r.value);
   }
 

@@ -1,30 +1,30 @@
-import type { ThinkingLevel } from '../slots/types.js';
+import type { ThinkingLevel } from "../slots/types.js";
 
 export interface ImageContent {
-  type: 'image';
-  data: string;       // base64-encoded
-  mimeType: string;   // e.g. 'image/png'
+  type: "image";
+  data: string; // base64-encoded
+  mimeType: string; // e.g. 'image/png'
 }
 
 export interface TextContent {
-  type: 'text';
+  type: "text";
   text: string;
 }
 
 export type MessageContent = string | Array<TextContent | ImageContent>;
 
 export interface ChatMessage {
-  role: 'user' | 'assistant' | 'system';
+  role: "user" | "assistant" | "system";
   content: MessageContent;
 }
 
 /** Extract plain text from MessageContent, joining text parts and ignoring images. */
 export function getTextContent(content: MessageContent): string {
-  if (typeof content === 'string') return content;
+  if (typeof content === "string") return content;
   return content
-    .filter((p): p is TextContent => p.type === 'text')
-    .map(p => p.text)
-    .join('\n');
+    .filter((p): p is TextContent => p.type === "text")
+    .map((p) => p.text)
+    .join("\n");
 }
 
 export interface BridgeOptions {
@@ -44,9 +44,10 @@ export interface BridgeResult {
 }
 
 export interface BridgeChunk {
-  type: 'text' | 'tool_use' | 'error' | 'done';
+  type: "text" | "thinking" | "tool_use" | "error" | "done";
   content: string;
   tokens?: { input: number; output: number };
+  toolCall?: { id: string; name: string; status: "start" | "end" };
 }
 
 export interface CLIBridge {
