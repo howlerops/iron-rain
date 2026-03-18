@@ -39,9 +39,9 @@ describe("CostRegistry", () => {
 
   it("estimates cost correctly", () => {
     const registry = new CostRegistry();
-    const cost = registry.estimateCost("gpt-4o", { input: 1000, output: 500 });
+    const cost = registry.estimateCost("gpt-5.4", { input: 1000, output: 500 });
     expect(cost).toBeTruthy();
-    // gpt-4o: $2.50/M input, $10/M output
+    // gpt-5.4: $2.50/M input, $10/M output
     // 1000 input tokens = 0.0025, 500 output tokens = 0.005
     expect(cost).toBeCloseTo(0.0075, 4);
   });

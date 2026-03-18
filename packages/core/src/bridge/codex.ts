@@ -6,7 +6,7 @@ export class CodexBridge extends BaseCLIBridge {
   constructor(opts: { model?: string; binaryPath?: string }) {
     super({
       name: "codex",
-      model: opts.model ?? "o3",
+      model: opts.model ?? "gpt-5.4",
       binaryPath: opts.binaryPath ?? "codex",
     });
   }

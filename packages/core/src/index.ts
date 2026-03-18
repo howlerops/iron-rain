@@ -230,4 +230,5 @@ export {
   isNewerVersion,
   performUpdate,
   runDiagnostics,
+  setCurrentVersion,
 } from "./updater/index.js";

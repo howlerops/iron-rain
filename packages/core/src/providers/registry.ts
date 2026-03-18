@@ -12,14 +12,13 @@ const KNOWN_PROVIDERS: ProviderInfo[] = [
     models: [
       "claude-opus-4-6",
       "claude-sonnet-4-6",
-      "claude-sonnet-4-20250514",
       "claude-haiku-4-5-20251001",
     ],
   },
   {
     name: "openai",
     apiBase: "https://api.openai.com/v1",
-    models: ["gpt-4o", "gpt-4o-mini", "o3", "o4-mini"],
+    models: ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "o3", "o4-mini"],
   },
   {
     name: "ollama",
@@ -32,15 +31,25 @@ const KNOWN_PROVIDERS: ProviderInfo[] = [
   },
   {
     name: "codex",
-    models: ["o3", "o4-mini", "gpt-4o"],
+    models: ["gpt-5.4", "o3", "o4-mini"],
   },
   {
     name: "gemini",
-    models: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"],
+    models: [
+      "gemini-3.1-pro-preview",
+      "gemini-3-flash-preview",
+      "gemini-2.5-pro",
+      "gemini-2.5-flash",
+    ],
   },
   {
     name: "gemini-cli",
-    models: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"],
+    models: [
+      "gemini-3.1-pro-preview",
+      "gemini-3-flash-preview",
+      "gemini-2.5-pro",
+      "gemini-2.5-flash",
+    ],
   },
 ];
 

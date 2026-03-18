@@ -143,10 +143,18 @@ export async function performUpdate(): Promise<UpdateResult> {
 }
 
 /**
- * Get the current package version from the CLI package.
+ * Get the current package version.
+ * This is set at startup by the CLI entrypoint via setCurrentVersion().
+ * Falls back to the hardcoded value if not set.
  */
+let _currentVersion = "0.1.18";
+
 export function getCurrentVersion(): string {
-  return "0.1.6";
+  return _currentVersion;
+}
+
+export function setCurrentVersion(version: string): void {
+  _currentVersion = version;
 }
 
 /**

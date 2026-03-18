@@ -11,4 +11,5 @@ export {
   isNewerVersion,
   performUpdate,
   runDiagnostics,
+  setCurrentVersion,
 } from "./version-check.js";

@@ -11,20 +11,20 @@ interface ModelPricing {
 const DEFAULT_PRICING: Record<string, ModelPricing> = {
   // Anthropic
   "claude-opus-4-6": { input: 15, output: 75 },
-  "claude-opus-4-20250514": { input: 15, output: 75 },
   "claude-sonnet-4-6": { input: 3, output: 15 },
-  "claude-sonnet-4-20250514": { input: 3, output: 15 },
-  "claude-haiku-4-5": { input: 0.8, output: 4 },
   "claude-haiku-4-5-20251001": { input: 0.8, output: 4 },
 
   // OpenAI
-  "gpt-4o": { input: 2.5, output: 10 },
-  "gpt-4o-mini": { input: 0.15, output: 0.6 },
+  "gpt-5.4": { input: 2.5, output: 10 },
+  "gpt-5.4-mini": { input: 0.3, output: 1.2 },
+  "gpt-5.4-nano": { input: 0.1, output: 0.4 },
   o3: { input: 10, output: 40 },
-  "o3-mini": { input: 1.1, output: 4.4 },
+  "o3-pro": { input: 20, output: 80 },
   "o4-mini": { input: 1.1, output: 4.4 },
 
   // Google
+  "gemini-3.1-pro-preview": { input: 1.25, output: 10 },
+  "gemini-3-flash-preview": { input: 0.15, output: 0.6 },
   "gemini-2.5-pro": { input: 1.25, output: 10 },
   "gemini-2.5-flash": { input: 0.15, output: 0.6 },
 };

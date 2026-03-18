@@ -7,7 +7,7 @@ export class GeminiCLIBridge extends BaseCLIBridge {
   constructor(opts: { model?: string; binaryPath?: string }) {
     super({
       name: "gemini-cli",
-      model: opts.model ?? "gemini-2.5-pro",
+      model: opts.model ?? "gemini-3.1-pro-preview",
       binaryPath: opts.binaryPath ?? "gemini",
     });
   }

@@ -2,6 +2,7 @@ import type { Plan } from "@howlerops/iron-rain";
 import { loadConfig, parseReferences } from "@howlerops/iron-rain";
 import { useKeyboard } from "@opentui/solid";
 import {
+  batch,
   createMemo,
   createSignal,
   ErrorBoundary,
@@ -105,8 +106,8 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
     }
   }
 
-  async function handleSubmit(value: string) {
-    const text = value.trim();
+  async function handleSubmit(_event?: unknown) {
+    const text = (typeof _event === "string" ? _event : inputValue()).trim();
     if (!text) return;
 
     if (actions.isLoading() && !text.startsWith("/")) {
@@ -328,7 +329,6 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
               focusedBackgroundColor={ironRainTheme.chrome.bg}
               focusedTextColor={ironRainTheme.chrome.fg}
               keyBindings={[{ name: "return", action: "submit" }]}
-              // @ts-expect-error OpenTUI types
               onSubmit={handleSubmit}
               onInput={(val: string) => {
                 setInputValue(val);
@@ -414,7 +414,7 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
               ref={(el: any) => {
                 inputRef = el;
               }}
-              width="100%"
+              flexGrow={1}
               minHeight={1}
               maxHeight={6}
               focused={inputFocused()}
@@ -430,12 +430,16 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
               focusedBackgroundColor={ironRainTheme.chrome.bg}
               focusedTextColor={ironRainTheme.chrome.fg}
               keyBindings={[{ name: "return", action: "submit" }]}
-              // @ts-expect-error OpenTUI types onSubmit as SubmitEvent but calls with string at runtime
-              onSubmit={handleSubmit}
-              onInput={(val: string) => {
-                setInputValue(val);
-                setMenuIndex(0);
-              }}
+              onSubmit={() => handleSubmit()}
+              onContentChange={
+                (() => {
+                  batch(() => {
+                    const text = inputRef?.plainText ?? "";
+                    setInputValue(text);
+                    setMenuIndex(0);
+                  });
+                }) as any
+              }
             />
           </box>
 

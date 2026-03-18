@@ -1,6 +1,8 @@
 #!/usr/bin/env bun
 
 import { randomBytes } from "node:crypto";
+// Read version from package.json
+import { createRequire } from "node:module";
 import {
   checkForUpdate,
   findConfigFile,
@@ -11,9 +13,14 @@ import {
   ProviderRegistry,
   performUpdate,
   runDiagnostics,
+  setCurrentVersion,
 } from "@howlerops/iron-rain";
 
-const VERSION = "0.1.6";
+const _require = createRequire(import.meta.url);
+const VERSION: string = _require("../package.json").version;
+
+// Sync version into the core updater so version-check uses the real version
+setCurrentVersion(VERSION);
 
 const SPLASH_ART = [
   "  ___                    ____       _       ",
