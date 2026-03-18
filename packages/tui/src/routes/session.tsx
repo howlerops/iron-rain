@@ -345,13 +345,14 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
           mode() === "loop-running"
         }
       >
-        <box flexDirection="column" flexGrow={1}>
+        <box flexDirection="column" flexGrow={1} height="100%">
           <Show
             when={hasMessages()}
             fallback={<WelcomeScreen model={state.slots.main.model} />}
           >
             <scrollbox
               flexGrow={1}
+              flexShrink={1}
               stickyScroll
               stickyStart="bottom"
               paddingX={1}
@@ -385,16 +386,18 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
           </Show>
 
           <Show when={showSlashMenu() && filteredCommands().length > 0}>
-            <SlashMenu
-              filter={inputValue()}
-              selectedIndex={menuIndex()}
-              onSelect={(cmd) => {
-                setInputValue("");
-                setMenuIndex(0);
-                handleSlashCommand(cmd.name);
-              }}
-              extraCommands={skillCommands()}
-            />
+            <scrollbox maxHeight={12} flexShrink={0}>
+              <SlashMenu
+                filter={inputValue()}
+                selectedIndex={menuIndex()}
+                onSelect={(cmd) => {
+                  setInputValue("");
+                  setMenuIndex(0);
+                  handleSlashCommand(cmd.name);
+                }}
+                extraCommands={skillCommands()}
+              />
+            </scrollbox>
           </Show>
 
           {/* ── Input row with prompt indicator ───── */}
@@ -402,7 +405,7 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
             flexDirection="row"
             paddingX={1}
             gap={1}
-            marginTop={1}
+            flexShrink={0}
             border
             borderStyle="rounded"
             borderColor={ironRainTheme.chrome.border}
@@ -444,7 +447,12 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
           </box>
 
           {/* ── Status bar: model (left) · stats (right) ── */}
-          <box flexDirection="row" paddingX={1} justifyContent="space-between">
+          <box
+            flexDirection="row"
+            paddingX={1}
+            flexShrink={0}
+            justifyContent="space-between"
+          >
             <box flexDirection="row" gap={2}>
               <text fg={ironRainTheme.chrome.muted}>
                 {state.slots.main.model}

@@ -11,6 +11,7 @@ export function WelcomeScreen(props: WelcomeScreenProps) {
       alignItems="center"
       justifyContent="center"
       flexGrow={1}
+      flexShrink={1}
       paddingTop={2}
     >
       <ascii_font
