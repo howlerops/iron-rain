@@ -51,6 +51,7 @@ export function Settings(props: SettingsProps) {
   const [cursor, setCursor] = createSignal(0);
   const [editing, setEditing] = createSignal(false);
   const [editCursor, setEditCursor] = createSignal(0);
+  const [providerFilter, setProviderFilter] = createSignal<string>("all");
   const [editingKey, setEditingKey] = createSignal(false);
   const [keyBuffer, setKeyBuffer] = createSignal("");
   const [editingThinking, setEditingThinking] = createSignal(false);
@@ -109,7 +110,26 @@ export function Settings(props: SettingsProps) {
         }
       }
     }
+    // Always include CLI providers (no API key required)
+    for (const cliProvider of ["claude-code", "codex", "gemini-cli"]) {
+      const models = PROVIDER_MODELS[cliProvider] ?? [];
+      for (const m of models) {
+        if (!options.some((o) => o.provider === cliProvider && o.model === m)) {
+          options.push({ provider: cliProvider, model: m });
+        }
+      }
+    }
     return options;
+  });
+
+  const availableProviders = createMemo(() => [
+    ...new Set(modelOptions().map((o) => o.provider)),
+  ]);
+
+  const filteredModelOptions = createMemo(() => {
+    const filter = providerFilter();
+    if (filter === "all") return modelOptions();
+    return modelOptions().filter((o) => o.provider === filter);
   });
 
   const providerList = createMemo((): ProviderListItem[] => {
@@ -144,7 +164,7 @@ export function Settings(props: SettingsProps) {
   }
 
   function selectModelForSlot(slotIdx: number, optionIdx: number) {
-    const opt = modelOptions()[optionIdx];
+    const opt = filteredModelOptions()[optionIdx];
     if (!opt) return;
     const slot = slotNames[slotIdx]!;
     setConfig("slots", slot, {
@@ -154,6 +174,7 @@ export function Settings(props: SettingsProps) {
       apiBase: (config.providers ?? {})[opt.provider]?.apiBase,
     } as SlotConfig);
     setEditing(false);
+    setProviderFilter("all");
   }
 
   function autoAssignSlotsToProvider(providerId: string) {
@@ -226,11 +247,23 @@ export function Settings(props: SettingsProps) {
 
     // Model picker sub-menu
     if (editing()) {
-      if (e.name === "escape") setEditing(false);
-      else if (e.name === "up") setEditCursor((c) => Math.max(0, c - 1));
+      if (e.name === "escape") {
+        setEditing(false);
+        setProviderFilter("all");
+      } else if (e.name === "up") setEditCursor((c) => Math.max(0, c - 1));
       else if (e.name === "down")
-        setEditCursor((c) => Math.min(modelOptions().length - 1, c + 1));
-      else if (e.name === "return") selectModelForSlot(cursor(), editCursor());
+        setEditCursor((c) =>
+          Math.min(filteredModelOptions().length - 1, c + 1),
+        );
+      else if (e.name === "left" || e.name === "right") {
+        const filters = ["all", ...availableProviders()];
+        const idx = filters.indexOf(providerFilter());
+        const dir = e.name === "right" ? 1 : -1;
+        const next = filters[(idx + dir + filters.length) % filters.length]!;
+        setProviderFilter(next);
+        setEditCursor(0);
+      } else if (e.name === "return")
+        selectModelForSlot(cursor(), editCursor());
       e.preventDefault();
       return;
     }
@@ -281,6 +314,7 @@ export function Settings(props: SettingsProps) {
       if (activeSection() === "models") {
         setEditing(true);
         setEditCursor(0);
+        setProviderFilter("all");
       } else if (activeSection() === "providers") toggleProvider(cursor());
       e.preventDefault();
       return;
@@ -338,8 +372,10 @@ export function Settings(props: SettingsProps) {
             editCursor={editCursor()}
             editingThinking={editingThinking()}
             thinkingCursor={thinkingCursor()}
-            modelOptions={modelOptions()}
+            modelOptions={filteredModelOptions()}
             modelsLoading={modelsLoading()}
+            providerFilter={providerFilter()}
+            availableProviders={availableProviders()}
           />
         </Match>
         <Match when={activeSection() === "providers"}>
@@ -362,7 +398,10 @@ export function Settings(props: SettingsProps) {
         <text
           fg={ironRainTheme.chrome.dimFg}
         >{`Enter ${activeSection() === "models" ? "edit" : "toggle"}`}</text>
-        {activeSection() === "models" && (
+        {editing() && (
+          <text fg={ironRainTheme.chrome.dimFg}>{`\u2190\u2192 filter`}</text>
+        )}
+        {activeSection() === "models" && !editing() && (
           <text fg={ironRainTheme.chrome.dimFg}>{`t thinking`}</text>
         )}
         <text fg={ironRainTheme.chrome.dimFg}>{`s save`}</text>

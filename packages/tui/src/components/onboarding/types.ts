@@ -89,24 +89,25 @@ export const AVAILABLE_PROVIDERS: ProviderChoice[] = [
 ];
 
 export const PROVIDER_MODELS: Record<string, string[]> = {
-  ollama: [
-    "llama3.2",
-    "qwen2.5-coder:32b",
-    "deepseek-coder-v2:latest",
-    "mistral",
-  ],
   anthropic: [
     "claude-opus-4-6",
-    "claude-sonnet-4-20250514",
+    "claude-sonnet-4-6",
     "claude-haiku-4-5-20251001",
   ],
-  openai: ["gpt-4o", "gpt-4o-mini", "o3", "o4-mini"],
-  "claude-code": [
-    "claude-sonnet-4-20250514",
-    "claude-opus-4-6",
-    "claude-haiku-4-5-20251001",
+  openai: ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano", "o3", "o4-mini"],
+  "claude-code": ["opus", "sonnet", "haiku"],
+  codex: ["gpt-5.4", "o3", "o4-mini"],
+  gemini: [
+    "gemini-3.1-pro-preview",
+    "gemini-3-flash-preview",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
   ],
-  codex: ["o3", "o4-mini", "gpt-4o"],
-  gemini: ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"],
-  "gemini-cli": ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"],
+  "gemini-cli": [
+    "gemini-3.1-pro-preview",
+    "gemini-3-flash-preview",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+  ],
+  ollama: ["qwen2.5-coder:32b", "llama3.3:70b", "deepseek-coder-v2:latest"],
 };

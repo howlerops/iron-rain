@@ -24,6 +24,8 @@ export interface ModelsSectionProps {
   thinkingCursor: number;
   modelOptions: ModelOption[];
   modelsLoading: boolean;
+  providerFilter: string;
+  availableProviders: string[];
 }
 
 export function ModelsSection(props: ModelsSectionProps) {
@@ -77,6 +79,27 @@ export function ModelsSection(props: ModelsSectionProps) {
           <text fg={slotColor(slotNames[props.cursor]!)}>
             <b>{`Select model for ${slotLabel(slotNames[props.cursor]!)}:`}</b>
           </text>
+          <box flexDirection="row" gap={1} marginBottom={0}>
+            <For each={["all", ...props.availableProviders]}>
+              {(filter) => (
+                <text
+                  fg={
+                    filter === props.providerFilter
+                      ? ironRainTheme.brand.primary
+                      : ironRainTheme.chrome.muted
+                  }
+                >
+                  {filter === props.providerFilter ? (
+                    <b>{filter === "all" ? "All" : filter}</b>
+                  ) : filter === "all" ? (
+                    "All"
+                  ) : (
+                    filter
+                  )}
+                </text>
+              )}
+            </For>
+          </box>
           <For each={props.modelOptions}>
             {(option, i) => {
               const isSel = () => i() === props.editCursor;
@@ -109,7 +132,7 @@ export function ModelsSection(props: ModelsSectionProps) {
             }}
           </For>
           <text fg={ironRainTheme.chrome.dimFg} marginTop={0}>
-            [Enter] select · [Esc] cancel
+            {`[Enter] select \u00B7 [\u2190\u2192] filter \u00B7 [Esc] cancel`}
           </text>
         </box>
       </Show>
