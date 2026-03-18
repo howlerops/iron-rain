@@ -442,7 +442,13 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
           mode() === "loop-running"
         }
       >
-        <box flexDirection="column" flexGrow={1} height="100%">
+        {/* biome-ignore lint/a11y/noStaticElementInteractions: TUI click-to-focus */}
+        <box
+          flexDirection="column"
+          flexGrow={1}
+          height="100%"
+          onMouseDown={() => inputRef?.focus()}
+        >
           <Show
             when={hasMessages()}
             fallback={<WelcomeScreen model={state.slots.main.model} />}

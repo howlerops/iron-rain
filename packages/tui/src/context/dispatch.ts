@@ -455,7 +455,15 @@ export class DispatchController {
       : "";
 
     // RLM context compaction
-    const allMessages = state.messages.map((m) => ({
+    // Exclude the last message if it's the current user prompt — the bridge
+    // always appends the prompt as the final user message, so including it
+    // in history would send it twice and break role alternation.
+    const msgs = state.messages;
+    const historyEnd =
+      msgs.length > 0 && msgs[msgs.length - 1].role === "user"
+        ? msgs.length - 1
+        : msgs.length;
+    const allMessages = msgs.slice(0, historyEnd).map((m) => ({
       role: m.role as "user" | "assistant",
       content: m.content,
       originalId: m.id,
