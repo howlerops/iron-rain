@@ -55,8 +55,10 @@ export class MCPClient {
     });
 
     this.process.stderr?.on("data", (data: Buffer) => {
-      // Log MCP server errors to stderr for debugging
-      process.stderr.write(`[mcp:${this.serverName}] ${data.toString()}`);
+      // Only surface MCP server stderr in debug mode
+      if (process.env.DEBUG || process.env.IRON_RAIN_DEBUG) {
+        process.stderr.write(`[mcp:${this.serverName}] ${data.toString()}`);
+      }
     });
 
     this.process.on("close", () => {

@@ -1,11 +1,10 @@
 /**
  * Custom slash command loader.
- * Loads command templates from .iron-rain/commands/ directories.
+ * Loads command templates from .iron-rain/commands/, .claude/commands/, etc.
  */
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { getResourcePaths, scanDirectory } from "../discovery.js";
 
 export interface CustomCommand {
   name: string;
@@ -14,8 +13,6 @@ export interface CustomCommand {
   template: string;
   source: string;
 }
-
-const COMMANDS_DIR = ".iron-rain/commands";
 
 /**
  * Parse YAML-like frontmatter from a markdown command file.
@@ -44,29 +41,27 @@ function parseFrontmatter(content: string): {
 }
 
 /**
- * Load custom commands from project and global directories.
+ * Load custom commands from all discovery paths.
+ * Scans .iron-rain/commands/, .claude/commands/, .cursor/commands/, .windsurf/commands/.
  */
 export function loadCustomCommands(cwd: string): CustomCommand[] {
   const commands: CustomCommand[] = [];
-  const dirs = [resolve(cwd, COMMANDS_DIR), resolve(homedir(), COMMANDS_DIR)];
+  const paths = getResourcePaths("commands", cwd);
 
-  for (const dir of dirs) {
-    if (!existsSync(dir)) continue;
-
-    const files = readdirSync(dir).filter((f) => f.endsWith(".md"));
-    for (const file of files) {
+  for (const { path: dirPath } of paths) {
+    const entries = scanDirectory(dirPath);
+    for (const entry of entries) {
       try {
-        const filePath = join(dir, file);
-        const content = readFileSync(filePath, "utf-8");
+        const content = readFileSync(entry.filePath, "utf-8");
         const { meta, body } = parseFrontmatter(content);
 
-        const name = meta.name ?? file.replace(/\.md$/, "");
+        const name = meta.name ?? entry.name.replace(/\.(md|mdc|mdx)$/, "");
         commands.push({
           name: name.startsWith("/") ? name : `/${name}`,
           description: meta.description ?? "",
           slot: meta.slot,
           template: body,
-          source: filePath,
+          source: entry.filePath,
         });
       } catch {
         // Skip malformed command files

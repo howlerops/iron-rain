@@ -33,9 +33,12 @@ export class MCPManager {
           await client.listTools();
           this.clients.set(name, client);
         } catch (err) {
-          process.stderr.write(
-            `[mcp] Failed to connect to ${name}: ${err instanceof Error ? err.message : String(err)}\n`,
-          );
+          const msg = err instanceof Error ? err.message : String(err);
+          if (process.env.DEBUG || process.env.IRON_RAIN_DEBUG) {
+            process.stderr.write(
+              `[mcp] Failed to connect to ${name}: ${msg}\n`,
+            );
+          }
         }
       }),
     );

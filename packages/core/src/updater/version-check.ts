@@ -147,7 +147,7 @@ export async function performUpdate(): Promise<UpdateResult> {
  * This is set at startup by the CLI entrypoint via setCurrentVersion().
  * Falls back to the hardcoded value if not set.
  */
-let _currentVersion = "0.1.22";
+let _currentVersion = "0.1.23";
 
 export function getCurrentVersion(): string {
   return _currentVersion;

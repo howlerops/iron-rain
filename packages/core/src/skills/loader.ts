@@ -1,8 +1,13 @@
 /**
  * Skill Loader — parses skill markdown files with YAML frontmatter.
  */
-import * as fs from "node:fs";
-import * as path from "node:path";
+import { readFileSync } from "node:fs";
+import { basename, extname } from "node:path";
+import {
+  type DiscoverySource,
+  getResourcePaths,
+  scanDirectory,
+} from "../discovery.js";
 import type { Skill, SkillDiscoveryPath } from "./types.js";
 
 /**
@@ -30,14 +35,22 @@ function parseFrontmatter(content: string): {
 
 /**
  * Load a single skill from a file path.
+ * For subdirectory skills ({dir}/{name}/SKILL.md), derives the name from the
+ * parent directory rather than the filename.
  */
-export function loadSkillFile(filePath: string): Skill | null {
+export function loadSkillFile(
+  filePath: string,
+  parentDir?: string,
+): Skill | null {
   try {
-    const raw = fs.readFileSync(filePath, "utf-8");
+    const raw = readFileSync(filePath, "utf-8");
     const { metadata, body } = parseFrontmatter(raw);
 
-    const name =
-      metadata.name || path.basename(filePath, path.extname(filePath));
+    const baseName = basename(filePath, extname(filePath));
+    // For SKILL.md inside a named subdirectory, use the directory name
+    const inferredName =
+      baseName === "SKILL" && parentDir ? basename(parentDir) : baseName;
+    const name = metadata.name || inferredName;
     const description = metadata.description || "";
     const command = metadata.command || `/${name}`;
 
@@ -56,27 +69,21 @@ export function loadSkillFile(filePath: string): Skill | null {
 
 /**
  * Get default discovery paths for skills.
+ * Uses shared multi-source discovery (iron-rain, Claude Code, Cursor, Windsurf).
  */
 export function getDiscoveryPaths(): SkillDiscoveryPath[] {
-  const home = process.env.HOME || process.env.USERPROFILE || "";
-  const cwd = process.cwd();
-
-  return [
-    { path: path.join(cwd, ".iron-rain", "skills"), label: "Project" },
-    { path: path.join(home, ".iron-rain", "skills"), label: "User" },
-    {
-      path: path.join(cwd, ".claude", "skills"),
-      label: "Claude Code (Project)",
-    },
-    { path: path.join(home, ".claude", "skills"), label: "Claude Code (User)" },
-  ];
+  return getResourcePaths("skills");
 }
 
 /**
  * Discover all skills from default paths.
+ * Supports:
+ *   - Flat markdown files:    {dir}/my-skill.md
+ *   - Subdirectory skills:    {dir}/my-skill/SKILL.md
+ *   - Cursor .mdc files:      {dir}/my-rule.mdc
  */
 export function discoverSkills(extraPaths?: string[]): Skill[] {
-  const paths = getDiscoveryPaths();
+  const paths: DiscoverySource[] = getDiscoveryPaths();
   if (extraPaths) {
     for (const p of extraPaths) {
       paths.push({ path: p, label: "Custom" });
@@ -87,22 +94,14 @@ export function discoverSkills(extraPaths?: string[]): Skill[] {
   const seen = new Set<string>();
 
   for (const { path: dirPath, label } of paths) {
-    if (!fs.existsSync(dirPath)) continue;
-
-    try {
-      const entries = fs.readdirSync(dirPath);
-      for (const entry of entries) {
-        if (!entry.endsWith(".md")) continue;
-        const fullPath = path.join(dirPath, entry);
-        const skill = loadSkillFile(fullPath);
-        if (skill && !seen.has(skill.command!)) {
-          skill.source = `${label}: ${fullPath}`;
-          skills.push(skill);
-          seen.add(skill.command!);
-        }
+    const entries = scanDirectory(dirPath);
+    for (const entry of entries) {
+      const skill = loadSkillFile(entry.filePath, entry.parentDir);
+      if (skill && skill.command && !seen.has(skill.command)) {
+        skill.source = `${label}: ${entry.filePath}`;
+        skills.push(skill);
+        seen.add(skill.command);
       }
-    } catch {
-      // Skip inaccessible directories
     }
   }
 

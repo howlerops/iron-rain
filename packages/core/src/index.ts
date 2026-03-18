@@ -60,6 +60,12 @@ export { loadIgnoreRules } from "./context/ignore.js";
 export type { ParsedInput, ResolvedReference } from "./context/references.js";
 export { parseReferences } from "./context/references.js";
 export { shouldSummarize, truncateWithContext } from "./context/summarizer.js";
+// Discovery
+export {
+  type DiscoverySource,
+  getResourcePaths,
+  scanDirectory,
+} from "./discovery.js";
 
 // Episodes
 export type { EpisodeSummary } from "./episodes/protocol.js";

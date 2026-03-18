@@ -38,7 +38,9 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
   const [inputFocused, _setInputFocused] = createSignal(true);
   const [menuIndex, setMenuIndex] = createSignal(0);
   const [mode, setMode] = createSignal<SessionMode>("chat");
+  const [historyIndex, setHistoryIndex] = createSignal(-1);
   let inputRef: any;
+  let savedDraft = "";
 
   const showSlashMenu = createMemo(() => {
     const val = inputValue();
@@ -113,6 +115,8 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
   function clearInput() {
     setInputValue("");
     setMenuIndex(0);
+    setHistoryIndex(-1);
+    savedDraft = "";
     if (inputRef) {
       try {
         inputRef.selectAll();
@@ -272,18 +276,73 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
       return;
     }
 
-    if (!showSlashMenu()) return;
-    const cmds = filteredCommands();
-    if (cmds.length === 0) return;
+    // Slash menu navigation takes priority
+    if (showSlashMenu()) {
+      const cmds = filteredCommands();
+      if (cmds.length > 0) {
+        if (e.name === "up") {
+          setMenuIndex((i) => Math.max(0, i - 1));
+        } else if (e.name === "down") {
+          setMenuIndex((i) => Math.min(cmds.length - 1, i + 1));
+        } else if (e.name === "tab") {
+          const selected = cmds[menuIndex()];
+          if (selected) {
+            setInputValue(selected.name);
+          }
+        }
+        return;
+      }
+    }
 
-    if (e.name === "up") {
-      setMenuIndex((i) => Math.max(0, i - 1));
-    } else if (e.name === "down") {
-      setMenuIndex((i) => Math.min(cmds.length - 1, i + 1));
-    } else if (e.name === "tab") {
-      const selected = cmds[menuIndex()];
-      if (selected) {
-        setInputValue(selected.name);
+    // Message history navigation — only when cursor is on the first line (up)
+    // or last line (down)
+    if (e.name === "up" || e.name === "down") {
+      const userMessages = state.messages
+        .filter((m) => m.role === "user")
+        .map((m) => m.content);
+      if (userMessages.length === 0) return;
+
+      const cursorRow = inputRef?.logicalCursor?.row ?? 0;
+
+      if (e.name === "up" && cursorRow === 0) {
+        const idx = historyIndex();
+        if (idx === -1) {
+          savedDraft = inputValue();
+          const newIdx = userMessages.length - 1;
+          setHistoryIndex(newIdx);
+          const text = userMessages[newIdx];
+          setInputValue(text);
+          inputRef?.setText(text);
+        } else if (idx > 0) {
+          const newIdx = idx - 1;
+          setHistoryIndex(newIdx);
+          const text = userMessages[newIdx];
+          setInputValue(text);
+          inputRef?.setText(text);
+        }
+        e.preventDefault();
+        return;
+      }
+
+      if (e.name === "down") {
+        const lineCount = inputRef?.lineCount ?? 1;
+        const isLastLine = cursorRow >= lineCount - 1;
+        if (isLastLine && historyIndex() !== -1) {
+          const idx = historyIndex();
+          if (idx < userMessages.length - 1) {
+            const newIdx = idx + 1;
+            setHistoryIndex(newIdx);
+            const text = userMessages[newIdx];
+            setInputValue(text);
+            inputRef?.setText(text);
+          } else {
+            setHistoryIndex(-1);
+            setInputValue(savedDraft);
+            inputRef?.setText(savedDraft);
+          }
+          e.preventDefault();
+          return;
+        }
       }
     }
   });
