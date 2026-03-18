@@ -1,8 +1,10 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { type IronRainConfig, parseConfig } from "./schema.js";
 
 const CONFIG_FILENAMES = [
+  ".iron-rain/config.json",
+  ".iron-rain/config.jsonc",
   "iron-rain.json",
   "iron-rain.jsonc",
   ".iron-rainrc.json",
@@ -82,7 +84,12 @@ export function writeConfig(
   cwd?: string,
 ): string {
   const dir = cwd ?? process.cwd();
-  const configPath = findConfigFile(dir) ?? resolve(dir, "iron-rain.json");
+  const configPath =
+    findConfigFile(dir) ?? resolve(dir, ".iron-rain/config.json");
+
+  // Ensure .iron-rain/ directory exists when writing to new canonical path
+  const configDir = resolve(configPath, "..");
+  mkdirSync(configDir, { recursive: true });
 
   const output: Record<string, unknown> = {};
   if (config.slots) output.slots = config.slots;

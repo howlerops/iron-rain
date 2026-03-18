@@ -147,7 +147,7 @@ export async function performUpdate(): Promise<UpdateResult> {
  * This is set at startup by the CLI entrypoint via setCurrentVersion().
  * Falls back to the hardcoded value if not set.
  */
-let _currentVersion = "0.1.19";
+let _currentVersion = "0.1.22";
 
 export function getCurrentVersion(): string {
   return _currentVersion;
@@ -173,7 +173,7 @@ export function getVersionInfo(): VersionInfo {
 
 function getConfigPath(): string {
   const home = process.env.HOME || process.env.USERPROFILE || "~";
-  return `${home}/.iron-rain/iron-rain.json`;
+  return `${home}/.iron-rain/config.json`;
 }
 
 /**
