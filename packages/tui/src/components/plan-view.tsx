@@ -1,4 +1,4 @@
-import type { Plan, PlanTask } from "@howlerops/iron-rain";
+import type { Plan } from "@howlerops/iron-rain";
 import { For, Show } from "solid-js";
 import { ironRainTheme } from "../theme/theme.js";
 

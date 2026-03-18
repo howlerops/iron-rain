@@ -1,5 +1,3 @@
-import type { ProviderInfo } from "./registry.js";
-
 interface CacheEntry {
   models: string[];
   fetchedAt: number;

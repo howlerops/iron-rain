@@ -100,7 +100,7 @@ export class LSPClient {
       stdio: ["pipe", "pipe", "pipe"],
     });
 
-    this.process.stdout!.on("data", (data: Buffer) => {
+    this.process.stdout?.on("data", (data: Buffer) => {
       this.handleData(data.toString());
     });
 

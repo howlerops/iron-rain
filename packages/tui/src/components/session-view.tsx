@@ -175,7 +175,7 @@ function AssistantMessage(props: { message: Message }) {
 
 function truncateText(text: string, maxLen: number): string {
   if (text.length <= maxLen) return text;
-  return text.slice(0, maxLen - 3) + "...";
+  return `${text.slice(0, maxLen - 3)}...`;
 }
 
 const SPINNER_FRAMES = [
@@ -225,7 +225,7 @@ function StreamingAgentCard(props: {
   };
 
   const truncTask = () =>
-    props.task.length > 40 ? props.task.slice(0, 37) + "..." : props.task;
+    props.task.length > 40 ? `${props.task.slice(0, 37)}...` : props.task;
 
   const contentPreview = () => {
     if (!props.content) return "";
@@ -306,7 +306,7 @@ function StreamingAgentCard(props: {
   );
 }
 
-function CumulativeStats(props: { stats: SessionStats }) {
+function _CumulativeStats(props: { stats: SessionStats }) {
   return (
     <box flexDirection="row" paddingX={1} marginTop={1}>
       <text fg={ironRainTheme.chrome.dimFg}>

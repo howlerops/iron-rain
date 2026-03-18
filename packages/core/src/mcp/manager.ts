@@ -25,7 +25,7 @@ export class MCPManager {
     const entries = Object.entries(this.config);
     if (entries.length === 0) return;
 
-    const results = await Promise.allSettled(
+    const _results = await Promise.allSettled(
       entries.map(async ([name, cfg]) => {
         const client = new MCPClient(name, cfg);
         try {

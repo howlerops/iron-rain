@@ -1,7 +1,9 @@
 /**
- * Plan Executor — sequentially executes plan tasks through the execute slot.
+ * Plan Executor — executes plan tasks through the execute slot.
+ * Independent tasks (no unmet dependencies) run in parallel.
  */
 
+import type { EpisodeSummary } from "../episodes/protocol.js";
 import { autoCommit } from "../git/utils.js";
 import type { OrchestratorKernel } from "../orchestrator/kernel.js";
 import { buildTaskExecutionPrompt } from "./prompts.js";
@@ -12,7 +14,7 @@ export class PlanExecutor {
   private kernel: OrchestratorKernel;
   private storage: PlanStorage;
   private paused = false;
-  private currentAbort: AbortController | null = null;
+  private currentAborts: AbortController[] = [];
 
   constructor(kernel: OrchestratorKernel, storage?: PlanStorage) {
     this.kernel = kernel;
@@ -20,7 +22,8 @@ export class PlanExecutor {
   }
 
   /**
-   * Execute all pending tasks in a plan sequentially.
+   * Execute all pending tasks in a plan.
+   * Independent tasks (no unmet dependsOn) run concurrently in waves.
    */
   async executePlan(
     plan: Plan,
@@ -32,86 +35,70 @@ export class PlanExecutor {
     this.storage.save(plan);
     this.paused = false;
 
-    const priorResults: string[] = [];
+    const completedIds = new Set<string>();
+    const resultMap = new Map<string, string>();
+    const episodeMap = new Map<string, EpisodeSummary>();
 
+    // Pre-populate completed tasks
     for (const task of plan.tasks) {
-      if (signal?.aborted || this.paused) {
-        plan.status = "paused";
-        break;
-      }
-
       if (task.status === "completed" || task.status === "skipped") {
-        if (task.result) priorResults.push(task.result.output);
-        continue;
+        completedIds.add(task.id);
+        if (task.result) resultMap.set(task.id, task.result.output);
       }
+    }
 
-      task.status = "in_progress";
-      callbacks?.onTaskStart?.(task);
+    // Execute in waves until all tasks are done
+    while (!signal?.aborted && !this.paused) {
+      // Find ready tasks: pending + all dependencies met
+      const ready = plan.tasks.filter((t) => {
+        if (t.status !== "pending") return false;
+        const deps = t.dependsOn ?? [];
+        return deps.every((dep) => completedIds.has(dep));
+      });
 
-      const start = Date.now();
+      if (ready.length === 0) break; // No more tasks to run
 
-      try {
-        this.currentAbort = new AbortController();
-        const taskSignal = signal
-          ? anySignal(signal, this.currentAbort.signal)
-          : this.currentAbort.signal;
+      // Build prior results for context
+      const priorResults = [...resultMap.values()];
 
-        const prompt = buildTaskExecutionPrompt(task, plan.prd, priorResults);
+      // Execute wave — all ready tasks in parallel
+      // Pass dependency episodes as inputEpisodes for thread composition
+      const wavePromises = ready.map((task) => {
+        const depEpisodes = (task.dependsOn ?? [])
+          .map((dep) => episodeMap.get(dep))
+          .filter((ep): ep is EpisodeSummary => ep != null);
+        return this.executeTask(
+          task,
+          plan,
+          priorResults,
+          depEpisodes,
+          signal,
+          callbacks,
+        );
+      });
 
-        const episode = await this.kernel.dispatch({
-          id: task.id,
-          prompt,
-          targetSlot: "execute",
-          systemPrompt: `You are Forge, executing task ${task.index + 1} of ${plan.tasks.length}: "${task.title}". Implement it completely.`,
-        });
+      const waveResults = await Promise.allSettled(wavePromises);
 
-        const duration = Date.now() - start;
+      // Process results
+      for (let i = 0; i < ready.length; i++) {
+        const task = ready[i];
+        const result = waveResults[i];
 
-        task.status = episode.status === "failure" ? "failed" : "completed";
-        task.result = {
-          output: episode.result,
-          filesModified: episode.filesModified ?? [],
-          duration,
-          tokens: episode.tokens,
-        };
-
-        if (task.status === "completed") {
-          plan.stats.tasksCompleted++;
-          priorResults.push(episode.result);
-
-          // Auto-commit if enabled
-          if (plan.autoCommit) {
-            const commitHash = autoCommit(task.title);
-            if (commitHash) task.result.commitHash = commitHash;
-          }
-
-          callbacks?.onTaskComplete?.(task);
-        } else {
-          plan.stats.tasksFailed++;
-          callbacks?.onTaskFail?.(task, episode.result);
+        if (result.status === "fulfilled" && task.status === "completed") {
+          completedIds.add(task.id);
+          if (task.result) resultMap.set(task.id, task.result.output);
+          // Store episode for downstream thread composition
+          if (result.value) episodeMap.set(task.id, result.value);
         }
-
-        plan.stats.totalDuration += duration;
-        plan.stats.totalTokens += episode.tokens;
-      } catch (err) {
-        task.status = "failed";
-        task.result = {
-          output: err instanceof Error ? err.message : String(err),
-          filesModified: [],
-          duration: Date.now() - start,
-          tokens: 0,
-        };
-        plan.stats.tasksFailed++;
-        callbacks?.onTaskFail?.(task, task.result.output);
-      } finally {
-        this.currentAbort = null;
       }
 
       plan.updatedAt = Date.now();
       this.storage.save(plan);
     }
 
-    if (!this.paused && !signal?.aborted) {
+    if (this.paused || signal?.aborted) {
+      plan.status = "paused";
+    } else {
       plan.status = plan.stats.tasksFailed > 0 ? "failed" : "completed";
     }
 
@@ -122,9 +109,88 @@ export class PlanExecutor {
     return plan;
   }
 
+  private async executeTask(
+    task: PlanTask,
+    plan: Plan,
+    priorResults: string[],
+    depEpisodes: EpisodeSummary[],
+    signal?: AbortSignal,
+    callbacks?: PlanCallbacks,
+  ): Promise<EpisodeSummary | undefined> {
+    task.status = "in_progress";
+    callbacks?.onTaskStart?.(task);
+
+    const start = Date.now();
+    const abort = new AbortController();
+    this.currentAborts.push(abort);
+
+    try {
+      const _taskSignal = signal
+        ? anySignal(signal, abort.signal)
+        : abort.signal;
+
+      const prompt = buildTaskExecutionPrompt(task, plan.prd, priorResults);
+
+      const episode = await this.kernel.dispatch({
+        id: task.id,
+        prompt,
+        targetSlot: "execute",
+        systemPrompt: `You are Forge, executing task ${task.index + 1} of ${plan.tasks.length}: "${task.title}". Implement it completely. Use parallel tool calls for independent operations.`,
+        // Thread composition: pass dependency episodes as direct context
+        inputEpisodes: depEpisodes.length > 0 ? depEpisodes : undefined,
+      });
+
+      const duration = Date.now() - start;
+
+      task.status = episode.status === "failure" ? "failed" : "completed";
+      task.result = {
+        output: episode.result,
+        filesModified: episode.filesModified ?? [],
+        duration,
+        tokens: episode.tokens,
+      };
+
+      if (task.status === "completed") {
+        plan.stats.tasksCompleted++;
+
+        if (plan.autoCommit) {
+          const commitHash = autoCommit(task.title);
+          if (commitHash) task.result.commitHash = commitHash;
+        }
+
+        callbacks?.onTaskComplete?.(task);
+      } else {
+        plan.stats.tasksFailed++;
+        callbacks?.onTaskFail?.(task, episode.result);
+      }
+
+      plan.stats.totalDuration += duration;
+      plan.stats.totalTokens += episode.tokens;
+
+      return episode;
+    } catch (err) {
+      task.status = "failed";
+      task.result = {
+        output: err instanceof Error ? err.message : String(err),
+        filesModified: [],
+        duration: Date.now() - start,
+        tokens: 0,
+      };
+      plan.stats.tasksFailed++;
+      callbacks?.onTaskFail?.(task, task.result.output);
+      return undefined;
+    } finally {
+      const idx = this.currentAborts.indexOf(abort);
+      if (idx >= 0) this.currentAborts.splice(idx, 1);
+    }
+  }
+
   pause(): void {
     this.paused = true;
-    this.currentAbort?.abort();
+    for (const abort of this.currentAborts) {
+      abort.abort();
+    }
+    this.currentAborts = [];
   }
 }
 

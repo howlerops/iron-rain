@@ -39,9 +39,8 @@ export async function handleSystemCommand({
         );
         const updateResult = await performUpdate();
         if (updateResult.success) {
-          addSystemMessage(
-            "Update installed successfully. Restart iron-rain to use the new version.",
-          );
+          addSystemMessage("Update installed successfully. Restarting...");
+          setTimeout(() => process.exit(0), 500);
         } else {
           addSystemMessage(`Update failed: ${updateResult.error}`);
         }

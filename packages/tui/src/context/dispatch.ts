@@ -5,6 +5,8 @@
  * episode readback, tool routing heuristics, MCP injection, and abort handling.
  */
 import type {
+  CliPermissionMode,
+  EpisodeSummary,
   MCPManager,
   OrchestratorTask,
   ResolvedReference,
@@ -16,8 +18,12 @@ import {
   buildEpisodeContext,
   buildSystemPrompt,
   detectToolType,
+  formatEpisodeInputs,
+  hasDispatchTags,
   ModelSlotManager,
   OrchestratorKernel,
+  parseDispatchTags,
+  stripDispatchTags,
 } from "@howlerops/iron-rain";
 import type {
   Message,
@@ -57,12 +63,29 @@ export class DispatchController {
   private currentAbort: AbortController | null = null;
   private mcpManager: MCPManager | null;
   private context: DispatchContext = {};
+  private cliPermissions?: Record<string, CliPermissionMode>;
 
-  constructor(slots?: SlotAssignment, mcpManager?: MCPManager) {
+  constructor(
+    slots?: SlotAssignment,
+    mcpManager?: MCPManager,
+    cliPermissions?: Record<string, CliPermissionMode>,
+  ) {
+    this.cliPermissions = cliPermissions;
     if (slots) {
-      this.kernel = new OrchestratorKernel(new ModelSlotManager(slots));
+      this.kernel = new OrchestratorKernel(
+        new ModelSlotManager(slots),
+        this.cliPermissions,
+      );
     }
     this.mcpManager = mcpManager ?? null;
+  }
+
+  setCliPermissions(perms: Record<string, CliPermissionMode>): void {
+    this.cliPermissions = perms;
+    // Rebuild kernel so new permission flags take effect
+    if (this.kernel) {
+      this.kernel = null;
+    }
   }
 
   setContext(ctx: DispatchContext): void {
@@ -82,7 +105,10 @@ export class DispatchController {
 
   ensureKernel(slots: SlotAssignment): OrchestratorKernel {
     if (!this.kernel) {
-      this.kernel = new OrchestratorKernel(new ModelSlotManager(slots));
+      this.kernel = new OrchestratorKernel(
+        new ModelSlotManager(slots),
+        this.cliPermissions,
+      );
     }
     return this.kernel;
   }
@@ -95,7 +121,10 @@ export class DispatchController {
     references?: ResolvedReference[],
   ): Promise<void> {
     if (!this.kernel) {
-      this.kernel = new OrchestratorKernel(new ModelSlotManager(state.slots));
+      this.kernel = new OrchestratorKernel(
+        new ModelSlotManager(state.slots),
+        this.cliPermissions,
+      );
     }
 
     // Cancel any previous in-flight request
@@ -109,84 +138,183 @@ export class DispatchController {
     callbacks.setStreamingThinking("");
     callbacks.setStreamingToolCalls([]);
     callbacks.setStreamingTask(
-      prompt.length > 60 ? prompt.slice(0, 57) + "..." : prompt,
+      prompt.length > 60 ? `${prompt.slice(0, 57)}...` : prompt,
     );
     callbacks.setLoadingStartTime(Date.now());
 
     const start = Date.now();
 
     try {
-      const task = this.buildTask(prompt, state, targetSlot, references);
+      let currentTask = this.buildTask(prompt, state, targetSlot, references);
+      const MAX_DISPATCH_DEPTH = 10; // Safety circuit breaker, not an architectural limit
+      let totalAccumulated = "";
+      let totalTokens = 0;
+      let round = 0;
+      const allActivities: SlotActivity[] = [];
 
       // Expose system prompt for streaming sub-items display
-      callbacks.setStreamingSystemPrompt(task.systemPrompt ?? "");
+      callbacks.setStreamingSystemPrompt(currentTask.systemPrompt ?? "");
 
-      let accumulated = "";
-      let thinkingAccumulated = "";
-      let detectedSlot: SlotName = "main";
-      let tokenUsage: { input: number; output: number } | undefined;
-
-      // Live tool call tracking
+      // Live tool call tracking (persists across dispatch rounds)
       const liveToolCalls: ToolCallEntry[] = [
         { name: "System prompt loaded", status: "done" },
       ];
       callbacks.setStreamingToolCalls([...liveToolCalls]);
-      let thinkingStarted = false;
-      let thinkingIdx = -1;
 
-      for await (const chunk of this.kernel.dispatchStreaming(task, signal)) {
-        detectedSlot = chunk.slot;
-        callbacks.setActiveSlot(chunk.slot);
+      while (!signal.aborted) {
+        let accumulated = "";
+        let thinkingAccumulated = "";
+        let detectedSlot: SlotName = "main";
+        let tokenUsage: { input: number; output: number } | undefined;
+        let thinkingStarted = false;
+        let thinkingIdx = -1;
 
-        if (chunk.type === "thinking") {
-          if (!thinkingStarted) {
-            thinkingStarted = true;
-            thinkingIdx = liveToolCalls.length;
-            liveToolCalls.push({ name: "Thinking...", status: "running" });
-            callbacks.setStreamingToolCalls([...liveToolCalls]);
-          }
-          thinkingAccumulated += chunk.content;
-          callbacks.setStreamingThinking(thinkingAccumulated);
-        } else if (chunk.type === "text") {
-          // Mark thinking complete on first text chunk
-          if (
-            thinkingStarted &&
-            thinkingIdx >= 0 &&
-            liveToolCalls[thinkingIdx]?.status === "running"
-          ) {
-            liveToolCalls[thinkingIdx] = {
-              name: "Thinking (complete)",
-              status: "done",
-            };
-            callbacks.setStreamingToolCalls([...liveToolCalls]);
-          }
-          accumulated += chunk.content;
-          callbacks.setStreamingContent(accumulated);
-        } else if (chunk.type === "tool_use" && chunk.toolCall) {
-          if (chunk.toolCall.status === "start") {
-            liveToolCalls.push({
-              name: chunk.toolCall.name,
-              status: "running",
-            });
-          } else if (chunk.toolCall.status === "end") {
-            const idx = liveToolCalls.findIndex(
-              (tc) =>
-                tc.name === chunk.toolCall!.name && tc.status === "running",
-            );
-            if (idx >= 0) {
-              liveToolCalls[idx] = {
-                name: chunk.toolCall.name,
+        for await (const chunk of this.kernel.dispatchStreaming(
+          currentTask,
+          signal,
+        )) {
+          detectedSlot = chunk.slot;
+          callbacks.setActiveSlot(chunk.slot);
+
+          if (chunk.type === "thinking") {
+            if (!thinkingStarted) {
+              thinkingStarted = true;
+              thinkingIdx = liveToolCalls.length;
+              liveToolCalls.push({ name: "Thinking...", status: "running" });
+              callbacks.setStreamingToolCalls([...liveToolCalls]);
+            }
+            thinkingAccumulated += chunk.content;
+            callbacks.setStreamingThinking(thinkingAccumulated);
+          } else if (chunk.type === "text") {
+            // Mark thinking complete on first text chunk
+            if (
+              thinkingStarted &&
+              thinkingIdx >= 0 &&
+              liveToolCalls[thinkingIdx]?.status === "running"
+            ) {
+              liveToolCalls[thinkingIdx] = {
+                name: "Thinking (complete)",
                 status: "done",
               };
+              callbacks.setStreamingToolCalls([...liveToolCalls]);
             }
+            accumulated += chunk.content;
+            callbacks.setStreamingContent(
+              stripDispatchTags(totalAccumulated + accumulated),
+            );
+          } else if (chunk.type === "tool_use" && chunk.toolCall) {
+            if (chunk.toolCall.status === "start") {
+              liveToolCalls.push({
+                name: chunk.toolCall.name,
+                status: "running",
+              });
+            } else if (chunk.toolCall.status === "end") {
+              const idx = liveToolCalls.findIndex(
+                (tc) =>
+                  tc.name === chunk.toolCall?.name && tc.status === "running",
+              );
+              if (idx >= 0) {
+                liveToolCalls[idx] = {
+                  name: chunk.toolCall.name,
+                  status: "done",
+                };
+              }
+            }
+            callbacks.setStreamingToolCalls([...liveToolCalls]);
+          } else if (chunk.type === "error") {
+            accumulated += `\n**Error:** ${chunk.content}`;
+            callbacks.setStreamingContent(
+              stripDispatchTags(totalAccumulated + accumulated),
+            );
+          } else if (chunk.type === "done" && chunk.tokens) {
+            tokenUsage = chunk.tokens;
           }
-          callbacks.setStreamingToolCalls([...liveToolCalls]);
-        } else if (chunk.type === "error") {
-          accumulated += `\n**Error:** ${chunk.content}`;
-          callbacks.setStreamingContent(accumulated);
-        } else if (chunk.type === "done" && chunk.tokens) {
-          tokenUsage = chunk.tokens;
         }
+
+        const roundTokens = tokenUsage
+          ? tokenUsage.input + tokenUsage.output
+          : 0;
+        totalTokens += roundTokens;
+
+        const roundDuration = Date.now() - start;
+        allActivities.push({
+          slot: detectedSlot,
+          task: prompt.length > 60 ? `${prompt.slice(0, 57)}...` : prompt,
+          status: "done",
+          duration: roundDuration,
+          ...(roundTokens > 0 ? { tokens: roundTokens } : {}),
+          ...(liveToolCalls.length > 1
+            ? { toolCalls: [...liveToolCalls] }
+            : {}),
+        });
+
+        // Natural exit: no dispatch tags means Cortex is done
+        if (!hasDispatchTags(accumulated)) {
+          totalAccumulated += accumulated;
+          break;
+        }
+
+        // Safety circuit breaker — not an architectural limit
+        round++;
+        if (round >= MAX_DISPATCH_DEPTH) {
+          console.warn(
+            `[dispatch] Hit safety circuit breaker at ${MAX_DISPATCH_DEPTH} rounds — breaking`,
+          );
+          totalAccumulated += stripDispatchTags(accumulated);
+          break;
+        }
+
+        // Parse and execute dispatch tags
+        const tags = parseDispatchTags(accumulated);
+        totalAccumulated += stripDispatchTags(accumulated);
+
+        // Show dispatch activity in tool calls
+        for (const tag of tags) {
+          const label =
+            tag.slot === "explore"
+              ? `Scout: ${tag.content.slice(0, 40)}...`
+              : `Forge: ${tag.content.slice(0, 40)}...`;
+          liveToolCalls.push({ name: label, status: "running" });
+        }
+        callbacks.setStreamingToolCalls([...liveToolCalls]);
+        callbacks.setStreamingTask("Dispatching to threads...");
+
+        // Execute all dispatch tags in parallel via kernel
+        const dispatchEpisodes = await this.executeDispatchTags(
+          tags,
+          currentTask,
+          signal,
+        );
+
+        // Mark dispatch tool calls as done
+        for (let i = 0; i < tags.length; i++) {
+          const tcIdx = liveToolCalls.length - tags.length + i;
+          if (tcIdx >= 0 && liveToolCalls[tcIdx]) {
+            liveToolCalls[tcIdx] = {
+              ...liveToolCalls[tcIdx],
+              status: "done",
+            };
+          }
+        }
+        callbacks.setStreamingToolCalls([...liveToolCalls]);
+
+        // Build continuation prompt with dispatch results
+        const resultsContext = formatEpisodeInputs(dispatchEpisodes);
+        const continuationPrompt = `${resultsContext}\n\nThe dispatched threads above have completed. Review their results, then either synthesize a final response or dispatch follow-up work if needed.`;
+
+        // Build next task for the continuation round
+        currentTask = {
+          ...currentTask,
+          id: crypto.randomUUID?.() ?? `${Date.now()}`,
+          prompt: continuationPrompt,
+          history: [
+            ...(currentTask.history ?? []),
+            { role: "user" as const, content: currentTask.prompt },
+            { role: "assistant" as const, content: accumulated },
+          ],
+        };
+
+        callbacks.setStreamingTask("Synthesizing results...");
       }
 
       const duration = Date.now() - start;
@@ -195,35 +323,23 @@ export class DispatchController {
           tc.name !== "System prompt loaded" && !tc.name.startsWith("Thinking"),
       ).length;
       const finalContent =
-        accumulated ||
+        stripDispatchTags(totalAccumulated) ||
         (toolCallCount > 0
           ? `*Completed ${toolCallCount} tool call${toolCallCount !== 1 ? "s" : ""} with no text response.*`
           : "(empty response)");
-      const totalMsgTokens = tokenUsage
-        ? tokenUsage.input + tokenUsage.output
-        : 0;
-
-      const activity: SlotActivity = {
-        slot: detectedSlot,
-        task: prompt.length > 60 ? prompt.slice(0, 57) + "..." : prompt,
-        status: "done",
-        duration,
-        ...(totalMsgTokens > 0 ? { tokens: totalMsgTokens } : {}),
-        ...(liveToolCalls.length > 1 ? { toolCalls: liveToolCalls } : {}),
-      };
 
       callbacks.addMessage({
-        id: task.id,
+        id: currentTask.id,
         role: "assistant",
         content: finalContent,
-        slot: detectedSlot,
+        slot: allActivities[0]?.slot ?? "main",
         timestamp: Date.now(),
-        activities: [activity],
+        activities: allActivities.length > 0 ? allActivities : undefined,
         duration,
-        ...(totalMsgTokens > 0 ? { tokens: totalMsgTokens } : {}),
+        ...(totalTokens > 0 ? { tokens: totalTokens } : {}),
       });
 
-      callbacks.updateStats(duration, totalMsgTokens);
+      callbacks.updateStats(duration, totalTokens);
     } catch (err) {
       if (signal.aborted) {
         const partial = callbacks.getStreamingContent();
@@ -232,14 +348,14 @@ export class DispatchController {
           callbacks.addMessage({
             id: `cancelled-${Date.now()}`,
             role: "assistant",
-            content: partial + "\n\n*— interrupted —*",
+            content: `${partial}\n\n*— interrupted —*`,
             slot: callbacks.getActiveSlot(),
             timestamp: Date.now(),
             duration,
             activities: [
               {
                 slot: callbacks.getActiveSlot(),
-                task: prompt.length > 60 ? prompt.slice(0, 57) + "..." : prompt,
+                task: prompt.length > 60 ? `${prompt.slice(0, 57)}...` : prompt,
                 status: "interrupted",
                 duration,
               },
@@ -280,7 +396,7 @@ export class DispatchController {
       callbacks.addMessage({
         id: `paused-${Date.now()}`,
         role: "assistant",
-        content: partial + "\n\n*— paused for context —*",
+        content: `${partial}\n\n*— paused for context —*`,
         slot: callbacks.getActiveSlot(),
         timestamp: Date.now(),
       });
@@ -293,6 +409,37 @@ export class DispatchController {
     // 4. Re-dispatch with continuation prompt
     const continuationPrompt = `Continue. Additional context from user: ${injection}`;
     await this.dispatch(continuationPrompt, state, callbacks);
+  }
+
+  /**
+   * Execute parsed dispatch tags in parallel via the kernel.
+   * Each tag becomes a dispatch to the specified slot (Scout or Forge).
+   * Returns the resulting episodes for thread composition.
+   */
+  private async executeDispatchTags(
+    tags: Array<{ slot: "explore" | "execute"; content: string }>,
+    parentTask: OrchestratorTask,
+    _signal?: AbortSignal,
+  ): Promise<EpisodeSummary[]> {
+    if (!this.kernel || tags.length === 0) return [];
+
+    const tasks: OrchestratorTask[] = tags.map((tag) => ({
+      id: crypto.randomUUID?.() ?? `${Date.now()}-${tag.slot}`,
+      prompt: tag.content,
+      targetSlot: tag.slot,
+      systemPrompt: parentTask.systemPrompt,
+    }));
+
+    const results = await Promise.allSettled(
+      tasks.map((t) => this.kernel?.dispatch(t)),
+    );
+
+    return results
+      .filter(
+        (r): r is PromiseFulfilledResult<EpisodeSummary> =>
+          r.status === "fulfilled",
+      )
+      .map((r) => r.value);
   }
 
   private buildTask(

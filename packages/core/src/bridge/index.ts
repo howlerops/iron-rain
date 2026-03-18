@@ -17,6 +17,7 @@ export type {
   CLIBridge,
 } from "./types.js";
 
+import type { CliPermissionMode } from "../config/schema.js";
 import type { SlotConfig } from "../slots/types.js";
 import { AnthropicBridge } from "./anthropic.js";
 import { ClaudeCodeBridge } from "./claude-code.js";
@@ -27,7 +28,11 @@ import { OllamaBridge } from "./ollama.js";
 import { OpenAICompatBridge } from "./openai-compat.js";
 import type { CLIBridge } from "./types.js";
 
-export function createBridgeForSlot(slot: SlotConfig): CLIBridge {
+export function createBridgeForSlot(
+  slot: SlotConfig,
+  cliPermissions?: Record<string, CliPermissionMode>,
+): CLIBridge {
+  const perm = cliPermissions?.[slot.provider];
   switch (slot.provider) {
     case "ollama":
       return new OllamaBridge({
@@ -43,11 +48,13 @@ export function createBridgeForSlot(slot: SlotConfig): CLIBridge {
       return new ClaudeCodeBridge({
         model: slot.model,
         binaryPath: slot.apiBase,
+        permissionMode: perm,
       });
     case "codex":
       return new CodexBridge({
         model: slot.model,
         binaryPath: slot.apiBase,
+        permissionMode: perm,
       });
     case "gemini":
       return new GeminiBridge({
@@ -58,6 +65,7 @@ export function createBridgeForSlot(slot: SlotConfig): CLIBridge {
       return new GeminiCLIBridge({
         model: slot.model,
         binaryPath: slot.apiBase,
+        permissionMode: perm,
       });
     default:
       return new OpenAICompatBridge({

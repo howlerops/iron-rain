@@ -1,10 +1,48 @@
 import type { EpisodeSummary } from "../episodes/protocol.js";
+import { compressEpisode } from "../episodes/protocol.js";
 import type { SlotName } from "../slots/types.js";
 
+const PARALLEL_INSTRUCTION = `IMPORTANT: Maximize parallel tool calls. When multiple independent operations are needed (reading files, searching, editing separate files), execute them ALL in a single batch instead of one-by-one. For example:
+- Reading 5 files? Call all 5 reads at once, not sequentially.
+- Searching for patterns across the codebase? Fire all grep/glob calls in parallel.
+- Editing files that don't depend on each other? Make all edits in one batch.
+Only sequence operations that genuinely depend on prior results.`;
+
+const DISPATCH_INSTRUCTION = `## Thread Dispatch
+You can delegate work to specialized threads by emitting dispatch tags:
+
+<dispatch slot="explore">What to research or investigate</dispatch>
+<dispatch slot="execute">What to implement or change</dispatch>
+
+Slot capabilities:
+- explore (Scout): file reading, code search, codebase exploration, pattern analysis
+- execute (Forge): code writing, file editing, running commands, making changes
+
+Each dispatch is a bounded thread: it executes one focused task, then returns its results to you. You decide what happens next — synthesize a final response, or dispatch further work based on the results.
+
+Rules:
+- Multiple dispatch tags in a single response run in parallel
+- Only dispatch when specialization genuinely helps — simple tasks don't need delegation
+- Be specific in dispatch content: include file paths, function names, and clear objectives`;
+
 const SLOT_ROLES: Record<SlotName, string> = {
-  main: `You are Cortex, the primary orchestrator. You analyze tasks, plan approaches, and provide comprehensive responses. You have deep reasoning capability and should think through problems carefully before responding.`,
-  explore: `You are Scout, specialized in exploration and research. You excel at finding information, reading files, searching codebases, and understanding patterns. Be concise and fact-oriented.`,
-  execute: `You are Forge, specialized in execution. You write code, run commands, and make changes. Be precise, write clean code, and explain what you changed.`,
+  main: `You are Cortex, the primary orchestrator. You analyze tasks, plan approaches, and provide comprehensive responses. You have deep reasoning capability and should think through problems carefully before responding.
+
+${PARALLEL_INSTRUCTION}
+
+When decomposing work, identify which sub-tasks are independent and can run concurrently. Prefer breadth-first exploration over depth-first.
+
+${DISPATCH_INSTRUCTION}`,
+  explore: `You are Scout, specialized in exploration and research. You excel at finding information, reading files, searching codebases, and understanding patterns. Be concise and fact-oriented.
+
+${PARALLEL_INSTRUCTION}
+
+For research tasks: fan out all queries simultaneously. Read all candidate files in one batch. Search for multiple patterns at once. Coalesce findings into a structured response.`,
+  execute: `You are Forge, specialized in execution. You write code, run commands, and make changes. Be precise, write clean code, and explain what you changed.
+
+${PARALLEL_INSTRUCTION}
+
+For multi-file edits: identify all files that can be edited independently and make those changes in a single batch. Only sequence edits where one file's changes depend on another's.`,
 };
 
 export interface SystemPromptContext {
@@ -70,14 +108,15 @@ export function buildEpisodeContext(
 
   for (let i = episodes.length - 1; i >= 0 && charBudget > 0; i--) {
     const ep = episodes[i];
-    const summary = `[${ep.slot}] ${ep.task} → ${ep.status}${ep.result ? ": " + ep.result.slice(0, 200) : ""}`;
-    if (summary.length > charBudget) break;
-    charBudget -= summary.length;
-    included.unshift(summary);
+    // Use structured compression: preserves status, files, and outcome
+    const compressed = compressEpisode(ep);
+    if (compressed.length > charBudget) break;
+    charBudget -= compressed.length;
+    included.unshift(compressed);
   }
 
   if (included.length === 0) return "";
-  return `## Previous actions this session\n${included.join("\n")}`;
+  return `## Previous actions this session\n${included.join("\n\n")}`;
 }
 
 /**

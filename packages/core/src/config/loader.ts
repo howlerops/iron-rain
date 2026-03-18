@@ -11,19 +11,19 @@ const CONFIG_FILENAMES = [
 function stripJsoncComments(text: string): string {
   let result = "";
   let inString = false;
-  let escape = false;
+  let escaped = false;
 
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
 
-    if (escape) {
+    if (escaped) {
       result += ch;
-      escape = false;
+      escaped = false;
       continue;
     }
 
     if (inString) {
-      if (ch === "\\") escape = true;
+      if (ch === "\\") escaped = true;
       else if (ch === '"') inString = false;
       result += ch;
       continue;
@@ -88,11 +88,12 @@ export function writeConfig(
   if (config.slots) output.slots = config.slots;
   if (config.providers) output.providers = config.providers;
   if (config.permission) output.permission = config.permission;
+  if (config.cliPermissions) output.cliPermissions = config.cliPermissions;
   if (config.agent && config.agent !== "build") output.agent = config.agent;
   if (config.lcm) output.lcm = config.lcm;
   if (config.theme && config.theme !== "default") output.theme = config.theme;
 
-  writeFileSync(configPath, JSON.stringify(output, null, 2) + "\n", "utf-8");
+  writeFileSync(configPath, `${JSON.stringify(output, null, 2)}\n`, "utf-8");
   return configPath;
 }
 

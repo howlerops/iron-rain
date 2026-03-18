@@ -1,13 +1,19 @@
-import { existsSync, readFileSync } from "node:fs";
+import { execFile, execSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { SlotName } from "@howlerops/iron-rain";
 import {
   buildReviewPrompt,
   generateRepoMap,
   getBranchDiff,
+  getCurrentBranch,
   getStagedDiff,
+  isGitRepo,
+  loadConfig,
   loadIgnoreRules,
   SkillExecutor,
+  writeConfig,
 } from "@howlerops/iron-rain";
 import { SLASH_COMMANDS } from "../components/slash-menu.js";
 import { getSessionDB } from "../context/slate-context.js";
@@ -30,6 +36,119 @@ function levenshtein(a: string, b: string): number {
     }
   }
   return dp[m][n];
+}
+
+const CONFIG_FILES = [
+  "tsconfig.json",
+  "biome.json",
+  ".eslintrc.js",
+  "turbo.json",
+  "Dockerfile",
+  "docker-compose.yml",
+  ".github/workflows/ci.yml",
+];
+
+async function gatherProjectMeta(cwd: string): Promise<string[]> {
+  const meta: string[] = [];
+
+  // Read package.json and check config files in parallel
+  const [pkgResult, ...configResults] = await Promise.allSettled([
+    readFile(join(cwd, "package.json"), "utf-8"),
+    ...CONFIG_FILES.map((f) => readFile(join(cwd, f), "utf-8").then(() => f)),
+  ]);
+
+  if (pkgResult.status === "fulfilled") {
+    try {
+      const pkg = JSON.parse(pkgResult.value);
+      const deps = Object.keys(pkg.dependencies ?? {});
+      const devDeps = Object.keys(pkg.devDependencies ?? {});
+      meta.push(
+        `**Package:** ${pkg.name ?? "unknown"} v${pkg.version ?? "0.0.0"}`,
+        `**Dependencies:** ${deps.slice(0, 15).join(", ")}${deps.length > 15 ? ` (+${deps.length - 15} more)` : ""}`,
+        `**Dev Dependencies:** ${devDeps.slice(0, 10).join(", ")}${devDeps.length > 10 ? ` (+${devDeps.length - 10} more)` : ""}`,
+      );
+    } catch {
+      /* skip */
+    }
+  }
+
+  const found = configResults
+    .filter(
+      (r): r is PromiseFulfilledResult<string> => r.status === "fulfilled",
+    )
+    .map((r) => r.value);
+  if (found.length > 0) {
+    meta.push(`**Config files:** ${found.join(", ")}`);
+  }
+
+  return meta;
+}
+
+function copyToClipboard(text: string): Promise<void> {
+  const cmd =
+    process.platform === "darwin"
+      ? "pbcopy"
+      : process.platform === "win32"
+        ? "clip"
+        : "xclip";
+  const args = process.platform === "linux" ? ["-selection", "clipboard"] : [];
+
+  return new Promise((resolve, reject) => {
+    const proc = execFile(cmd, args, (err) => {
+      if (err) reject(err);
+      else resolve();
+    });
+    proc.stdin?.write(text);
+    proc.stdin?.end();
+  });
+}
+
+function git(cmd: string): string {
+  return execSync(`git ${cmd}`, { stdio: "pipe" }).toString().trim();
+}
+
+function runShell(
+  cmd: string,
+): Promise<{ stdout: string; stderr: string; code: number }> {
+  return new Promise((resolve) => {
+    execFile(
+      "sh",
+      ["-c", cmd],
+      { maxBuffer: 1024 * 1024 },
+      (err, stdout, stderr) => {
+        resolve({
+          stdout: stdout?.toString() ?? "",
+          stderr: stderr?.toString() ?? "",
+          code: err ? ((err as any).code ?? 1) : 0,
+        });
+      },
+    );
+  });
+}
+
+function detectTestCommand(): string {
+  const cwd = process.cwd();
+  if (
+    existsSync(join(cwd, "bun.lockb")) ||
+    existsSync(join(cwd, "bunfig.toml"))
+  )
+    return "bun test";
+  if (existsSync(join(cwd, "package.json"))) {
+    try {
+      const pkg = JSON.parse(
+        require("node:fs").readFileSync(join(cwd, "package.json"), "utf-8"),
+      );
+      if (pkg.scripts?.test) return "npm test";
+    } catch {}
+  }
+  if (existsSync(join(cwd, "Cargo.toml"))) return "cargo test";
+  if (existsSync(join(cwd, "go.mod"))) return "go test ./...";
+  if (
+    existsSync(join(cwd, "pyproject.toml")) ||
+    existsSync(join(cwd, "setup.py"))
+  )
+    return "python -m pytest";
+  return "npm test";
 }
 
 export async function handleBasicSlashCommand(
@@ -64,8 +183,25 @@ export async function handleBasicSlashCommand(
     const allCmds = [...SLASH_COMMANDS, ...skillCommands()];
     addSystemMessage(
       allCmds.map((c) => `**${c.name}** — ${c.description}`).join("\n") +
-        "\n\n**@cortex/@scout/@forge** — Route to a specific slot",
+        "\n\n**@cortex/@scout/@forge** — Route to a specific slot" +
+        "\n\n**Tip:** Hold **Shift** and drag to select text in the terminal for copying.",
     );
+    return true;
+  }
+
+  if (command === "/copy") {
+    const assistantMsgs = state.messages.filter((m) => m.role === "assistant");
+    if (assistantMsgs.length === 0) {
+      addSystemMessage("No assistant messages to copy.");
+      return true;
+    }
+    const last = assistantMsgs[assistantMsgs.length - 1];
+    try {
+      await copyToClipboard(last.content);
+      addSystemMessage("Copied last response to clipboard.");
+    } catch {
+      addSystemMessage("Failed to copy — clipboard not available.");
+    }
     return true;
   }
 
@@ -230,45 +366,138 @@ export async function handleBasicSlashCommand(
     return true;
   }
 
+  if (command === "/commit") {
+    if (!isGitRepo()) {
+      addSystemMessage("Not a git repository.");
+      return true;
+    }
+    try {
+      const status = git("status --porcelain");
+      if (!status) {
+        addSystemMessage("Nothing to commit — working tree clean.");
+        return true;
+      }
+      const diff = git("diff HEAD");
+      const branch = getCurrentBranch();
+      addSystemMessage("Generating commit message...");
+      const prompt = [
+        "Generate a concise, conventional commit message for these changes.",
+        "Use the format: `type(scope): description` (e.g. feat, fix, refactor, docs, chore).",
+        "Return ONLY the commit message, nothing else. No markdown, no explanation.",
+        "",
+        `Branch: ${branch}`,
+        "```diff",
+        diff.slice(0, 8000),
+        "```",
+      ].join("\n");
+      await actions.dispatch(prompt);
+
+      // After the model responds, extract the message from the last assistant reply
+      const lastMsg = state.messages
+        .filter((m) => m.role === "assistant")
+        .pop();
+      if (lastMsg) {
+        const msg = lastMsg.content.replace(/^```\s*|```$/g, "").trim();
+        git("add -A");
+        git(`commit -m ${JSON.stringify(msg)}`);
+        try {
+          git(`push origin ${branch}`);
+          addSystemMessage(`Committed and pushed to **${branch}**.`);
+        } catch {
+          addSystemMessage(
+            `Committed locally. Push failed — run \`git push\` manually.`,
+          );
+        }
+      }
+    } catch (err) {
+      addSystemMessage(
+        `**Error:** ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return true;
+  }
+
+  if (command === "/diff") {
+    if (!isGitRepo()) {
+      addSystemMessage("Not a git repository.");
+      return true;
+    }
+    try {
+      const staged = git("diff --cached");
+      const unstaged = git("diff");
+      if (!staged && !unstaged) {
+        addSystemMessage("No changes. Working tree is clean.");
+        return true;
+      }
+      const parts: string[] = [];
+      if (staged)
+        parts.push(`## Staged Changes\n\`\`\`diff\n${staged}\n\`\`\``);
+      if (unstaged)
+        parts.push(`## Unstaged Changes\n\`\`\`diff\n${unstaged}\n\`\`\``);
+      addSystemMessage(parts.join("\n\n"));
+    } catch (err) {
+      addSystemMessage(
+        `**Error:** ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return true;
+  }
+
+  if (command === "/branch") {
+    if (!isGitRepo()) {
+      addSystemMessage("Not a git repository.");
+      return true;
+    }
+    try {
+      if (args.length === 0) {
+        const current = getCurrentBranch();
+        const branches = git("branch --sort=-committerdate")
+          .split("\n")
+          .slice(0, 10)
+          .map((b) => b.trim());
+        addSystemMessage(
+          `## Branches\nCurrent: **${current}**\n\n${branches.map((b) => `- ${b}`).join("\n")}`,
+        );
+      } else if (args[0] === "new" && args[1]) {
+        git(`checkout -b ${args[1]}`);
+        addSystemMessage(`Created and switched to **${args[1]}**.`);
+      } else {
+        git(`checkout ${args[0]}`);
+        addSystemMessage(`Switched to **${args[0]}**.`);
+      }
+    } catch (err) {
+      addSystemMessage(
+        `**Error:** ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return true;
+  }
+
+  if (command === "/test") {
+    const testCmd = args.length > 0 ? args.join(" ") : detectTestCommand();
+    addSystemMessage(`Running \`${testCmd}\`...`);
+    const result = await runShell(testCmd);
+    const output = (result.stdout + result.stderr).trim();
+    const status = result.code === 0 ? "PASSED" : "FAILED";
+    const truncated =
+      output.length > 4000 ? `...${output.slice(-4000)}` : output;
+    addSystemMessage(
+      `## Test Results — ${status}\n\`\`\`\n${truncated}\n\`\`\``,
+    );
+    return true;
+  }
+
   if (command === "/init") {
     addSystemMessage("Analyzing project structure...");
 
     const cwd = process.cwd();
     const ignoreFilter = loadIgnoreRules(cwd);
-    const repoMap = generateRepoMap(cwd, ignoreFilter, 4000);
 
-    // Gather project metadata
-    const meta: string[] = [];
-    const pkgPath = join(cwd, "package.json");
-    if (existsSync(pkgPath)) {
-      try {
-        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-        const deps = Object.keys(pkg.dependencies ?? {});
-        const devDeps = Object.keys(pkg.devDependencies ?? {});
-        meta.push(
-          `**Package:** ${pkg.name ?? "unknown"} v${pkg.version ?? "0.0.0"}`,
-          `**Dependencies:** ${deps.slice(0, 15).join(", ")}${deps.length > 15 ? ` (+${deps.length - 15} more)` : ""}`,
-          `**Dev Dependencies:** ${devDeps.slice(0, 10).join(", ")}${devDeps.length > 10 ? ` (+${devDeps.length - 10} more)` : ""}`,
-        );
-      } catch {
-        /* skip */
-      }
-    }
-
-    // Check for key config files
-    const configFiles = [
-      "tsconfig.json",
-      "biome.json",
-      ".eslintrc.js",
-      "turbo.json",
-      "Dockerfile",
-      "docker-compose.yml",
-      ".github/workflows/ci.yml",
-    ];
-    const found = configFiles.filter((f) => existsSync(join(cwd, f)));
-    if (found.length > 0) {
-      meta.push(`**Config files:** ${found.join(", ")}`);
-    }
+    // Run repo map generation and metadata gathering in parallel
+    const [repoMap, meta] = await Promise.all([
+      generateRepoMap(cwd, ignoreFilter, 4000),
+      gatherProjectMeta(cwd),
+    ]);
 
     // Store structural findings as lessons
     const db = getSessionDB();
@@ -310,6 +539,44 @@ export async function handleBasicSlashCommand(
     return true;
   }
 
+  if (command === "/permissions") {
+    const config = loadConfig();
+    const cliProviders = ["claude-code", "codex", "gemini-cli"];
+    const current = config.cliPermissions ?? {};
+
+    // If any arg given, treat as toggle target
+    if (args.length > 0 && args[0] === "off") {
+      // Set all to supervised
+      const updated: Record<string, "auto" | "supervised"> = {};
+      for (const p of cliProviders) updated[p] = "supervised";
+      config.cliPermissions = updated;
+      writeConfig(config);
+      actions.getDispatcher().setCliPermissions(updated);
+      actions.setCliAutoMode(false);
+      addSystemMessage(
+        "CLI permissions set to **supervised** (agents will ask before editing).",
+      );
+      return true;
+    }
+
+    // Default: toggle all to auto or supervised
+    const allAuto = cliProviders.every((p) => current[p] === "auto");
+    const newMode = allAuto ? "supervised" : "auto";
+    const updated: Record<string, "auto" | "supervised"> = {};
+    for (const p of cliProviders) updated[p] = newMode;
+    config.cliPermissions = updated;
+    writeConfig(config);
+    actions.getDispatcher().setCliPermissions(updated);
+    actions.setCliAutoMode(newMode === "auto");
+
+    const label =
+      newMode === "auto"
+        ? "**auto** (agents can edit files without asking)"
+        : "**supervised** (agents will ask before editing)";
+    addSystemMessage(`CLI permissions set to ${label}.`);
+    return true;
+  }
+
   if (command === "/stats") {
     const stats = state.sessionStats;
     addSystemMessage(
@@ -336,7 +603,7 @@ export async function handleSlashCommand(
 
   const skill = context.actions.skillRegistry().getByCommand(command);
   if (skill) {
-    const skillArgs = text.slice(skill.command!.length).trim();
+    const skillArgs = text.slice(skill.command?.length).trim();
     context.addSystemMessage(`Running skill: **${skill.name}**...`);
     const kernel = context.actions
       .getDispatcher()

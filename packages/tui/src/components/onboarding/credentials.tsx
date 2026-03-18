@@ -91,9 +91,9 @@ export function Credentials(props: CredentialsProps) {
                         }
                       >
                         {cred().apiKey
-                          ? cred().apiKey!.startsWith("env:")
+                          ? cred().apiKey?.startsWith("env:")
                             ? cred().apiKey!
-                            : "***" + cred().apiKey!.slice(-4)
+                            : `***${cred().apiKey?.slice(-4)}`
                           : hasEnvKey()
                             ? `env:${provider.keyEnvVar}`
                             : "not set"}

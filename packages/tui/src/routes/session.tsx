@@ -1,6 +1,6 @@
 import type { Plan } from "@howlerops/iron-rain";
 import { loadConfig, parseReferences } from "@howlerops/iron-rain";
-import { useKeyboard } from "@opentui/solid";
+import { useKeyboard, useRenderer, useSelectionHandler } from "@opentui/solid";
 import {
   batch,
   createMemo,
@@ -18,7 +18,11 @@ import {
   SessionView,
 } from "../components/session-view.js";
 import { Settings } from "../components/settings.js";
-import { getFilteredCommands, SlashMenu } from "../components/slash-menu.js";
+import {
+  getFilteredCommands,
+  SLASH_COMMANDS,
+  SlashMenu,
+} from "../components/slash-menu.js";
 import { WelcomeScreen } from "../components/welcome-screen.js";
 import { useSlate } from "../context/slate-context.js";
 import type { SessionContext, SessionMode } from "../controllers/context.js";
@@ -31,10 +35,10 @@ import { ironRainTheme, slotLabel } from "../theme/theme.js";
 export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
   const [state, actions] = useSlate();
   const [inputValue, setInputValue] = createSignal("");
-  const [inputFocused, setInputFocused] = createSignal(true);
+  const [inputFocused, _setInputFocused] = createSignal(true);
   const [menuIndex, setMenuIndex] = createSignal(0);
   const [mode, setMode] = createSignal<SessionMode>("chat");
-  let inputRef: any = undefined;
+  let inputRef: any;
 
   const showSlashMenu = createMemo(() => {
     const val = inputValue();
@@ -46,6 +50,17 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
   const filteredCommands = createMemo(() => {
     if (!showSlashMenu()) return [];
     return getFilteredCommands(inputValue(), skillCommands());
+  });
+
+  /** Detect a known slash command embedded in natural text (not at position 0). */
+  const detectedCommand = createMemo(() => {
+    const val = inputValue();
+    if (!val || val.startsWith("/")) return null;
+    const match = val.match(/\/([\w][\w-]*)/);
+    if (!match) return null;
+    const cmdName = `/${match[1]}`;
+    const allCmds = [...SLASH_COMMANDS, ...skillCommands()];
+    return allCmds.find((c) => c.name === cmdName) ?? null;
   });
 
   function addSystemMessage(content: string) {
@@ -163,6 +178,20 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
       }
     }
 
+    // Detect embedded slash command in natural text (e.g. "run /update")
+    const embeddedMatch = text.match(/\/([\w][\w-]*)/);
+    if (embeddedMatch) {
+      const cmdName = `/${embeddedMatch[1]}`;
+      const allCmds = [...SLASH_COMMANDS, ...skillCommands()];
+      const matched = allCmds.find((c) => c.name === cmdName);
+      if (matched) {
+        clearInput();
+        if (await handleSlashCommand(cmdName)) {
+          return;
+        }
+      }
+    }
+
     const { targetSlot, prompt, references } = await parseReferences(
       text,
       process.cwd(),
@@ -256,6 +285,15 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
       if (selected) {
         setInputValue(selected.name);
       }
+    }
+  });
+
+  // Auto-copy text selection to clipboard via OSC 52
+  const renderer = useRenderer();
+  useSelectionHandler((selection) => {
+    const text = selection.getSelectedText();
+    if (text) {
+      renderer.copyToClipboardOSC52(text);
     }
   });
 
@@ -400,6 +438,19 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
             </scrollbox>
           </Show>
 
+          <Show when={detectedCommand()}>
+            {(cmd: () => { name: string; description: string }) => (
+              <box paddingX={2} flexShrink={0}>
+                <text fg={ironRainTheme.brand.primary}>
+                  {`\u21B3 ${cmd().name}`}
+                </text>
+                <text fg={ironRainTheme.chrome.muted}>
+                  {` \u2014 ${cmd().description} (Enter to run)`}
+                </text>
+              </box>
+            )}
+          </Show>
+
           {/* ── Input row with prompt indicator ───── */}
           <box
             flexDirection="row"
@@ -457,6 +508,9 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
               <text fg={ironRainTheme.chrome.muted}>
                 {state.slots.main.model}
               </text>
+              <Show when={actions.cliAutoMode()}>
+                <text fg={ironRainTheme.status.warning}>AUTO</text>
+              </Show>
               {actions.isLoading() && (
                 <text fg={ironRainTheme.brand.primary}>
                   {`${slotLabel(actions.activeSlot())} working...`}
@@ -473,7 +527,7 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
               when={state.sessionStats && state.sessionStats.requestCount > 0}
             >
               <text fg={ironRainTheme.chrome.dimFg}>
-                {`${formatDuration(state.sessionStats!.totalDuration)} \u00B7 ${state.sessionStats!.requestCount} req${state.sessionStats!.requestCount !== 1 ? "s" : ""} \u00B7 ${formatTokens(state.sessionStats!.totalTokens)} tokens`}
+                {`${formatDuration(state.sessionStats?.totalDuration)} \u00B7 ${state.sessionStats?.requestCount} req${state.sessionStats?.requestCount !== 1 ? "s" : ""} \u00B7 ${formatTokens(state.sessionStats?.totalTokens)} tokens`}
               </text>
             </Show>
           </box>

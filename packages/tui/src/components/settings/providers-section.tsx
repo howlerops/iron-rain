@@ -61,9 +61,9 @@ export function ProvidersSection(props: ProvidersSectionProps) {
                 <box flexDirection="row" gap={1} paddingX={4}>
                   <text fg={ironRainTheme.chrome.dimFg}>key:</text>
                   <text fg={ironRainTheme.status.success}>
-                    {prov.apiKey!.startsWith("env:")
+                    {prov.apiKey?.startsWith("env:")
                       ? prov.apiKey!
-                      : `${prov.apiKey!.slice(0, 8)}...`}
+                      : `${prov.apiKey?.slice(0, 8)}...`}
                   </text>
                 </box>
               </Show>

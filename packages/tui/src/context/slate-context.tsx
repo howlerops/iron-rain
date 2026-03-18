@@ -6,7 +6,6 @@ import type {
   LoopState,
   Plan,
   ResolvedReference,
-  Skill,
   SlotAssignment,
   SlotName,
 } from "@howlerops/iron-rain";
@@ -100,6 +99,10 @@ export interface SlateActions {
   // Hooks
   hookEmitter: () => HookEmitter;
 
+  // CLI permission mode
+  cliAutoMode: () => boolean;
+  setCliAutoMode: (auto: boolean) => void;
+
   // Dispatch controller (for planner/loop)
   getDispatcher: () => DispatchController;
 }
@@ -152,6 +155,16 @@ export function SlateProvider(props: {
   const [activePlan, setActivePlan] = createSignal<Plan | null>(null);
   const [activeLoop, setActiveLoop] = createSignal<LoopState | null>(null);
 
+  // CLI auto-permissions
+  const initCliPerms = props.config?.cliPermissions as
+    | Record<string, string>
+    | undefined;
+  const [cliAutoMode, setCliAutoMode] = createSignal(
+    initCliPerms
+      ? Object.values(initCliPerms).some((v) => v === "auto")
+      : false,
+  );
+
   // MCP Manager
   const mcpMgr = new MCPManager({ mcpServers: props.config?.mcpServers });
 
@@ -163,7 +176,7 @@ export function SlateProvider(props: {
   }
 
   // Skill-derived slash commands
-  const [skillCmds, setSkillCmds] = createSignal<SlashCommand[]>(
+  const [skillCmds, _setSkillCmds] = createSignal<SlashCommand[]>(
     skillReg
       .getCommands()
       .map((c) => ({ name: c.name, description: c.description })),
@@ -176,10 +189,7 @@ export function SlateProvider(props: {
   const cwd = process.cwd();
   const rules = props.config?.rules?.disabled ? [] : loadProjectRules(cwd);
   const ignoreFilter = loadIgnoreRules(cwd);
-  const repoMap =
-    props.config?.repoMap?.enabled !== false
-      ? generateRepoMap(cwd, ignoreFilter, props.config?.repoMap?.maxTokens)
-      : "";
+  let repoMap = "";
 
   // Initialize checkpoint manager (Phase 1 T-01)
   const checkpointMgr = new CheckpointManager();
@@ -213,10 +223,23 @@ export function SlateProvider(props: {
   const dispatcher = new DispatchController(
     props.config?.slots ? slotAssignment : undefined,
     mcpMgr,
+    props.config?.cliPermissions as
+      | Record<string, "auto" | "supervised">
+      | undefined,
   );
 
   // Wire project context into dispatch system prompts
   dispatcher.setContext({ rules, repoMap });
+
+  // Load repo map asynchronously and update context when ready
+  if (props.config?.repoMap?.enabled !== false) {
+    generateRepoMap(cwd, ignoreFilter, props.config?.repoMap?.maxTokens)
+      .then((map) => {
+        repoMap = map;
+        dispatcher.setContext({ rules, repoMap });
+      })
+      .catch(() => {});
+  }
 
   const actions: SlateActions = {
     currentSessionId: () => currentSession(),
@@ -303,6 +326,9 @@ export function SlateProvider(props: {
 
     costRegistry: () => costReg,
     hookEmitter: () => hooks,
+
+    cliAutoMode,
+    setCliAutoMode: (auto: boolean) => setCliAutoMode(auto),
 
     getDispatcher: () => dispatcher,
 

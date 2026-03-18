@@ -50,11 +50,11 @@ export class MCPClient {
       env,
     });
 
-    this.process.stdout!.on("data", (data: Buffer) => {
+    this.process.stdout?.on("data", (data: Buffer) => {
       this.handleData(data.toString());
     });
 
-    this.process.stderr!.on("data", (data: Buffer) => {
+    this.process.stderr?.on("data", (data: Buffer) => {
       // Log MCP server errors to stderr for debugging
       process.stderr.write(`[mcp:${this.serverName}] ${data.toString()}`);
     });
@@ -129,7 +129,7 @@ export class MCPClient {
     params: Record<string, unknown>,
   ): void {
     const msg = JSON.stringify({ jsonrpc: "2.0", method, params });
-    this.process?.stdin?.write(msg + "\n");
+    this.process?.stdin?.write(`${msg}\n`);
   }
 
   private sendRequest(
@@ -165,7 +165,7 @@ export class MCPClient {
         },
       });
 
-      this.process?.stdin?.write(JSON.stringify(request) + "\n");
+      this.process?.stdin?.write(`${JSON.stringify(request)}\n`);
     });
   }
 

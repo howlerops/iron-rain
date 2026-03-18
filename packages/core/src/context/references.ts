@@ -95,11 +95,12 @@ export async function parseReferences(
     /@(\.\.?\/[^\s]+|file:[^\s]+|dir:[^\s]+|git:[^\s]+|image:[^\s]+)/g;
   const tokens: { match: string; ref: ResolvedReference | null }[] = [];
 
-  let m: RegExpExecArray | null;
-  while ((m = tokenRegex.exec(prompt)) !== null) {
+  let m: RegExpExecArray | null = tokenRegex.exec(prompt);
+  while (m !== null) {
     const raw = m[1];
     const ref = await resolveToken(raw, cwd, contextDirs);
     tokens.push({ match: m[0], ref });
+    m = tokenRegex.exec(prompt);
   }
 
   // Strip tokens from prompt and collect resolved references
@@ -173,9 +174,7 @@ async function resolveFile(
         path: abs,
         content: `<file path="${relative(cwd, abs)}">\n${content}\n</file>`,
       };
-    } catch {
-      continue;
-    }
+    } catch {}
   }
 
   return null;
@@ -200,9 +199,7 @@ async function resolveDirectory(
         path: abs,
         content: `<directory path="${relative(cwd, abs) || "."}">\n${lines.join("\n")}\n</directory>`,
       };
-    } catch {
-      continue;
-    }
+    } catch {}
   }
 
   return null;
@@ -245,9 +242,7 @@ async function resolveImage(
         imageData: b64,
         mimeType: mime,
       };
-    } catch {
-      continue;
-    }
+    } catch {}
   }
 
   return null;

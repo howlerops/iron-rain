@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { extname, join, relative } from "node:path";
 import type { IgnoreFilter } from "../context/ignore.js";
 
@@ -36,13 +36,13 @@ const EXPORT_PATTERNS: Record<string, RegExp[]> = {
 /**
  * Generate a lightweight repo map showing files and exported symbols.
  */
-export function generateRepoMap(
+export async function generateRepoMap(
   cwd: string,
   ignoreFilter?: IgnoreFilter,
   maxTokens = 2000,
-): string {
+): Promise<string> {
   const entries: SymbolEntry[] = [];
-  walkDir(cwd, cwd, entries, ignoreFilter);
+  await walkDir(cwd, cwd, entries, ignoreFilter);
 
   // Sort by path
   entries.sort((a, b) => a.file.localeCompare(b.file));
@@ -65,21 +65,24 @@ export function generateRepoMap(
   return lines.join("\n");
 }
 
-function walkDir(
+async function walkDir(
   dir: string,
   root: string,
   entries: SymbolEntry[],
   ignoreFilter?: IgnoreFilter,
   depth = 0,
-): void {
+): Promise<void> {
   if (depth > 8) return; // Prevent excessive recursion
 
   let items: string[];
   try {
-    items = readdirSync(dir);
+    items = await readdir(dir);
   } catch {
     return;
   }
+
+  const filePromises: Promise<SymbolEntry | null>[] = [];
+  const dirPromises: Promise<void>[] = [];
 
   for (const item of items) {
     if (
@@ -94,24 +97,39 @@ function walkDir(
     const fullPath = join(dir, item);
     if (ignoreFilter?.isIgnored(fullPath)) continue;
 
-    let stat;
-    try {
-      stat = statSync(fullPath);
-    } catch {
-      continue;
-    }
+    // Fire all stat calls in parallel by deferring to promises
+    const p = stat(fullPath)
+      .then((s) => {
+        if (s.isDirectory()) {
+          dirPromises.push(
+            walkDir(fullPath, root, entries, ignoreFilter, depth + 1),
+          );
+          return null;
+        }
+        if (s.isFile() && SOURCE_EXTENSIONS.has(extname(item))) {
+          return extractSymbols(fullPath).then((symbols) => ({
+            file: relative(root, fullPath),
+            symbols,
+          }));
+        }
+        return null;
+      })
+      .catch(() => null);
 
-    if (stat.isDirectory()) {
-      walkDir(fullPath, root, entries, ignoreFilter, depth + 1);
-    } else if (stat.isFile() && SOURCE_EXTENSIONS.has(extname(item))) {
-      const relPath = relative(root, fullPath);
-      const symbols = extractSymbols(fullPath);
-      entries.push({ file: relPath, symbols });
-    }
+    filePromises.push(p);
   }
+
+  // Wait for all stat calls to resolve (which also queues subdirectory walks)
+  const fileResults = await Promise.all(filePromises);
+  for (const entry of fileResults) {
+    if (entry) entries.push(entry);
+  }
+
+  // Now wait for all subdirectory walks
+  await Promise.all(dirPromises);
 }
 
-function extractSymbols(filePath: string): string[] {
+async function extractSymbols(filePath: string): Promise<string[]> {
   const ext = extname(filePath);
   let lang: string;
 
@@ -132,7 +150,7 @@ function extractSymbols(filePath: string): string[] {
 
   let content: string;
   try {
-    content = readFileSync(filePath, "utf-8");
+    content = await readFile(filePath, "utf-8");
     // Only read first 10KB for symbol extraction
     if (content.length > 10240) content = content.slice(0, 10240);
   } catch {
@@ -143,9 +161,10 @@ function extractSymbols(filePath: string): string[] {
   for (const pattern of patterns) {
     // Reset regex lastIndex
     const re = new RegExp(pattern.source, pattern.flags);
-    let match;
-    while ((match = re.exec(content)) !== null) {
+    let match: RegExpExecArray | null = re.exec(content);
+    while (match !== null) {
       if (match[1]) symbols.add(match[1]);
+      match = re.exec(content);
     }
   }
 

@@ -90,6 +90,7 @@ export class PlanGenerator {
         description: string;
         acceptanceCriteria?: string[];
         targetFiles?: string[];
+        dependsOn?: number[];
       }>;
 
       return parsed.map((t, i) => ({
@@ -100,6 +101,7 @@ export class PlanGenerator {
         acceptanceCriteria: t.acceptanceCriteria ?? [],
         status: "pending" as const,
         targetFiles: t.targetFiles,
+        dependsOn: t.dependsOn?.map((dep) => `${planId}-task-${dep}`),
       }));
     } catch {
       return [];

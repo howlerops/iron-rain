@@ -1,13 +1,19 @@
+import type { CliPermissionMode } from "../config/schema.js";
 import { BaseCLIBridge } from "./base-cli.js";
 import { BridgeError } from "./errors.js";
 import type { BridgeChunk, BridgeOptions, BridgeResult } from "./types.js";
 
 export class CodexBridge extends BaseCLIBridge {
-  constructor(opts: { model?: string; binaryPath?: string }) {
+  constructor(opts: {
+    model?: string;
+    binaryPath?: string;
+    permissionMode?: CliPermissionMode;
+  }) {
     super({
       name: "codex",
       model: opts.model ?? "gpt-5.4",
       binaryPath: opts.binaryPath ?? "codex",
+      permissionMode: opts.permissionMode,
     });
   }
 
@@ -16,7 +22,15 @@ export class CodexBridge extends BaseCLIBridge {
     options?: BridgeOptions,
   ): Promise<BridgeResult> {
     const start = Date.now();
-    const args = ["exec", prompt, "-c", `model="${this.model}"`];
+    const args = [
+      "exec",
+      prompt,
+      "-c",
+      `model="${this.model}"`,
+      ...(this.permissionMode === "auto"
+        ? ["--approval-mode", "full-auto"]
+        : []),
+    ];
 
     try {
       const { stdout, stderr, exitCode } = await this.spawnAndCollect(

@@ -13,19 +13,19 @@ describe("sandbox", () => {
   it("returns executor for 'seatbelt' backend", () => {
     const executor = getSandboxExecutor("seatbelt");
     expect(executor).toBeTruthy();
-    expect(executor!.backend).toBe("seatbelt");
+    expect(executor?.backend).toBe("seatbelt");
   });
 
   it("returns executor for 'docker' backend", () => {
     const executor = getSandboxExecutor("docker");
     expect(executor).toBeTruthy();
-    expect(executor!.backend).toBe("docker");
+    expect(executor?.backend).toBe("docker");
   });
 
   it("returns executor for 'gvisor' backend", () => {
     const executor = getSandboxExecutor("gvisor");
     expect(executor).toBeTruthy();
-    expect(executor!.backend).toBe("gvisor");
+    expect(executor?.backend).toBe("gvisor");
   });
 
   it("wrapCommandForSandbox passes through for 'none'", () => {

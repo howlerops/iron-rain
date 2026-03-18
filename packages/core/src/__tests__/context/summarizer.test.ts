@@ -26,7 +26,7 @@ describe("truncateWithContext", () => {
   });
 
   it("truncates long output keeping start and end", () => {
-    const output = "START" + "x".repeat(10000) + "END";
+    const output = `START${"x".repeat(10000)}END`;
     const result = truncateWithContext(output, 200);
     expect(result).toContain("START");
     expect(result).toContain("END");

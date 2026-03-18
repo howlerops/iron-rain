@@ -170,7 +170,7 @@ export class AnthropicBridge extends BaseAPIBridge {
                   ) {
                     const p =
                       input.pattern.length > 30
-                        ? input.pattern.slice(0, 27) + "..."
+                        ? `${input.pattern.slice(0, 27)}...`
                         : input.pattern;
                     enrichedName = `${tool.name} ${p}`;
                   } else if (
@@ -179,7 +179,7 @@ export class AnthropicBridge extends BaseAPIBridge {
                   ) {
                     const c =
                       input.command.length > 40
-                        ? input.command.slice(0, 37) + "..."
+                        ? `${input.command.slice(0, 37)}...`
                         : input.command;
                     enrichedName = `${tool.name}: ${c}`;
                   }

@@ -6,8 +6,8 @@ describe("CostRegistry", () => {
     const registry = new CostRegistry();
     const pricing = registry.getPricing("claude-opus-4-6");
     expect(pricing).toBeTruthy();
-    expect(pricing!.input).toBe(15);
-    expect(pricing!.output).toBe(75);
+    expect(pricing?.input).toBe(15);
+    expect(pricing?.output).toBe(75);
   });
 
   it("returns null for unknown models", () => {
@@ -19,7 +19,7 @@ describe("CostRegistry", () => {
     const registry = new CostRegistry();
     const pricing = registry.getPricing("claude-sonnet-4-6");
     expect(pricing).toBeTruthy();
-    expect(pricing!.input).toBe(3);
+    expect(pricing?.input).toBe(3);
   });
 
   it("allows custom pricing that overrides defaults", () => {

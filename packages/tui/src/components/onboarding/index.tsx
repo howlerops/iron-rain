@@ -1,18 +1,14 @@
 import type { SlotConfig, SlotName } from "@howlerops/iron-rain";
 import { ModelRegistry, SLOT_NAMES, writeConfig } from "@howlerops/iron-rain";
 import { useKeyboard } from "@opentui/solid";
-import { createSignal, onMount } from "solid-js";
+import { createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 import { ironRainTheme } from "../../theme/theme.js";
 import { Credentials } from "./credentials.js";
 import { ProviderSelect } from "./provider-select.js";
 import { SlotAssignment } from "./slot-assignment.js";
 import { Summary } from "./summary.js";
-import type {
-  OnboardingState,
-  OnboardingStep,
-  ProviderChoice,
-} from "./types.js";
+import type { OnboardingState, OnboardingStep } from "./types.js";
 import { AVAILABLE_PROVIDERS, PROVIDER_MODELS } from "./types.js";
 import { Welcome } from "./welcome.js";
 

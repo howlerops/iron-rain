@@ -5,9 +5,9 @@
  * The DB file lives at ~/.iron-rain/sessions.db by default.
  */
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync } from "fs";
-import { homedir } from "os";
-import { join } from "path";
+import { existsSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type {
   Message,
   SessionStats,

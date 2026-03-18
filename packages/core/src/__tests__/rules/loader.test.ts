@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadProjectRules } from "../../rules/loader.js";
 
-const TMP = join(tmpdir(), "iron-rain-test-rules-" + Date.now());
+const TMP = join(tmpdir(), `iron-rain-test-rules-${Date.now()}`);
 
 function setup() {
   mkdirSync(TMP, { recursive: true });

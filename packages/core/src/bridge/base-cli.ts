@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { BridgeError } from "./errors.js";
+import type { CliPermissionMode } from "../config/schema.js";
 import type {
   BridgeChunk,
   BridgeOptions,
@@ -11,11 +11,18 @@ export abstract class BaseCLIBridge implements CLIBridge {
   readonly name: string;
   protected model: string;
   protected binaryPath: string;
+  protected permissionMode: CliPermissionMode;
 
-  constructor(opts: { name: string; model: string; binaryPath: string }) {
+  constructor(opts: {
+    name: string;
+    model: string;
+    binaryPath: string;
+    permissionMode?: CliPermissionMode;
+  }) {
     this.name = opts.name;
     this.model = opts.model;
     this.binaryPath = opts.binaryPath;
+    this.permissionMode = opts.permissionMode ?? "supervised";
   }
 
   protected buildSpawnEnv(): NodeJS.ProcessEnv {

@@ -198,7 +198,7 @@ function compactMessages(messages: CompactedMessage[]): string {
   for (const msg of messages) {
     const preview =
       msg.content.length > 120
-        ? msg.content.slice(0, 117) + "..."
+        ? `${msg.content.slice(0, 117)}...`
         : msg.content;
     parts.push(`[${msg.role}] ${preview}`);
   }

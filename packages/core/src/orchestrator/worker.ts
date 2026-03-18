@@ -7,6 +7,7 @@ import {
 } from "../bridge/errors.js";
 import { createBridgeForSlot } from "../bridge/index.js";
 import type { BridgeChunk, CLIBridge } from "../bridge/types.js";
+import type { CliPermissionMode } from "../config/schema.js";
 import type { SlotConfig, SlotName, ThinkingLevel } from "../slots/types.js";
 import type { OrchestratorTask, WorkerResult } from "./types.js";
 
@@ -19,13 +20,20 @@ export class SlotWorker {
   private circuitBreaker = new CircuitBreaker();
   private retryConfig: RetryConfig = DEFAULT_RETRY_CONFIG;
 
-  constructor(slotName: SlotName, slotConfig: SlotConfig) {
+  constructor(
+    slotName: SlotName,
+    slotConfig: SlotConfig,
+    cliPermissions?: Record<string, CliPermissionMode>,
+  ) {
     this.slot = slotName;
-    this.bridge = createBridgeForSlot(slotConfig);
+    this.bridge = createBridgeForSlot(slotConfig, cliPermissions);
     this.thinkingLevel = slotConfig.thinkingLevel;
     this.systemPrompt = slotConfig.systemPrompt;
     if (slotConfig.fallback) {
-      this.fallbackBridge = createBridgeForSlot(slotConfig.fallback);
+      this.fallbackBridge = createBridgeForSlot(
+        slotConfig.fallback,
+        cliPermissions,
+      );
     }
   }
 
@@ -110,7 +118,7 @@ export class SlotWorker {
     start: number,
   ): Promise<WorkerResult> {
     try {
-      const result = await this.fallbackBridge!.execute(task.prompt, {
+      const result = await this.fallbackBridge?.execute(task.prompt, {
         signal,
         systemPrompt: task.systemPrompt ?? this.systemPrompt,
         conversationHistory: task.history,
@@ -118,9 +126,9 @@ export class SlotWorker {
       return {
         taskId: task.id,
         slot: this.slot,
-        content: result.content,
-        tokens: result.tokens,
-        duration: result.duration,
+        content: result?.content ?? "",
+        tokens: result?.tokens ?? { input: 0, output: 0 },
+        duration: result?.duration ?? Date.now() - start,
         status: "success",
       };
     } catch (err) {

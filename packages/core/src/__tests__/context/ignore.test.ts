@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadIgnoreRules } from "../../context/ignore.js";
 
-const TMP = join(tmpdir(), "iron-rain-test-ignore-" + Date.now());
+const TMP = join(tmpdir(), `iron-rain-test-ignore-${Date.now()}`);
 
 function setup() {
   mkdirSync(TMP, { recursive: true });

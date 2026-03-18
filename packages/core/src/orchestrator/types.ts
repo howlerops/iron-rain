@@ -10,6 +10,8 @@ export interface OrchestratorTask {
   systemPrompt?: string;
   history?: Array<{ role: "user" | "assistant"; content: string }>;
   metadata?: Record<string, unknown>;
+  /** Episodes to inject as context for this dispatch (thread composition). */
+  inputEpisodes?: EpisodeSummary[];
 }
 
 export interface WorkerResult {

@@ -14,7 +14,6 @@ export interface Checkpoint {
  */
 export class CheckpointManager {
   private stack: Checkpoint[] = [];
-  private readonly shadowBranch = "iron-rain/checkpoints";
   private enabled = false;
 
   constructor() {

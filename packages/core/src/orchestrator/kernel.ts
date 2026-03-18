@@ -1,7 +1,14 @@
+import type { CliPermissionMode } from "../config/schema.js";
 import type { EpisodeSummary } from "../episodes/protocol.js";
+import {
+  episodeRelevance,
+  extractKeywords,
+  formatEpisodeInputs,
+} from "../episodes/protocol.js";
 import type { ModelSlotManager } from "../slots/slot-manager.js";
 import type { SlotName } from "../slots/types.js";
-import type { OrchestratorTask, WorkerResult } from "./types.js";
+import { generateId } from "../utils/id.js";
+import type { OrchestratorTask } from "./types.js";
 import { taskToEpisode } from "./types.js";
 import { SlotWorker } from "./worker.js";
 
@@ -9,9 +16,14 @@ export class OrchestratorKernel {
   private slots: ModelSlotManager;
   private workers: Map<SlotName, SlotWorker> = new Map();
   private episodes: EpisodeSummary[] = [];
+  private cliPermissions?: Record<string, CliPermissionMode>;
 
-  constructor(slots: ModelSlotManager) {
+  constructor(
+    slots: ModelSlotManager,
+    cliPermissions?: Record<string, CliPermissionMode>,
+  ) {
     this.slots = slots;
+    this.cliPermissions = cliPermissions;
     this.initWorkers();
   }
 
@@ -20,7 +32,7 @@ export class OrchestratorKernel {
     for (const [name, config] of Object.entries(assignment)) {
       this.workers.set(
         name as SlotName,
-        new SlotWorker(name as SlotName, config),
+        new SlotWorker(name as SlotName, config, this.cliPermissions),
       );
     }
   }
@@ -35,7 +47,10 @@ export class OrchestratorKernel {
       throw new Error(`No worker for slot: ${slotName}`);
     }
 
-    const result = await worker.execute(task);
+    // Compose input episodes into prompt for thread-to-thread handoffs
+    const enrichedTask = this.enrichTaskWithEpisodes(task);
+
+    const result = await worker.execute(enrichedTask);
     const episode = taskToEpisode(task, result);
     this.episodes.push(episode);
     return episode;
@@ -60,7 +75,10 @@ export class OrchestratorKernel {
       throw new Error(`No worker for slot: ${slotName}`);
     }
 
-    for await (const chunk of worker.stream(task, signal)) {
+    // Compose input episodes for streaming dispatches too
+    const enrichedTask = this.enrichTaskWithEpisodes(task);
+
+    for await (const chunk of worker.stream(enrichedTask, signal)) {
       yield { ...chunk, slot: slotName };
     }
   }
@@ -78,6 +96,52 @@ export class OrchestratorKernel {
       .map((r) => r.value);
   }
 
+  /**
+   * Handoff: dispatch to a specific slot with prior episode(s) as context.
+   * This is the thread composition primitive described in the Slate blog:
+   * one thread's episode becomes another thread's input context.
+   */
+  async handoff(
+    fromEpisodes: EpisodeSummary | EpisodeSummary[],
+    toSlot: SlotName,
+    prompt: string,
+    systemPrompt?: string,
+  ): Promise<EpisodeSummary> {
+    const episodes = Array.isArray(fromEpisodes)
+      ? fromEpisodes
+      : [fromEpisodes];
+    return this.dispatch({
+      id: generateId(),
+      prompt,
+      targetSlot: toSlot,
+      inputEpisodes: episodes,
+      systemPrompt,
+    });
+  }
+
+  /**
+   * RLM-style retrieval: find past episodes relevant to the current prompt.
+   * Uses keyword overlap scoring to surface the most contextually relevant
+   * episodes from session history.
+   */
+  retrieveRelevantEpisodes(prompt: string, maxCount = 3): EpisodeSummary[] {
+    if (this.episodes.length === 0) return [];
+
+    const queryKeywords = extractKeywords(prompt);
+    if (queryKeywords.size === 0) return [];
+
+    const scored = this.episodes.map((ep) => ({
+      ep,
+      score: episodeRelevance(queryKeywords, ep),
+    }));
+
+    scored.sort((a, b) => b.score - a.score);
+    return scored
+      .slice(0, maxCount)
+      .filter((s) => s.score > 0)
+      .map((s) => s.ep);
+  }
+
   integrate(episodes: EpisodeSummary[]): void {
     this.episodes.push(...episodes);
   }
@@ -93,5 +157,21 @@ export class OrchestratorKernel {
   refreshWorkers(): void {
     this.workers.clear();
     this.initWorkers();
+  }
+
+  /**
+   * Inject input episodes into the task prompt for thread composition.
+   * When a task includes inputEpisodes, their compressed content is
+   * prepended to the prompt so the receiving thread inherits the
+   * conclusions and work history of prior threads.
+   */
+  private enrichTaskWithEpisodes(task: OrchestratorTask): OrchestratorTask {
+    if (!task.inputEpisodes?.length) return task;
+
+    const episodeContext = formatEpisodeInputs(task.inputEpisodes);
+    return {
+      ...task,
+      prompt: `${episodeContext}\n\n${task.prompt}`,
+    };
   }
 }

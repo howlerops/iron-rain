@@ -1,14 +1,20 @@
 import { spawn } from "node:child_process";
+import type { CliPermissionMode } from "../config/schema.js";
 import { BaseCLIBridge } from "./base-cli.js";
 import { BridgeError } from "./errors.js";
 import type { BridgeChunk, BridgeOptions, BridgeResult } from "./types.js";
 
 export class GeminiCLIBridge extends BaseCLIBridge {
-  constructor(opts: { model?: string; binaryPath?: string }) {
+  constructor(opts: {
+    model?: string;
+    binaryPath?: string;
+    permissionMode?: CliPermissionMode;
+  }) {
     super({
       name: "gemini-cli",
       model: opts.model ?? "gemini-3.1-pro-preview",
       binaryPath: opts.binaryPath ?? "gemini",
+      permissionMode: opts.permissionMode,
     });
   }
 
@@ -24,6 +30,7 @@ export class GeminiCLIBridge extends BaseCLIBridge {
       "json",
       "--model",
       this.model,
+      ...(this.permissionMode === "auto" ? ["--sandbox", "none"] : []),
     ];
 
     try {
@@ -84,6 +91,7 @@ export class GeminiCLIBridge extends BaseCLIBridge {
       "stream-json",
       "--model",
       this.model,
+      ...(this.permissionMode === "auto" ? ["--sandbox", "none"] : []),
     ];
 
     const proc = spawn(this.binaryPath, args, {

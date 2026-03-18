@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { CliPermissionMode } from "../config/schema.js";
 import { BaseCLIBridge } from "./base-cli.js";
 import { BridgeError } from "./errors.js";
 import type { BridgeChunk, BridgeOptions, BridgeResult } from "./types.js";
@@ -26,14 +27,14 @@ function toolDisplayName(name: string, input?: Record<string, any>): string {
   if (input.pattern && typeof input.pattern === "string") {
     const p =
       input.pattern.length > 30
-        ? input.pattern.slice(0, 27) + "..."
+        ? `${input.pattern.slice(0, 27)}...`
         : input.pattern;
     return `${name} ${p}`;
   }
   if (input.command && typeof input.command === "string") {
     const c =
       input.command.length > 40
-        ? input.command.slice(0, 37) + "..."
+        ? `${input.command.slice(0, 37)}...`
         : input.command;
     return `${name}: ${c}`;
   }
@@ -43,11 +44,16 @@ function toolDisplayName(name: string, input?: Record<string, any>): string {
 export class ClaudeCodeBridge extends BaseCLIBridge {
   private sessionId: string | null = null;
 
-  constructor(opts: { model?: string; binaryPath?: string }) {
+  constructor(opts: {
+    model?: string;
+    binaryPath?: string;
+    permissionMode?: CliPermissionMode;
+  }) {
     super({
       name: "claude-code",
       model: opts.model ?? "sonnet",
       binaryPath: opts.binaryPath ?? "claude",
+      permissionMode: opts.permissionMode,
     });
   }
 
@@ -72,6 +78,10 @@ export class ClaudeCodeBridge extends BaseCLIBridge {
         ? ["--resume", this.sessionId!]
         : ["--no-session-persistence"]),
     ];
+
+    if (this.permissionMode === "auto") {
+      args.push("--dangerously-skip-permissions");
+    }
 
     if (options?.systemPrompt) {
       args.push("--append-system-prompt", options.systemPrompt);
@@ -145,6 +155,10 @@ export class ClaudeCodeBridge extends BaseCLIBridge {
         ? ["--resume", this.sessionId!]
         : ["--no-session-persistence"]),
     ];
+
+    if (this.permissionMode === "auto") {
+      args.push("--dangerously-skip-permissions");
+    }
 
     if (options?.systemPrompt) {
       args.push("--append-system-prompt", options.systemPrompt);

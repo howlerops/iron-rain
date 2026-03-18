@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expandTemplate, loadCustomCommands } from "../../commands/loader.js";
 
-const TMP = join(tmpdir(), "iron-rain-test-commands-" + Date.now());
+const TMP = join(tmpdir(), `iron-rain-test-commands-${Date.now()}`);
 
 function setup() {
   mkdirSync(TMP, { recursive: true });

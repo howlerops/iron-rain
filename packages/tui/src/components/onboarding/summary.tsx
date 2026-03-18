@@ -49,7 +49,7 @@ export function Summary(props: SummaryProps) {
                 <text fg={ironRainTheme.chrome.dimFg}>({provider.type})</text>
                 {cred().apiKey && (
                   <text fg={ironRainTheme.chrome.muted}>
-                    {`key: ${cred().apiKey!.startsWith("env:") ? cred().apiKey! : "***"}`}
+                    {`key: ${cred().apiKey?.startsWith("env:") ? cred().apiKey! : "***"}`}
                   </text>
                 )}
               </box>

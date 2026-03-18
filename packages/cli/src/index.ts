@@ -3,6 +3,7 @@
 import { randomBytes } from "node:crypto";
 // Read version from package.json
 import { createRequire } from "node:module";
+import type { IronRainConfig } from "@howlerops/iron-rain";
 import {
   checkForUpdate,
   findConfigFile,
@@ -104,7 +105,7 @@ async function handleUpdate(): Promise<void> {
 async function handleDoctor(): Promise<void> {
   console.log("Running diagnostics...\n");
 
-  let config;
+  let config: IronRainConfig | undefined;
   try {
     config = loadConfig();
   } catch {
@@ -190,9 +191,8 @@ async function launchTUI(): Promise<void> {
   // This redirects solid-js from server build (non-reactive) to client
   // build (reactive). Without this, Bun's "node" export condition resolves
   // solid-js to server.js which makes signals static/non-reactive.
-  // @ts-ignore — bun-specific runtime plugin API
+  // @ts-expect-error — bun-specific runtime plugin API
   const { plugin } = await import("bun");
-  // @ts-ignore — bun plugin, no types needed at compile time
   const { default: solidPlugin } = await import("@opentui/solid/bun-plugin");
   plugin(solidPlugin);
 

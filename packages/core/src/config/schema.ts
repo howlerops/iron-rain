@@ -24,6 +24,10 @@ const ProviderConfigSchema = z.object({
 
 const PermissionValue = z.enum(["allow", "deny", "ask"]);
 
+const CliPermissionMode = z.enum(["auto", "supervised"]);
+
+const CliPermissionsSchema = z.record(z.string(), CliPermissionMode).optional();
+
 const LcmConfigSchema = z.object({
   enabled: z.boolean().default(true),
   episodes: z
@@ -147,6 +151,7 @@ export const IronRainConfigSchema = z.object({
     .optional(),
   providers: z.record(z.string(), ProviderConfigSchema).optional(),
   permission: z.record(z.string(), PermissionValue).optional(),
+  cliPermissions: CliPermissionsSchema,
   agent: z.string().default("build"),
   lcm: LcmConfigSchema.optional(),
   theme: z.string().default("default"),
@@ -170,6 +175,8 @@ export const IronRainConfigSchema = z.object({
 });
 
 export type IronRainConfig = z.infer<typeof IronRainConfigSchema>;
+
+export type CliPermissionMode = z.infer<typeof CliPermissionMode>;
 
 export function parseConfig(raw: unknown): IronRainConfig {
   return IronRainConfigSchema.parse(raw);

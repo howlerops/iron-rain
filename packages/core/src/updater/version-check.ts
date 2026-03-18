@@ -104,11 +104,11 @@ export async function performUpdate(): Promise<UpdateResult> {
       stdio: "pipe",
     });
 
-    let stdout = "";
+    let _stdout = "";
     let stderr = "";
 
     child.stdout?.on("data", (d: Buffer) => {
-      stdout += d.toString();
+      _stdout += d.toString();
     });
     child.stderr?.on("data", (d: Buffer) => {
       stderr += d.toString();

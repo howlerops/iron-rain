@@ -19,17 +19,15 @@ import type {
 export class RalphLoop {
   private kernel: OrchestratorKernel;
   private callbacks: LoopCallbacks;
-  private storage: PlanStorage;
   private paused = false;
 
   constructor(
     kernel: OrchestratorKernel,
     callbacks: LoopCallbacks,
-    storage?: PlanStorage,
+    _storage?: PlanStorage,
   ) {
     this.kernel = kernel;
     this.callbacks = callbacks;
-    this.storage = storage ?? new PlanStorage();
   }
 
   async run(config: LoopConfig, signal?: AbortSignal): Promise<LoopState> {
@@ -138,7 +136,7 @@ export class RalphLoop {
       return state;
     }
 
-    const resumeConfig: LoopConfig = {
+    const _resumeConfig: LoopConfig = {
       ...state.config,
       maxIterations: remaining,
     };

@@ -96,7 +96,7 @@ export function SubagentCard(props: { activity: SubagentActivity }) {
   const a = () => props.activity;
   const dot = () => statusDot(a().status);
   const truncTitle = () =>
-    a().task.length > 35 ? a().task.slice(0, 32) + "..." : a().task;
+    a().task.length > 35 ? `${a().task.slice(0, 32)}...` : a().task;
 
   return (
     <box

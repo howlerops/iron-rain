@@ -39,7 +39,7 @@ export {
   deepMergeConfig,
   fetchRemoteConfig,
 } from "./config/remote.js";
-export type { IronRainConfig } from "./config/schema.js";
+export type { CliPermissionMode, IronRainConfig } from "./config/schema.js";
 export {
   IronRainConfigSchema,
   parseConfig,
@@ -63,10 +63,27 @@ export { shouldSummarize, truncateWithContext } from "./context/summarizer.js";
 
 // Episodes
 export type { EpisodeSummary } from "./episodes/protocol.js";
-export { createEpisodeSummary } from "./episodes/protocol.js";
+export {
+  compressEpisode,
+  createEpisodeSummary,
+  episodeRelevance,
+  extractEpisodeKeywords,
+  extractKeywords,
+  formatEpisodeInputs,
+} from "./episodes/protocol.js";
 
 // Git
-export * from "./git/index.js";
+export type { Checkpoint } from "./git/index.js";
+export {
+  autoCommit,
+  CheckpointManager,
+  commitIfChanged,
+  getChangedFiles,
+  getCurrentBranch,
+  isGitRepo,
+  stashCreate,
+  stashPop,
+} from "./git/index.js";
 export type { VoiceConfig } from "./input/index.js";
 // Input
 export {
@@ -104,6 +121,12 @@ export type { Lesson } from "./memory/auto-learner.js";
 export { AutoLearner } from "./memory/index.js";
 
 // Orchestrator
+export type { DispatchTag } from "./orchestrator/dispatch-tags.js";
+export {
+  hasDispatchTags,
+  parseDispatchTags,
+  stripDispatchTags,
+} from "./orchestrator/dispatch-tags.js";
 export { OrchestratorKernel } from "./orchestrator/kernel.js";
 export type {
   ParallelChunk,

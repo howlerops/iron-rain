@@ -2,7 +2,6 @@ import type {
   IronRainConfig,
   SlotConfig,
   SlotName,
-  ThinkingLevel,
 } from "@howlerops/iron-rain";
 import { ModelRegistry, SLOT_NAMES, writeConfig } from "@howlerops/iron-rain";
 import { useKeyboard } from "@opentui/solid";
@@ -137,8 +136,8 @@ export function Settings(props: SettingsProps) {
     return AVAILABLE_PROVIDERS.map((p) => ({
       ...p,
       configured: configured.includes(p.id),
-      apiKey: (config.providers ?? {})[p.id]?.apiKey,
-      apiBase: (config.providers ?? {})[p.id]?.apiBase ?? p.defaultApiBase,
+      apiKey: config.providers?.[p.id]?.apiKey,
+      apiBase: config.providers?.[p.id]?.apiBase ?? p.defaultApiBase,
     }));
   });
 
@@ -170,8 +169,8 @@ export function Settings(props: SettingsProps) {
     setConfig("slots", slot, {
       provider: opt.provider,
       model: opt.model,
-      apiKey: (config.providers ?? {})[opt.provider]?.apiKey,
-      apiBase: (config.providers ?? {})[opt.provider]?.apiBase,
+      apiKey: config.providers?.[opt.provider]?.apiKey,
+      apiBase: config.providers?.[opt.provider]?.apiBase,
     } as SlotConfig);
     setEditing(false);
     setProviderFilter("all");
@@ -188,7 +187,7 @@ export function Settings(props: SettingsProps) {
         setConfig("slots", slot, {
           provider: providerId,
           model: defaultModel,
-          apiBase: (config.providers ?? {})[providerId]?.apiBase,
+          apiBase: config.providers?.[providerId]?.apiBase,
         } as SlotConfig);
       }
     }

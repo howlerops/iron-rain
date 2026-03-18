@@ -4,7 +4,7 @@ export interface WelcomeProps {
   onNext: () => void;
 }
 
-export function Welcome(props: WelcomeProps) {
+export function Welcome(_props: WelcomeProps) {
   return (
     <box flexDirection="column" alignItems="center" paddingY={2} paddingX={4}>
       <text fg={ironRainTheme.brand.primary}>

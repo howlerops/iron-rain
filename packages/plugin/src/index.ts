@@ -28,7 +28,7 @@ export interface PluginHooks {
   onBeforeDispatch?(
     task: OrchestratorTask,
     ctx: PluginContext,
-  ): OrchestratorTask | void;
+  ): OrchestratorTask | undefined;
   onAfterDispatch?(episode: EpisodeSummary, ctx: PluginContext): void;
   onSlotChange?(slot: SlotName, config: SlotConfig, ctx: PluginContext): void;
   onDestroy?(ctx: PluginContext): void | Promise<void>;

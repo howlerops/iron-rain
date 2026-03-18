@@ -64,9 +64,9 @@ export async function runHeadless(
       };
 
       if (options.output === "json") {
-        process.stdout.write(JSON.stringify(event) + "\n");
+        process.stdout.write(`${JSON.stringify(event)}\n`);
       } else {
-        process.stdout.write(episode.result + "\n");
+        process.stdout.write(`${episode.result}\n`);
       }
       return EXIT_CODES.SUCCESS;
     }
@@ -88,7 +88,7 @@ export async function runHeadless(
             content: chunk.content,
             slot: chunk.slot,
           };
-          process.stdout.write(JSON.stringify(event) + "\n");
+          process.stdout.write(`${JSON.stringify(event)}\n`);
         } else {
           process.stdout.write(chunk.content);
         }
@@ -99,7 +99,7 @@ export async function runHeadless(
           slot: chunk.slot,
         };
         if (options.output === "json") {
-          process.stdout.write(JSON.stringify(event) + "\n");
+          process.stdout.write(`${JSON.stringify(event)}\n`);
         } else {
           process.stderr.write(`Error: ${chunk.content}\n`);
         }
@@ -114,7 +114,7 @@ export async function runHeadless(
         slot,
         duration: Date.now() - start,
       };
-      process.stdout.write(JSON.stringify(event) + "\n");
+      process.stdout.write(`${JSON.stringify(event)}\n`);
     }
 
     return EXIT_CODES.SUCCESS;
@@ -122,7 +122,7 @@ export async function runHeadless(
     const message = err instanceof Error ? err.message : String(err);
     if (options.output === "json") {
       const event: HeadlessEvent = { type: "error", content: message };
-      process.stdout.write(JSON.stringify(event) + "\n");
+      process.stdout.write(`${JSON.stringify(event)}\n`);
     } else {
       process.stderr.write(`Error: ${message}\n`);
     }
@@ -167,13 +167,13 @@ export async function runBatch(
   }
 
   if (options.output === "json") {
-    process.stdout.write(JSON.stringify(results, null, 2) + "\n");
+    process.stdout.write(`${JSON.stringify(results, null, 2)}\n`);
   } else {
     for (const result of results) {
       if (result.type === "error") {
         process.stderr.write(`Error: ${result.content}\n`);
       } else {
-        process.stdout.write(result.content + "\n---\n");
+        process.stdout.write(`${result.content}\n---\n`);
       }
     }
   }

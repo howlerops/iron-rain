@@ -17,8 +17,10 @@ export const TASK_BREAKDOWN_PROMPT = `You are Cortex, breaking down a PRD into e
 
 Given the PRD below, generate a JSON array of tasks. Each task should be:
 - Small enough to complete in one focused session
-- Ordered by dependency (earlier tasks first)
 - Specific about what files to create/modify
+- Include dependsOn to indicate which tasks MUST complete first (use task index numbers)
+
+IMPORTANT: Maximize parallelism. Tasks that touch different files or independent modules should NOT depend on each other. Only add dependsOn when a task genuinely requires output from a prior task (e.g., task 2 uses types defined in task 1). The executor will run independent tasks concurrently.
 
 Respond with ONLY a JSON array in this exact format:
 [
@@ -26,9 +28,17 @@ Respond with ONLY a JSON array in this exact format:
     "title": "Task title",
     "description": "What to do",
     "acceptanceCriteria": ["Criterion 1", "Criterion 2"],
-    "targetFiles": ["path/to/file.ts"]
+    "targetFiles": ["path/to/file.ts"],
+    "dependsOn": []
   }
-]`;
+]
+
+Example with dependencies:
+- Task 0: "Add types" → dependsOn: []
+- Task 1: "Add utility functions" → dependsOn: []
+- Task 2: "Implement feature using types and utils" → dependsOn: [0, 1]
+- Task 3: "Add tests" → dependsOn: [2]
+Tasks 0 and 1 run in parallel, then task 2, then task 3.`;
 
 export function buildTaskExecutionPrompt(
   task: {

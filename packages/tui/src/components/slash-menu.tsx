@@ -27,11 +27,17 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: "/undo", description: "Undo last checkpoint" },
   { name: "/review", description: "Review code changes" },
   { name: "/model", description: "Show model assignments" },
+  { name: "/permissions", description: "Toggle CLI auto-permissions" },
   { name: "/slot", description: "Show or set active slot" },
   { name: "/stats", description: "Show session statistics" },
   { name: "/version", description: "Show version and system info" },
   { name: "/update", description: "Check for and install updates" },
   { name: "/doctor", description: "Run system diagnostics" },
+  { name: "/commit", description: "Stage, commit with AI message, and push" },
+  { name: "/diff", description: "Show current git diff" },
+  { name: "/branch", description: "Show or switch git branches" },
+  { name: "/test", description: "Run project tests" },
+  { name: "/copy", description: "Copy last response to clipboard" },
   { name: "/quit", description: "Exit iron-rain" },
 ];
 

@@ -37,10 +37,7 @@ export const DEFAULT_RETRY_CONFIG: RetryConfig = {
  * Exponential backoff with jitter.
  */
 export function backoffDelay(attempt: number, config: RetryConfig): number {
-  const delay = Math.min(
-    config.baseDelayMs * Math.pow(2, attempt),
-    config.maxDelayMs,
-  );
+  const delay = Math.min(config.baseDelayMs * 2 ** attempt, config.maxDelayMs);
   // Add jitter: 50-100% of computed delay
   return delay * (0.5 + Math.random() * 0.5);
 }

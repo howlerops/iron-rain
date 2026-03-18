@@ -72,7 +72,7 @@ export function buildReviewPrompt(diff: string): string {
   const maxChars = 50000;
   const truncated =
     diff.length > maxChars
-      ? diff.slice(0, maxChars) + "\n\n[...diff truncated...]"
+      ? `${diff.slice(0, maxChars)}\n\n[...diff truncated...]`
       : diff;
 
   return `${REVIEW_PROMPT}\n\n## Changes\n\`\`\`diff\n${truncated}\n\`\`\``;
