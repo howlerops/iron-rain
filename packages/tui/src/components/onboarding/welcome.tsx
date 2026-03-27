@@ -50,11 +50,16 @@ export function Welcome(_props: WelcomeProps) {
 
       <box marginY={1} />
 
-      <box flexDirection="row" gap={2}>
-        <text fg={ironRainTheme.brand.primary}>
-          <b>[Enter] Continue</b>
+      <box flexDirection="row" gap={1}>
+        <text fg={ironRainTheme.chrome.muted}>
+          <b>[Enter]</b>
         </text>
-        <text fg={ironRainTheme.chrome.muted}>[q] Quit</text>
+        <text fg={ironRainTheme.chrome.dimFg}>continue</text>
+        <text fg={ironRainTheme.chrome.dimFg}>{"\u00B7"}</text>
+        <text fg={ironRainTheme.chrome.muted}>
+          <b>[q]</b>
+        </text>
+        <text fg={ironRainTheme.chrome.dimFg}>quit</text>
       </box>
     </box>
   );

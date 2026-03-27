@@ -1,9 +1,8 @@
 /**
  * SubagentGrid — Responsive grid of subagent cards for multi-agent workflows.
  *
- * Inspired by Slate's subagent display: each card shows a status dot,
- * task title, tool-call tree, and footer with duration/tokens/cost.
- * The grid uses flexWrap to adapt columns to terminal width.
+ * Each card shows a status indicator, task title, categorized tool calls
+ * with type-specific icons, and a footer with duration/tokens/cost.
  */
 
 import type { SlotName } from "@howlerops/iron-rain";
@@ -27,6 +26,75 @@ export interface SubagentActivity {
   toolCalls?: ToolCallEntry[];
 }
 
+/* ── Tool call categorization ─────────────────────────────────── */
+
+interface ToolCategory {
+  icon: string;
+  color: string;
+  label: string;
+}
+
+const TOOL_CATEGORIES: Record<string, ToolCategory> = {
+  read: { icon: "\u25B7", color: ironRainTheme.brand.lightGold, label: "Read" },
+  edit: {
+    icon: "\u25C7",
+    color: ironRainTheme.brand.accent,
+    label: "Edit",
+  },
+  write: {
+    icon: "\u25C6",
+    color: ironRainTheme.brand.accent,
+    label: "Write",
+  },
+  bash: {
+    icon: "\u25B6",
+    color: ironRainTheme.slots.execute,
+    label: "Bash",
+  },
+  search: {
+    icon: "\u25C9",
+    color: ironRainTheme.brand.lightGold,
+    label: "Search",
+  },
+  thinking: {
+    icon: "\u25CC",
+    color: ironRainTheme.chrome.muted,
+    label: "Thinking",
+  },
+  dispatch: {
+    icon: "\u25E6",
+    color: ironRainTheme.brand.primary,
+    label: "Dispatch",
+  },
+  default: {
+    icon: "\u2022",
+    color: ironRainTheme.chrome.fg,
+    label: "Tool",
+  },
+};
+
+export function categorizeToolCall(name: string): ToolCategory {
+  const lower = name.toLowerCase();
+  if (
+    lower.includes("read") ||
+    lower.includes("glob") ||
+    lower.includes("grep")
+  )
+    return TOOL_CATEGORIES.search;
+  if (lower.includes("edit")) return TOOL_CATEGORIES.edit;
+  if (lower.includes("write")) return TOOL_CATEGORIES.write;
+  if (
+    lower.includes("bash") ||
+    lower.includes("exec") ||
+    lower.includes("shell")
+  )
+    return TOOL_CATEGORIES.bash;
+  if (lower.includes("thinking") || lower.includes("think"))
+    return TOOL_CATEGORIES.thinking;
+  if (lower.includes("dispatch")) return TOOL_CATEGORIES.dispatch;
+  return TOOL_CATEGORIES.default;
+}
+
 /* ── Formatting helpers ─────────────────────────────────────────── */
 
 function fmtDuration(ms: number): string {
@@ -48,32 +116,32 @@ function fmtCost(c: number): string {
   return `$${c.toFixed(2)}`;
 }
 
-/* ── SubagentCard ───────────────────────────────────────────────── */
+/* ── Status helpers ────────────────────────────────────────────── */
 
-function statusDot(status: SubagentActivity["status"]): {
+function statusIndicator(status: SubagentActivity["status"]): {
   char: string;
   color: string;
 } {
   switch (status) {
     case "done":
-      return { char: "\u25CF", color: ironRainTheme.status.success };
+      return { char: "\u2713", color: ironRainTheme.status.success };
     case "error":
-      return { char: "\u25CF", color: ironRainTheme.status.error };
+      return { char: "\u2717", color: ironRainTheme.status.error };
     case "running":
       return { char: "\u25CB", color: ironRainTheme.status.warning };
     case "interrupted":
-      return { char: "\u25CF", color: ironRainTheme.chrome.muted };
+      return { char: "\u2014", color: ironRainTheme.chrome.muted };
   }
 }
 
 function statusLabel(a: SubagentActivity): string {
   switch (a.status) {
     case "done":
-      return `Done${a.duration != null ? ` in ${fmtDuration(a.duration)}` : ""}`;
+      return a.duration != null ? fmtDuration(a.duration) : "Done";
     case "error":
-      return `Error${a.duration != null ? ` after ${fmtDuration(a.duration)}` : ""}`;
+      return `Error${a.duration != null ? ` ${fmtDuration(a.duration)}` : ""}`;
     case "interrupted":
-      return `Interrupted${a.duration != null ? ` after ${fmtDuration(a.duration)}` : ""}`;
+      return "Interrupted";
     case "running":
       return "Running...";
   }
@@ -82,7 +150,7 @@ function statusLabel(a: SubagentActivity): string {
 function statusColor(status: SubagentActivity["status"]): string {
   switch (status) {
     case "done":
-      return ironRainTheme.status.success;
+      return ironRainTheme.chrome.dimFg;
     case "error":
       return ironRainTheme.status.error;
     case "interrupted":
@@ -92,115 +160,150 @@ function statusColor(status: SubagentActivity["status"]): string {
   }
 }
 
+/* ── Tool call summary ─────────────────────────────────────────── */
+
+function toolCallSummary(toolCalls: ToolCallEntry[]): string {
+  const done = toolCalls.filter((t) => t.status === "done").length;
+  const errored = toolCalls.filter((t) => t.status === "error").length;
+  const running = toolCalls.filter((t) => t.status === "running").length;
+  const parts: string[] = [];
+  if (done > 0) parts.push(`${done} done`);
+  if (errored > 0) parts.push(`${errored} failed`);
+  if (running > 0) parts.push(`${running} running`);
+  return parts.join(", ");
+}
+
+/* ── SubagentCard ───────────────────────────────────────────────── */
+
 export function SubagentCard(props: { activity: SubagentActivity }) {
   const a = () => props.activity;
-  const dot = () => statusDot(a().status);
+  const indicator = () => statusIndicator(a().status);
   const truncTitle = () =>
-    a().task.length > 35 ? `${a().task.slice(0, 32)}...` : a().task;
+    a().task.length > 40 ? `${a().task.slice(0, 37)}...` : a().task;
 
   return (
     <box
       flexDirection="column"
       border
       borderStyle="rounded"
-      borderColor={ironRainTheme.chrome.border}
+      borderColor={
+        a().status === "error"
+          ? ironRainTheme.status.error
+          : a().status === "done"
+            ? ironRainTheme.chrome.border
+            : ironRainTheme.status.warning
+      }
       paddingX={1}
       flexGrow={1}
       minWidth={30}
     >
-      {/* Header: dot + slot label + task title */}
+      {/* Header: status + slot label + task title */}
       <box flexDirection="row" gap={1}>
-        <text fg={dot().color}>{dot().char}</text>
+        <text fg={indicator().color}>{indicator().char}</text>
         <text fg={slotColor(a().slot)}>
-          <b>{slotLabel(a().slot)}:</b>
+          <b>{slotLabel(a().slot)}</b>
         </text>
         <text fg={ironRainTheme.chrome.fg} truncate>
-          <b>{truncTitle()}</b>
+          {truncTitle()}
         </text>
       </box>
 
-      {/* Tool call tree */}
+      {/* Categorized tool call list */}
       <Show when={a().toolCalls && a().toolCalls!.length > 0}>
-        <For each={a().toolCalls}>
-          {(tc, i) => {
-            const isLast = () => i() === a().toolCalls!.length - 1;
-            const connector = () => (isLast() ? "\u2514" : "\u251C");
-            const check = () =>
-              tc.status === "done"
-                ? "\u2713"
-                : tc.status === "error"
-                  ? "\u2717"
-                  : "\u2026";
-            const checkColor = () =>
-              tc.status === "done"
-                ? ironRainTheme.status.success
-                : tc.status === "error"
-                  ? ironRainTheme.status.error
-                  : ironRainTheme.chrome.muted;
+        <box flexDirection="column" paddingLeft={2} marginTop={0}>
+          <For each={a().toolCalls}>
+            {(tc, i) => {
+              const cat = categorizeToolCall(tc.name);
+              const isLast = () => i() === a().toolCalls!.length - 1;
+              const connector = () => (isLast() ? "\u2514" : "\u2502");
+              const statusChar = () =>
+                tc.status === "done"
+                  ? "\u2713"
+                  : tc.status === "error"
+                    ? "\u2717"
+                    : "\u2192";
+              const statusClr = () =>
+                tc.status === "done"
+                  ? ironRainTheme.status.success
+                  : tc.status === "error"
+                    ? ironRainTheme.status.error
+                    : ironRainTheme.status.warning;
 
-            return (
-              <box flexDirection="row" gap={0} paddingLeft={1}>
-                <text fg={ironRainTheme.chrome.dimFg}>{connector()} </text>
-                <text fg={ironRainTheme.chrome.fg} truncate>
-                  {tc.name}{" "}
-                </text>
-                <text fg={checkColor()}>{check()}</text>
-              </box>
-            );
-          }}
-        </For>
+              return (
+                <box flexDirection="row" gap={0}>
+                  <text fg={ironRainTheme.chrome.dimFg}>
+                    {`${connector()} `}
+                  </text>
+                  <text fg={cat.color}>{`${cat.icon} `}</text>
+                  <text fg={ironRainTheme.chrome.fg} truncate>
+                    {`${tc.name} `}
+                  </text>
+                  <text fg={statusClr()}>{statusChar()}</text>
+                </box>
+              );
+            }}
+          </For>
+        </box>
       </Show>
 
-      {/* Footer: status, tokens, cost */}
-      <box flexDirection="row" gap={2} marginTop={0}>
+      {/* Footer: status · tokens · cost */}
+      <box flexDirection="row" gap={1} marginTop={0}>
         <text fg={statusColor(a().status)}>{statusLabel(a())}</text>
+        <Show when={a().toolCalls && a().toolCalls!.length > 0}>
+          <text fg={ironRainTheme.chrome.dimFg}>
+            {`\u00B7 ${a().toolCalls!.length} tools`}
+          </text>
+        </Show>
         <Show when={a().tokens != null}>
           <text fg={ironRainTheme.chrome.dimFg}>
-            {`${fmtTokens(a().tokens!)} tokens`}
+            {`\u00B7 ${fmtTokens(a().tokens!)}tok`}
           </text>
         </Show>
         <Show when={a().cost != null}>
-          <text fg={ironRainTheme.chrome.dimFg}>{fmtCost(a().cost!)}</text>
+          <text fg={ironRainTheme.chrome.dimFg}>
+            {`\u00B7 ${fmtCost(a().cost!)}`}
+          </text>
         </Show>
       </box>
     </box>
   );
 }
 
-/* ── Summary helpers ─────────────────────────────────────────────── */
-
-function buildSummaryText(
-  activities: SubagentActivity[],
-  totalDuration?: number,
-): string {
-  const done = activities.filter((a) => a.status === "done").length;
-  const interrupted = activities.filter(
-    (a) => a.status === "interrupted",
-  ).length;
-  const errored = activities.filter((a) => a.status === "error").length;
-  const parts: string[] = [];
-  if (done > 0) parts.push(`${done} completed`);
-  if (interrupted > 0) parts.push(`${interrupted} interrupted`);
-  if (errored > 0) parts.push(`${errored} errored`);
-  let msg = `Finished running ${activities.length} subagent${activities.length !== 1 ? "s" : ""}`;
-  if (parts.length > 0) msg += `, ${parts.join(", ")}`;
-  if (totalDuration != null) msg += ` (${fmtDuration(totalDuration)})`;
-  return msg;
-}
-
 /* ── SubagentSummary ────────────────────────────────────────────── */
 
-export function SubagentSummary(props: { activities: SubagentActivity[] }) {
+export function SubagentSummary(props: {
+  activities: SubagentActivity[];
+  totalDuration?: number;
+}) {
   const total = () => props.activities.length;
-  const running = () =>
-    props.activities.filter((a) => a.status === "running").length;
-  const check = () => (running() === 0 ? " \u2713" : "");
+  const done = () => props.activities.filter((a) => a.status === "done").length;
+  const allDone = () => done() === total();
 
   return (
     <box flexDirection="row" gap={1} marginBottom={0}>
-      <text fg={ironRainTheme.chrome.fg}>
-        {`Ran ${total()} subagent${total() !== 1 ? "s" : ""}${check()}`}
+      <text fg={ironRainTheme.brand.primary}>
+        <b>
+          {allDone()
+            ? `\u2713 ${total()} agent${total() !== 1 ? "s" : ""}`
+            : `\u25CB ${done()}/${total()} agents`}
+        </b>
       </text>
+      <Show when={props.totalDuration != null}>
+        <text fg={ironRainTheme.chrome.dimFg}>
+          {fmtDuration(props.totalDuration!)}
+        </text>
+      </Show>
+      <Show when={!allDone()}>
+        {(() => {
+          const allToolCalls = props.activities.flatMap(
+            (a) => a.toolCalls ?? [],
+          );
+          const summary = toolCallSummary(allToolCalls);
+          return summary ? (
+            <text fg={ironRainTheme.chrome.dimFg}>{`(${summary})`}</text>
+          ) : null;
+        })()}
+      </Show>
     </box>
   );
 }
@@ -213,19 +316,15 @@ export function SubagentGrid(props: {
 }) {
   return (
     <box flexDirection="column" marginBottom={1}>
-      <SubagentSummary activities={props.activities} />
+      <SubagentSummary
+        activities={props.activities}
+        totalDuration={props.totalDuration}
+      />
       <box flexDirection="row" flexWrap="wrap" gap={1}>
         <For each={props.activities}>
           {(activity) => <SubagentCard activity={activity} />}
         </For>
       </box>
-      <Show when={props.activities.every((a) => a.status !== "running")}>
-        <box flexDirection="row" marginTop={0}>
-          <text fg={ironRainTheme.chrome.dimFg}>
-            {buildSummaryText(props.activities, props.totalDuration)}
-          </text>
-        </box>
-      </Show>
     </box>
   );
 }

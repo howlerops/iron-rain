@@ -1,3 +1,4 @@
+import type { CustomCommand, PluginManager } from "@howlerops/iron-rain";
 import type { Accessor, Setter } from "solid-js";
 import type { SlashCommand } from "../components/slash-menu.js";
 import type { SlateActions, SlateState } from "../context/slate-context.js";
@@ -10,7 +11,8 @@ export type SessionMode =
   | "plan-executing"
   | "loop-running"
   | "skills-browse"
-  | "mcp-status";
+  | "mcp-status"
+  | "make-wizard";
 
 export type AddSystemMessage = (content: string) => void;
 
@@ -22,6 +24,8 @@ export interface SessionContext {
   version?: string;
   onQuit?: () => void;
   skillCommands: Accessor<SlashCommand[]>;
+  customCommands: Accessor<CustomCommand[]>;
+  pluginManager: () => PluginManager;
 }
 
 export type SessionControllerContext = SessionContext;

@@ -1,7 +1,12 @@
 import type { SlotConfig, SlotName, ThinkingLevel } from "@howlerops/iron-rain";
 import { SLOT_NAMES } from "@howlerops/iron-rain";
 import { For, Show } from "solid-js";
-import { ironRainTheme, slotColor, slotLabel } from "../../theme/theme.js";
+import {
+  ironRainTheme,
+  slotColor,
+  slotDescription,
+  slotLabel,
+} from "../../theme/theme.js";
 
 export const THINKING_LEVELS: ThinkingLevel[] = [
   "off",
@@ -43,27 +48,34 @@ export function ModelsSection(props: ModelsSectionProps) {
           const sc = () => props.slots?.[slot];
           const thinking = () => sc()?.thinkingLevel ?? "off";
           return (
-            <box flexDirection="row" gap={1} paddingX={1}>
-              <text
-                fg={isActive() ? slotColor(slot) : ironRainTheme.chrome.dimFg}
-              >
-                {isActive() ? "\u25B8" : " "}
-              </text>
-              <text fg={slotColor(slot)}>
-                <b>{slotLabel(slot).padEnd(8)}</b>
-              </text>
-              <text fg={ironRainTheme.chrome.fg}>
-                {`${sc()?.provider ?? "\u2014"}/${sc()?.model ?? "\u2014"}`}
-              </text>
-              <text
-                fg={
-                  thinking() !== "off"
-                    ? ironRainTheme.brand.primary
-                    : ironRainTheme.chrome.dimFg
-                }
-              >
-                {`[${thinking()}]`}
-              </text>
+            <box flexDirection="column" paddingX={1}>
+              <box flexDirection="row" gap={1}>
+                <text
+                  fg={isActive() ? slotColor(slot) : ironRainTheme.chrome.dimFg}
+                >
+                  {isActive() ? "\u25B8" : " "}
+                </text>
+                <text fg={slotColor(slot)}>
+                  <b>{slotLabel(slot).padEnd(8)}</b>
+                </text>
+                <text fg={ironRainTheme.chrome.fg}>
+                  {`${sc()?.provider ?? "\u2014"}/${sc()?.model ?? "\u2014"}`}
+                </text>
+                <text
+                  fg={
+                    thinking() !== "off"
+                      ? ironRainTheme.brand.primary
+                      : ironRainTheme.chrome.dimFg
+                  }
+                >
+                  {thinking()}
+                </text>
+              </box>
+              <box flexDirection="row" paddingX={3}>
+                <text fg={ironRainTheme.chrome.dimFg}>
+                  {slotDescription(slot)}
+                </text>
+              </box>
             </box>
           );
         }}
@@ -131,9 +143,22 @@ export function ModelsSection(props: ModelsSectionProps) {
               );
             }}
           </For>
-          <text fg={ironRainTheme.chrome.dimFg} marginTop={0}>
-            {`[Enter] select \u00B7 [\u2190\u2192] filter \u00B7 [Esc] cancel`}
-          </text>
+          <box flexDirection="row" gap={1} marginTop={0}>
+            <text fg={ironRainTheme.chrome.muted}>
+              <b>[Enter]</b>
+            </text>
+            <text fg={ironRainTheme.chrome.dimFg}>select</text>
+            <text fg={ironRainTheme.chrome.dimFg}>{"\u00B7"}</text>
+            <text fg={ironRainTheme.chrome.muted}>
+              <b>[←→]</b>
+            </text>
+            <text fg={ironRainTheme.chrome.dimFg}>filter</text>
+            <text fg={ironRainTheme.chrome.dimFg}>{"\u00B7"}</text>
+            <text fg={ironRainTheme.chrome.muted}>
+              <b>[Esc]</b>
+            </text>
+            <text fg={ironRainTheme.chrome.dimFg}>cancel</text>
+          </box>
         </box>
       </Show>
 
@@ -169,9 +194,17 @@ export function ModelsSection(props: ModelsSectionProps) {
               );
             }}
           </For>
-          <text fg={ironRainTheme.chrome.dimFg} marginTop={0}>
-            [Enter] select · [Esc] cancel
-          </text>
+          <box flexDirection="row" gap={1} marginTop={0}>
+            <text fg={ironRainTheme.chrome.muted}>
+              <b>[Enter]</b>
+            </text>
+            <text fg={ironRainTheme.chrome.dimFg}>select</text>
+            <text fg={ironRainTheme.chrome.dimFg}>{"\u00B7"}</text>
+            <text fg={ironRainTheme.chrome.muted}>
+              <b>[Esc]</b>
+            </text>
+            <text fg={ironRainTheme.chrome.dimFg}>cancel</text>
+          </box>
         </box>
       </Show>
     </box>

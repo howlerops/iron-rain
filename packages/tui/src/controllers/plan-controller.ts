@@ -42,6 +42,12 @@ export class PlanController {
       return true;
     }
 
+    if (text === "/run" || text.startsWith("/run ")) {
+      const arg = text.slice(4).trim();
+      await this.handleRun(arg || undefined);
+      return true;
+    }
+
     if (text === "/resume") {
       const plan = this.ctx.actions.activePlan();
       if (plan && (plan.status === "paused" || plan.status === "approved")) {
@@ -55,6 +61,47 @@ export class PlanController {
     }
 
     return false;
+  }
+
+  async handleRun(arg?: string) {
+    const storage = new PlanStorage();
+    let plan: Plan | null = null;
+
+    if (arg?.endsWith(".md")) {
+      // Load from file path
+      plan = storage.loadFromFile(arg);
+      if (!plan) {
+        this.ctx.addSystemMessage(`Could not load plan from: ${arg}`);
+        return;
+      }
+    } else if (arg) {
+      // Load by plan ID
+      plan = storage.load(arg);
+      if (!plan) {
+        this.ctx.addSystemMessage(`No plan found with ID: ${arg}`);
+        return;
+      }
+    } else {
+      // Load most recent plan
+      const plans = storage.list();
+      if (plans.length === 0) {
+        this.ctx.addSystemMessage(
+          "No saved plans. Use `/plan <description>` to create one.",
+        );
+        return;
+      }
+      plan = storage.load(plans[0].id);
+      if (!plan) {
+        this.ctx.addSystemMessage("Failed to load most recent plan.");
+        return;
+      }
+    }
+
+    this.ctx.actions.setActivePlan(plan);
+    this.ctx.setMode("plan-review");
+    this.ctx.addSystemMessage(
+      `Loaded plan: **${plan.title}** (${plan.tasks.length} tasks, status: ${plan.status})\n\nType **approve** to execute, **reject** to cancel, or provide feedback.`,
+    );
   }
 
   async generatePlan(want: string) {

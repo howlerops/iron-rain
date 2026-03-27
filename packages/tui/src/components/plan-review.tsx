@@ -38,10 +38,21 @@ export function PlanReview(props: PlanReviewProps) {
         </For>
       </box>
 
-      <box flexDirection="row" marginTop={1} gap={2}>
-        <text fg={ironRainTheme.status.success}>[a]pprove</text>
-        <text fg={ironRainTheme.status.error}>[r]eject</text>
-        <text fg={ironRainTheme.status.warning}>[e]dit (type feedback)</text>
+      <box flexDirection="row" marginTop={1} gap={1}>
+        <text fg={ironRainTheme.status.success}>
+          <b>[a]</b>
+        </text>
+        <text fg={ironRainTheme.status.success}>approve</text>
+        <text fg={ironRainTheme.chrome.dimFg}>{"\u00B7"}</text>
+        <text fg={ironRainTheme.status.error}>
+          <b>[r]</b>
+        </text>
+        <text fg={ironRainTheme.status.error}>reject</text>
+        <text fg={ironRainTheme.chrome.dimFg}>{"\u00B7"}</text>
+        <text fg={ironRainTheme.status.warning}>
+          <b>[e]</b>
+        </text>
+        <text fg={ironRainTheme.status.warning}>edit (type feedback)</text>
       </box>
     </box>
   );

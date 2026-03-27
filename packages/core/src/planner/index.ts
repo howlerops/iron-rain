@@ -1,6 +1,6 @@
 export { PlanExecutor } from "./executor.js";
-
 export { PlanGenerator } from "./generator.js";
+export { parsePlanFromMarkdown, serializePlanToMarkdown } from "./markdown.js";
 export { RalphLoop } from "./ralph-loop.js";
 export { PlanStorage } from "./storage.js";
 export type {

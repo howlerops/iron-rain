@@ -11,5 +11,6 @@ export async function startTUI(props: AppProps = {}): Promise<void> {
   await render(() => <App {...props} />, {
     targetFps: 60,
     exitOnCtrlC: false,
+    useMouse: false,
   });
 }

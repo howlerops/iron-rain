@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { SlotName } from "@howlerops/iron-rain";
 import {
   buildReviewPrompt,
+  expandTemplate,
   generateRepoMap,
   getBranchDiff,
   getCurrentBranch,
@@ -12,7 +13,6 @@ import {
   isGitRepo,
   loadConfig,
   loadIgnoreRules,
-  SkillExecutor,
   writeConfig,
 } from "@howlerops/iron-rain";
 import { SLASH_COMMANDS } from "../components/slash-menu.js";
@@ -156,8 +156,16 @@ export async function handleBasicSlashCommand(
   args: string[],
   context: SessionContext,
 ): Promise<boolean> {
-  const { actions, addSystemMessage, setMode, onQuit, skillCommands, state } =
-    context;
+  const {
+    actions,
+    addSystemMessage,
+    setMode,
+    onQuit,
+    skillCommands,
+    customCommands,
+    pluginManager,
+    state,
+  } = context;
 
   if (command === "/quit" || command === "/exit") {
     onQuit?.();
@@ -181,11 +189,19 @@ export async function handleBasicSlashCommand(
 
   if (command === "/help") {
     const allCmds = [...SLASH_COMMANDS, ...skillCommands()];
-    addSystemMessage(
-      allCmds.map((c) => `**${c.name}** — ${c.description}`).join("\n") +
-        "\n\n**@cortex/@scout/@forge** — Route to a specific slot" +
-        "\n\n**Tip:** Hold **Shift** and drag to select text in the terminal for copying.",
-    );
+    let helpText = allCmds
+      .map((c) => `**${c.name}** — ${c.description}`)
+      .join("\n");
+
+    const userCmds = customCommands?.() ?? [];
+    if (userCmds.length > 0) {
+      helpText += `\n\n## Custom Commands\n${userCmds.map((c) => `**${c.name}** — ${c.description}`).join("\n")}`;
+    }
+
+    helpText +=
+      "\n\n**@cortex/@scout/@forge** — Route to a specific slot" +
+      "\n\n**Tip:** Hold **Shift** and drag to select text in the terminal for copying.";
+    addSystemMessage(helpText);
     return true;
   }
 
@@ -588,6 +604,28 @@ export async function handleBasicSlashCommand(
     return true;
   }
 
+  if (command === "/plugins") {
+    const mgr = pluginManager?.();
+    if (!mgr) {
+      addSystemMessage("Plugin system not available.");
+      return true;
+    }
+    const plugins = mgr.getPlugins();
+    if (plugins.length === 0) {
+      addSystemMessage(
+        "No plugins loaded. Add JS modules to `.iron-rain/plugins/` or configure `plugins.hooks` in iron-rain.json.",
+      );
+    } else {
+      const lines = plugins.map(
+        (p) => `- **${p.name}** — ${Object.keys(p.hooks ?? {}).length} hook(s)`,
+      );
+      addSystemMessage(
+        `## Loaded Plugins\n${lines.join("\n")}\n\nTotal plugins: ${plugins.length}`,
+      );
+    }
+    return true;
+  }
+
   return false;
 }
 
@@ -605,23 +643,36 @@ export async function handleSlashCommand(
   if (skill) {
     const skillArgs = text.slice(skill.command?.length).trim();
     context.addSystemMessage(`Running skill: **${skill.name}**...`);
-    const kernel = context.actions
-      .getDispatcher()
-      .ensureKernel(context.state.slots);
-    const executor = new SkillExecutor(kernel);
-    try {
-      const episode = await executor.execute(skill, skillArgs || undefined);
-      context.addSystemMessage(episode.result);
-    } catch (err) {
-      context.addSystemMessage(
-        `Skill error: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
+    const prompt = skillArgs || `Execute the ${skill.name} skill.`;
+    const systemOverride = skill.content;
+    await context.actions.dispatch(
+      prompt,
+      undefined,
+      undefined,
+      systemOverride,
+    );
+    return true;
+  }
+
+  // Custom command dispatch
+  const userCmds = context.customCommands?.() ?? [];
+  const customCmd = userCmds.find((c) => c.name === command);
+  if (customCmd) {
+    const expanded = expandTemplate(customCmd.template, args.join(" "));
+    context.addSystemMessage(
+      `Running custom command: **${customCmd.name}**...`,
+    );
+    const targetSlot = (customCmd.slot as SlotName) || undefined;
+    await context.actions.dispatch(expanded, targetSlot);
     return true;
   }
 
   // Unknown command — suggest closest match
-  const allCmds = [...SLASH_COMMANDS, ...(context.skillCommands?.() ?? [])];
+  const allCmds = [
+    ...SLASH_COMMANDS,
+    ...(context.skillCommands?.() ?? []),
+    ...userCmds.map((c) => ({ name: c.name, description: c.description })),
+  ];
   const suggestions = allCmds
     .map((c) => ({
       name: c.name,

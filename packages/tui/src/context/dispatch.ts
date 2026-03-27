@@ -7,6 +7,7 @@
 import type {
   CliPermissionMode,
   EpisodeSummary,
+  HookEmitter,
   MCPManager,
   OrchestratorTask,
   ResolvedReference,
@@ -64,6 +65,7 @@ export class DispatchController {
   private mcpManager: MCPManager | null;
   private context: DispatchContext = {};
   private cliPermissions?: Record<string, CliPermissionMode>;
+  private hookEmitter: HookEmitter | null = null;
 
   constructor(
     slots?: SlotAssignment,
@@ -78,6 +80,10 @@ export class DispatchController {
       );
     }
     this.mcpManager = mcpManager ?? null;
+  }
+
+  setHookEmitter(emitter: HookEmitter): void {
+    this.hookEmitter = emitter;
   }
 
   setCliPermissions(perms: Record<string, CliPermissionMode>): void {
@@ -119,6 +125,7 @@ export class DispatchController {
     callbacks: DispatchCallbacks,
     targetSlot?: SlotName,
     references?: ResolvedReference[],
+    systemPromptOverride?: string,
   ): Promise<void> {
     if (!this.kernel) {
       this.kernel = new OrchestratorKernel(
@@ -145,8 +152,19 @@ export class DispatchController {
     const start = Date.now();
 
     try {
-      let currentTask = this.buildTask(prompt, state, targetSlot, references);
+      let currentTask = this.buildTask(
+        prompt,
+        state,
+        targetSlot,
+        references,
+        systemPromptOverride,
+      );
       const MAX_DISPATCH_DEPTH = 10; // Safety circuit breaker, not an architectural limit
+
+      // Fire beforeDispatch hook
+      this.hookEmitter
+        ?.emit("beforeDispatch", { prompt, slot: targetSlot ?? "main" })
+        .catch(() => {});
       let totalAccumulated = "";
       let totalTokens = 0;
       let round = 0;
@@ -208,6 +226,9 @@ export class DispatchController {
                 name: chunk.toolCall.name,
                 status: "running",
               });
+              this.hookEmitter
+                ?.emit("onToolCall", { tool: chunk.toolCall.name })
+                .catch(() => {});
             } else if (chunk.toolCall.status === "end") {
               const idx = liveToolCalls.findIndex(
                 (tc) =>
@@ -219,6 +240,9 @@ export class DispatchController {
                   status: "done",
                 };
               }
+              this.hookEmitter
+                ?.emit("onToolResult", { tool: chunk.toolCall.name })
+                .catch(() => {});
             }
             callbacks.setStreamingToolCalls([...liveToolCalls]);
           } else if (chunk.type === "error") {
@@ -340,6 +364,16 @@ export class DispatchController {
       });
 
       callbacks.updateStats(duration, totalTokens);
+
+      // Fire afterDispatch hook
+      this.hookEmitter
+        ?.emit("afterDispatch", {
+          prompt,
+          slot: targetSlot ?? "main",
+          duration,
+          tokens: totalTokens,
+        })
+        .catch(() => {});
     } catch (err) {
       if (signal.aborted) {
         const partial = callbacks.getStreamingContent();
@@ -363,13 +397,17 @@ export class DispatchController {
           });
         }
       } else {
+        const errorMsg = err instanceof Error ? err.message : String(err);
         callbacks.addMessage({
           id: `err-${Date.now()}`,
           role: "assistant",
-          content: `**Error:** ${err instanceof Error ? err.message : String(err)}`,
+          content: `**Error:** ${errorMsg}`,
           slot: "main" as SlotName,
           timestamp: Date.now(),
         });
+        this.hookEmitter
+          ?.emit("onError", { error: errorMsg, prompt })
+          .catch(() => {});
       }
     } finally {
       callbacks.setIsLoading(false);
@@ -447,6 +485,7 @@ export class DispatchController {
     state: DispatchState,
     targetSlot?: SlotName,
     references?: ResolvedReference[],
+    systemPromptOverride?: string,
   ): OrchestratorTask {
     const effectiveSlot = targetSlot ?? "main";
     const slotConfig = state.slots[effectiveSlot] ?? state.slots.main;
@@ -471,13 +510,17 @@ export class DispatchController {
     const contextWindow = buildContextWindow(allMessages, prompt);
 
     // Build system prompt with compacted archive context + project context
-    const systemParts = [
+    const systemParts: string[] = [];
+    if (systemPromptOverride) {
+      systemParts.push(systemPromptOverride, "---");
+    }
+    systemParts.push(
       buildSystemPrompt(effectiveSlot, slotConfig.systemPrompt, {
         rules: this.context.rules,
         repoMap: this.context.repoMap,
         lessons: this.context.lessons,
       }),
-    ];
+    );
     if (contextWindow.systemParts.length > 0) {
       systemParts.push(...contextWindow.systemParts);
     }

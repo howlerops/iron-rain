@@ -1,10 +1,12 @@
 import { For, Show } from "solid-js";
 import { ironRainTheme } from "../../theme/theme.js";
+import { PROVIDER_TYPE_LABELS } from "../onboarding/types.js";
 
 export interface ProviderListItem {
   id: string;
   name: string;
   description: string;
+  type: "api" | "cli" | "local";
   requiresKey: boolean;
   configured: boolean;
   apiKey?: string;
@@ -33,8 +35,17 @@ export function ProvidersSection(props: ProvidersSectionProps) {
           const iconColor = prov.configured
             ? ironRainTheme.status.success
             : ironRainTheme.chrome.dimFg;
+          const isFirstOfType = () =>
+            i() === 0 || props.providers[i() - 1]?.type !== prov.type;
           return (
             <box flexDirection="column">
+              <Show when={isFirstOfType()}>
+                <box paddingX={1} marginTop={i() > 0 ? 1 : 0}>
+                  <text fg={ironRainTheme.chrome.muted}>
+                    {PROVIDER_TYPE_LABELS[prov.type]}
+                  </text>
+                </box>
+              </Show>
               <box flexDirection="row" gap={1} paddingX={1}>
                 <text
                   fg={
@@ -79,11 +90,22 @@ export function ProvidersSection(props: ProvidersSectionProps) {
                   >
                     {props.keyBuffer || "type key or env:VAR_NAME"}
                   </text>
-                  <text fg={ironRainTheme.chrome.muted}>_</text>
+                  <text fg={ironRainTheme.chrome.muted}>{"\u2588"}</text>
                 </box>
-                <box paddingX={4}>
+                <box flexDirection="column" paddingX={4}>
+                  <box flexDirection="row" gap={1}>
+                    <text fg={ironRainTheme.chrome.muted}>
+                      <b>[Enter]</b>
+                    </text>
+                    <text fg={ironRainTheme.chrome.dimFg}>save</text>
+                    <text fg={ironRainTheme.chrome.dimFg}>{"\u00B7"}</text>
+                    <text fg={ironRainTheme.chrome.muted}>
+                      <b>[Esc]</b>
+                    </text>
+                    <text fg={ironRainTheme.chrome.dimFg}>cancel</text>
+                  </box>
                   <text fg={ironRainTheme.chrome.dimFg}>
-                    [Enter] save · [Esc] cancel · Tip: use env:ANTHROPIC_API_KEY
+                    Tip: use env:ANTHROPIC_API_KEY
                   </text>
                 </box>
               </Show>

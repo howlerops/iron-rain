@@ -25,16 +25,20 @@ export interface OnboardingState {
   slots: Record<SlotName, SlotConfig>;
 }
 
+export const PROVIDER_TYPE_LABELS: Record<ProviderChoice["type"], string> = {
+  api: "API Providers",
+  cli: "CLI Providers",
+  local: "Local Providers",
+};
+
+export const PROVIDER_TYPE_ORDER: ProviderChoice["type"][] = [
+  "api",
+  "cli",
+  "local",
+];
+
 export const AVAILABLE_PROVIDERS: ProviderChoice[] = [
-  {
-    id: "ollama",
-    name: "Ollama",
-    description: "Local models, free, private",
-    type: "local",
-    selected: false,
-    requiresKey: false,
-    defaultApiBase: "http://localhost:11434",
-  },
+  // API providers (require key)
   {
     id: "anthropic",
     name: "Anthropic",
@@ -54,6 +58,16 @@ export const AVAILABLE_PROVIDERS: ProviderChoice[] = [
     keyEnvVar: "OPENAI_API_KEY",
   },
   {
+    id: "gemini",
+    name: "Gemini",
+    description: "Google Gemini via API",
+    type: "api",
+    selected: false,
+    requiresKey: true,
+    keyEnvVar: "GEMINI_API_KEY",
+  },
+  // CLI providers (use existing subscriptions)
+  {
     id: "claude-code",
     name: "Claude Code",
     description: "Use your Claude Code subscription",
@@ -70,21 +84,22 @@ export const AVAILABLE_PROVIDERS: ProviderChoice[] = [
     requiresKey: false,
   },
   {
-    id: "gemini",
-    name: "Gemini",
-    description: "Google Gemini via API",
-    type: "api",
-    selected: false,
-    requiresKey: true,
-    keyEnvVar: "GEMINI_API_KEY",
-  },
-  {
     id: "gemini-cli",
     name: "Gemini CLI",
     description: "Use your Gemini CLI subscription",
     type: "cli",
     selected: false,
     requiresKey: false,
+  },
+  // Local providers (free, private)
+  {
+    id: "ollama",
+    name: "Ollama",
+    description: "Local models, free, private",
+    type: "local",
+    selected: false,
+    requiresKey: false,
+    defaultApiBase: "http://localhost:11434",
   },
 ];
 

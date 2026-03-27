@@ -342,21 +342,27 @@ export function Settings(props: SettingsProps) {
 
       <box flexDirection="row" gap={2} marginTop={1}>
         <For each={SECTIONS}>
-          {(s) => (
-            <text
-              fg={
-                s === activeSection()
-                  ? ironRainTheme.brand.primary
-                  : ironRainTheme.chrome.muted
-              }
-            >
-              {s === activeSection() ? (
-                <b>{`[${SECTION_LABELS[s]}]`}</b>
-              ) : (
-                SECTION_LABELS[s]
-              )}
-            </text>
-          )}
+          {(s) => {
+            const isActive = () => s === activeSection();
+            return (
+              <box flexDirection="column">
+                <text
+                  fg={
+                    isActive()
+                      ? ironRainTheme.brand.primary
+                      : ironRainTheme.chrome.muted
+                  }
+                >
+                  {isActive() ? <b>{SECTION_LABELS[s]}</b> : SECTION_LABELS[s]}
+                </text>
+                <text
+                  fg={isActive() ? ironRainTheme.brand.primary : "transparent"}
+                >
+                  {"\u2500".repeat(SECTION_LABELS[s].length)}
+                </text>
+              </box>
+            );
+          }}
         </For>
       </box>
 
@@ -391,20 +397,51 @@ export function Settings(props: SettingsProps) {
       </Switch>
 
       <box flexGrow={1} />
-      <box flexDirection="row" gap={2} paddingX={1}>
-        <text fg={ironRainTheme.chrome.dimFg}>{`Tab section`}</text>
-        <text fg={ironRainTheme.chrome.dimFg}>{`\u2191\u2193 navigate`}</text>
-        <text
-          fg={ironRainTheme.chrome.dimFg}
-        >{`Enter ${activeSection() === "models" ? "edit" : "toggle"}`}</text>
+      <box flexDirection="row" gap={1} paddingX={1}>
+        <text fg={ironRainTheme.chrome.muted}>
+          <b>Tab</b>
+        </text>
+        <text fg={ironRainTheme.chrome.dimFg}>section</text>
+        <text fg={ironRainTheme.chrome.dimFg}>{"\u00B7"}</text>
+        <text fg={ironRainTheme.chrome.muted}>
+          <b>{"\u2191\u2193"}</b>
+        </text>
+        <text fg={ironRainTheme.chrome.dimFg}>navigate</text>
+        <text fg={ironRainTheme.chrome.dimFg}>{"\u00B7"}</text>
+        <text fg={ironRainTheme.chrome.muted}>
+          <b>Enter</b>
+        </text>
+        <text fg={ironRainTheme.chrome.dimFg}>
+          {activeSection() === "models" ? "edit model" : "toggle"}
+        </text>
         {editing() && (
-          <text fg={ironRainTheme.chrome.dimFg}>{`\u2190\u2192 filter`}</text>
+          <>
+            <text fg={ironRainTheme.chrome.dimFg}>{"\u00B7"}</text>
+            <text fg={ironRainTheme.chrome.muted}>
+              <b>{"\u2190\u2192"}</b>
+            </text>
+            <text fg={ironRainTheme.chrome.dimFg}>filter</text>
+          </>
         )}
         {activeSection() === "models" && !editing() && (
-          <text fg={ironRainTheme.chrome.dimFg}>{`t thinking`}</text>
+          <>
+            <text fg={ironRainTheme.chrome.dimFg}>{"\u00B7"}</text>
+            <text fg={ironRainTheme.chrome.muted}>
+              <b>t</b>
+            </text>
+            <text fg={ironRainTheme.chrome.dimFg}>thinking</text>
+          </>
         )}
-        <text fg={ironRainTheme.chrome.dimFg}>{`s save`}</text>
-        <text fg={ironRainTheme.chrome.dimFg}>{`Esc close`}</text>
+        <text fg={ironRainTheme.chrome.dimFg}>{"\u00B7"}</text>
+        <text fg={ironRainTheme.chrome.muted}>
+          <b>s</b>
+        </text>
+        <text fg={ironRainTheme.chrome.dimFg}>save</text>
+        <text fg={ironRainTheme.chrome.dimFg}>{"\u00B7"}</text>
+        <text fg={ironRainTheme.chrome.muted}>
+          <b>Esc</b>
+        </text>
+        <text fg={ironRainTheme.chrome.dimFg}>close</text>
       </box>
     </box>
   );

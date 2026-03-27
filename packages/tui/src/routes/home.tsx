@@ -19,9 +19,22 @@ export function HomeRoute(props: HomeRouteProps) {
       <text fg={ironRainTheme.brand.primary}>
         <b>Sessions</b>
       </text>
-      <text fg={ironRainTheme.chrome.muted} marginBottom={1}>
-        [n] New session | [enter] Open | [q] Quit
-      </text>
+      <box flexDirection="row" gap={1} marginBottom={1}>
+        <text fg={ironRainTheme.chrome.muted}>
+          <b>[n]</b>
+        </text>
+        <text fg={ironRainTheme.chrome.dimFg}>new session</text>
+        <text fg={ironRainTheme.chrome.dimFg}>{"\u00B7"}</text>
+        <text fg={ironRainTheme.chrome.muted}>
+          <b>[Enter]</b>
+        </text>
+        <text fg={ironRainTheme.chrome.dimFg}>open</text>
+        <text fg={ironRainTheme.chrome.dimFg}>{"\u00B7"}</text>
+        <text fg={ironRainTheme.chrome.muted}>
+          <b>[q]</b>
+        </text>
+        <text fg={ironRainTheme.chrome.dimFg}>quit</text>
+      </box>
 
       {props.sessions.length === 0 ? (
         <text fg={ironRainTheme.chrome.dimFg}>

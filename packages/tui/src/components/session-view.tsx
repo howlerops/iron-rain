@@ -1,9 +1,9 @@
 import type { SlotName } from "@howlerops/iron-rain";
 import { SyntaxStyle } from "@opentui/core";
-import { createSignal, For, onCleanup, Show } from "solid-js";
+import { createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 import { ironRainTheme, slotColor, slotLabel } from "../theme/theme.js";
 import type { SubagentActivity, ToolCallEntry } from "./subagent-grid.js";
-import { SubagentGrid } from "./subagent-grid.js";
+import { categorizeToolCall, SubagentGrid } from "./subagent-grid.js";
 
 const defaultSyntaxStyle = SyntaxStyle.create();
 
@@ -71,6 +71,8 @@ export function formatTokens(n: number): string {
   return `${(n / 1000).toFixed(1)}k`;
 }
 
+/* ── User message ──────────────────────────────────────────────── */
+
 function UserMessage(props: { message: Message }) {
   return (
     <box flexDirection="column" paddingX={1} marginBottom={1}>
@@ -102,6 +104,8 @@ function UserMessage(props: { message: Message }) {
   );
 }
 
+/* ── Assistant message ─────────────────────────────────────────── */
+
 /** Convert SlotActivity to SubagentActivity for the grid component */
 function toSubagentActivity(a: SlotActivity): SubagentActivity {
   return {
@@ -113,6 +117,19 @@ function toSubagentActivity(a: SlotActivity): SubagentActivity {
     cost: a.cost,
     toolCalls: a.toolCalls,
   };
+}
+
+/** Compact tool call summary for single-agent footer */
+function compactToolSummary(toolCalls: ToolCallEntry[]): string {
+  if (toolCalls.length === 0) return "";
+  const counts: Record<string, number> = {};
+  for (const tc of toolCalls) {
+    const cat = categorizeToolCall(tc.name);
+    counts[cat.label] = (counts[cat.label] ?? 0) + 1;
+  }
+  return Object.entries(counts)
+    .map(([label, count]) => `${count} ${label.toLowerCase()}`)
+    .join(", ");
 }
 
 function AssistantMessage(props: { message: Message }) {
@@ -131,20 +148,22 @@ function AssistantMessage(props: { message: Message }) {
         />
       </Show>
 
-      {/* Single-agent activity (simple inline display) */}
+      {/* Single-agent activity footer with tool summary */}
       <Show when={hasActivities() && !isMultiAgent()}>
         <box flexDirection="row" gap={1} marginBottom={0}>
+          <text fg={slotColor(props.message.activities![0].slot)}>
+            {slotLabel(props.message.activities![0].slot)}
+          </text>
           <text fg={ironRainTheme.chrome.dimFg}>
             {(() => {
               const a = props.message.activities![0];
-              const label = slotLabel(a.slot);
-              const dur =
-                a.duration != null ? ` in ${formatDuration(a.duration)}` : "";
-              const tok =
-                a.tokens != null
-                  ? ` \u00B7 ${formatTokens(a.tokens)} tokens`
-                  : "";
-              return `${label}${dur}${tok}`;
+              const parts: string[] = [];
+              if (a.duration != null) parts.push(formatDuration(a.duration));
+              if (a.tokens != null)
+                parts.push(`${formatTokens(a.tokens)} tokens`);
+              if (a.toolCalls && a.toolCalls.length > 0)
+                parts.push(compactToolSummary(a.toolCalls));
+              return parts.join(" \u00B7 ");
             })()}
           </text>
         </box>
@@ -163,9 +182,21 @@ function AssistantMessage(props: { message: Message }) {
           (props.message.tokens != null || props.message.duration != null)
         }
       >
-        <box flexDirection="row" gap={2} marginTop={0}>
+        <box flexDirection="row" gap={1} marginTop={0}>
+          <text fg={slotColor(props.message.slot ?? "main")}>
+            {slotLabel(props.message.slot ?? "main")}
+          </text>
           <text fg={ironRainTheme.chrome.dimFg}>
-            {`${props.message.slot ? slotLabel(props.message.slot) : "Cortex"}${props.message.duration != null ? ` \u00B7 ${formatDuration(props.message.duration)}` : ""}${props.message.tokens != null ? ` \u00B7 ${formatTokens(props.message.tokens)} tokens` : ""}`}
+            {[
+              props.message.duration != null
+                ? formatDuration(props.message.duration)
+                : null,
+              props.message.tokens != null
+                ? `${formatTokens(props.message.tokens)} tokens`
+                : null,
+            ]
+              .filter(Boolean)
+              .join(" \u00B7 ")}
           </text>
         </box>
       </Show>
@@ -173,10 +204,14 @@ function AssistantMessage(props: { message: Message }) {
   );
 }
 
+/* ── Helpers ────────────────────────────────────────────────────── */
+
 function truncateText(text: string, maxLen: number): string {
   if (text.length <= maxLen) return text;
   return `${text.slice(0, maxLen - 3)}...`;
 }
+
+/* ── Streaming agent card ──────────────────────────────────────── */
 
 const SPINNER_FRAMES = [
   "\u2581",
@@ -194,6 +229,8 @@ const SPINNER_FRAMES = [
   "\u2583",
   "\u2582",
 ];
+
+const THINKING_FRAMES = ["\u25CC", "\u25CB", "\u25CF", "\u25CB"];
 
 function StreamingAgentCard(props: {
   slot: SlotName;
@@ -225,20 +262,50 @@ function StreamingAgentCard(props: {
   };
 
   const truncTask = () =>
-    props.task.length > 40 ? `${props.task.slice(0, 37)}...` : props.task;
+    props.task.length > 50 ? `${props.task.slice(0, 47)}...` : props.task;
 
   const contentPreview = () => {
     if (!props.content) return "";
     const lines = props.content.replace(/\n+/g, " ").trim();
-    return truncateText(lines, 120);
+    return truncateText(lines, 200);
   };
+
+  const thinkingPreview = () => {
+    if (!props.thinking) return "";
+    const lines = props.thinking.replace(/\n+/g, " ").trim();
+    return truncateText(lines, 100);
+  };
+
+  const isThinking = () =>
+    props.thinking && !props.content && props.toolCalls.length === 0;
+
+  // Count tool calls by status
+  const toolStats = createMemo(() => {
+    const done = props.toolCalls.filter((t) => t.status === "done").length;
+    const running = props.toolCalls.filter(
+      (t) => t.status === "running",
+    ).length;
+    const errored = props.toolCalls.filter((t) => t.status === "error").length;
+    return { done, running, errored, total: props.toolCalls.length };
+  });
+
+  // Show only last N tool calls to keep card compact
+  const visibleToolCalls = createMemo(() => {
+    const MAX_VISIBLE = 8;
+    const calls = props.toolCalls;
+    if (calls.length <= MAX_VISIBLE) return { calls, hidden: 0 };
+    return {
+      calls: calls.slice(calls.length - MAX_VISIBLE),
+      hidden: calls.length - MAX_VISIBLE,
+    };
+  });
 
   return (
     <box
       flexDirection="column"
       border
       borderStyle="rounded"
-      borderColor={ironRainTheme.chrome.border}
+      borderColor={slotColor(props.slot)}
       paddingX={1}
       marginX={1}
       marginBottom={1}
@@ -249,62 +316,106 @@ function StreamingAgentCard(props: {
           <b>{SPINNER_FRAMES[frame()]}</b>
         </text>
         <text fg={slotColor(props.slot)}>
-          <b>{slotLabel(props.slot)}:</b>
+          <b>{slotLabel(props.slot)}</b>
         </text>
-        <text fg={ironRainTheme.chrome.fg} truncate>
-          {truncTask()}
-        </text>
+        <Show when={props.task}>
+          <text fg={ironRainTheme.chrome.dimFg}>{"\u2014"}</text>
+          <text fg={ironRainTheme.chrome.fg} truncate>
+            {truncTask()}
+          </text>
+        </Show>
       </box>
 
-      {/* Tool call tree */}
-      <Show when={props.toolCalls.length > 0}>
-        <For each={props.toolCalls}>
-          {(tc, i) => {
-            const isLast = () => i() === props.toolCalls.length - 1;
-            const connector = () => (isLast() ? "\u2514" : "\u251C");
-            const check = () =>
-              tc.status === "done"
-                ? "\u2713"
-                : tc.status === "error"
-                  ? "\u2717"
-                  : "\u2192";
-            const checkColor = () =>
-              tc.status === "done"
-                ? ironRainTheme.status.success
-                : tc.status === "error"
-                  ? ironRainTheme.status.error
-                  : ironRainTheme.status.warning;
+      {/* Thinking indicator */}
+      <Show when={isThinking()}>
+        <box flexDirection="row" gap={1} paddingLeft={2}>
+          <text fg={ironRainTheme.chrome.muted}>
+            {THINKING_FRAMES[Math.floor(frame() / 3) % THINKING_FRAMES.length]}
+          </text>
+          <text fg={ironRainTheme.chrome.muted}>
+            {thinkingPreview() || "Reasoning..."}
+          </text>
+        </box>
+      </Show>
 
-            return (
-              <box flexDirection="row" gap={0} paddingLeft={1}>
-                <text fg={ironRainTheme.chrome.dimFg}>{connector()} </text>
-                <text fg={ironRainTheme.chrome.fg} truncate>
-                  {tc.name}{" "}
-                </text>
-                <text fg={checkColor()}>{check()}</text>
-              </box>
-            );
-          }}
-        </For>
+      {/* Tool call progress summary when many calls */}
+      <Show when={toolStats().total > 0}>
+        <box flexDirection="row" gap={1} paddingLeft={2}>
+          <text fg={ironRainTheme.chrome.dimFg}>
+            {`${toolStats().done}/${toolStats().total} tools`}
+          </text>
+          <Show when={toolStats().errored > 0}>
+            <text fg={ironRainTheme.status.error}>
+              {`${toolStats().errored} failed`}
+            </text>
+          </Show>
+        </box>
+      </Show>
+
+      {/* Categorized tool call tree */}
+      <Show when={props.toolCalls.length > 0}>
+        <box flexDirection="column" paddingLeft={2}>
+          <Show when={visibleToolCalls().hidden > 0}>
+            <text fg={ironRainTheme.chrome.dimFg}>
+              {`  \u2026 ${visibleToolCalls().hidden} earlier`}
+            </text>
+          </Show>
+          <For each={visibleToolCalls().calls}>
+            {(tc, i) => {
+              const cat = categorizeToolCall(tc.name);
+              const isLast = () => i() === visibleToolCalls().calls.length - 1;
+              const connector = () => (isLast() ? "\u2514" : "\u251C");
+              const statusChar = () =>
+                tc.status === "done"
+                  ? "\u2713"
+                  : tc.status === "error"
+                    ? "\u2717"
+                    : "\u2192";
+              const statusClr = () =>
+                tc.status === "done"
+                  ? ironRainTheme.status.success
+                  : tc.status === "error"
+                    ? ironRainTheme.status.error
+                    : ironRainTheme.status.warning;
+
+              return (
+                <box flexDirection="row" gap={0}>
+                  <text fg={ironRainTheme.chrome.dimFg}>
+                    {`${connector()} `}
+                  </text>
+                  <text fg={cat.color}>{`${cat.icon} `}</text>
+                  <text fg={ironRainTheme.chrome.fg} truncate>
+                    {`${tc.name} `}
+                  </text>
+                  <text fg={statusClr()}>{statusChar()}</text>
+                </box>
+              );
+            }}
+          </For>
+        </box>
       </Show>
 
       {/* Content preview */}
       <Show when={contentPreview()}>
-        <box paddingLeft={1} marginTop={0}>
-          <text fg={ironRainTheme.chrome.muted}>{`> ${contentPreview()}`}</text>
+        <box paddingLeft={2} marginTop={0}>
+          <text fg={ironRainTheme.chrome.muted} truncate>
+            {contentPreview()}
+          </text>
         </box>
       </Show>
 
-      {/* Footer: status + elapsed + hints */}
-      <box flexDirection="row" gap={2} marginTop={0}>
-        <text fg={ironRainTheme.status.warning}>Running...</text>
+      {/* Footer: elapsed · hints */}
+      <box flexDirection="row" gap={1} marginTop={0}>
+        <text fg={slotColor(props.slot)}>{elapsedStr()}</text>
         <text fg={ironRainTheme.chrome.dimFg}>
-          {`${elapsedStr()} \u00B7 esc to cancel \u00B7 enter to add context`}
+          {`\u00B7 esc cancel \u00B7 enter add context`}
         </text>
       </box>
     </box>
   );
 }
+
+/* ── Unused but kept for compatibility ─────────────────────────── */
 
 function _CumulativeStats(props: { stats: SessionStats }) {
   return (
@@ -315,6 +426,8 @@ function _CumulativeStats(props: { stats: SessionStats }) {
     </box>
   );
 }
+
+/* ── SessionView ───────────────────────────────────────────────── */
 
 export function SessionView(props: SessionViewProps) {
   return (

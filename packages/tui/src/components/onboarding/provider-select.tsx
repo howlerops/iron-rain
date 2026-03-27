@@ -1,6 +1,7 @@
-import { For } from "solid-js";
+import { For, Show } from "solid-js";
 import { ironRainTheme } from "../../theme/theme.js";
 import type { ProviderChoice } from "./types.js";
+import { PROVIDER_TYPE_LABELS } from "./types.js";
 
 export interface ProviderSelectProps {
   providers: ProviderChoice[];
@@ -33,46 +34,50 @@ export function ProviderSelect(props: ProviderSelectProps) {
         <For each={props.providers}>
           {(provider, i) => {
             const isActive = () => i() === props.cursorIndex;
-            const typeColor =
-              provider.type === "local"
-                ? ironRainTheme.status.success
-                : provider.type === "cli"
-                  ? ironRainTheme.slots.explore
-                  : ironRainTheme.brand.primary;
+            const isFirstOfType = () =>
+              i() === 0 || props.providers[i() - 1]?.type !== provider.type;
 
             return (
-              <box flexDirection="row" gap={1}>
-                <text
-                  fg={
-                    isActive()
-                      ? ironRainTheme.brand.primary
-                      : ironRainTheme.chrome.dimFg
-                  }
-                >
-                  {isActive() ? ">" : " "}
-                </text>
-                <text
-                  fg={
-                    provider.selected
-                      ? ironRainTheme.status.success
-                      : ironRainTheme.chrome.dimFg
-                  }
-                >
-                  {provider.selected ? "[x]" : "[ ]"}
-                </text>
-                <text
-                  fg={
-                    isActive()
-                      ? ironRainTheme.chrome.fg
-                      : ironRainTheme.chrome.muted
-                  }
-                >
-                  {isActive() ? <b>{provider.name}</b> : provider.name}
-                </text>
-                <text fg={typeColor}>({provider.type})</text>
-                <text fg={ironRainTheme.chrome.dimFg}>
-                  {provider.description}
-                </text>
+              <box flexDirection="column">
+                <Show when={isFirstOfType()}>
+                  <box paddingX={0} marginTop={i() > 0 ? 1 : 0}>
+                    <text fg={ironRainTheme.chrome.muted}>
+                      {PROVIDER_TYPE_LABELS[provider.type]}
+                    </text>
+                  </box>
+                </Show>
+                <box flexDirection="row" gap={1}>
+                  <text
+                    fg={
+                      isActive()
+                        ? ironRainTheme.brand.primary
+                        : ironRainTheme.chrome.dimFg
+                    }
+                  >
+                    {isActive() ? "\u25B8" : " "}
+                  </text>
+                  <text
+                    fg={
+                      provider.selected
+                        ? ironRainTheme.status.success
+                        : ironRainTheme.chrome.dimFg
+                    }
+                  >
+                    {provider.selected ? "[x]" : "[ ]"}
+                  </text>
+                  <text
+                    fg={
+                      isActive()
+                        ? ironRainTheme.chrome.fg
+                        : ironRainTheme.chrome.muted
+                    }
+                  >
+                    {isActive() ? <b>{provider.name}</b> : provider.name}
+                  </text>
+                  <text fg={ironRainTheme.chrome.dimFg}>
+                    {provider.description}
+                  </text>
+                </box>
               </box>
             );
           }}
@@ -81,14 +86,21 @@ export function ProviderSelect(props: ProviderSelectProps) {
 
       <box marginY={1} />
 
-      <box flexDirection="row" gap={2}>
-        <text fg={ironRainTheme.brand.primary}>
-          <b>[Space] Toggle</b>
+      <box flexDirection="row" gap={1}>
+        <text fg={ironRainTheme.chrome.muted}>
+          <b>[Space]</b>
         </text>
-        <text fg={ironRainTheme.brand.primary}>
-          <b>[Enter] Next</b>
+        <text fg={ironRainTheme.chrome.dimFg}>toggle</text>
+        <text fg={ironRainTheme.chrome.dimFg}>{"\u00B7"}</text>
+        <text fg={ironRainTheme.chrome.muted}>
+          <b>[Enter]</b>
         </text>
-        <text fg={ironRainTheme.chrome.muted}>[Backspace] Back</text>
+        <text fg={ironRainTheme.chrome.dimFg}>next</text>
+        <text fg={ironRainTheme.chrome.dimFg}>{"\u00B7"}</text>
+        <text fg={ironRainTheme.chrome.muted}>
+          <b>[Backspace]</b>
+        </text>
+        <text fg={ironRainTheme.chrome.dimFg}>back</text>
       </box>
     </box>
   );

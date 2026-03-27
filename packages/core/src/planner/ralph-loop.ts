@@ -8,7 +8,7 @@ import {
   buildCompletionCheckPrompt,
   buildLoopIterationPrompt,
 } from "./prompts.js";
-import { PlanStorage } from "./storage.js";
+import type { PlanStorage } from "./storage.js";
 import type {
   LoopCallbacks,
   LoopConfig,

@@ -97,11 +97,16 @@ export function Summary(props: SummaryProps) {
 
       <box marginY={1} />
 
-      <box flexDirection="row" gap={2}>
-        <text fg={ironRainTheme.status.success}>
-          <b>[Enter] Save & Start</b>
+      <box flexDirection="row" gap={1}>
+        <text fg={ironRainTheme.chrome.muted}>
+          <b>[Enter]</b>
         </text>
-        <text fg={ironRainTheme.chrome.muted}>[Backspace] Back</text>
+        <text fg={ironRainTheme.chrome.dimFg}>save & start</text>
+        <text fg={ironRainTheme.chrome.dimFg}>{"\u00B7"}</text>
+        <text fg={ironRainTheme.chrome.muted}>
+          <b>[Backspace]</b>
+        </text>
+        <text fg={ironRainTheme.chrome.dimFg}>back</text>
       </box>
     </box>
   );

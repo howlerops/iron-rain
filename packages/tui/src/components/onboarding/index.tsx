@@ -25,6 +25,14 @@ const STEPS: OnboardingStep[] = [
   "summary",
 ];
 
+const STEP_LABELS: Record<OnboardingStep, string> = {
+  welcome: "Welcome",
+  providers: "Providers",
+  credentials: "Keys",
+  slots: "Slots",
+  summary: "Review",
+};
+
 function defaultSlots(): Record<SlotName, SlotConfig> {
   return {
     main: { provider: "anthropic", model: "claude-sonnet-4-20250514" },
@@ -317,31 +325,29 @@ export function OnboardingWizard(props: OnboardingWizardProps) {
   return (
     <box flexDirection="column" width="100%" height="100%">
       {/* Step indicator */}
-      <box flexDirection="row" paddingX={4} paddingY={0} gap={1}>
+      <box flexDirection="row" paddingX={4} paddingY={0} gap={0}>
         {STEPS.map((s, i) => {
           const isCurrent = () => s === state.step;
           const isPast = () => STEPS.indexOf(state.step) > i;
+          const color = () =>
+            isCurrent()
+              ? ironRainTheme.brand.primary
+              : isPast()
+                ? ironRainTheme.status.success
+                : ironRainTheme.chrome.dimFg;
           return (
             <box flexDirection="row" gap={0}>
-              <text
-                fg={
-                  isCurrent()
-                    ? ironRainTheme.brand.primary
-                    : isPast()
-                      ? ironRainTheme.status.success
-                      : ironRainTheme.chrome.dimFg
-                }
-              >
-                {isCurrent() ? (
-                  <b>{isPast() ? "✓" : `${i + 1}`}</b>
-                ) : isPast() ? (
-                  "✓"
+              <text fg={color()}>
+                {isPast() ? (
+                  `\u2713 ${STEP_LABELS[s]}`
+                ) : isCurrent() ? (
+                  <b>{`${i + 1} ${STEP_LABELS[s]}`}</b>
                 ) : (
-                  `${i + 1}`
+                  `${i + 1} ${STEP_LABELS[s]}`
                 )}
               </text>
               <text fg={ironRainTheme.chrome.dimFg}>
-                {i < STEPS.length - 1 ? " → " : ""}
+                {i < STEPS.length - 1 ? "  \u203A  " : ""}
               </text>
             </box>
           );

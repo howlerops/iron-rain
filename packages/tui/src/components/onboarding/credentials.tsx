@@ -58,7 +58,7 @@ export function Credentials(props: CredentialsProps) {
                         : ironRainTheme.chrome.dimFg
                     }
                   >
-                    {isActive() ? ">" : " "}
+                    {isActive() ? "\u25B8" : " "}
                   </text>
                   <text
                     fg={
@@ -80,7 +80,7 @@ export function Credentials(props: CredentialsProps) {
                     <text fg={ironRainTheme.chrome.muted}>API Key:</text>
                     {isActive() && props.editing ? (
                       <text fg={ironRainTheme.brand.primary}>
-                        {`${props.editValue}_`}
+                        {`${props.editValue}\u2588`}
                       </text>
                     ) : (
                       <text
@@ -117,14 +117,21 @@ export function Credentials(props: CredentialsProps) {
 
       <box marginY={1} />
 
-      <box flexDirection="row" gap={2}>
-        <text fg={ironRainTheme.brand.primary}>
-          <b>[Enter] Edit/Confirm</b>
+      <box flexDirection="row" gap={1}>
+        <text fg={ironRainTheme.chrome.muted}>
+          <b>[Enter]</b>
         </text>
-        <text fg={ironRainTheme.brand.primary}>
-          <b>[Tab] Skip (use env)</b>
+        <text fg={ironRainTheme.chrome.dimFg}>edit/confirm</text>
+        <text fg={ironRainTheme.chrome.dimFg}>{"\u00B7"}</text>
+        <text fg={ironRainTheme.chrome.muted}>
+          <b>[Tab]</b>
         </text>
-        <text fg={ironRainTheme.chrome.muted}>[Backspace] Back</text>
+        <text fg={ironRainTheme.chrome.dimFg}>skip (use env)</text>
+        <text fg={ironRainTheme.chrome.dimFg}>{"\u00B7"}</text>
+        <text fg={ironRainTheme.chrome.muted}>
+          <b>[Backspace]</b>
+        </text>
+        <text fg={ironRainTheme.chrome.dimFg}>back</text>
       </box>
     </box>
   );

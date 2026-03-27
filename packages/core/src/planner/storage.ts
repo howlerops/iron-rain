@@ -4,6 +4,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { parsePlanFromMarkdown, serializePlanToMarkdown } from "./markdown.js";
 import type { Plan } from "./types.js";
 
 const PLANS_DIR = ".iron-rain/plans";
@@ -30,13 +31,33 @@ export class PlanStorage {
 
     // Save prd.md separately for human readability
     fs.writeFileSync(path.join(dir, "prd.md"), plan.prd);
+
+    // Save plan.md for human-readable round-trippable format
+    fs.writeFileSync(path.join(dir, "plan.md"), serializePlanToMarkdown(plan));
   }
 
   load(planId: string): Plan | null {
-    const planPath = path.join(getPlanDir(planId), "plan.json");
+    const dir = getPlanDir(planId);
+    const jsonPath = path.join(dir, "plan.json");
     try {
-      const raw = fs.readFileSync(planPath, "utf-8");
+      const raw = fs.readFileSync(jsonPath, "utf-8");
       return JSON.parse(raw) as Plan;
+    } catch {
+      // Fallback: try plan.md
+      const mdPath = path.join(dir, "plan.md");
+      try {
+        const raw = fs.readFileSync(mdPath, "utf-8");
+        return parsePlanFromMarkdown(raw);
+      } catch {
+        return null;
+      }
+    }
+  }
+
+  loadFromFile(filePath: string): Plan | null {
+    try {
+      const raw = fs.readFileSync(filePath, "utf-8");
+      return parsePlanFromMarkdown(raw);
     } catch {
       return null;
     }
@@ -56,7 +77,8 @@ export class PlanStorage {
         .readdirSync(dir)
         .filter((entry) => {
           const planJson = path.join(dir, entry, "plan.json");
-          return fs.existsSync(planJson);
+          const planMd = path.join(dir, entry, "plan.md");
+          return fs.existsSync(planJson) || fs.existsSync(planMd);
         })
         .map((entry) => {
           const plan = this.load(entry);

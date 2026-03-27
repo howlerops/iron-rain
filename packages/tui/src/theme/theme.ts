@@ -41,3 +41,12 @@ export function slotLabel(slot: "main" | "explore" | "execute"): string {
   };
   return labels[slot];
 }
+
+export function slotDescription(slot: "main" | "explore" | "execute"): string {
+  const descriptions = {
+    main: "Primary reasoning & orchestration",
+    explore: "Research & code exploration",
+    execute: "Code execution & tool use",
+  };
+  return descriptions[slot];
+}

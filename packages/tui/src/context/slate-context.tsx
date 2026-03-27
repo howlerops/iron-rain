@@ -2,6 +2,8 @@ import { statSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import type {
   Checkpoint,
+  CustomCommand,
+  HookEmitter,
   IronRainConfig,
   LoopState,
   Plan,
@@ -14,10 +16,11 @@ import {
   CostRegistry,
   DEFAULT_SLOT_ASSIGNMENT,
   generateRepoMap,
-  HookEmitter,
+  loadCustomCommands,
   loadIgnoreRules,
   loadProjectRules,
   MCPManager,
+  PluginManager,
   SkillRegistry,
 } from "@howlerops/iron-rain";
 import { createContext, createSignal, type JSX, useContext } from "solid-js";
@@ -64,6 +67,7 @@ export interface SlateActions {
     prompt: string,
     targetSlot?: SlotName,
     references?: ResolvedReference[],
+    systemPromptOverride?: string,
   ) => Promise<void>;
   cancelDispatch: () => void;
   injectContext: (text: string) => Promise<void>;
@@ -87,6 +91,12 @@ export interface SlateActions {
   // Skills
   skillRegistry: () => SkillRegistry;
   skillCommands: () => SlashCommand[];
+
+  // Custom commands
+  customCommands: () => CustomCommand[];
+
+  // Plugins
+  pluginManager: () => PluginManager;
 
   // Checkpoint/Undo
   createCheckpoint: (label: string) => string | undefined;
@@ -175,18 +185,25 @@ export function SlateProvider(props: {
     skillReg.discover(skillPaths);
   }
 
-  // Skill-derived slash commands
-  const [skillCmds, _setSkillCmds] = createSignal<SlashCommand[]>(
-    skillReg
-      .getCommands()
-      .map((c) => ({ name: c.name, description: c.description })),
-  );
+  // Skill-derived slash commands (populated after cwd is known)
+  let skillCmdsInit: SlashCommand[] = skillReg
+    .getCommands()
+    .map((c) => ({ name: c.name, description: c.description }));
 
   // Initialize MCP connections (non-blocking)
   mcpMgr.connectAll().catch(() => {});
 
   // Load project rules and repo map (Phase 1-2 integration)
   const cwd = process.cwd();
+
+  // Load custom commands (needs cwd)
+  const customCmds = loadCustomCommands(cwd);
+  skillCmdsInit = [
+    ...skillCmdsInit,
+    ...customCmds.map((c) => ({ name: c.name, description: c.description })),
+  ];
+  const [skillCmds, _setSkillCmds] =
+    createSignal<SlashCommand[]>(skillCmdsInit);
   const rules = props.config?.rules?.disabled ? [] : loadProjectRules(cwd);
   const ignoreFilter = loadIgnoreRules(cwd);
   let repoMap = "";
@@ -202,8 +219,10 @@ export function SlateProvider(props: {
       | undefined,
   );
 
-  // Initialize hook emitter (Phase 2 I-05)
-  const hooks = new HookEmitter();
+  // Initialize plugin manager and hook emitter (Phase 2 I-05)
+  const pluginMgr = new PluginManager({ hooks: props.config?.plugins?.hooks });
+  const hooks = pluginMgr.emitter;
+  pluginMgr.loadAll(cwd).catch(() => {});
   hooks.emit("onSessionStart", { sessionId }).catch(() => {});
 
   // Store for complex nested state
@@ -228,8 +247,9 @@ export function SlateProvider(props: {
       | undefined,
   );
 
-  // Wire project context into dispatch system prompts
+  // Wire project context and hooks into dispatch controller
   dispatcher.setContext({ rules, repoMap });
+  dispatcher.setHookEmitter(hooks);
 
   // Load repo map asynchronously and update context when ready
   if (props.config?.repoMap?.enabled !== false) {
@@ -311,6 +331,8 @@ export function SlateProvider(props: {
     mcpManager: () => mcpMgr,
     skillRegistry: () => skillReg,
     skillCommands: () => skillCmds(),
+    customCommands: () => customCmds,
+    pluginManager: () => pluginMgr,
 
     createCheckpoint(label: string) {
       return checkpointMgr.createCheckpoint(label);
@@ -344,6 +366,7 @@ export function SlateProvider(props: {
       prompt: string,
       targetSlot?: SlotName,
       references?: ResolvedReference[],
+      systemPromptOverride?: string,
     ) {
       await dispatcher.dispatch(
         prompt,
@@ -371,6 +394,7 @@ export function SlateProvider(props: {
         },
         targetSlot,
         references,
+        systemPromptOverride,
       );
     },
 

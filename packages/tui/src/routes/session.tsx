@@ -1,6 +1,6 @@
 import type { Plan } from "@howlerops/iron-rain";
 import { loadConfig, parseReferences } from "@howlerops/iron-rain";
-import { useKeyboard, useRenderer, useSelectionHandler } from "@opentui/solid";
+import { useKeyboard } from "@opentui/solid";
 import {
   batch,
   createMemo,
@@ -10,6 +10,7 @@ import {
   Show,
   Switch,
 } from "solid-js";
+import { MakeWizard } from "../components/make-wizard/index.js";
 import { PlanReview } from "../components/plan-review.js";
 import { PlanView } from "../components/plan-view.js";
 import {
@@ -27,6 +28,7 @@ import { WelcomeScreen } from "../components/welcome-screen.js";
 import { useSlate } from "../context/slate-context.js";
 import type { SessionContext, SessionMode } from "../controllers/context.js";
 import { LoopController } from "../controllers/loop-controller.js";
+import { MakeController } from "../controllers/make-controller.js";
 import { PlanController } from "../controllers/plan-controller.js";
 import { handleSlashCommand as handleSlashCommandController } from "../controllers/slash-commands.js";
 import { handleSystemCommand } from "../controllers/system-commands.js";
@@ -75,6 +77,8 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
     });
   }
 
+  const customCommands = createMemo(() => actions.customCommands());
+
   const sessionContext = (): SessionContext => ({
     state,
     actions,
@@ -83,9 +87,12 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
     version: props.version,
     onQuit: props.onQuit,
     skillCommands,
+    customCommands,
+    pluginManager: actions.pluginManager,
   });
 
   const planController = new PlanController(sessionContext());
+  const makeController = new MakeController(sessionContext());
   const loopController = new LoopController(sessionContext());
 
   async function handleSlashCommand(text: string): Promise<boolean> {
@@ -102,6 +109,10 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
     }
 
     if (await planController.handleCommand(text)) {
+      return true;
+    }
+
+    if (await makeController.handleCommand(text)) {
       return true;
     }
 
@@ -231,6 +242,8 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
   }
 
   useKeyboard((e) => {
+    if (mode() === "make-wizard") return;
+
     if (mode() === "settings") {
       if (e.name === "escape") {
         setMode("chat");
@@ -347,15 +360,6 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
     }
   });
 
-  // Auto-copy text selection to clipboard via OSC 52
-  const renderer = useRenderer();
-  useSelectionHandler((selection) => {
-    const text = selection.getSelectedText();
-    if (text) {
-      renderer.copyToClipboardOSC52(text);
-    }
-  });
-
   const hasMessages = createMemo(() => state.messages.length > 0);
 
   return (
@@ -434,6 +438,25 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
           </box>
         </box>
       </Match>
+      <Match when={mode() === "make-wizard"}>
+        <Show when={actions.activePlan()}>
+          {(plan: () => Plan) => (
+            <MakeWizard
+              plan={plan()}
+              onApprove={(finalPlan, options) =>
+                makeController.executePlan(finalPlan, options)
+              }
+              onCancel={() => {
+                setMode("chat");
+                actions.setActivePlan(null);
+              }}
+              onRegeneratePlan={(feedback) =>
+                makeController.regeneratePlan(plan(), feedback)
+              }
+            />
+          )}
+        </Show>
+      </Match>
       <Match
         when={
           mode() === "chat" ||
@@ -442,13 +465,7 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
           mode() === "loop-running"
         }
       >
-        {/* biome-ignore lint/a11y/noStaticElementInteractions: TUI click-to-focus */}
-        <box
-          flexDirection="column"
-          flexGrow={1}
-          height="100%"
-          onMouseDown={() => inputRef?.focus()}
-        >
+        <box flexDirection="column" flexGrow={1} height="100%">
           <Show
             when={hasMessages()}
             fallback={<WelcomeScreen model={state.slots.main.model} />}

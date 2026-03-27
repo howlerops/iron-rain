@@ -24,9 +24,16 @@ export function PermissionDialog(props: PermissionDialogProps) {
         Tool: {props.tool}
       </text>
       <text fg={ironRainTheme.chrome.muted}>{props.description}</text>
-      <box flexDirection="row" gap={2} marginTop={1}>
-        <text fg={ironRainTheme.status.success}>[y] Allow</text>
-        <text fg={ironRainTheme.status.error}>[n] Deny</text>
+      <box flexDirection="row" gap={1} marginTop={1}>
+        <text fg={ironRainTheme.status.success}>
+          <b>[y]</b>
+        </text>
+        <text fg={ironRainTheme.status.success}>allow</text>
+        <text fg={ironRainTheme.chrome.dimFg}>{"\u00B7"}</text>
+        <text fg={ironRainTheme.status.error}>
+          <b>[n]</b>
+        </text>
+        <text fg={ironRainTheme.status.error}>deny</text>
       </box>
     </box>
   );

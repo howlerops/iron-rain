@@ -1,7 +1,12 @@
 import type { SlotConfig, SlotName } from "@howlerops/iron-rain";
 import { SLOT_NAMES } from "@howlerops/iron-rain";
 import { For } from "solid-js";
-import { ironRainTheme, slotColor, slotLabel } from "../../theme/theme.js";
+import {
+  ironRainTheme,
+  slotColor,
+  slotDescription,
+  slotLabel,
+} from "../../theme/theme.js";
 import type { ProviderChoice } from "./types.js";
 import { PROVIDER_MODELS } from "./types.js";
 
@@ -58,7 +63,10 @@ export function SlotAssignment(props: SlotAssignmentProps) {
                 minWidth={25}
               >
                 <text fg={slotColor(slot)}>
-                  <b>{`${isActive() ? "> " : "  "}${slotLabel(slot)}`}</b>
+                  <b>{`${isActive() ? "\u25B8 " : "  "}${slotLabel(slot)}`}</b>
+                </text>
+                <text fg={ironRainTheme.chrome.dimFg}>
+                  {slotDescription(slot)}
                 </text>
                 <text fg={ironRainTheme.chrome.muted}>
                   {`${config().provider}/${config().model}`}
@@ -99,7 +107,7 @@ export function SlotAssignment(props: SlotAssignmentProps) {
                       : ironRainTheme.chrome.dimFg
                   }
                 >
-                  {isSelected() ? ">" : " "}
+                  {isSelected() ? "\u25B8" : " "}
                 </text>
                 <text
                   fg={
@@ -125,11 +133,16 @@ export function SlotAssignment(props: SlotAssignmentProps) {
 
       <box marginY={1} />
 
-      <box flexDirection="row" gap={2}>
-        <text fg={ironRainTheme.brand.primary}>
-          <b>[Enter] Assign & Next Slot</b>
+      <box flexDirection="row" gap={1}>
+        <text fg={ironRainTheme.chrome.muted}>
+          <b>[Enter]</b>
         </text>
-        <text fg={ironRainTheme.chrome.muted}>[Backspace] Back</text>
+        <text fg={ironRainTheme.chrome.dimFg}>assign & next slot</text>
+        <text fg={ironRainTheme.chrome.dimFg}>{"\u00B7"}</text>
+        <text fg={ironRainTheme.chrome.muted}>
+          <b>[Backspace]</b>
+        </text>
+        <text fg={ironRainTheme.chrome.dimFg}>back</text>
       </box>
     </box>
   );
