@@ -495,7 +495,7 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
                 <SessionView
                   messages={state.messages}
                   stats={state.sessionStats}
-                  isLoading={actions.isLoading()}
+                  isLoading={actions.isLoading() && mode() !== "plan-executing"}
                   activeSlot={actions.activeSlot()}
                   streamingContent={actions.streamingContent()}
                   streamingThinking={actions.streamingThinking()}
@@ -511,7 +511,14 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
                   {(plan: () => Plan) => (
                     <PlanView
                       plan={plan()}
+                      isLoading={actions.isLoading()}
+                      activeSlot={actions.activeSlot()}
                       streamingContent={actions.streamingContent()}
+                      streamingThinking={actions.streamingThinking()}
+                      streamingSystemPrompt={actions.streamingSystemPrompt()}
+                      streamingToolCalls={actions.streamingToolCalls()}
+                      streamingTask={actions.streamingTask()}
+                      loadingStartTime={actions.loadingStartTime()}
                     />
                   )}
                 </Show>

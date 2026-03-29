@@ -232,7 +232,7 @@ const SPINNER_FRAMES = [
 
 const THINKING_FRAMES = ["\u25CC", "\u25CB", "\u25CF", "\u25CB"];
 
-function StreamingAgentCard(props: {
+export function StreamingAgentCard(props: {
   slot: SlotName;
   task: string;
   toolCalls: ToolCallEntry[];

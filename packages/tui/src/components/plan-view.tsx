@@ -1,11 +1,24 @@
-import type { Plan } from "@howlerops/iron-rain";
+import type { Plan, SlotName } from "@howlerops/iron-rain";
 import { For, Show } from "solid-js";
 import { ironRainTheme } from "../theme/theme.js";
-import { formatDuration, formatTokens } from "./session-view.js";
+import type { ToolCallEntry } from "./session-view.js";
+import {
+  formatDuration,
+  formatTokens,
+  StreamingAgentCard,
+} from "./session-view.js";
 
 export interface PlanViewProps {
   plan: Plan;
+  /** Whether a task dispatch is currently streaming */
+  isLoading?: boolean;
+  activeSlot?: SlotName;
   streamingContent?: string;
+  streamingThinking?: string;
+  streamingSystemPrompt?: string;
+  streamingToolCalls?: ToolCallEntry[];
+  streamingTask?: string;
+  loadingStartTime?: number;
 }
 
 function taskStatusIcon(status: string): string {
@@ -61,33 +74,44 @@ export function PlanView(props: PlanViewProps) {
               return parts.length > 0 ? ` (${parts.join(" \u00B7 ")})` : "";
             };
             return (
-              <box flexDirection="row" gap={1}>
-                <text fg={taskStatusColor(task.status)}>
-                  {`${taskStatusIcon(task.status)}`}
-                </text>
-                <text
-                  fg={
-                    task.status === "in_progress"
-                      ? ironRainTheme.chrome.fg
-                      : ironRainTheme.chrome.dimFg
-                  }
-                >
-                  {`${task.index + 1}. ${task.title}`}
-                </text>
-                <Show when={task.result}>
-                  <text fg={ironRainTheme.chrome.muted}>{statParts()}</text>
+              <box flexDirection="column">
+                <box flexDirection="row" gap={1}>
+                  <text fg={taskStatusColor(task.status)}>
+                    {`${taskStatusIcon(task.status)}`}
+                  </text>
+                  <text
+                    fg={
+                      task.status === "in_progress"
+                        ? ironRainTheme.chrome.fg
+                        : ironRainTheme.chrome.dimFg
+                    }
+                  >
+                    {`${task.index + 1}. ${task.title}`}
+                  </text>
+                  <Show when={task.result}>
+                    <text fg={ironRainTheme.chrome.muted}>{statParts()}</text>
+                  </Show>
+                </box>
+
+                {/* Show streaming activity card below the in-progress task */}
+                <Show when={task.status === "in_progress" && props.isLoading}>
+                  <box marginTop={0} marginBottom={1}>
+                    <StreamingAgentCard
+                      slot={props.activeSlot ?? "execute"}
+                      task={props.streamingTask ?? task.title}
+                      toolCalls={props.streamingToolCalls ?? []}
+                      content={props.streamingContent ?? ""}
+                      thinking={props.streamingThinking ?? ""}
+                      systemPrompt={props.streamingSystemPrompt ?? ""}
+                      startTime={props.loadingStartTime ?? Date.now()}
+                    />
+                  </box>
                 </Show>
               </box>
             );
           }}
         </For>
       </box>
-
-      <Show when={props.streamingContent}>
-        <box marginTop={1} paddingX={1}>
-          <text fg={ironRainTheme.chrome.fg}>{props.streamingContent}</text>
-        </box>
-      </Show>
 
       <Show when={props.plan.stats.totalDuration > 0}>
         <box marginTop={1} flexDirection="column">
