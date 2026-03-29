@@ -131,14 +131,18 @@ export class PlanExecutor {
 
       const prompt = buildTaskExecutionPrompt(task, plan.prd, priorResults);
 
-      const episode = await this.kernel.dispatch({
+      const dispatchTask = {
         id: task.id,
         prompt,
-        targetSlot: "execute",
+        targetSlot: "execute" as const,
         systemPrompt: `You are Forge, executing task ${task.index + 1} of ${plan.tasks.length}: "${task.title}". Implement it completely. Use parallel tool calls for independent operations.`,
         // Thread composition: pass dependency episodes as direct context
         inputEpisodes: depEpisodes.length > 0 ? depEpisodes : undefined,
-      });
+      };
+
+      const episode = callbacks?.dispatchFn
+        ? await callbacks.dispatchFn(dispatchTask)
+        : await this.kernel.dispatch(dispatchTask);
 
       const duration = Date.now() - start;
 

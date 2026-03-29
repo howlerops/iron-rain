@@ -61,12 +61,16 @@ export class RalphLoop {
           priorActions: state.iterations.map((it) => it.action),
         });
 
-        const episode = await this.kernel.dispatch({
+        const iterTask = {
           id: `loop-${state.id}-iter-${i}`,
           prompt,
-          targetSlot: "execute",
+          targetSlot: "execute" as const,
           systemPrompt: `You are Forge, working iteratively to achieve a goal. This is iteration ${i + 1} of ${config.maxIterations}.`,
-        });
+        };
+
+        const episode = this.callbacks.dispatchFn
+          ? await this.callbacks.dispatchFn(iterTask)
+          : await this.kernel.dispatch(iterTask);
 
         const duration = Date.now() - start;
 
@@ -163,11 +167,15 @@ export class RalphLoop {
       });
 
       try {
-        const episode = await this.kernel.dispatch({
+        const resumeTask = {
           id: `loop-${state.id}-iter-${i}`,
           prompt,
-          targetSlot: "execute",
-        });
+          targetSlot: "execute" as const,
+        };
+
+        const episode = this.callbacks.dispatchFn
+          ? await this.callbacks.dispatchFn(resumeTask)
+          : await this.kernel.dispatch(resumeTask);
 
         const duration = Date.now() - start;
         let commitHash: string | undefined;

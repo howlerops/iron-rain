@@ -1,4 +1,9 @@
-import type { LoopConfig, Plan } from "@howlerops/iron-rain";
+import type {
+  LoopConfig,
+  LoopState,
+  Plan,
+  PlanTask,
+} from "@howlerops/iron-rain";
 import {
   PlanExecutor,
   PlanGenerator,
@@ -6,6 +11,7 @@ import {
   RalphLoop,
 } from "@howlerops/iron-rain";
 import type { MakeWizardOptions } from "../components/make-wizard/types.js";
+import { formatDuration, formatTokens } from "../components/session-view.js";
 import type { SessionControllerContext } from "./context.js";
 
 export class MakeController {
@@ -110,14 +116,16 @@ export class MakeController {
 
     try {
       const result = await executor.executePlan(plan, {
+        dispatchFn: (task) => this.ctx.actions.dispatchForTask(task),
         onTaskStart: (task) => {
           this.ctx.addSystemMessage(
             `Starting task ${task.index + 1}: **${task.title}**`,
           );
         },
         onTaskComplete: (task) => {
+          const stats = this.formatTaskStats(task);
           this.ctx.addSystemMessage(
-            `Completed task ${task.index + 1}: **${task.title}**${task.result?.commitHash ? ` (${task.result.commitHash})` : ""}`,
+            `Completed task ${task.index + 1}: **${task.title}**${stats}${task.result?.commitHash ? ` (${task.result.commitHash})` : ""}`,
           );
           this.ctx.actions.setActivePlan({ ...plan });
         },
@@ -128,12 +136,8 @@ export class MakeController {
           this.ctx.actions.setActivePlan({ ...plan });
         },
         onPlanComplete: (completedPlan) => {
-          const status =
-            completedPlan.status === "completed"
-              ? "completed successfully"
-              : `finished with status: ${completedPlan.status}`;
           this.ctx.addSystemMessage(
-            `Plan ${status}. ${completedPlan.stats.tasksCompleted}/${completedPlan.tasks.length} tasks completed.`,
+            this.buildPlanCompletionMessage(completedPlan),
           );
         },
       });
@@ -170,21 +174,19 @@ export class MakeController {
       .getDispatcher()
       .ensureKernel(this.ctx.state.slots);
     const loop = new RalphLoop(kernel, {
+      dispatchFn: (task) => this.ctx.actions.dispatchForTask(task),
       onIterationStart: (i) => {
         this.ctx.addSystemMessage(`**Iteration ${i + 1}** starting...`);
       },
       onIterationComplete: (iter) => {
         const status = iter.completionMet ? "CONDITION MET" : "continuing";
+        const stats = ` (${formatDuration(iter.duration)} · ${formatTokens(iter.tokens)} tokens)`;
         this.ctx.addSystemMessage(
-          `**Iteration ${iter.index + 1}** \u2014 ${status}${iter.commitHash ? ` (${iter.commitHash})` : ""}`,
+          `**Iteration ${iter.index + 1}** \u2014 ${status}${stats}${iter.commitHash ? ` (${iter.commitHash})` : ""}`,
         );
       },
       onComplete: (loopState) => {
-        const msg =
-          loopState.status === "completed"
-            ? `Loop completed after ${loopState.iterations.length} iterations.`
-            : `Loop ${loopState.status} after ${loopState.iterations.length} iterations.`;
-        this.ctx.addSystemMessage(msg);
+        this.ctx.addSystemMessage(this.buildLoopCompletionMessage(loopState));
       },
     });
 
@@ -198,5 +200,73 @@ export class MakeController {
     } finally {
       this.ctx.setMode("chat");
     }
+  }
+
+  private formatTaskStats(task: PlanTask): string {
+    if (!task.result) return "";
+    const parts: string[] = [];
+    if (task.result.duration > 0)
+      parts.push(formatDuration(task.result.duration));
+    if (task.result.filesModified.length > 0)
+      parts.push(`${task.result.filesModified.length} files`);
+    if (task.result.tokens > 0)
+      parts.push(`${formatTokens(task.result.tokens)} tokens`);
+    return parts.length > 0 ? ` (${parts.join(" \u00B7 ")})` : "";
+  }
+
+  private buildPlanCompletionMessage(plan: Plan): string {
+    const status =
+      plan.status === "completed" ? "Plan Complete" : `Plan ${plan.status}`;
+    const header = `**${status}: ${plan.title}**`;
+    const summary = `${plan.stats.tasksCompleted}/${plan.tasks.length} tasks \u00B7 ${formatDuration(plan.stats.totalDuration)} \u00B7 ${formatTokens(plan.stats.totalTokens)} tokens`;
+
+    const rows = plan.tasks
+      .filter((t) => t.result)
+      .map((t) => {
+        const d = formatDuration(t.result!.duration);
+        const f = `${t.result!.filesModified.length}`;
+        const tk = formatTokens(t.result!.tokens);
+        return `| ${t.index + 1}. ${t.title} | ${d} | ${f} | ${tk} |`;
+      });
+
+    const commits = plan.tasks.map((t) => t.result?.commitHash).filter(Boolean);
+
+    let msg = `${header}\n${summary}`;
+
+    if (rows.length > 0) {
+      msg += `\n\n| Task | Duration | Files | Tokens |\n|------|----------|-------|--------|\n${rows.join("\n")}`;
+    }
+
+    if (commits.length > 0) {
+      msg += `\n\nCommits: ${commits.join(", ")}`;
+    }
+
+    return msg;
+  }
+
+  private buildLoopCompletionMessage(loopState: LoopState): string {
+    const status =
+      loopState.status === "completed"
+        ? "Loop Complete"
+        : `Loop ${loopState.status}`;
+    const totalDuration = loopState.iterations.reduce(
+      (sum, it) => sum + it.duration,
+      0,
+    );
+    const totalTokens = loopState.iterations.reduce(
+      (sum, it) => sum + it.tokens,
+      0,
+    );
+    const commits = loopState.iterations
+      .map((it) => it.commitHash)
+      .filter(Boolean);
+
+    let msg = `**${status}**\n${loopState.iterations.length} iterations \u00B7 ${formatDuration(totalDuration)} \u00B7 ${formatTokens(totalTokens)} tokens`;
+
+    if (commits.length > 0) {
+      msg += `\n\nCommits: ${commits.join(", ")}`;
+    }
+
+    return msg;
   }
 }

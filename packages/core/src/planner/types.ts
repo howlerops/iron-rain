@@ -2,6 +2,9 @@
  * Plan workflow types — PRD-driven task execution.
  */
 
+import type { EpisodeSummary } from "../episodes/protocol.js";
+import type { OrchestratorTask } from "../orchestrator/types.js";
+
 export type PlanStatus =
   | "drafting"
   | "review"
@@ -90,6 +93,8 @@ export interface PlanCallbacks {
   onTaskFail?: (task: PlanTask, error: string) => void;
   onPlanComplete?: (plan: Plan) => void;
   onStream?: (chunk: string) => void;
+  /** Route task dispatch through the TUI's streaming infrastructure. */
+  dispatchFn?: (task: OrchestratorTask) => Promise<EpisodeSummary>;
 }
 
 export interface LoopCallbacks {
@@ -97,4 +102,6 @@ export interface LoopCallbacks {
   onIterationComplete?: (iteration: LoopIteration) => void;
   onStream?: (chunk: string) => void;
   onComplete?: (state: LoopState) => void;
+  /** Route task dispatch through the TUI's streaming infrastructure. */
+  dispatchFn?: (task: OrchestratorTask) => Promise<EpisodeSummary>;
 }

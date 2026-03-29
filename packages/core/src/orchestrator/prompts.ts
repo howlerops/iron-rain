@@ -92,6 +92,7 @@ export interface SystemPromptContext {
   repoMap?: string;
   lessons?: string[];
   mcpTools?: string;
+  qualityGates?: string[];
 }
 
 export function buildSystemPrompt(
@@ -122,6 +123,13 @@ export function buildSystemPrompt(
   if (context?.lessons && context.lessons.length > 0) {
     parts.push(
       `## Lessons Learned\n${context.lessons.map((l) => `- ${l}`).join("\n")}`,
+    );
+  }
+
+  // Quality gates (linting, typechecking, etc.)
+  if (context?.qualityGates && context.qualityGates.length > 0) {
+    parts.push(
+      `## Quality Gates\nThe following checks MUST pass. Run them after making changes:\n${context.qualityGates.map((g) => `- ${g}`).join("\n")}`,
     );
   }
 

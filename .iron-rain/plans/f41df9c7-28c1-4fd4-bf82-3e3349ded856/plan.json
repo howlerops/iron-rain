@@ -1,0 +1,67 @@
+{
+  "id": "f41df9c7-28c1-4fd4-bf82-3e3349ded856",
+  "title": "PRD: Per-Implementation Persistent Input History",
+  "description": "You are an applicatio nediting yourself, right now it  doesn't seem like our \"history\" is preserving. Each \"implementation\" (since a termianl can have x number of iron-rains running) should have it's own histroy. When opening a terminal in a project that has history we hsould be able to press the \"up\" button to go back in the history like calude-code, codex, etc.",
+  "prd": "I now have a clear picture of the problem. Here's the PRD:\n\n---\n\n# PRD: Per-Implementation Persistent Input History\n\n## Title\nPersistent Input History per Project Implementation\n\n## Description\nIron-rain's input history (up/down arrow navigation) is currently derived from `state.messages` in the active session. This means:\n\n1. **New sessions start with no history** — when you run `/new` or open a fresh terminal, up-arrow does nothing even though you've sent dozens of prompts in that project before.\n2. **History is session-scoped, not implementation-scoped** — each terminal instance running iron-rain in a project directory should share a persistent input history (like shell history or Claude Code's `~/.claude/` history).\n3. **History doesn't survive across sessions** — the current approach reads `state.messages.filter(m => m.role === \"user\")` which is only populated for the current/resumed session.\n\nThe fix: introduce a dedicated **input history** store, scoped per project directory, that persists across all sessions in that project. Pressing up-arrow in a fresh terminal should recall prior inputs from any session in that project.\n\n## Requirements\n\n### Must Have\n1. **Dedicated input history table** in `sessions.db` — stores raw user input strings with timestamps, scoped by project directory (cwd).\n2. **Cross-session persistence** — history entries survive session boundaries. Opening a new session in the same project directory loads the full input history.\n3. **Up/down arrow navigation** uses the dedicated history store instead of `state.messages` — works identically to current behavior but sources from the persistent store.\n4. **Per-project scoping** — different project directories maintain separate histories. The key is the working directory path.\n5. **Deduplication** — consecutive duplicate inputs are not stored twice (like `HISTCONTROL=ignoredups` in bash).\n6. **Reasonable history limit** — cap at ~1000 entries per project, oldest entries pruned automatically.\n\n### Should Have\n7. **Immediate write** — each submitted input is persisted to the history table synchronously (or at least before the next prompt), so it's available even if the process crashes mid-dispatch.\n8. **History available on startup** — when entering a session route (new or resumed), the full project history is loaded and navigable immediately.\n\n### Won't Have (this iteration)\n9. History search (Ctrl+R style) — future enhancement.\n10. History editing/deletion commands — future enhancement.\n11. Cross-project global history — each project is isolated.\n\n## Technical Approach\n\n### 1. New SQLite Table: `input_history`\nAdd to `session-db.ts` → `initDb()`:\n\n```sql\nCREATE TABLE IF NOT EXISTS input_history (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  project_dir TEXT NOT NULL,\n  content TEXT NOT NULL,\n  timestamp INTEGER NOT NULL\n);\nCREATE INDEX IF NOT EXISTS idx_input_history_project\n  ON input_history(project_dir, timestamp DESC);\n```\n\n### 2. New `SessionDB` Methods\n- `addInputHistory(projectDir: string, content: string): void` — inserts entry, deduplicates against the last entry for that project, prunes if over 1000.\n- `getInputHistory(projectDir: string, limit?: number): string[]` — returns inputs oldest-to-newest (so index 0 is oldest, last is most recent).\n\n### 3. Wire into Context (`slate-context.tsx`)\n- On init, load `db.getInputHistory(cwd)` into a signal/store (e.g., `inputHistory: string[]`).\n- In `addMessage()`, when `msg.role === \"user\"`, also call `db.addInputHistory(cwd, msg.content)` and append to the in-memory `inputHistory` array.\n- Expose `inputHistory()` accessor from context actions.\n\n### 4. Update History Navigation (`session.tsx`)\nReplace the current `state.messages.filter(m => m.role === \"user\")` source:\n\n```typescript\n// Before:\nconst userMessages = state.messages.filter(m => m.role === \"user\").map(m => m.content);\n\n// After:\nconst userMessages = actions.inputHistory();\n```\n\nEverything else (historyIndex, savedDraft, up/down logic) stays the same.\n\n### 5. NullSessionDB\nAdd no-op implementations of `addInputHistory` and `getInputHistory` to `NullSessionDB`.\n\n### Files to Modify\n| File | Change |\n|------|--------|\n| `packages/tui/src/store/session-db.ts` | Add `input_history` table, `addInputHistory()`, `getInputHistory()` methods |\n| `packages/tui/src/context/slate-context.tsx` | Load history on init, persist on message add, expose accessor |\n| `packages/tui/src/routes/session.tsx` | Source history from context instead of `state.messages` |\n\n## Out of Scope\n- **Ctrl+R fuzzy search** — separate feature, not needed for basic up/down navigation\n- **History file format** (e.g., `~/.iron-rain/history`) — SQLite is already the persistence layer, no need for a separate file\n- **Multi-terminal real-time sync** — if two terminals are open in the same project, they each load history on startup; new entries from one won't appear in the other until restart (acceptable for now)\n- **History import/export** — no CLI commands for managing history\n- **Encryption of history entries** — inputs are stored as plaintext, same as messages today",
+  "tasks": [
+    {
+      "id": "f41df9c7-28c1-4fd4-bf82-3e3349ded856-task-0",
+      "index": 0,
+      "title": "Add input_history table and SessionDB methods",
+      "description": "In `packages/tui/src/store/session-db.ts`:\n1. Add `CREATE TABLE IF NOT EXISTS input_history` with columns (id INTEGER PRIMARY KEY AUTOINCREMENT, project_dir TEXT NOT NULL, content TEXT NOT NULL, timestamp INTEGER NOT NULL) to `initDb()`.\n2. Add `CREATE INDEX IF NOT EXISTS idx_input_history_project ON input_history(project_dir, timestamp DESC)` to `initDb()`.\n3. Add `addInputHistory(projectDir: string, content: string): void` method to `SessionDB` — inserts entry with current timestamp, skips if content matches the most recent entry for that project (dedup), prunes entries beyond 1000 for that project.\n4. Add `getInputHistory(projectDir: string, limit = 1000): string[]` method to `SessionDB` — returns inputs oldest-to-newest.\n5. Add no-op `addInputHistory(): void` and `getInputHistory(): string[]` (returns `[]`) to `NullSessionDB`.",
+      "acceptanceCriteria": [
+        "input_history table is created on DB init with correct schema and index",
+        "addInputHistory inserts a new row with project_dir, content, and timestamp",
+        "addInputHistory skips insertion if content matches the last entry for that project_dir",
+        "addInputHistory prunes entries beyond 1000 per project_dir (deletes oldest)",
+        "getInputHistory returns string[] ordered oldest-to-newest",
+        "NullSessionDB has no-op implementations of both methods"
+      ],
+      "status": "completed",
+      "targetFiles": ["packages/tui/src/store/session-db.ts"],
+      "dependsOn": [],
+      "result": {
+        "output": "It seems write permissions to the file haven't been granted yet. I need permission to edit `packages/tui/src/store/session-db.ts`. Could you approve the write permission so I can make the changes?\n\nThe three edits I need to make are:\n\n1. **Add `input_history` table + index** in `initDb()` (after the lessons table, before the closing brace)\n2. **Add `addInputHistory` and `getInputHistory` methods** to `SessionDB` (before `close()`)\n3. **Add no-op implementations** to `NullSessionDB` (before `close()`)",
+        "filesModified": [],
+        "duration": 41375,
+        "tokens": 0
+      }
+    },
+    {
+      "id": "f41df9c7-28c1-4fd4-bf82-3e3349ded856-task-1",
+      "index": 1,
+      "title": "Wire input history into SlateContext and session route",
+      "description": "Two files to update:\n\n**`packages/tui/src/context/slate-context.tsx`:**\n1. On provider init (after `db` is created), load history: `const initialHistory = db.getInputHistory(process.cwd())` and store in a signal: `const [inputHistory, setInputHistory] = createSignal<string[]>(initialHistory)`.\n2. In the `addMessage` action, when `msg.role === 'user'`, also call `db.addInputHistory(process.cwd(), msg.content)` and append to the inputHistory signal.\n3. Expose `inputHistory` as a readable accessor on the actions object (add to the actions object and the SlateActions type).\n\n**`packages/tui/src/routes/session.tsx`:**\n1. Replace `const userMessages = state.messages.filter((m) => m.role === 'user').map((m) => m.content)` with `const userMessages = actions.inputHistory()` (get `actions` from context — it should already be destructured).\n2. Everything else (historyIndex, savedDraft, up/down logic) stays the same.",
+      "acceptanceCriteria": [
+        "Input history is loaded from DB on SlateProvider init using process.cwd()",
+        "Each user message submission persists to input_history via addInputHistory",
+        "inputHistory accessor is exposed on SlateActions and returns string[]",
+        "session.tsx sources history from actions.inputHistory() instead of state.messages",
+        "Up/down arrow navigation works with persistent history in a fresh session",
+        "historyIndex resets properly when new messages are added"
+      ],
+      "status": "completed",
+      "targetFiles": [
+        "packages/tui/src/context/slate-context.tsx",
+        "packages/tui/src/routes/session.tsx"
+      ],
+      "dependsOn": ["f41df9c7-28c1-4fd4-bf82-3e3349ded856-task-0"],
+      "result": {
+        "output": "It looks like write permissions need to be approved in the UI. I'm ready to make three changes once approved:\n\n**1. `session-db.ts`** — Add `input_history` table in `initDb()`, add `addInputHistory()`/`getInputHistory()` methods to `SessionDB`, add no-ops to `NullSessionDB`.\n\n**2. `slate-context.tsx`** — After `db` init, load `db.getInputHistory(cwd)` into a signal. In `addMessage()`, persist user messages. Expose `inputHistory` accessor on `SlateActions`.\n\n**3. `session.tsx`** — Replace `state.messages.filter(...)` with `actions.inputHistory()`.\n\nPlease approve the write permission prompt so the edits can proceed.",
+        "filesModified": [],
+        "duration": 91677,
+        "tokens": 0
+      }
+    }
+  ],
+  "status": "completed",
+  "autoCommit": true,
+  "createdAt": 1774807825057,
+  "updatedAt": 1774815631567,
+  "stats": {
+    "tasksCompleted": 2,
+    "tasksFailed": 0,
+    "totalDuration": 133052,
+    "totalTokens": 0
+  }
+}

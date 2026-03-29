@@ -18,6 +18,7 @@ import {
   buildContextWindow,
   buildEpisodeContext,
   buildSystemPrompt,
+  createEpisodeSummary,
   detectToolType,
   formatEpisodeInputs,
   hasDispatchTags,
@@ -57,6 +58,7 @@ export interface DispatchContext {
   rules?: string[];
   repoMap?: string;
   lessons?: string[];
+  qualityGates?: string[];
 }
 
 export class DispatchController {
@@ -420,6 +422,157 @@ export class DispatchController {
     }
   }
 
+  /**
+   * Dispatch a task with full streaming UI, returning an EpisodeSummary.
+   * Used by PlanExecutor/RalphLoop to route through streaming infrastructure.
+   */
+  async dispatchForTask(
+    task: OrchestratorTask,
+    state: DispatchState,
+    callbacks: DispatchCallbacks,
+  ): Promise<EpisodeSummary> {
+    if (!this.kernel) {
+      this.kernel = new OrchestratorKernel(
+        new ModelSlotManager(state.slots),
+        this.cliPermissions,
+      );
+    }
+
+    this.cancel();
+    this.currentAbort = new AbortController();
+    const signal = this.currentAbort.signal;
+
+    callbacks.setIsLoading(true);
+    callbacks.setActiveSlot(task.targetSlot ?? "main");
+    callbacks.setStreamingContent("");
+    callbacks.setStreamingThinking("");
+    callbacks.setStreamingToolCalls([]);
+    const taskLabel =
+      task.prompt.length > 60 ? `${task.prompt.slice(0, 57)}...` : task.prompt;
+    callbacks.setStreamingTask(taskLabel);
+    callbacks.setLoadingStartTime(Date.now());
+    callbacks.setStreamingSystemPrompt(task.systemPrompt ?? "");
+
+    const start = Date.now();
+    let accumulated = "";
+    let totalTokens = 0;
+    let detectedSlot: SlotName = task.targetSlot ?? "main";
+    let filesModified: string[] = [];
+
+    const liveToolCalls: ToolCallEntry[] = [
+      { name: "System prompt loaded", status: "done" },
+    ];
+    callbacks.setStreamingToolCalls([...liveToolCalls]);
+
+    try {
+      let thinkingAccumulated = "";
+      let thinkingStarted = false;
+      let thinkingIdx = -1;
+
+      for await (const chunk of this.kernel.dispatchStreaming(task, signal)) {
+        detectedSlot = chunk.slot;
+        callbacks.setActiveSlot(chunk.slot);
+
+        if (chunk.type === "thinking") {
+          if (!thinkingStarted) {
+            thinkingStarted = true;
+            thinkingIdx = liveToolCalls.length;
+            liveToolCalls.push({ name: "Thinking...", status: "running" });
+            callbacks.setStreamingToolCalls([...liveToolCalls]);
+          }
+          thinkingAccumulated += chunk.content;
+          callbacks.setStreamingThinking(thinkingAccumulated);
+        } else if (chunk.type === "text") {
+          if (
+            thinkingStarted &&
+            thinkingIdx >= 0 &&
+            liveToolCalls[thinkingIdx]?.status === "running"
+          ) {
+            liveToolCalls[thinkingIdx] = {
+              name: "Thinking (complete)",
+              status: "done",
+            };
+            callbacks.setStreamingToolCalls([...liveToolCalls]);
+          }
+          accumulated += chunk.content;
+          callbacks.setStreamingContent(stripDispatchTags(accumulated));
+        } else if (chunk.type === "tool_use" && chunk.toolCall) {
+          if (chunk.toolCall.status === "start") {
+            liveToolCalls.push({
+              name: chunk.toolCall.name,
+              status: "running",
+            });
+          } else if (chunk.toolCall.status === "end") {
+            const idx = liveToolCalls.findIndex(
+              (tc) =>
+                tc.name === chunk.toolCall?.name && tc.status === "running",
+            );
+            if (idx >= 0) {
+              liveToolCalls[idx] = {
+                name: chunk.toolCall.name,
+                status: "done",
+              };
+            }
+          }
+          callbacks.setStreamingToolCalls([...liveToolCalls]);
+        } else if (chunk.type === "error") {
+          accumulated += `\n**Error:** ${chunk.content}`;
+          callbacks.setStreamingContent(stripDispatchTags(accumulated));
+        } else if (chunk.type === "done" && chunk.tokens) {
+          totalTokens = chunk.tokens.input + chunk.tokens.output;
+        }
+      }
+
+      const duration = Date.now() - start;
+      const content = stripDispatchTags(accumulated);
+
+      // Extract file tool calls as proxy for filesModified
+      filesModified = liveToolCalls
+        .filter(
+          (tc) =>
+            tc.status === "done" &&
+            (tc.name.startsWith("write_") ||
+              tc.name.startsWith("edit_") ||
+              tc.name === "write_file" ||
+              tc.name === "edit_file"),
+        )
+        .map((tc) => tc.name);
+
+      callbacks.updateStats(duration, totalTokens);
+
+      return createEpisodeSummary({
+        slot: detectedSlot,
+        task: task.prompt,
+        result: content,
+        tokens: totalTokens,
+        duration,
+        filesModified,
+        status: "success",
+      });
+    } catch (err) {
+      const duration = Date.now() - start;
+      const errorMsg = err instanceof Error ? err.message : String(err);
+
+      return createEpisodeSummary({
+        slot: detectedSlot,
+        task: task.prompt,
+        result: errorMsg,
+        tokens: totalTokens,
+        duration,
+        filesModified: [],
+        status: "failure",
+      });
+    } finally {
+      callbacks.setIsLoading(false);
+      callbacks.setStreamingContent("");
+      callbacks.setStreamingThinking("");
+      callbacks.setStreamingSystemPrompt("");
+      callbacks.setStreamingToolCalls([]);
+      callbacks.setStreamingTask("");
+      this.currentAbort = null;
+    }
+  }
+
   async injectAndContinue(
     injection: string,
     state: DispatchState,
@@ -519,6 +672,7 @@ export class DispatchController {
         rules: this.context.rules,
         repoMap: this.context.repoMap,
         lessons: this.context.lessons,
+        qualityGates: this.context.qualityGates,
       }),
     );
     if (contextWindow.systemParts.length > 0) {

@@ -202,7 +202,16 @@ export { detectToolType } from "./router/heuristics.js";
 export { getSlotForTool, getToolsForSlot } from "./router/tool-router.js";
 
 // Rules
-export { loadProjectRules } from "./rules/index.js";
+export type {
+  MarkdownHookResult,
+  ParsedHook,
+  QualityGate,
+} from "./rules/index.js";
+export {
+  loadProjectRules,
+  parseAllMarkdownHooks,
+  parseMarkdownHooks,
+} from "./rules/index.js";
 export type {
   DockerConfig,
   SandboxBackend,

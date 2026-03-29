@@ -3,9 +3,11 @@ import { isAbsolute, resolve } from "node:path";
 import type {
   Checkpoint,
   CustomCommand,
+  EpisodeSummary,
   HookEmitter,
   IronRainConfig,
   LoopState,
+  OrchestratorTask,
   Plan,
   ResolvedReference,
   SlotAssignment,
@@ -71,6 +73,7 @@ export interface SlateActions {
   ) => Promise<void>;
   cancelDispatch: () => void;
   injectContext: (text: string) => Promise<void>;
+  dispatchForTask: (task: OrchestratorTask) => Promise<EpisodeSummary>;
 
   // Context directories
   addContextDirectory: (path: string) => string | null;
@@ -222,7 +225,6 @@ export function SlateProvider(props: {
   // Initialize plugin manager and hook emitter (Phase 2 I-05)
   const pluginMgr = new PluginManager({ hooks: props.config?.plugins?.hooks });
   const hooks = pluginMgr.emitter;
-  pluginMgr.loadAll(cwd).catch(() => {});
   hooks.emit("onSessionStart", { sessionId }).catch(() => {});
 
   // Store for complex nested state
@@ -248,15 +250,28 @@ export function SlateProvider(props: {
   );
 
   // Wire project context and hooks into dispatch controller
-  dispatcher.setContext({ rules, repoMap });
+  const qualityGateLabels = pluginMgr.qualityGates.map((g) => g.label);
+  dispatcher.setContext({ rules, repoMap, qualityGates: qualityGateLabels });
   dispatcher.setHookEmitter(hooks);
+
+  // Update context after plugins finish loading (quality gates may arrive async)
+  pluginMgr
+    .loadAll(cwd, rules)
+    .then(() => {
+      const gateLabels = pluginMgr.qualityGates.map((g) => g.label);
+      if (gateLabels.length > 0) {
+        dispatcher.setContext({ rules, repoMap, qualityGates: gateLabels });
+      }
+    })
+    .catch(() => {});
 
   // Load repo map asynchronously and update context when ready
   if (props.config?.repoMap?.enabled !== false) {
     generateRepoMap(cwd, ignoreFilter, props.config?.repoMap?.maxTokens)
       .then((map) => {
         repoMap = map;
-        dispatcher.setContext({ rules, repoMap });
+        const gateLabels = pluginMgr.qualityGates.map((g) => g.label);
+        dispatcher.setContext({ rules, repoMap, qualityGates: gateLabels });
       })
       .catch(() => {});
   }
@@ -400,6 +415,31 @@ export function SlateProvider(props: {
 
     async injectContext(text: string) {
       await dispatcher.injectAndContinue(text, state, {
+        setIsLoading,
+        setActiveSlot,
+        setStreamingContent,
+        setStreamingThinking,
+        setStreamingSystemPrompt,
+        setStreamingToolCalls,
+        setStreamingTask,
+        setLoadingStartTime,
+        getStreamingContent: streamingContent,
+        getActiveSlot: activeSlot,
+        addMessage: actions.addMessage,
+        updateStats: (duration, tokens) => {
+          setState("sessionStats", (prev) => ({
+            totalDuration: prev.totalDuration + duration,
+            totalTokens: prev.totalTokens + tokens,
+            modelCount: prev.modelCount,
+            requestCount: prev.requestCount + 1,
+          }));
+        },
+      });
+    },
+
+    async dispatchForTask(task: OrchestratorTask): Promise<EpisodeSummary> {
+      dispatcher.ensureKernel(state.slots);
+      return dispatcher.dispatchForTask(task, state, {
         setIsLoading,
         setActiveSlot,
         setStreamingContent,

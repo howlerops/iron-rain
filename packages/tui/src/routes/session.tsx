@@ -42,6 +42,7 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
   const [mode, setMode] = createSignal<SessionMode>("chat");
   const [historyIndex, setHistoryIndex] = createSignal(-1);
   let inputRef: any;
+  let scrollRef: any;
   let savedDraft = "";
 
   const showSlashMenu = createMemo(() => {
@@ -289,6 +290,15 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
       return;
     }
 
+    // Page Up/Down scrolling
+    if (e.name === "pageup" || e.name === "pagedown") {
+      if (scrollRef?.scrollBy) {
+        scrollRef.scrollBy(e.name === "pageup" ? -20 : 20);
+      }
+      e.preventDefault();
+      return;
+    }
+
     // Slash menu navigation takes priority
     if (showSlashMenu()) {
       const cmds = filteredCommands();
@@ -471,11 +481,15 @@ export function SessionRoute(props: { version?: string; onQuit?: () => void }) {
             fallback={<WelcomeScreen model={state.slots.main.model} />}
           >
             <scrollbox
+              ref={(el: any) => {
+                scrollRef = el;
+              }}
               flexGrow={1}
               flexShrink={1}
               stickyScroll
               stickyStart="bottom"
               paddingX={1}
+              focused
             >
               <box flexDirection="column">
                 <SessionView
