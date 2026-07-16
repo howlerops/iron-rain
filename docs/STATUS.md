@@ -18,7 +18,10 @@ Built TDD, cross-language, end-to-end tested. This tracks what's proven vs. what
 | **Swift↔Go crypto parity** | `app/OculusKit` | CryptoKit reproduces Go golden vectors byte-for-byte |
 | **LIVE Swift client ↔ real Go daemon** | `app/OculusKit` LiveE2ETests | spawns the daemon, handshakes, create→output→approval→idle |
 | SwiftUI macOS app | `app/OculusApp` | builds on OculusKit (`swift build`) |
-| **Universal iOS + macOS app** | `app/` (xcodegen → `Oculus.xcodeproj`) | **iOS app builds for the simulator SDK and launches (runs the Connect UI)**; shares `OculusUI.ContentView` with macOS; surfaces autodetected sessions |
+| **Universal iOS + macOS app** | `app/` (xcodegen → `Oculus.xcodeproj`) | iOS builds for the simulator SDK and launches; shares `OculusUI` with macOS; surfaces autodetected sessions; **HowlerOps theme + wolf app icon/logo** |
+| **macOS MenuBarExtra** | `OculusUI.MenuBarView` | live status + one-tap approve/deny, shares the window's connection; both app targets build |
+| **App Intents + Handoff** | `OculusUI/Intents.swift`, app target | "Start a session" Siri shortcut (metadata extracted); NSUserActivity advertise/restore; builds + launches |
+| **Live Activities scaffold** | `app/OculusWidgets` | WidgetKit extension (lock screen + Dynamic Island) embedded as `OculusWidgets.appex`; Model drives it; builds for iOS |
 
 Run it all: `cd daemon && go test ./...` and `cd app/OculusKit && swift test`.
 
@@ -38,10 +41,10 @@ Autodetect what's already running (no config): `cd daemon && go run . discover`.
   approvals push to registered devices). Genuinely device-gated remainder: a real Apple APNs key, a
   real device token (iOS `didRegisterForRemoteNotifications` → `Model.registerDevice`), the
   notification-action entitlements, and delivery to a physical device.
-- **iOS app target** — ✅ **buildable + runs.** `app/Oculus.xcodeproj` (xcodegen) has universal
-  iOS + macOS app targets sharing `OculusUI.ContentView`; the iOS target builds for the simulator SDK
-  and launches. Still ahead (device/entitlement-gated): Live Activities, Handoff, App Intents,
-  menu-bar (macOS `MenuBarExtra`), push entitlement, and signing for a physical device / TestFlight.
+- **iOS app target** — ✅ **buildable + runs**, with **MenuBarExtra (macOS), App Intents + Handoff,
+  and a Live Activities scaffold** all building. Still device/entitlement-gated to fully exercise:
+  real Dynamic Island / Live Activity delivery, Handoff across two paired devices, push entitlement,
+  and signing for a physical device / TestFlight.
 - **Live validation vs real opencode + real claude-code** — ✅ **streaming validated** by opt-in
   `live_test.go` in each provider (run with `OCULUS_OPENCODE_URL` / `OCULUS_CLAUDE_BIN`). This caught +
   fixed **two real wire-shape bugs**: opencode streams `message.part.delta` (not `message.part.updated`
