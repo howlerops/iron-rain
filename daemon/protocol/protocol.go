@@ -27,9 +27,10 @@ const (
 	// events (daemon -> client), no id
 	TypeSessionStatus   = "session.status"
 	TypeSessionMessage  = "session.message" // a full (historical/replayed) turn
-	TypeThinking        = "thinking.delta"  // streaming reasoning ("it's working")
-	TypeOutputDelta     = "output.delta"
-	TypeApprovalRequest = "approval.request"
+	TypeThinking         = "thinking.delta"  // streaming reasoning ("it's working")
+	TypeOutputDelta      = "output.delta"
+	TypeApprovalRequest  = "approval.request"
+	TypeApprovalResolved = "approval.resolved" // broadcast: this approval was answered
 
 	// responses
 	TypeOK    = "ok"
@@ -116,6 +117,13 @@ type ApprovalRequest struct {
 }
 
 type ApprovalRespond struct {
+	ApprovalID string `json:"approval_id"`
+	Decision   string `json:"decision"`
+}
+
+// ApprovalResolved is broadcast to every client when an approval is answered, so a
+// pending approval card clears on all devices (not just the one that responded).
+type ApprovalResolved struct {
 	ApprovalID string `json:"approval_id"`
 	Decision   string `json:"decision"`
 }

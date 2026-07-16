@@ -344,6 +344,18 @@ public final class Model: ObservableObject {
                         pendingApproval = ar
                         refreshLiveActivity()
                     }
+                case MessageType.approvalResolved:
+                    // Another device answered this exact approval — clear our card and
+                    // mirror the decision so both transcripts match.
+                    if let r = try? Protocol.payload(data, as: ApprovalResolved.self),
+                       let ap = pendingApproval, ap.approvalID == r.approvalID {
+                        let verb = r.decision == Decision.deny ? "✗ Denied"
+                            : (r.decision == Decision.always ? "✓ Always allow" : "✓ Allowed")
+                        let cmd = (ap.detail?.isEmpty == false) ? " · \(ap.detail!)" : ""
+                        appendTool("\(verb) \(ap.tool)\(cmd)")
+                        pendingApproval = nil
+                        refreshLiveActivity()
+                    }
                 case MessageType.error:
                     if let e = try? Protocol.payload(data, as: ProtocolError.self) {
                         status = "error: \(e.message)"

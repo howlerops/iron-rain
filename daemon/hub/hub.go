@@ -28,6 +28,7 @@ type Hub struct {
 	notifier   push.Notifier // optional: push actionable approvals to a device
 	pushTokens []string      // registered device tokens
 	attach     AttacherFactory
+	clients    map[*transport.Conn]bool // all connected clients (for broadcasts)
 }
 
 // AttacherFactory returns an Attacher for a discovered session (by provider + URL),
@@ -40,6 +41,7 @@ func New() *Hub {
 		providers: map[string]agent.Provider{},
 		sessions:  map[string]agent.Session{},
 		approvals: map[string]agent.Session{},
+		clients:   map[*transport.Conn]bool{},
 	}
 }
 
@@ -121,6 +123,14 @@ func safePrefix(s string) string {
 
 // Serve handles one client connection until it closes or errors.
 func (h *Hub) Serve(ctx context.Context, conn *transport.Conn) error {
+	h.mu.Lock()
+	h.clients[conn] = true
+	h.mu.Unlock()
+	defer func() {
+		h.mu.Lock()
+		delete(h.clients, conn)
+		h.mu.Unlock()
+	}()
 	for {
 		raw, err := conn.Recv()
 		if err != nil {
@@ -132,6 +142,23 @@ func (h *Hub) Serve(ctx context.Context, conn *transport.Conn) error {
 			continue
 		}
 		h.dispatch(ctx, conn, env)
+	}
+}
+
+// broadcast sends an event to every connected client (used for cross-device sync).
+func (h *Hub) broadcast(typ string, payload any) {
+	raw, err := protocol.Encode("", typ, payload)
+	if err != nil {
+		return
+	}
+	h.mu.Lock()
+	conns := make([]*transport.Conn, 0, len(h.clients))
+	for c := range h.clients {
+		conns = append(conns, c)
+	}
+	h.mu.Unlock()
+	for _, c := range conns {
+		_ = c.Send(raw)
 	}
 }
 
@@ -200,6 +227,8 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			return
 		}
 		h.sendOK(conn, env.ID, nil)
+		// Tell every client this approval was answered, so its card clears everywhere.
+		h.broadcast(protocol.TypeApprovalResolved, protocol.ApprovalResolved{ApprovalID: req.ApprovalID, Decision: req.Decision})
 
 	case protocol.TypeSessionAttach:
 		var req protocol.SessionAttach

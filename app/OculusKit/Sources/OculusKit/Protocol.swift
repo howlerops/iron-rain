@@ -18,6 +18,7 @@ public enum MessageType {
     public static let thinking = "thinking.delta"
     public static let outputDelta = "output.delta"
     public static let approvalRequest = "approval.request"
+    public static let approvalResolved = "approval.resolved"
 
     public static let ok = "ok"
     public static let error = "error"
@@ -72,6 +73,10 @@ public struct ApprovalRequest: Codable, Equatable {
 public struct ApprovalRespond: Codable {
     public var approvalID: String; public var decision: String
     public init(approvalID: String, decision: String) { self.approvalID = approvalID; self.decision = decision }
+    enum CodingKeys: String, CodingKey { case approvalID = "approval_id"; case decision }
+}
+public struct ApprovalResolved: Codable {
+    public var approvalID: String; public var decision: String
     enum CodingKeys: String, CodingKey { case approvalID = "approval_id"; case decision }
 }
 public struct Session: Codable { public var id: String; public var provider: String; public var status: String; public var title: String? }
