@@ -19,8 +19,13 @@ settings:
     MARKETING_VERSION: "0.0.1"
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_VERSION: "5.9"
-    CODE_SIGNING_ALLOWED: NO
     ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    # Signing: automatic with Jacob Beck's Apple Development team. Xcode auto-registers
+    # the App IDs + Push capability on first device build. Override DEVELOPMENT_TEAM if
+    # you build under a different team. Simulator builds don't need a provisioning profile.
+    DEVELOPMENT_TEAM: XQ5D47Z462
+    CODE_SIGN_STYLE: Automatic
+    CODE_SIGN_IDENTITY: Apple Development
 
 targets:
   Oculus-iOS:
@@ -50,8 +55,6 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.howlerops.oculus
         TARGETED_DEVICE_FAMILY: "1,2"
         CODE_SIGN_ENTITLEMENTS: Oculus/Oculus.entitlements
-        # For a device build / TestFlight, set DEVELOPMENT_TEAM to your Team ID,
-        # CODE_SIGN_STYLE: Automatic, and CODE_SIGNING_ALLOWED: YES (see docs/apple-setup.md).
 
   OculusWidgets:
     type: app-extension

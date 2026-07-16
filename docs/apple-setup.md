@@ -1,30 +1,26 @@
 # Apple setup — signing, push (APNs), and a real device
 
-This is the device/credential-gated tail: everything code-side is done and builds. These steps need
-your Apple Developer account (paid), the Apple Developer Portal (interactive), and a physical iPhone.
-Bundle IDs are already set: app `com.howlerops.oculus`, widget `com.howlerops.oculus.OculusWidgets`.
+Everything code-side is done and builds. Signing is already wired to **Team `XQ5D47Z462`**
+(Jacob Beck) with **automatic** signing. Bundle IDs: app `com.howlerops.oculus`, widget
+`com.howlerops.oculus.OculusWidgets`.
 
-## 1. Register the App IDs (portal → Identifiers)
-1. https://developer.apple.com/account → **Certificates, IDs & Profiles → Identifiers → +**.
-2. New **App ID** (App), Bundle ID **`com.howlerops.oculus`** (explicit). Enable **Push Notifications**.
-3. New **App ID** for the widget: **`com.howlerops.oculus.OculusWidgets`** (no push needed).
+## 1. App IDs — automatic (no manual portal step)
+Because signing is **automatic**, Xcode **registers both App IDs and enables the Push capability for
+you** the first time you build to a device (it reads `aps-environment` from the entitlements). You do
+**not** need to create the App IDs by hand. (If you prefer to pre-create them: portal → Identifiers →
++ → App ID → `com.howlerops.oculus` with Push Notifications, and `com.howlerops.oculus.OculusWidgets`.)
 
-## 2. Create an APNs Auth Key (.p8) — powers push
+## 2. Create an APNs Auth Key (.p8) — the one manual step (powers the daemon's push)
 1. **Keys → +**, name it (e.g. "Oculus APNs"), enable **Apple Push Notifications service (APNs)**.
 2. **Download** the `AuthKey_XXXXXXXXXX.p8` — you can only download it **once**. Keep it secret.
 3. Note the **Key ID** (the `XXXXXXXXXX`) and your **Team ID** (top-right of the portal, 10 chars).
 4. Save the file somewhere OUTSIDE the repo, e.g. `~/.oculus/AuthKey.p8`. It's gitignored (`*.p8`) —
    never commit it.
 
-## 3. Turn on signing for a device build
-Automatic signing needs your Team ID. In `app/project.yml`, under **both** app targets' `settings.base`
-(and the widget target), add:
-```yaml
-        DEVELOPMENT_TEAM: YOURTEAMID
-        CODE_SIGN_STYLE: Automatic
-        CODE_SIGNING_ALLOWED: YES
-```
-Then `cd app && xcodegen generate`. (Tell me your Team ID and I'll wire this for you.)
+## 3. Signing — already wired
+`app/project.yml` sets `DEVELOPMENT_TEAM: XQ5D47Z462`, `CODE_SIGN_STYLE: Automatic`. Nothing to do
+unless you build under a different team (then change `DEVELOPMENT_TEAM` and `xcodegen generate`).
+Make sure Xcode → Settings → Accounts is signed into your Apple ID (it is: jacob.beck.018@gmail.com).
 
 ## 4. Build & run on your iPhone
 Plug in the phone, trust the Mac, then either:
