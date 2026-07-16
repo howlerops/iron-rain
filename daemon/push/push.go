@@ -21,6 +21,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -128,7 +129,8 @@ func (a *apnsNotifier) Notify(ctx context.Context, deviceToken string, n Notific
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("push: APNs returned %s", resp.Status)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("push: APNs returned %s: %s", resp.Status, string(body))
 	}
 	return nil
 }

@@ -5,6 +5,7 @@ package hub
 
 import (
 	"context"
+	"log"
 	"sync"
 
 	"github.com/howlerops/oculus/daemon/agent"
@@ -87,9 +88,23 @@ func (h *Hub) pushApproval(ar protocol.ApprovalRequest) {
 		ThreadID: ar.SessionID,
 		Custom:   map[string]any{"approval_id": ar.ApprovalID, "session_id": ar.SessionID},
 	}
+	log.Printf("hub: pushing approval %s (tool %q) to %d device(s)", ar.ApprovalID, ar.Tool, len(tokens))
 	for _, t := range tokens {
-		go func(token string) { _ = n.Notify(context.Background(), token, notif) }(t)
+		go func(token string) {
+			if err := n.Notify(context.Background(), token, notif); err != nil {
+				log.Printf("hub: push to %s… failed: %v", safePrefix(token), err)
+			} else {
+				log.Printf("hub: push to %s… delivered to APNs", safePrefix(token))
+			}
+		}(t)
 	}
+}
+
+func safePrefix(s string) string {
+	if len(s) > 8 {
+		return s[:8]
+	}
+	return s
 }
 
 // Serve handles one client connection until it closes or errors.
@@ -196,6 +211,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			return
 		}
 		h.RegisterDevice(req.Token)
+		log.Printf("hub: device registered for push (token %s…, %d chars)", safePrefix(req.Token), len(req.Token))
 		h.sendOK(conn, env.ID, nil)
 
 	case protocol.TypeSessionStop:

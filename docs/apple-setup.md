@@ -1,6 +1,6 @@
 # Apple setup — signing, push (APNs), and a real device
 
-Everything code-side is done and builds. Signing is already wired to **Team `XQ5D47Z462`**
+Everything code-side is done and builds. Signing is already wired to **Team `Q6JSHJ4DQN`**
 (Jacob Beck) with **automatic** signing. Bundle IDs: app `com.howlerops.oculus`, widget
 `com.howlerops.oculus.OculusWidgets`.
 
@@ -18,9 +18,14 @@ you** the first time you build to a device (it reads `aps-environment` from the 
    never commit it.
 
 ## 3. Signing — already wired
-`app/project.yml` sets `DEVELOPMENT_TEAM: XQ5D47Z462`, `CODE_SIGN_STYLE: Automatic`. Nothing to do
-unless you build under a different team (then change `DEVELOPMENT_TEAM` and `xcodegen generate`).
-Make sure Xcode → Settings → Accounts is signed into your Apple ID (it is: jacob.beck.018@gmail.com).
+`app/project.yml` sets `DEVELOPMENT_TEAM: Q6JSHJ4DQN`, `CODE_SIGN_STYLE: Automatic`. Make sure
+Xcode → Settings → Accounts is signed into your Apple ID (jacob.beck.018@gmail.com).
+
+> ⚠️ **Team ID vs Apple-ID gotcha:** the value in a signing cert's CN — `Apple Development: name
+> (XQ5D47Z462)` — is your **Apple ID identifier, NOT your Team ID**. The Team ID is the cert's **OU**
+> field / the provisioning profile's `TeamIdentifier` (here `Q6JSHJ4DQN`). Using the wrong one gives
+> Xcode "No Account for Team …" and APNs **403 InvalidProviderToken**. Find it with:
+> `security find-certificate -a -c "Apple Development" -p | openssl x509 -noout -subject -nameopt sep_multiline | grep OU`
 
 ## 4. Build & run on your iPhone
 Plug in the phone, trust the Mac, then either:

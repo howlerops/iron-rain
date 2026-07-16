@@ -23,7 +23,7 @@ settings:
     # Signing: automatic with Jacob Beck's Apple Development team. Xcode auto-registers
     # the App IDs + Push capability on first device build. Override DEVELOPMENT_TEAM if
     # you build under a different team. Simulator builds don't need a provisioning profile.
-    DEVELOPMENT_TEAM: XQ5D47Z462
+    DEVELOPMENT_TEAM: Q6JSHJ4DQN
     CODE_SIGN_STYLE: Automatic
     CODE_SIGN_IDENTITY: Apple Development
 
@@ -43,6 +43,10 @@ targets:
         UILaunchScreen: {}
         UIApplicationSupportsIndirectInputEvents: true
         NSSupportsLiveActivities: true
+        # Allow cleartext ws:// to the daemon on the local network (direct/LAN mode).
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        NSLocalNetworkUsageDescription: "Oculus connects to the Oculus daemon on your Mac over your local network."
         NSUserActivityTypes:
           - com.howlerops.oculus.session
     dependencies:
