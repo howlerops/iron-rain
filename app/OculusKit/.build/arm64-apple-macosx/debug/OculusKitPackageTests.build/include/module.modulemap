@@ -1,0 +1,3 @@
+module OculusKitPackageTests {
+    header "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKitPackageTests.build/include/OculusKitPackageTests-Swift.h"
+}

@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKit.build/primary.swiftdeps"
+  },
+  "/Users/jacob/projects/oculus/app/OculusKit/Sources/OculusKit/Crypto.swift": {
+    "dependencies": "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKit.build/Crypto.d",
+    "object": "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKit.build/Crypto.swift.o",
+    "swiftmodule": "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKit.build/Crypto~partial.swiftmodule",
+    "swift-dependencies": "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKit.build/Crypto.swiftdeps",
+    "diagnostics": "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKit.build/Crypto.dia"
+  }
+}

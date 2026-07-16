@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKitTests.build/primary.swiftdeps"
+  },
+  "/Users/jacob/projects/oculus/app/OculusKit/Tests/OculusKitTests/CryptoVectorsTests.swift": {
+    "dependencies": "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKitTests.build/CryptoVectorsTests.d",
+    "object": "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKitTests.build/CryptoVectorsTests.swift.o",
+    "swiftmodule": "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKitTests.build/CryptoVectorsTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKitTests.build/CryptoVectorsTests.swiftdeps",
+    "diagnostics": "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKitTests.build/CryptoVectorsTests.dia"
+  }
+}
