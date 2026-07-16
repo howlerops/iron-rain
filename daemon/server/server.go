@@ -42,17 +42,19 @@ func (s *Server) Handler() http.Handler {
 		if err != nil {
 			return
 		}
-		s.serve(r.Context(), newWSConn(r.Context(), ws))
+		_ = s.ServeConn(r.Context(), newWSConn(r.Context(), ws))
 	})
 }
 
-// serve runs the handshake + hub loop for one accepted websocket, then closes it.
-func (s *Server) serve(ctx context.Context, mc *wsConn) {
+// ServeConn runs the encrypted handshake then the hub loop over any MsgConn
+// (a direct WebSocket, or a relay-bridged connection). Blocks until the client
+// disconnects.
+func (s *Server) ServeConn(ctx context.Context, mc transport.MsgConn) error {
 	conn, err := transport.ServerHandshake(mc, s.kp, s.authorize)
 	if err != nil {
 		_ = mc.Close()
-		return
+		return err
 	}
-	_ = s.hub.Serve(ctx, conn)
-	_ = conn.Close()
+	defer conn.Close()
+	return s.hub.Serve(ctx, conn)
 }
