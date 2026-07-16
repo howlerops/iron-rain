@@ -29,9 +29,6 @@ targets:
     sources:
       - Oculus/Sources
       - Oculus/Assets.xcassets
-    dependencies:
-      - package: OculusKit
-        product: OculusUI
     info:
       path: Oculus/Info-iOS.plist
       properties:
@@ -40,12 +37,36 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         UIApplicationSupportsIndirectInputEvents: true
+        NSSupportsLiveActivities: true
         NSUserActivityTypes:
           - com.howlerops.oculus.session
+    dependencies:
+      - package: OculusKit
+        product: OculusUI
+      - target: OculusWidgets
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.howlerops.oculus
         TARGETED_DEVICE_FAMILY: "1,2"
+
+  OculusWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - OculusWidgets
+    dependencies:
+      - package: OculusKit
+        product: OculusUI
+    info:
+      path: OculusWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: Oculus
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.howlerops.oculus.OculusWidgets
 
   Oculus-macOS:
     type: application

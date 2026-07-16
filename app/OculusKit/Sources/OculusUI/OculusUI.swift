@@ -3,6 +3,9 @@ import OculusKit
 #if canImport(AppKit)
 import AppKit
 #endif
+#if os(iOS)
+import ActivityKit
+#endif
 
 /// Drives one daemon connection. Minimal v0 surface: connect, autodetect running
 /// sessions, start a session, stream output, approve/deny tool calls. Built entirely
@@ -23,8 +26,38 @@ public final class Model: ObservableObject {
 
     private var client: OculusClient?
     private let clientPrivate = OculusCrypto.generatePrivateKey()
+    #if os(iOS)
+    private var liveActivity: Any?
+    #endif
 
     public init() {}
+
+    /// Starts/updates/ends the session Live Activity to match current state. No-op on
+    /// macOS and when Live Activities are unavailable/disabled.
+    func refreshLiveActivity(ended: Bool = false) {
+        #if os(iOS)
+        if #available(iOS 16.1, *) {
+            if ended {
+                if let act = liveActivity as? Activity<OculusActivityAttributes> {
+                    Task { await act.end(dismissalPolicy: .immediate) }
+                }
+                liveActivity = nil
+                return
+            }
+            guard ActivityAuthorizationInfo().areActivitiesEnabled, let sid = sessionID else { return }
+            let state = OculusActivityAttributes.ContentState(
+                status: status, tool: pendingApproval?.tool, awaitingApproval: pendingApproval != nil
+            )
+            if let act = liveActivity as? Activity<OculusActivityAttributes> {
+                Task { await act.update(using: state) }
+            } else {
+                liveActivity = try? Activity.request(
+                    attributes: OculusActivityAttributes(sessionID: sid), contentState: state
+                )
+            }
+        }
+        #endif
+    }
 
     public func connect() async {
         guard let url = URL(string: wsURL), let pub = Data(hexString: daemonPubHex) else {
@@ -88,6 +121,7 @@ public final class Model: ObservableObject {
     public func respond(_ decision: String) async {
         guard let client, let ap = pendingApproval else { return }
         pendingApproval = nil
+        refreshLiveActivity()
         do {
             let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.approvalRespond,
                                           payload: ApprovalRespond(approvalID: ap.approvalID, decision: decision))
@@ -110,6 +144,7 @@ public final class Model: ObservableObject {
                     } else if let s = try? Protocol.payload(data, as: Session.self) {
                         sessionID = s.id
                         output.append("• session \(s.id) [\(s.provider)]")
+                        refreshLiveActivity()
                     }
                 case MessageType.outputDelta:
                     if let d = try? Protocol.payload(data, as: OutputDelta.self) {
@@ -118,10 +153,15 @@ public final class Model: ObservableObject {
                 case MessageType.sessionStatus:
                     if let ss = try? Protocol.payload(data, as: SessionStatus.self) {
                         status = "session: \(ss.status)"
+                        if ss.status == SessionStatusValue.idle || ss.status == SessionStatusValue.done {
+                            pendingApproval = nil
+                        }
+                        refreshLiveActivity()
                     }
                 case MessageType.approvalRequest:
                     if let ar = try? Protocol.payload(data, as: ApprovalRequest.self) {
                         pendingApproval = ar
+                        refreshLiveActivity()
                     }
                 case MessageType.error:
                     if let e = try? Protocol.payload(data, as: ProtocolError.self) {
@@ -133,6 +173,7 @@ public final class Model: ObservableObject {
             } catch {
                 connected = false
                 status = "Disconnected: \(error)"
+                refreshLiveActivity(ended: true)
             }
         }
     }

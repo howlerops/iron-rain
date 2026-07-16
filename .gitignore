@@ -30,3 +30,4 @@ node_modules/
 .omc/
 /app/Oculus/Info-iOS.plist
 /app/Oculus/Info-macOS.plist
+/app/OculusWidgets/Info.plist
