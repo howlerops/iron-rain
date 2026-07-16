@@ -57,7 +57,7 @@ public struct SessionStatus: Codable {
     public var sessionID: String; public var status: String
     enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case status }
 }
-public struct ApprovalRequest: Codable {
+public struct ApprovalRequest: Codable, Equatable {
     public var approvalID: String; public var sessionID: String; public var tool: String
     enum CodingKeys: String, CodingKey { case approvalID = "approval_id"; case sessionID = "session_id"; case tool }
 }

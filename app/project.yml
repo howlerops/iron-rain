@@ -47,6 +47,10 @@ targets:
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         NSLocalNetworkUsageDescription: "Oculus connects to the Oculus daemon on your Mac over your local network."
+        NSCameraUsageDescription: "Scan the daemon's QR code to pair."
+        NSMicrophoneUsageDescription: "Dictate prompts to your agent by voice."
+        NSSpeechRecognitionUsageDescription: "Transcribe your voice into prompts."
+        NSPhotoLibraryUsageDescription: "Attach images to your prompts."
         NSUserActivityTypes:
           - com.howlerops.oculus.session
     dependencies:

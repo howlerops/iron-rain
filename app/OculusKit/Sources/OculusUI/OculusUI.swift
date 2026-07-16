@@ -7,10 +7,9 @@ import AppKit
 import ActivityKit
 #endif
 
-/// Drives one daemon connection. Minimal v0 surface: connect, autodetect running
-/// sessions, start a session, stream output, approve/deny tool calls. Built entirely
-/// on OculusKit (the proven, vector-locked client), so the app speaks the same
-/// protocol as the Go daemon. Shared verbatim by the iOS and macOS app targets.
+/// Drives one daemon connection: connect, autodetect running sessions, hold a
+/// streaming conversation, and approve/deny tool calls. Built entirely on OculusKit
+/// (the proven, vector-locked client). Shared by the iOS and macOS app targets.
 @MainActor
 public final class Model: ObservableObject {
     @Published public var wsURL = "ws://127.0.0.1:6000/ws"
@@ -19,10 +18,11 @@ public final class Model: ObservableObject {
 
     @Published public var connected = false
     @Published public var status = "Not connected"
-    @Published public var output: [String] = []
+    @Published public var messages: [ChatMessage] = []
     @Published public var sessionID: String?
     @Published public var pendingApproval: ApprovalRequest?
     @Published public var discovered: [Discovered] = []
+    @Published public var busy = false // agent is producing output
 
     private var client: OculusClient?
     private let clientPrivate = OculusCrypto.generatePrivateKey()
@@ -32,8 +32,184 @@ public final class Model: ObservableObject {
 
     public init() {}
 
-    /// Starts/updates/ends the session Live Activity to match current state. No-op on
-    /// macOS and when Live Activities are unavailable/disabled.
+    // MARK: connection
+
+    public func connect() async {
+        guard let url = URL(string: wsURL), let pub = Data(hexString: daemonPubHex) else {
+            status = "Invalid URL or daemon public key"
+            return
+        }
+        let c = OculusClient(url: url)
+        do {
+            try await c.connect(clientPrivate: clientPrivate, daemonPublic: pub, secret: secret)
+            client = c
+            connected = true
+            status = "Connected"
+            Task { await receiveLoop() }
+            await discover()
+            if let token = OculusStore.shared.deviceToken {
+                await registerDevice(token: token)
+            }
+            if let queued = OculusStore.shared.pendingPrompt {
+                OculusStore.shared.pendingPrompt = nil
+                await send(queued)
+            }
+            if let decision = OculusStore.shared.pendingDecision, pendingApproval != nil {
+                OculusStore.shared.pendingDecision = nil
+                await respond(decision)
+            }
+        } catch {
+            status = "Connect failed: \(error)"
+        }
+    }
+
+    public func disconnect() {
+        client?.close()
+        client = nil
+        connected = false
+        status = "Not connected"
+        refreshLiveActivity(ended: true)
+    }
+
+    /// Fills the connect fields from a scanned pairing payload (oculus://pair?...).
+    public func applyPairing(url: String, pub: String, secret: String) {
+        self.wsURL = url
+        self.daemonPubHex = pub
+        self.secret = secret
+    }
+
+    // MARK: conversation
+
+    /// Sends a user turn: creates the session on the first message, then follow-ups
+    /// go to the same session (a real multi-turn conversation).
+    public func send(_ text: String) async {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let client else { return }
+        messages.append(ChatMessage(role: .user, text: trimmed))
+        busy = true
+        do {
+            if let sid = sessionID {
+                let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.sessionPrompt,
+                                              payload: SessionPrompt(sessionID: sid, text: trimmed))
+                try await client.send(env)
+            } else {
+                let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.sessionCreate,
+                                              payload: SessionCreate(provider: "opencode", prompt: trimmed))
+                try await client.send(env)
+            }
+        } catch {
+            status = "Send failed: \(error)"
+            busy = false
+        }
+    }
+
+    public func respond(_ decision: String) async {
+        guard let client, let ap = pendingApproval else { return }
+        appendTool(decision == Decision.allow ? "✓ Allowed \(ap.tool)" : "✗ Denied \(ap.tool)")
+        pendingApproval = nil
+        refreshLiveActivity()
+        do {
+            let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.approvalRespond,
+                                          payload: ApprovalRespond(approvalID: ap.approvalID, decision: decision))
+            try await client.send(env)
+        } catch {
+            status = "Respond failed: \(error)"
+        }
+    }
+
+    public func discover() async {
+        guard let client else { return }
+        let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.discover)
+        if let env { try? await client.send(env) }
+    }
+
+    public func registerDevice(token: String) async {
+        guard let client else { return }
+        let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.deviceRegister,
+                                       payload: DeviceRegister(token: token))
+        if let env { try? await client.send(env) }
+    }
+
+    // MARK: streaming helpers
+
+    private func appendAssistantDelta(_ text: String) {
+        if let last = messages.last, last.role == .assistant, last.streaming {
+            messages[messages.count - 1].text += text
+        } else {
+            messages.append(ChatMessage(role: .assistant, text: text, streaming: true))
+        }
+    }
+
+    private func finalizeStreaming() {
+        if let last = messages.last, last.role == .assistant, last.streaming {
+            messages[messages.count - 1].streaming = false
+        }
+    }
+
+    private func appendTool(_ text: String) {
+        finalizeStreaming()
+        messages.append(ChatMessage(role: .tool, text: text))
+    }
+
+    // MARK: receive loop
+
+    private func receiveLoop() async {
+        guard let client else { return }
+        while connected {
+            do {
+                let data = try await client.recv()
+                let header = try Protocol.header(data)
+                switch header.type {
+                case MessageType.ok:
+                    if let dl = try? Protocol.payload(data, as: DiscoverList.self), !dl.items.isEmpty {
+                        discovered = dl.items
+                    } else if let s = try? Protocol.payload(data, as: Session.self) {
+                        sessionID = s.id
+                        refreshLiveActivity()
+                    }
+                case MessageType.outputDelta:
+                    if let d = try? Protocol.payload(data, as: OutputDelta.self) {
+                        appendAssistantDelta(d.text)
+                    }
+                case MessageType.sessionStatus:
+                    if let ss = try? Protocol.payload(data, as: SessionStatus.self) {
+                        status = ss.status
+                        if ss.status == SessionStatusValue.idle || ss.status == SessionStatusValue.done {
+                            pendingApproval = nil
+                            busy = false
+                            finalizeStreaming()
+                        } else if ss.status == SessionStatusValue.awaitingApproval {
+                            busy = false
+                        } else {
+                            busy = true
+                        }
+                        refreshLiveActivity()
+                    }
+                case MessageType.approvalRequest:
+                    if let ar = try? Protocol.payload(data, as: ApprovalRequest.self) {
+                        pendingApproval = ar
+                        refreshLiveActivity()
+                    }
+                case MessageType.error:
+                    if let e = try? Protocol.payload(data, as: ProtocolError.self) {
+                        status = "error: \(e.message)"
+                        busy = false
+                    }
+                default:
+                    break
+                }
+            } catch {
+                connected = false
+                status = "Disconnected"
+                busy = false
+                refreshLiveActivity(ended: true)
+            }
+        }
+    }
+
+    // MARK: live activity
+
+    /// Starts/updates/ends the session Live Activity to match current state.
     func refreshLiveActivity(ended: Bool = false) {
         #if os(iOS)
         if #available(iOS 16.1, *) {
@@ -58,170 +234,36 @@ public final class Model: ObservableObject {
         }
         #endif
     }
+}
 
-    public func connect() async {
-        guard let url = URL(string: wsURL), let pub = Data(hexString: daemonPubHex) else {
-            status = "Invalid URL or daemon public key"
-            return
-        }
-        let c = OculusClient(url: url)
-        do {
-            try await c.connect(clientPrivate: clientPrivate, daemonPublic: pub, secret: secret)
-            client = c
-            connected = true
-            status = "Connected"
-            Task { await receiveLoop() }
-            await discover()
-            // Register this device's APNs token so the daemon can push approvals.
-            if let token = OculusStore.shared.deviceToken {
-                await registerDevice(token: token)
-            }
-            // Start any prompt queued by the "Start Session" App Intent.
-            if let queued = OculusStore.shared.pendingPrompt {
-                OculusStore.shared.pendingPrompt = nil
-                await startSession(prompt: queued)
-            }
-            // Apply a decision chosen from a notification action while disconnected.
-            if let decision = OculusStore.shared.pendingDecision, pendingApproval != nil {
-                OculusStore.shared.pendingDecision = nil
-                await respond(decision)
-            }
-        } catch {
-            status = "Connect failed: \(error)"
-        }
-    }
-
-    /// Asks the daemon to autodetect active opencode/claude-code sessions on the host.
-    public func discover() async {
-        guard let client else { return }
-        do {
-            let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.discover)
-            try await client.send(env)
-        } catch {
-            status = "Discover failed: \(error)"
-        }
-    }
-
-    /// Registers this device's APNs token so the daemon can push approval requests
-    /// to the lock screen. Call after the OS grants a token (iOS
-    /// `didRegisterForRemoteNotificationsWithDeviceToken`).
-    public func registerDevice(token: String) async {
-        guard let client else { return }
-        do {
-            let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.deviceRegister,
-                                          payload: DeviceRegister(token: token))
-            try await client.send(env)
-        } catch {
-            status = "Device register failed: \(error)"
-        }
-    }
-
-    public func startSession(prompt: String) async {
-        guard let client else { return }
-        do {
-            let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.sessionCreate,
-                                          payload: SessionCreate(provider: "opencode", prompt: prompt))
-            try await client.send(env)
-        } catch {
-            status = "Send failed: \(error)"
-        }
-    }
-
-    public func respond(_ decision: String) async {
-        guard let client, let ap = pendingApproval else { return }
-        pendingApproval = nil
-        refreshLiveActivity()
-        do {
-            let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.approvalRespond,
-                                          payload: ApprovalRespond(approvalID: ap.approvalID, decision: decision))
-            try await client.send(env)
-        } catch {
-            status = "Respond failed: \(error)"
-        }
-    }
-
-    private func receiveLoop() async {
-        guard let client else { return }
-        while connected {
-            do {
-                let data = try await client.recv()
-                let header = try Protocol.header(data)
-                switch header.type {
-                case MessageType.ok:
-                    if let dl = try? Protocol.payload(data, as: DiscoverList.self), !dl.items.isEmpty {
-                        discovered = dl.items
-                    } else if let s = try? Protocol.payload(data, as: Session.self) {
-                        sessionID = s.id
-                        output.append("• session \(s.id) [\(s.provider)]")
-                        refreshLiveActivity()
-                    }
-                case MessageType.outputDelta:
-                    if let d = try? Protocol.payload(data, as: OutputDelta.self) {
-                        output.append(d.text)
-                    }
-                case MessageType.sessionStatus:
-                    if let ss = try? Protocol.payload(data, as: SessionStatus.self) {
-                        status = "session: \(ss.status)"
-                        if ss.status == SessionStatusValue.idle || ss.status == SessionStatusValue.done {
-                            pendingApproval = nil
-                        }
-                        refreshLiveActivity()
-                    }
-                case MessageType.approvalRequest:
-                    if let ar = try? Protocol.payload(data, as: ApprovalRequest.self) {
-                        pendingApproval = ar
-                        refreshLiveActivity()
-                    }
-                case MessageType.error:
-                    if let e = try? Protocol.payload(data, as: ProtocolError.self) {
-                        status = "error: \(e.message)"
-                    }
-                default:
-                    break
-                }
-            } catch {
-                connected = false
-                status = "Disconnected: \(error)"
-                refreshLiveActivity(ended: true)
-            }
-        }
+extension Model {
+    /// SF Symbol reflecting live state — used by the menu-bar item.
+    public var menuBarSymbol: String {
+        if pendingApproval != nil { return "bell.badge.fill" }
+        if connected { return "bolt.horizontal.circle.fill" }
+        return "bolt.horizontal.circle"
     }
 }
 
-/// The v0 app surface, identical on iOS and macOS. The `Model` is owned by the App
-/// (so the macOS menu-bar and the main window share one connection) and injected.
+/// Routes between the connect screen and the chat surface.
 public struct ContentView: View {
     @ObservedObject var model: Model
-    @State private var prompt = ""
     @Environment(\.colorScheme) private var scheme
     private var palette: OculusPalette { .current(scheme) }
 
     public init(model: Model) { self.model = model }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                Image("WolfMark")
-                    .resizable().scaledToFit()
-                    .frame(width: 34, height: 34)
-                Text("Oculus").font(.largeTitle.bold())
-                Spacer()
-            }
-            Text(model.status).font(.caption).foregroundStyle(palette.mutedForeground)
-
-            if !model.connected {
-                connectForm
+        Group {
+            if model.connected {
+                ChatView(model: model)
             } else {
-                sessionView
+                ConnectView(model: model)
             }
-            Spacer()
         }
-        .padding()
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(palette.background.ignoresSafeArea())
         .foregroundStyle(palette.foreground)
         .tint(palette.primary)
-        // Handoff: advertise the active session so the other device can continue it.
         .userActivity(oculusSessionActivityType, isActive: model.sessionID != nil) { activity in
             activity.title = "Oculus session"
             if let sid = model.sessionID { activity.userInfo = ["session_id": sid] }
@@ -230,99 +272,13 @@ public struct ContentView: View {
         .onContinueUserActivity(oculusSessionActivityType) { activity in
             if let sid = activity.userInfo?["session_id"] as? String {
                 OculusStore.shared.handoffSessionID = sid
-                model.output.append("↩︎ Handoff: continue session \(sid)")
             }
         }
-    }
-
-    private var connectForm: some View {
-        GroupBox("Connect") {
-            VStack(alignment: .leading, spacing: 6) {
-                plainField("Daemon WebSocket URL", text: $model.wsURL)
-                plainField("Daemon public key (hex)", text: $model.daemonPubHex)
-                SecureField("Pairing secret", text: $model.secret)
-                Button("Connect") { Task { await model.connect() } }
-                    .keyboardShortcut(.defaultAction)
-            }.padding(6)
-        }
-    }
-
-    @ViewBuilder private var sessionView: some View {
-        HStack {
-            TextField("Prompt an agent…", text: $prompt)
-            Button("Start") {
-                let p = prompt; prompt = ""
-                Task { await model.startSession(prompt: p) }
-            }
-        }
-
-        if !model.discovered.isEmpty {
-            GroupBox("Detected on host") {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(Array(model.discovered.enumerated()), id: \.offset) { _, d in
-                        Text(describe(d)).font(.system(.caption, design: .monospaced))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }.padding(4)
-            }
-        }
-
-        if let ap = model.pendingApproval {
-            GroupBox {
-                HStack {
-                    VStack(alignment: .leading) {
-                        Text("Approve tool: \(ap.tool)").bold()
-                        Text(ap.sessionID).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button("Deny") { Task { await model.respond(Decision.deny) } }
-                    Button("Allow") { Task { await model.respond(Decision.allow) } }
-                        .keyboardShortcut(.defaultAction)
-                }
-            }
-        }
-
-        ScrollView {
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(Array(model.output.enumerated()), id: \.offset) { _, line in
-                    Text(line).font(.system(.body, design: .monospaced)).textSelection(.enabled)
-                }
-            }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
-        }
-        .background(palette.card)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-    }
-
-    private func describe(_ d: Discovered) -> String {
-        if d.kind == DiscoveredKind.server { return "◆ opencode server \(d.url ?? "")" }
-        if d.provider == "opencode" { return "  ● \(d.title ?? d.sessionID ?? "session")" }
-        return "◆ claude-code \(d.cwd ?? d.sessionID ?? "")"
-    }
-
-    /// A text field with iOS niceties (no autocap/autocorrect for URLs/keys).
-    private func plainField(_ title: String, text: Binding<String>) -> some View {
-        let field = TextField(title, text: text)
-        #if os(iOS)
-        return field.textInputAutocapitalization(.never).autocorrectionDisabled()
-        #else
-        return field
-        #endif
-    }
-}
-
-extension Model {
-    /// SF Symbol reflecting live state — used by the menu-bar item so a pending
-    /// approval is visible without opening anything.
-    public var menuBarSymbol: String {
-        if pendingApproval != nil { return "bell.badge.fill" }
-        if connected { return "bolt.horizontal.circle.fill" }
-        return "bolt.horizontal.circle"
     }
 }
 
 #if os(macOS)
-/// Compact menu-bar surface: live status + one-tap approve/deny, sharing the App's
-/// Model so it stays in lockstep with the main window.
+/// Compact menu-bar surface: live status + one-tap approve/deny.
 public struct MenuBarView: View {
     @ObservedObject var model: Model
     public init(model: Model) { self.model = model }
@@ -340,7 +296,7 @@ public struct MenuBarView: View {
                     Button("Allow") { Task { await model.respond(Decision.allow) } }
                 }
             } else if model.connected {
-                Text("\(model.discovered.count) detected · \(model.output.count) output lines")
+                Text("\(model.discovered.count) detected · \(model.messages.count) messages")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
                 Text("Open the window to connect.").font(.caption).foregroundStyle(.secondary)
