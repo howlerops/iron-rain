@@ -1,5 +1,8 @@
 import SwiftUI
 import OculusKit
+#if canImport(AppKit)
+import AppKit
+#endif
 
 /// Drives one daemon connection. Minimal v0 surface: connect, autodetect running
 /// sessions, start a session, stream output, approve/deny tool calls. Built entirely
@@ -130,12 +133,13 @@ public final class Model: ObservableObject {
     }
 }
 
-/// The v0 app surface, identical on iOS and macOS.
+/// The v0 app surface, identical on iOS and macOS. The `Model` is owned by the App
+/// (so the macOS menu-bar and the main window share one connection) and injected.
 public struct ContentView: View {
-    @StateObject private var model = Model()
+    @ObservedObject var model: Model
     @State private var prompt = ""
 
-    public init() {}
+    public init(model: Model) { self.model = model }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -225,3 +229,48 @@ public struct ContentView: View {
         #endif
     }
 }
+
+extension Model {
+    /// SF Symbol reflecting live state — used by the menu-bar item so a pending
+    /// approval is visible without opening anything.
+    public var menuBarSymbol: String {
+        if pendingApproval != nil { return "bell.badge.fill" }
+        if connected { return "bolt.horizontal.circle.fill" }
+        return "bolt.horizontal.circle"
+    }
+}
+
+#if os(macOS)
+/// Compact menu-bar surface: live status + one-tap approve/deny, sharing the App's
+/// Model so it stays in lockstep with the main window.
+public struct MenuBarView: View {
+    @ObservedObject var model: Model
+    public init(model: Model) { self.model = model }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Oculus").font(.headline)
+            Text(model.status).font(.caption).foregroundStyle(.secondary)
+
+            if let ap = model.pendingApproval {
+                Divider()
+                Text("Approve \(ap.tool)?").bold()
+                HStack {
+                    Button("Deny") { Task { await model.respond(Decision.deny) } }
+                    Button("Allow") { Task { await model.respond(Decision.allow) } }
+                }
+            } else if model.connected {
+                Text("\(model.discovered.count) detected · \(model.output.count) output lines")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("Open the window to connect.").font(.caption).foregroundStyle(.secondary)
+            }
+
+            Divider()
+            Button("Quit Oculus") { NSApplication.shared.terminate(nil) }
+        }
+        .padding(12)
+        .frame(width: 240)
+    }
+}
+#endif

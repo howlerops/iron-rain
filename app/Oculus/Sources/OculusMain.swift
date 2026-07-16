@@ -2,19 +2,28 @@ import SwiftUI
 import OculusUI
 
 /// The universal Oculus app entry point — one `@main` shared by the iOS and macOS
-/// targets. The entire v0 surface lives in `OculusUI.ContentView` (built on the
-/// vector-locked `OculusKit` client), so both platforms are identical by design.
+/// targets. The App owns the `Model` (one daemon connection) and injects it into
+/// the window and, on macOS, the menu-bar item so both stay in lockstep. The v0
+/// surface lives in `OculusUI` (built on the vector-locked `OculusKit` client).
 @main
 struct OculusMain: App {
+    @StateObject private var model = Model()
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView(model: model)
                 #if os(macOS)
                 .frame(minWidth: 520, minHeight: 420)
                 #endif
         }
+
         #if os(macOS)
-        .windowResizability(.contentMinSize)
+        MenuBarExtra {
+            MenuBarView(model: model)
+        } label: {
+            Image(systemName: model.menuBarSymbol)
+        }
+        .menuBarExtraStyle(.window)
         #endif
     }
 }
