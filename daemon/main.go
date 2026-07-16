@@ -9,6 +9,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"flag"
@@ -16,11 +17,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/howlerops/oculus/daemon/agent/claudecode"
 	"github.com/howlerops/oculus/daemon/agent/opencode"
 	"github.com/howlerops/oculus/daemon/crypto"
+	"github.com/howlerops/oculus/daemon/discovery"
 	"github.com/howlerops/oculus/daemon/hub"
+	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/server"
 )
 
@@ -35,6 +39,14 @@ func main() {
 		return
 	}
 
+	if len(os.Args) >= 2 && os.Args[1] == "discover" {
+		if err := runDiscover(); err != nil {
+			fmt.Fprintln(os.Stderr, "oculusd:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	fs := flag.NewFlagSet("oculusd", flag.ExitOnError)
 	showVersion := fs.Bool("version", false, "print version and exit")
 	_ = fs.Parse(os.Args[1:])
@@ -42,7 +54,9 @@ func main() {
 		fmt.Println("oculusd", version)
 		return
 	}
-	fmt.Fprintln(os.Stderr, "usage: oculusd serve --opencode URL [--addr 127.0.0.1:6000] [--secret S]")
+	fmt.Fprintln(os.Stderr, "usage:")
+	fmt.Fprintln(os.Stderr, "  oculusd serve --opencode URL [--addr 127.0.0.1:6000] [--secret S]")
+	fmt.Fprintln(os.Stderr, "  oculusd discover   # autodetect active opencode/claude-code sessions on this host")
 }
 
 func serve(args []string) error {
@@ -70,6 +84,7 @@ func serve(args []string) error {
 	}
 
 	h := hub.New()
+	h.SetDiscoverer(discovery.Scan)
 	providers := []string{}
 	if *opencodeURL != "" {
 		h.Register(opencode.New(*opencodeURL))
@@ -96,6 +111,31 @@ func serve(args []string) error {
 		fmt.Printf("  provider:       %s\n", pv)
 	}
 	return http.ListenAndServe(*addr, mux)
+}
+
+// runDiscover autodetects active agent sessions on this host and prints them.
+func runDiscover() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	items, err := discovery.Scan(ctx)
+	if err != nil {
+		return err
+	}
+	if len(items) == 0 {
+		fmt.Println("no active opencode servers or recent claude-code sessions found")
+		return nil
+	}
+	for _, it := range items {
+		switch {
+		case it.Provider == "opencode" && it.Kind == protocol.KindServer:
+			fmt.Printf("opencode server   %s (pid %d)\n", it.URL, it.PID)
+		case it.Provider == "opencode":
+			fmt.Printf("  opencode session %s  %s  (%s)\n", it.SessionID, it.Title, it.URL)
+		default:
+			fmt.Printf("claude-code session %s  cwd=%s\n", it.SessionID, it.Cwd)
+		}
+	}
+	return nil
 }
 
 func defaultKeyPath() string {

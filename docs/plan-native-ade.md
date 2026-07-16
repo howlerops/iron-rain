@@ -89,6 +89,16 @@ docs/        # design docs (this plan, etc.)
 - **P3 — Own cloud / Mode-2:** ephemeral cloud agents as the forward differentiator (see
   `plan-cloud-agents.md`).
 
+## Session autodetection (v0)
+The daemon **discovers active agent sessions on the host** so they appear in the app with no manual
+config — this is the "continue my terminal session on my phone" handoff, first-class:
+- **opencode:** find running `opencode serve` processes + their listen ports, then enumerate their
+  live sessions (`GET /session`). Attach/drive them directly.
+- **claude-code:** find recent session transcripts in the claude store (and/or running `claude`
+  processes) and surface them.
+Exposed via a `discover.list` protocol message; the app can then focus/attach a discovered session.
+See `daemon/discovery` + `skills/oculus-discovery`.
+
 ## Inspiration (what we borrowed)
 - **HumanLayer/CodeLayer** — ADE framing + HITL approvals + daemon/client/CLI shape (Apache-2, Go `hld`).
 - **Paseo** — daemon+protocol+E2EE-relay+push proven for claude-code+opencode; `import`/handoff; pairing (AGPL — not used, only studied). Clone at `reference/paseo`.

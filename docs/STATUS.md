@@ -13,6 +13,7 @@ Built TDD, cross-language, end-to-end tested. This tracks what's proven vs. what
 | Daemon core (dispatch + event forward + approvals) | `daemon/hub` | full-stack E2E over encrypted transport |
 | WebSocket server + runnable `oculusd` | `daemon/server` | full E2E over a real WebSocket |
 | Relay ("from anywhere", outbound-only) | `daemon/relay` | full session driven through the relay |
+| **Session autodetection** (opencode servers + sessions, claude-code transcripts) | `daemon/discovery`, `daemon/hub` | unit + `discover.list` over encrypted transport; **live vs real opencode 1.17.19 + real claude-code** (`oculusd discover`) |
 | **Swift↔Go crypto parity** | `app/OculusKit` | CryptoKit reproduces Go golden vectors byte-for-byte |
 | **LIVE Swift client ↔ real Go daemon** | `app/OculusKit` LiveE2ETests | spawns the daemon, handshakes, create→output→approval→idle |
 | SwiftUI macOS app | `app/OculusApp` | builds on OculusKit (`swift build`) |
@@ -27,14 +28,19 @@ cd daemon && go run . serve --opencode http://127.0.0.1:4096 --secret test   # t
 ```
 Enable claude-code too: add `--claude claude`.
 
+Autodetect what's already running (no config): `cd daemon && go run . discover`. Lists active
+`opencode serve` instances + their live sessions and recent claude-code transcripts.
+
 ## Remaining (device / credential / real-LLM gated — not automatable here)
 - **Push / APNs** — daemon-side sender + actionable lock-screen approvals. Needs an Apple Developer
   APNs key + a real device. (Design: hosted default + self-host BYO-key.)
 - **iOS app target** — the SwiftUI views are cross-platform; iOS specifics (Live Activities,
   Handoff, App Intents, the iOS app target/entitlements) need an Xcode iOS build + device/simulator.
 - **Live validation vs real opencode + real claude-code** — the provider tests use faithful
-  stubs/fakes; validate the exact stream-json / settings-hook shapes against the installed tools
-  (invokes the LLM — spend-gated).
+  stubs/fakes. **Partially validated:** opencode 1.17.19 `GET /session` shape + the claude-code
+  transcript store are confirmed live via `oculusd discover`. Still spend-gated: the *streaming*
+  paths (opencode `/event` SSE deltas + permission asks; claude-code stream-json + PreToolUse hook)
+  need a real LLM turn to exercise end-to-end.
 - **Relay hardening** — the pairing secret currently transits the relay in cleartext (content stays
   E2E). Prove-secret-without-revealing is a tracked follow-up (see `skills/oculus-relay`).
 

@@ -32,6 +32,9 @@ Full design: [`docs/plan-native-ade.md`](docs/plan-native-ade.md).
   (`once|always|reject`) and claude-code `PreToolUse` hook both normalize to one
   `ApprovalRequest`/`ApprovalResponse(allow|deny, reason?)`.
 - Push: hosted APNs default + self-host BYO-key. License **MIT**.
+- **Session autodetection** is first-class: the daemon discovers running `opencode serve` instances
+  (+ their live sessions) and recent claude-code transcripts on the host, exposed via `discover.list`.
+  See `daemon/discovery` + `skills/oculus-discovery`; try `oculusd discover`.
 
 ## Build & run (as components land)
 - Daemon: `cd daemon && go build ./... && go test ./...` (Go 1.26).

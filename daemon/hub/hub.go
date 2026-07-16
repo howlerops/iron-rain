@@ -12,12 +12,16 @@ import (
 	"github.com/howlerops/oculus/daemon/transport"
 )
 
+// DiscoverFunc autodetects active agent artifacts on the host (see daemon/discovery).
+type DiscoverFunc func(context.Context) ([]protocol.Discovered, error)
+
 // Hub owns providers and live sessions.
 type Hub struct {
 	mu        sync.Mutex
 	providers map[string]agent.Provider
 	sessions  map[string]agent.Session // sessionID -> session
 	approvals map[string]agent.Session // approvalID -> owning session
+	discover  DiscoverFunc
 }
 
 // New returns an empty Hub.
@@ -34,6 +38,13 @@ func (h *Hub) Register(p agent.Provider) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.providers[p.Name()] = p
+}
+
+// SetDiscoverer installs the host-scan used to answer discover.list requests.
+func (h *Hub) SetDiscoverer(f DiscoverFunc) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.discover = f
 }
 
 // Serve handles one client connection until it closes or errors.
@@ -117,6 +128,21 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			return
 		}
 		h.sendOK(conn, env.ID, nil)
+
+	case protocol.TypeDiscover:
+		h.mu.Lock()
+		f := h.discover
+		h.mu.Unlock()
+		items := []protocol.Discovered{}
+		if f != nil {
+			got, err := f(ctx)
+			if err != nil {
+				h.sendErr(conn, env.ID, err.Error())
+				return
+			}
+			items = got
+		}
+		h.sendOK(conn, env.ID, protocol.DiscoverList{Items: items})
 
 	case protocol.TypeSessionStop:
 		var req protocol.SessionRef

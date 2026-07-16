@@ -20,6 +20,7 @@ const (
 	TypeSessionPrompt   = "session.prompt"
 	TypeSessionStop     = "session.stop"
 	TypeApprovalRespond = "approval.respond"
+	TypeDiscover        = "discover.list"
 
 	// events (daemon -> client), no id
 	TypeSessionStatus   = "session.status"
@@ -102,6 +103,30 @@ type Session struct {
 type SessionList struct {
 	Sessions []Session `json:"sessions"`
 }
+
+// Discovered is one autodetected agent artifact on the host: a running opencode
+// server, one of its live sessions, or a claude-code session transcript.
+type Discovered struct {
+	Provider  string `json:"provider"`             // "opencode" | "claude-code"
+	Kind      string `json:"kind"`                 // "server" | "session"
+	URL       string `json:"url,omitempty"`        // opencode server base URL
+	SessionID string `json:"session_id,omitempty"` // live/transcript session id
+	Title     string `json:"title,omitempty"`
+	Cwd       string `json:"cwd,omitempty"`  // claude-code working dir (best-effort)
+	Path      string `json:"path,omitempty"` // claude-code transcript path
+	PID       int    `json:"pid,omitempty"`
+}
+
+// DiscoverList is the response to a discover.list request.
+type DiscoverList struct {
+	Items []Discovered `json:"items"`
+}
+
+// Discovery kinds.
+const (
+	KindServer  = "server"
+	KindSession = "session"
+)
 
 type Error struct {
 	Message string `json:"message"`

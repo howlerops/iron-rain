@@ -9,6 +9,7 @@ public enum MessageType {
     public static let sessionPrompt = "session.prompt"
     public static let sessionStop = "session.stop"
     public static let approvalRespond = "approval.respond"
+    public static let discover = "discover.list"
 
     public static let sessionStatus = "session.status"
     public static let outputDelta = "output.delta"
@@ -66,6 +67,30 @@ public struct ApprovalRespond: Codable {
 }
 public struct Session: Codable { public var id: String; public var provider: String; public var status: String; public var title: String? }
 public struct ProtocolError: Codable { public var message: String }
+
+public enum DiscoveredKind {
+    public static let server = "server"
+    public static let session = "session"
+}
+
+/// One autodetected agent artifact on the host (opencode server, opencode live
+/// session, or claude-code transcript). Mirrors `protocol.Discovered`.
+public struct Discovered: Codable {
+    public var provider: String
+    public var kind: String
+    public var url: String?
+    public var sessionID: String?
+    public var title: String?
+    public var cwd: String?
+    public var path: String?
+    public var pid: Int?
+    enum CodingKeys: String, CodingKey {
+        case provider, kind, url
+        case sessionID = "session_id"
+        case title, cwd, path, pid
+    }
+}
+public struct DiscoverList: Codable { public var items: [Discovered] }
 
 /// Shared encoder/decoder for the wire format. Keys are set explicitly via each
 /// type's CodingKeys (matching the Go JSON), so no key-strategy is used.
