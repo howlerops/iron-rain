@@ -10,7 +10,7 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "OculusApp",
-            dependencies: [.product(name: "OculusKit", package: "OculusKit")]
+            dependencies: [.product(name: "OculusUI", package: "OculusKit")]
         ),
     ]
 )

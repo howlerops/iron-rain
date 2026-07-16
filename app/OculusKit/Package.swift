@@ -6,9 +6,11 @@ let package = Package(
     platforms: [.macOS(.v13), .iOS(.v16)],
     products: [
         .library(name: "OculusKit", targets: ["OculusKit"]),
+        .library(name: "OculusUI", targets: ["OculusUI"]),
     ],
     targets: [
         .target(name: "OculusKit"),
+        .target(name: "OculusUI", dependencies: ["OculusKit"]),
         .testTarget(name: "OculusKitTests", dependencies: ["OculusKit"]),
     ]
 )

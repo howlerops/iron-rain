@@ -22,3 +22,6 @@ node_modules/
 .env
 .env.*
 /daemon/daemon
+
+# xcodegen output (regenerate: cd app && xcodegen generate)
+/app/Oculus.xcodeproj/

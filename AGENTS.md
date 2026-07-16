@@ -39,7 +39,10 @@ Full design: [`docs/plan-native-ade.md`](docs/plan-native-ade.md).
 ## Build & run (as components land)
 - Daemon: `cd daemon && go build ./... && go test ./...` (Go 1.26).
 - Protocol parity: `cd daemon && go test ./protocol/...` runs the golden-vector tests.
-- App: open `app/Oculus.xcodeproj` in Xcode; universal iOS/macOS target.
+- App: `cd app && xcodegen generate` → `Oculus.xcodeproj` (universal iOS + macOS, both share
+  `OculusUI.ContentView`). Open in Xcode, or build headless:
+  `xcodebuild -project app/Oculus.xcodeproj -scheme Oculus-iOS -destination 'generic/platform=iOS Simulator' build`.
+  Quick macOS dev harness without Xcode: `cd app/OculusApp && swift run`.
 - Relay: see `relay/README.md` (self-host) — hosted default configured by the installer.
 
 ## Working practice — **definition of done for every component**

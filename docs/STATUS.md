@@ -17,6 +17,7 @@ Built TDD, cross-language, end-to-end tested. This tracks what's proven vs. what
 | **Swift↔Go crypto parity** | `app/OculusKit` | CryptoKit reproduces Go golden vectors byte-for-byte |
 | **LIVE Swift client ↔ real Go daemon** | `app/OculusKit` LiveE2ETests | spawns the daemon, handshakes, create→output→approval→idle |
 | SwiftUI macOS app | `app/OculusApp` | builds on OculusKit (`swift build`) |
+| **Universal iOS + macOS app** | `app/` (xcodegen → `Oculus.xcodeproj`) | **iOS app builds for the simulator SDK and launches (runs the Connect UI)**; shares `OculusUI.ContentView` with macOS; surfaces autodetected sessions |
 
 Run it all: `cd daemon && go test ./...` and `cd app/OculusKit && swift test`.
 
@@ -34,8 +35,10 @@ Autodetect what's already running (no config): `cd daemon && go run . discover`.
 ## Remaining (device / credential / real-LLM gated — not automatable here)
 - **Push / APNs** — daemon-side sender + actionable lock-screen approvals. Needs an Apple Developer
   APNs key + a real device. (Design: hosted default + self-host BYO-key.)
-- **iOS app target** — the SwiftUI views are cross-platform; iOS specifics (Live Activities,
-  Handoff, App Intents, the iOS app target/entitlements) need an Xcode iOS build + device/simulator.
+- **iOS app target** — ✅ **buildable + runs.** `app/Oculus.xcodeproj` (xcodegen) has universal
+  iOS + macOS app targets sharing `OculusUI.ContentView`; the iOS target builds for the simulator SDK
+  and launches. Still ahead (device/entitlement-gated): Live Activities, Handoff, App Intents,
+  menu-bar (macOS `MenuBarExtra`), push entitlement, and signing for a physical device / TestFlight.
 - **Live validation vs real opencode + real claude-code** — the provider tests use faithful
   stubs/fakes. **Partially validated:** opencode 1.17.19 `GET /session` shape + the claude-code
   transcript store are confirmed live via `oculusd discover`. Still spend-gated: the *streaming*
