@@ -25,3 +25,6 @@ node_modules/
 
 # xcodegen output (regenerate: cd app && xcodegen generate)
 /app/Oculus.xcodeproj/
+
+# OMC tooling state
+.omc/
