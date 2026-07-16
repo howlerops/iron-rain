@@ -200,6 +200,7 @@ func (s *session) handle(raw []byte) {
 			Permission string          `json:"permission"`
 			Type       string          `json:"type"`
 			Title      string          `json:"title"`
+			Patterns   []string        `json:"patterns"`
 			Metadata   json.RawMessage `json:"metadata"`
 		}
 		if json.Unmarshal(e.Properties, &perm) != nil || perm.SessionID != s.id {
@@ -212,8 +213,21 @@ func (s *session) handle(raw []byte) {
 		if tool == "" {
 			tool = perm.Title
 		}
+		// Detail: the concrete command/args to show inline (e.g. the bash command).
+		detail := ""
+		if len(perm.Patterns) > 0 {
+			detail = perm.Patterns[0]
+		}
+		if detail == "" {
+			var md struct {
+				Command string `json:"command"`
+			}
+			if json.Unmarshal(perm.Metadata, &md) == nil {
+				detail = md.Command
+			}
+		}
 		s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusAwaitingApproval}})
-		s.emit(agent.Event{Type: protocol.TypeApprovalRequest, Payload: protocol.ApprovalRequest{ApprovalID: perm.ID, SessionID: s.id, Tool: tool, Input: perm.Metadata}})
+		s.emit(agent.Event{Type: protocol.TypeApprovalRequest, Payload: protocol.ApprovalRequest{ApprovalID: perm.ID, SessionID: s.id, Tool: tool, Detail: detail, Input: perm.Metadata}})
 
 	case "session.idle":
 		var pr struct {
@@ -252,11 +266,14 @@ func (s *session) Prompt(_ context.Context, text string) error {
 	return nil
 }
 
-// Respond maps allow->"once", deny->"reject".
+// Respond maps allow->"once", always->"always", deny->"reject".
 func (s *session) Respond(ctx context.Context, approvalID, decision string) error {
 	resp := "reject"
-	if decision == protocol.DecisionAllow {
+	switch decision {
+	case protocol.DecisionAllow:
 		resp = "once"
+	case protocol.DecisionAlways:
+		resp = "always"
 	}
 	return s.p.postJSON(ctx, fmt.Sprintf("/session/%s/permissions/%s", s.id, approvalID), map[string]string{"response": resp}, nil)
 }

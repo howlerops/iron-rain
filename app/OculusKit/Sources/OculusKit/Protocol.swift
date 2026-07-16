@@ -31,6 +31,7 @@ public enum SessionStatusValue {
 public enum Decision {
     public static let allow = "allow"
     public static let deny = "deny"
+    public static let always = "always"
 }
 
 // Payload types (Decodable ignores unknown keys, so optional/extra fields are safe).
@@ -58,8 +59,8 @@ public struct SessionStatus: Codable {
     enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case status }
 }
 public struct ApprovalRequest: Codable, Equatable {
-    public var approvalID: String; public var sessionID: String; public var tool: String
-    enum CodingKeys: String, CodingKey { case approvalID = "approval_id"; case sessionID = "session_id"; case tool }
+    public var approvalID: String; public var sessionID: String; public var tool: String; public var detail: String?
+    enum CodingKeys: String, CodingKey { case approvalID = "approval_id"; case sessionID = "session_id"; case tool; case detail }
 }
 public struct ApprovalRespond: Codable {
     public var approvalID: String; public var decision: String

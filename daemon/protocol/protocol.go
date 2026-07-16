@@ -44,8 +44,9 @@ const (
 
 // Approval decisions.
 const (
-	DecisionAllow = "allow"
-	DecisionDeny  = "deny"
+	DecisionAllow  = "allow"
+	DecisionDeny   = "deny"
+	DecisionAlways = "always" // allow this + auto-allow the same tool for the session
 )
 
 // Envelope is the outer frame for every message.
@@ -86,6 +87,7 @@ type ApprovalRequest struct {
 	ApprovalID string          `json:"approval_id"`
 	SessionID  string          `json:"session_id"`
 	Tool       string          `json:"tool"`
+	Detail     string          `json:"detail,omitempty"` // human-readable command/args (e.g. the bash command)
 	Input      json.RawMessage `json:"input,omitempty"`
 }
 

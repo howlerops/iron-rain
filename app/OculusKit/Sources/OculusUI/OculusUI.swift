@@ -26,15 +26,45 @@ public final class Model: ObservableObject {
 
     private var client: OculusClient?
     private let clientPrivate = OculusCrypto.generatePrivateKey()
+    private let defaults = UserDefaults.standard
+    private var reconnectWanted = false
+    private var reconnecting = false
     #if os(iOS)
     private var liveActivity: Any?
     #endif
 
-    public init() {}
+    public init() {
+        // Restore the last pairing so the app auto-reconnects without re-pairing.
+        wsURL = defaults.string(forKey: Keys.ws) ?? wsURL
+        daemonPubHex = defaults.string(forKey: Keys.pub) ?? ""
+        secret = defaults.string(forKey: Keys.secret) ?? ""
+    }
+
+    private enum Keys { static let ws = "oculus.ws", pub = "oculus.pub", secret = "oculus.secret" }
+
+    /// True once the daemon has been paired at least once (creds are saved).
+    public var hasSavedPairing: Bool { !wsURL.isEmpty && !daemonPubHex.isEmpty && !secret.isEmpty }
+
+    private func savePairing() {
+        defaults.set(wsURL, forKey: Keys.ws)
+        defaults.set(daemonPubHex, forKey: Keys.pub)
+        defaults.set(secret, forKey: Keys.secret) // TODO: move the secret to the Keychain
+    }
 
     // MARK: connection
 
+    /// Connects to a locally-running (or paired) daemon and keeps the connection
+    /// alive — auto-reconnecting with backoff if it drops.
+    public func autoConnectIfPaired() async {
+        if hasSavedPairing && !connected { await connect() }
+    }
+
     public func connect() async {
+        reconnectWanted = true
+        await attemptConnect()
+    }
+
+    private func attemptConnect() async {
         guard let url = URL(string: wsURL), let pub = Data(hexString: daemonPubHex) else {
             status = "Invalid URL or daemon public key"
             return
@@ -45,6 +75,7 @@ public final class Model: ObservableObject {
             client = c
             connected = true
             status = "Connected"
+            savePairing()
             Task { await receiveLoop() }
             await discover()
             if let token = OculusStore.shared.deviceToken {
@@ -59,11 +90,30 @@ public final class Model: ObservableObject {
                 await respond(decision)
             }
         } catch {
-            status = "Connect failed: \(error)"
+            status = "Connect failed"
+            scheduleReconnect()
+        }
+    }
+
+    /// Retries the connection with exponential backoff until it succeeds or the user
+    /// disconnects. One loop at a time.
+    private func scheduleReconnect() {
+        guard reconnectWanted, hasSavedPairing, !reconnecting, !connected else { return }
+        reconnecting = true
+        Task { // inherits @MainActor from Model
+            var delay: UInt64 = 2
+            while reconnectWanted && !connected {
+                status = "Reconnecting…"
+                try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
+                if reconnectWanted && !connected { await attemptConnect() }
+                delay = min(delay * 2, 15)
+            }
+            reconnecting = false
         }
     }
 
     public func disconnect() {
+        reconnectWanted = false
         client?.close()
         client = nil
         connected = false
@@ -105,7 +155,14 @@ public final class Model: ObservableObject {
 
     public func respond(_ decision: String) async {
         guard let client, let ap = pendingApproval else { return }
-        appendTool(decision == Decision.allow ? "✓ Allowed \(ap.tool)" : "✗ Denied \(ap.tool)")
+        let verb: String
+        switch decision {
+        case Decision.deny: verb = "✗ Denied"
+        case Decision.always: verb = "✓ Always allow"
+        default: verb = "✓ Allowed"
+        }
+        let cmd = (ap.detail?.isEmpty == false) ? " · \(ap.detail!)" : ""
+        appendTool("\(verb) \(ap.tool)\(cmd)")
         pendingApproval = nil
         refreshLiveActivity()
         do {
@@ -205,6 +262,8 @@ public final class Model: ObservableObject {
                 refreshLiveActivity(ended: true)
             }
         }
+        // Connection dropped — auto-reconnect if the user didn't disconnect.
+        scheduleReconnect()
     }
 
     // MARK: live activity
@@ -264,6 +323,7 @@ public struct ContentView: View {
         .background(palette.background.ignoresSafeArea())
         .foregroundStyle(palette.foreground)
         .tint(palette.primary)
+        .task { await model.autoConnectIfPaired() }
         .userActivity(oculusSessionActivityType, isActive: model.sessionID != nil) { activity in
             activity.title = "Oculus session"
             if let sid = model.sessionID { activity.userInfo = ["session_id": sid] }

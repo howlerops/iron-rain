@@ -127,7 +127,7 @@ func (s *session) handleApprove(w http.ResponseWriter, r *http.Request) {
 	}
 
 	pd := "deny"
-	if decision == protocol.DecisionAllow {
+	if decision == protocol.DecisionAllow || decision == protocol.DecisionAlways {
 		pd = "allow"
 	}
 	resp := map[string]any{

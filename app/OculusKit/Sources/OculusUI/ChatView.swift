@@ -25,6 +25,7 @@ public struct ChatView: View {
             if let ap = model.pendingApproval {
                 ApprovalCard(approval: ap, palette: palette,
                              onAllow: { Task { await model.respond(Decision.allow) } },
+                             onAlways: { Task { await model.respond(Decision.always) } },
                              onDeny: { Task { await model.respond(Decision.deny) } })
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -187,24 +188,34 @@ struct ApprovalCard: View {
     let approval: ApprovalRequest
     let palette: OculusPalette
     let onAllow: () -> Void
+    let onAlways: () -> Void
     let onDeny: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: "bell.badge.fill").foregroundStyle(palette.primary)
-                Text("Approve \(approval.tool)?").font(.headline)
+                Text("Approve \(approval.tool)").font(.headline)
+                Spacer()
             }
-            HStack(spacing: 10) {
-                Button(action: onDeny) {
-                    Text("Deny").frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered).tint(palette.destructive)
-                Button(action: onAllow) {
-                    Text("Allow").frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent).tint(palette.primary)
-                .keyboardShortcut(.defaultAction)
+            if let d = approval.detail, !d.isEmpty {
+                Text(d)
+                    .font(.system(.footnote, design: .monospaced))
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(palette.input)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .textSelection(.enabled)
+            }
+            HStack(spacing: 8) {
+                Button("Deny", action: onDeny)
+                    .buttonStyle(.bordered).tint(palette.destructive)
+                Spacer()
+                Button("Always", action: onAlways)
+                    .buttonStyle(.bordered).tint(palette.primary)
+                Button("Allow", action: onAllow)
+                    .buttonStyle(.borderedProminent).tint(palette.primary)
+                    .keyboardShortcut(.defaultAction)
             }
         }
         .padding(14)
