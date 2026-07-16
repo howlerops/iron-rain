@@ -4,6 +4,7 @@ package server
 
 import (
 	"context"
+	"log"
 	"net/http"
 
 	"github.com/coder/websocket"
@@ -40,8 +41,10 @@ func (s *Server) Handler() http.Handler {
 			InsecureSkipVerify: true,
 		})
 		if err != nil {
+			log.Printf("server: ws accept failed: %v", err)
 			return
 		}
+		log.Printf("server: ws accepted from %s (ua=%q)", r.RemoteAddr, r.UserAgent())
 		_ = s.ServeConn(r.Context(), newWSConn(r.Context(), ws))
 	})
 }
@@ -52,9 +55,11 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) ServeConn(ctx context.Context, mc transport.MsgConn) error {
 	conn, err := transport.ServerHandshake(mc, s.kp, s.authorize)
 	if err != nil {
+		log.Printf("server: handshake failed: %v", err)
 		_ = mc.Close()
 		return err
 	}
+	log.Printf("server: client connected (handshake ok)")
 	defer conn.Close()
 	return s.hub.Serve(ctx, conn)
 }
