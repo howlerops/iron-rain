@@ -12,6 +12,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"net"
@@ -134,7 +135,36 @@ func serve(args []string) error {
 		fmt.Printf("  push:           APNs enabled (bundle %s)\n", *apnsBundle)
 	}
 	printPairing(wsPublicURL(*publicURL, *addr), hex.EncodeToString(kp.Public()), sec)
+	// Drop a local pairing file so an app on THIS machine (the macOS app) can
+	// auto-discover + connect with zero config. 0600, same-user only.
+	writeLocalPairing(localWSURL(*addr), hex.EncodeToString(kp.Public()), sec)
 	return http.ListenAndServe(*addr, mux)
+}
+
+// localWSURL is the loopback ws URL for a same-machine app.
+func localWSURL(addr string) string {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil || port == "" {
+		return "ws://127.0.0.1:6000/ws"
+	}
+	return "ws://127.0.0.1:" + port + "/ws"
+}
+
+// writeLocalPairing writes ~/.oculus/pairing.json for the local app to read.
+func writeLocalPairing(wsURL, pub, secret string) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	dir := filepath.Join(home, ".oculus")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return
+	}
+	data, err := json.Marshal(map[string]string{"ws": wsURL, "pub": pub, "secret": secret})
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(dir, "pairing.json"), data, 0o600)
 }
 
 // wsPublicURL returns the reachable ws URL clients should dial. If publicURL is set

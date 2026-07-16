@@ -54,9 +54,22 @@ public final class Model: ObservableObject {
     // MARK: connection
 
     /// Connects to a locally-running (or paired) daemon and keeps the connection
-    /// alive — auto-reconnecting with backoff if it drops.
+    /// alive — auto-reconnecting with backoff if it drops. On macOS, if there's no
+    /// saved pairing it reads the daemon's local pairing file (~/.oculus/pairing.json)
+    /// so a same-machine app connects with zero config.
     public func autoConnectIfPaired() async {
+        if !hasSavedPairing { loadLocalPairing() }
         if hasSavedPairing && !connected { await connect() }
+    }
+
+    private func loadLocalPairing() {
+        #if os(macOS)
+        let path = (NSHomeDirectory() as NSString).appendingPathComponent(".oculus/pairing.json")
+        guard let data = FileManager.default.contents(atPath: path),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: String],
+              let ws = obj["ws"], let pub = obj["pub"], let sec = obj["secret"] else { return }
+        applyPairing(url: ws, pub: pub, secret: sec)
+        #endif
     }
 
     public func connect() async {
