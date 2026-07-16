@@ -18,29 +18,39 @@ public final class OculusClient {
         self.task = session.webSocketTask(with: url)
     }
 
-    private struct ClientHello: Encodable { let clientPub: String; let secret: String }
-    private struct ServerHello: Decodable { let ok: Bool; let daemonPub: String?; let error: String? }
+    private struct ClientHello: Encodable { let clientPub: String }
+    private struct ServerHello: Decodable { let ok: Bool; let error: String? }
 
-    /// Performs the handshake: sends the client public key + pairing secret, reads the
-    /// server's response, and derives the directional session keys.
+    /// Performs the handshake, mirroring `daemon/transport` (client side):
+    /// 1. announce the client public key in the clear (a public key — safe),
+    /// 2. derive the channel from static-static ECDH,
+    /// 3. prove the pairing secret by sending it *encrypted* (never in the clear),
+    /// 4. read the server's encrypted verdict.
     public func connect(clientPrivate: Data, daemonPublic: Data, secret: String) async throws {
         task.resume()
 
         let clientPub = try OculusCrypto.publicKey(fromPrivate: clientPrivate)
         let enc = JSONEncoder()
         enc.keyEncodingStrategy = .convertToSnakeCase
-        let hello = try enc.encode(ClientHello(clientPub: clientPub.hexString, secret: secret))
+        let hello = try enc.encode(ClientHello(clientPub: clientPub.hexString))
         try await task.send(.data(hello))
 
-        let respData = try await Self.bytes(of: task.receive())
-        let dec = JSONDecoder()
-        dec.keyDecodingStrategy = .convertFromSnakeCase
-        let resp = try dec.decode(ServerHello.self, from: respData)
-        guard resp.ok else { throw OculusClientError.handshakeRejected(resp.error ?? "rejected") }
-
         let keys = try OculusCrypto.deriveSessionKeys(localPrivate: clientPrivate, remotePublic: daemonPublic)
-        sealer = Sealer(key: keys.c2d)
-        opener = Opener(key: keys.d2c)
+        let s = Sealer(key: keys.c2d)
+        let o = Opener(key: keys.d2c)
+        sealer = s
+        opener = o
+
+        // 3. send the pairing secret encrypted (first sealed frame).
+        try await task.send(.data(s.seal(Data(secret.utf8))))
+
+        // 4. read the encrypted verdict.
+        let respData = try o.open(try await Self.bytes(of: task.receive()))
+        let resp = try JSONDecoder().decode(ServerHello.self, from: respData)
+        guard resp.ok else {
+            sealer = nil; opener = nil
+            throw OculusClientError.handshakeRejected(resp.error ?? "rejected")
+        }
     }
 
     /// Encrypts and sends one protocol envelope.

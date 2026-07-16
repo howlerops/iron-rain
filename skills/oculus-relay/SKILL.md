@@ -19,11 +19,16 @@ relay **outbound**; the relay bridges them by `server_id` and copies opaque mess
 - Client: `relay.DialClient(ctx, relayURL, serverID)` → a `transport.MsgConn` ready for `ClientHandshake`.
 - Shared WS↔MsgConn adapter: `daemon/wsmsg`.
 
-## Security (v0 limitation — read before hardening)
-The relay forwards the transport handshake, so the **pairing secret + public keys transit the relay in
-cleartext**. Session CONTENT stays E2E encrypted (the relay cannot read it), but a malicious relay could
-replay the secret to impersonate a client. **Follow-up:** prove secret knowledge without revealing it
-(e.g. a MAC over the handshake keyed by the secret), or move auth inside the E2E channel.
+## Security
+The relay forwards the transport handshake but sees **only ciphertext + public keys**. The pairing
+secret is **never sent in the clear**: the client announces its public key, derives the channel from
+static-static ECDH, then sends the secret as the first *sealed* frame (see `daemon/transport` +
+[[oculus-transport]]). A passive relay can't compute the ECDH shared secret (no private key), so it
+can't verify or replay secret guesses. Session content is E2E encrypted throughout.
+
+Residual (tracked): the pairing secret is a bearer credential — anyone who *learns* it (out of band)
+can pair. Per-device revocation + rotation and binding the client's static key at pair time are the
+next hardening steps.
 
 ## Test
 `cd daemon && go test ./relay/` — a full session (create → output → approval → idle) driven end-to-end

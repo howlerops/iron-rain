@@ -7,7 +7,7 @@ Built TDD, cross-language, end-to-end tested. This tracks what's proven vs. what
 |---|---|---|
 | E2EE crypto (X25519→HKDF-SHA256→ChaCha20-Poly1305) | `daemon/crypto` | RFC 7748 KAT, agreement symmetry, AEAD round-trip/tamper/nonce, golden vectors |
 | Protocol (typed JSON envelope) | `daemon/protocol` | round-trip, event-omits-id, golden vectors |
-| Encrypted transport (handshake + sealed frames) | `daemon/transport` | handshake, auth rejection, wire-is-encrypted |
+| Encrypted transport (handshake + sealed frames) | `daemon/transport` | handshake, auth rejection, wire-is-encrypted, **pairing-secret-never-in-clear** |
 | opencode provider (create/stream/approve) | `daemon/agent/opencode` | E2E vs realistic stub incl. approval |
 | claude-code provider (stream-json + hook approvals) | `daemon/agent/claudecode` | E2E vs fake claude incl. hook approval |
 | Daemon core (dispatch + event forward + approvals) | `daemon/hub` | full-stack E2E over encrypted transport |
@@ -41,8 +41,10 @@ Autodetect what's already running (no config): `cd daemon && go run . discover`.
   transcript store are confirmed live via `oculusd discover`. Still spend-gated: the *streaming*
   paths (opencode `/event` SSE deltas + permission asks; claude-code stream-json + PreToolUse hook)
   need a real LLM turn to exercise end-to-end.
-- **Relay hardening** — the pairing secret currently transits the relay in cleartext (content stays
-  E2E). Prove-secret-without-revealing is a tracked follow-up (see `skills/oculus-relay`).
+- **Relay hardening** — ✅ **done.** The pairing secret is now sent as a sealed frame (never in the
+  clear); a passive relay can't derive the ECDH shared secret to verify/replay it. Validated by a
+  `pairing-secret-not-in-clear` unit test + the live cross-language E2E. Residual (tracked): the secret
+  is still a bearer credential — per-device revocation/rotation is the next step (see `skills/oculus-relay`).
 
 ## Not yet started (planned)
 Multi-machine overview UX, menu-bar polish, worktrees/diff review (P2), cloud ephemeral agents (P3).

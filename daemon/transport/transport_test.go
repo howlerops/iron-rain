@@ -152,6 +152,38 @@ func TestWire_IsEncrypted(t *testing.T) {
 	}
 }
 
+// TestWire_PairingSecretNotInClear proves the pairing secret never transits the
+// wire in the clear during the handshake (it's sent as a sealed frame).
+func TestWire_PairingSecretNotInClear(t *testing.T) {
+	clientKP, _ := crypto.GenerateKeyPair()
+	daemonKP, _ := crypto.GenerateKeyPair()
+	cConn, sConn := newPipePair()
+
+	tap := &tapConn{pipeConn: cConn}
+	done := make(chan struct{})
+	go func() {
+		_, _ = ServerHandshake(sConn, daemonKP, func(_ []byte, secret string) bool {
+			return secret == testSecret
+		})
+		close(done)
+	}()
+	client, err := ClientHandshake(tap, clientKP, daemonKP.Public(), testSecret)
+	if err != nil {
+		t.Fatalf("handshake: %v", err)
+	}
+	<-done
+	_ = client
+
+	for i, msg := range tap.sent {
+		if bytes.Contains(msg, []byte(testSecret)) {
+			t.Fatalf("pairing secret leaked in cleartext in wire message %d: %q", i, msg)
+		}
+	}
+	if len(tap.sent) < 2 {
+		t.Fatalf("expected at least client_pub + sealed secret on the wire, got %d messages", len(tap.sent))
+	}
+}
+
 type tapConn struct {
 	*pipeConn
 	sent [][]byte
