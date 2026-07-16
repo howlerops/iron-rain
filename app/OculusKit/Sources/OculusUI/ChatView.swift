@@ -13,7 +13,6 @@ public struct ChatView: View {
     private var palette: OculusPalette { .current(scheme) }
 
     @State private var draft = ""
-    @State private var showDiscovered = false
     @State private var showPairingQR = false
 
     public init(model: Model) { self.model = model }
@@ -47,13 +46,8 @@ public struct ChatView: View {
                 }
             }
             Spacer()
-            if !model.discovered.isEmpty {
-                Button { showDiscovered.toggle() } label: {
-                    Image(systemName: "rectangle.stack").foregroundStyle(palette.mutedForeground)
-                }
-            }
             Menu {
-                Button("New session") { model.sessionID = nil; model.messages.removeAll() }
+                Button("New session") { model.newSession() }
                 if model.pairingURL != nil {
                     Button("Pair a phone…") { showPairingQR = true }
                 }
@@ -63,7 +57,6 @@ public struct ChatView: View {
             }
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
-        .popover(isPresented: $showDiscovered) { discoveredList }
         .sheet(isPresented: $showPairingQR) {
             PairingQRView(url: model.pairingURL ?? "", palette: palette) { showPairingQR = false }
         }
@@ -100,33 +93,6 @@ public struct ChatView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, 40)
-    }
-
-    private var discoveredList: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Detected on host").font(.headline)
-            Text("Tap an opencode session to open it here.")
-                .font(.caption2).foregroundStyle(palette.mutedForeground)
-            ForEach(Array(model.discovered.enumerated()), id: \.offset) { _, d in
-                if d.provider == "opencode" && d.kind == DiscoveredKind.session {
-                    Button {
-                        showDiscovered = false
-                        Task { await model.attach(d) }
-                    } label: {
-                        HStack {
-                            Text(describe(d)).font(.system(.caption, design: .monospaced))
-                            Spacer()
-                            Image(systemName: "arrow.up.right.square").font(.caption2)
-                        }
-                    }
-                    .buttonStyle(.plain).foregroundStyle(palette.primary)
-                } else {
-                    Text(describe(d)).font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(palette.mutedForeground)
-                }
-            }
-        }
-        .padding(16).frame(minWidth: 280)
     }
 
     private var statusColor: Color {

@@ -188,6 +188,14 @@ public final class Model: ObservableObject {
 
     /// Attaches to an existing session discovered on the host: loads its history and
     /// continues it live. opencode sessions only (claude-code transcripts are view-only).
+    /// Clears the current conversation to start a fresh session on the next message.
+    public func newSession() {
+        sessionID = nil
+        messages.removeAll()
+        pendingApproval = nil
+        busy = false
+    }
+
     public func attach(_ d: Discovered) async {
         guard let client, d.provider == "opencode", let sid = d.sessionID else { return }
         messages.removeAll()
@@ -371,7 +379,12 @@ public struct ContentView: View {
     public var body: some View {
         Group {
             if model.connected {
-                ChatView(model: model)
+                NavigationSplitView {
+                    SessionSidebar(model: model)
+                        .navigationSplitViewColumnWidth(min: 220, ideal: 260)
+                } detail: {
+                    ChatView(model: model)
+                }
             } else {
                 ConnectView(model: model)
             }
