@@ -25,6 +25,7 @@ import (
 
 	"github.com/mdp/qrterminal/v3"
 
+	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/agent/claudecode"
 	"github.com/howlerops/oculus/daemon/agent/opencode"
 	"github.com/howlerops/oculus/daemon/crypto"
@@ -98,6 +99,12 @@ func serve(args []string) error {
 
 	h := hub.New()
 	h.SetDiscoverer(discovery.Scan)
+	h.SetAttacherFactory(func(provider, url string) agent.Attacher {
+		if provider == "opencode" && url != "" {
+			return opencode.New(url)
+		}
+		return nil
+	})
 	providers := []string{}
 	if *opencodeURL != "" {
 		h.Register(opencode.New(*opencodeURL))

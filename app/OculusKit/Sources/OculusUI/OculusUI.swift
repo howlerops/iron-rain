@@ -186,6 +186,23 @@ public final class Model: ObservableObject {
         }
     }
 
+    /// Attaches to an existing session discovered on the host: loads its history and
+    /// continues it live. opencode sessions only (claude-code transcripts are view-only).
+    public func attach(_ d: Discovered) async {
+        guard let client, d.provider == "opencode", let sid = d.sessionID else { return }
+        messages.removeAll()
+        sessionID = nil
+        busy = false
+        pendingApproval = nil
+        do {
+            let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.sessionAttach,
+                                          payload: SessionAttach(provider: d.provider, sessionID: sid, url: d.url))
+            try await client.send(env)
+        } catch {
+            status = "Attach failed: \(error)"
+        }
+    }
+
     public func respond(_ decision: String) async {
         guard let client, let ap = pendingApproval else { return }
         let verb: String
@@ -256,6 +273,12 @@ public final class Model: ObservableObject {
                     } else if let s = try? Protocol.payload(data, as: Session.self) {
                         sessionID = s.id
                         refreshLiveActivity()
+                    }
+                case MessageType.sessionMessage:
+                    if let m = try? Protocol.payload(data, as: SessionMessage.self) {
+                        finalizeStreaming()
+                        let role: ChatMessage.Role = m.role == "user" ? .user : (m.role == "tool" ? .tool : .assistant)
+                        messages.append(ChatMessage(role: role, text: m.text))
                     }
                 case MessageType.outputDelta:
                     if let d = try? Protocol.payload(data, as: OutputDelta.self) {

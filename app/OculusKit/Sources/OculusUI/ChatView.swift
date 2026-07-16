@@ -105,11 +105,28 @@ public struct ChatView: View {
     private var discoveredList: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Detected on host").font(.headline)
+            Text("Tap an opencode session to open it here.")
+                .font(.caption2).foregroundStyle(palette.mutedForeground)
             ForEach(Array(model.discovered.enumerated()), id: \.offset) { _, d in
-                Text(describe(d)).font(.system(.caption, design: .monospaced))
+                if d.provider == "opencode" && d.kind == DiscoveredKind.session {
+                    Button {
+                        showDiscovered = false
+                        Task { await model.attach(d) }
+                    } label: {
+                        HStack {
+                            Text(describe(d)).font(.system(.caption, design: .monospaced))
+                            Spacer()
+                            Image(systemName: "arrow.up.right.square").font(.caption2)
+                        }
+                    }
+                    .buttonStyle(.plain).foregroundStyle(palette.primary)
+                } else {
+                    Text(describe(d)).font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(palette.mutedForeground)
+                }
             }
         }
-        .padding(16).frame(minWidth: 260)
+        .padding(16).frame(minWidth: 280)
     }
 
     private var statusColor: Color {

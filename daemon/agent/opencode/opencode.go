@@ -82,6 +82,64 @@ func (p *Provider) Create(ctx context.Context, cwd, prompt string) (agent.Sessio
 	return s, nil
 }
 
+// Attach connects to an existing session (discovered on the host): it subscribes to
+// live events and replays the session's message history so the app shows the
+// conversation and can continue it.
+func (p *Provider) Attach(ctx context.Context, sessionID string) (agent.Session, error) {
+	s := &session{p: p, id: sessionID, events: make(chan agent.Event, 64), done: make(chan struct{})}
+	if err := s.subscribe(); err != nil {
+		return nil, err
+	}
+	s.replayHistory(ctx)
+	return s, nil
+}
+
+// replayHistory fetches the session's messages and emits them as SessionMessage
+// events (oldest first) so the client can render the existing conversation.
+func (s *session) replayHistory(ctx context.Context) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.p.baseURL+"/session/"+s.id+"/message", nil)
+	if err != nil {
+		return
+	}
+	resp, err := s.p.http.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	var msgs []struct {
+		Info struct {
+			Role string `json:"role"`
+		} `json:"info"`
+		Parts []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+			Tool string `json:"tool"`
+		} `json:"parts"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&msgs) != nil {
+		return
+	}
+	for _, m := range msgs {
+		var text string
+		var tool string
+		for _, part := range m.Parts {
+			switch part.Type {
+			case "text":
+				text += part.Text
+			case "tool":
+				if tool == "" {
+					tool = part.Tool
+				}
+			}
+		}
+		if text != "" {
+			s.emit(agent.Event{Type: protocol.TypeSessionMessage, Payload: protocol.SessionMessage{SessionID: s.id, Role: m.Info.Role, Text: text}})
+		} else if tool != "" {
+			s.emit(agent.Event{Type: protocol.TypeSessionMessage, Payload: protocol.SessionMessage{SessionID: s.id, Role: "tool", Text: tool}})
+		}
+	}
+}
+
 func (p *Provider) postJSON(ctx context.Context, path string, body, out any) error {
 	var buf bytes.Buffer
 	if body != nil {

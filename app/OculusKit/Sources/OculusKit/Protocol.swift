@@ -8,11 +8,13 @@ public enum MessageType {
     public static let sessionCreate = "session.create"
     public static let sessionPrompt = "session.prompt"
     public static let sessionStop = "session.stop"
+    public static let sessionAttach = "session.attach"
     public static let approvalRespond = "approval.respond"
     public static let discover = "discover.list"
     public static let deviceRegister = "device.register"
 
     public static let sessionStatus = "session.status"
+    public static let sessionMessage = "session.message"
     public static let outputDelta = "output.delta"
     public static let approvalRequest = "approval.request"
 
@@ -69,6 +71,16 @@ public struct ApprovalRespond: Codable {
 }
 public struct Session: Codable { public var id: String; public var provider: String; public var status: String; public var title: String? }
 public struct ProtocolError: Codable { public var message: String }
+
+public struct SessionAttach: Codable {
+    public var provider: String; public var sessionID: String; public var url: String?
+    public init(provider: String, sessionID: String, url: String?) { self.provider = provider; self.sessionID = sessionID; self.url = url }
+    enum CodingKeys: String, CodingKey { case provider; case sessionID = "session_id"; case url }
+}
+public struct SessionMessage: Codable {
+    public var sessionID: String; public var role: String; public var text: String
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case role; case text }
+}
 
 public enum DiscoveredKind {
     public static let server = "server"

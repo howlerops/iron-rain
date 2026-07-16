@@ -27,7 +27,12 @@ type Hub struct {
 
 	notifier   push.Notifier // optional: push actionable approvals to a device
 	pushTokens []string      // registered device tokens
+	attach     AttacherFactory
 }
+
+// AttacherFactory returns an Attacher for a discovered session (by provider + URL),
+// or nil if that provider/URL can't be attached.
+type AttacherFactory func(provider, url string) agent.Attacher
 
 // New returns an empty Hub.
 func New() *Hub {
@@ -58,6 +63,13 @@ func (h *Hub) SetNotifier(n push.Notifier) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.notifier = n
+}
+
+// SetAttacherFactory installs the factory used to attach to discovered sessions.
+func (h *Hub) SetAttacherFactory(f AttacherFactory) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.attach = f
 }
 
 // RegisterDevice adds a device token to receive approval pushes.
@@ -188,6 +200,38 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			return
 		}
 		h.sendOK(conn, env.ID, nil)
+
+	case protocol.TypeSessionAttach:
+		var req protocol.SessionAttach
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad session.attach")
+			return
+		}
+		h.mu.Lock()
+		factory := h.attach
+		registered := h.providers[req.Provider]
+		h.mu.Unlock()
+		var att agent.Attacher
+		if factory != nil {
+			att = factory(req.Provider, req.URL)
+		}
+		if att == nil {
+			att, _ = registered.(agent.Attacher)
+		}
+		if att == nil {
+			h.sendErr(conn, env.ID, "provider cannot attach: "+req.Provider)
+			return
+		}
+		sess, err := att.Attach(ctx, req.SessionID)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.mu.Lock()
+		h.sessions[sess.ID()] = sess
+		h.mu.Unlock()
+		go h.forward(conn, sess)
+		h.sendOK(conn, env.ID, protocol.Session{ID: sess.ID(), Provider: sess.Provider(), Status: protocol.StatusRunning})
 
 	case protocol.TypeDiscover:
 		h.mu.Lock()

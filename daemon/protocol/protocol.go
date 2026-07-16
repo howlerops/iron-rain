@@ -19,12 +19,14 @@ const (
 	TypeSessionCreate   = "session.create"
 	TypeSessionPrompt   = "session.prompt"
 	TypeSessionStop     = "session.stop"
+	TypeSessionAttach   = "session.attach"
 	TypeApprovalRespond = "approval.respond"
 	TypeDiscover        = "discover.list"
 	TypeDeviceRegister  = "device.register"
 
 	// events (daemon -> client), no id
 	TypeSessionStatus   = "session.status"
+	TypeSessionMessage  = "session.message" // a full (historical/replayed) turn
 	TypeOutputDelta     = "output.delta"
 	TypeApprovalRequest = "approval.request"
 
@@ -66,6 +68,20 @@ type SessionCreate struct {
 
 type SessionRef struct {
 	SessionID string `json:"session_id"`
+}
+
+// SessionAttach attaches to an existing session discovered on the host.
+type SessionAttach struct {
+	Provider  string `json:"provider"`
+	SessionID string `json:"session_id"`
+	URL       string `json:"url,omitempty"` // opencode server URL the session lives on
+}
+
+// SessionMessage is a full (historical/replayed) conversation turn.
+type SessionMessage struct {
+	SessionID string `json:"session_id"`
+	Role      string `json:"role"` // user | assistant | tool
+	Text      string `json:"text"`
 }
 
 type SessionPrompt struct {

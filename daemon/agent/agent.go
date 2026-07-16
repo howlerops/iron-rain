@@ -43,3 +43,9 @@ type Provider interface {
 	Create(ctx context.Context, cwd, prompt string) (Session, error)
 	List(ctx context.Context) ([]protocol.Session, error)
 }
+
+// Attacher is an optional Provider capability: attach to an existing session that
+// was discovered on the host, replaying its history and then streaming it live.
+type Attacher interface {
+	Attach(ctx context.Context, sessionID string) (Session, error)
+}
