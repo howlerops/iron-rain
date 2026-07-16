@@ -1,0 +1,100 @@
+client:
+  name: basic
+  file-system: device-agnostic
+tools: {}
+targets:
+  "OculusApp-arm64-apple-macosx-debug.exe": ["<OculusApp-arm64-apple-macosx-debug.exe>"]
+  "OculusApp-arm64-apple-macosx-debug.module": ["<OculusApp-arm64-apple-macosx-debug.module>"]
+  "OculusKit-arm64-apple-macosx-debug.module": ["<OculusKit-arm64-apple-macosx-debug.module>"]
+  "PackageStructure": ["<PackageStructure>"]
+  "main": ["<OculusApp-arm64-apple-macosx-debug.exe>","<OculusApp-arm64-apple-macosx-debug.module>"]
+  "test": ["<OculusApp-arm64-apple-macosx-debug.exe>","<OculusApp-arm64-apple-macosx-debug.module>"]
+default: "main"
+nodes:
+  "/Users/jacob/projects/oculus/app/OculusApp/Sources/OculusApp/":
+    is-directory-structure: true
+    content-exclusion-patterns: [".git",".build"]
+  "/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp":
+    is-mutated: true
+commands:
+  "/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp-entitlement.plist":
+    tool: write-auxiliary-file
+    inputs: ["<entitlement-plist>","<com.apple.security.get-task-allow>"]
+    outputs: ["/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp-entitlement.plist"]
+    description: "Write auxiliary file /Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp-entitlement.plist"
+
+  "/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp.build/sources":
+    tool: write-auxiliary-file
+    inputs: ["<sources-file-list>","/Users/jacob/projects/oculus/app/OculusApp/Sources/OculusApp/OculusApp.swift"]
+    outputs: ["/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp.build/sources"]
+    description: "Write auxiliary file /Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp.build/sources"
+
+  "/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp.product/Objects.LinkFileList":
+    tool: write-auxiliary-file
+    inputs: ["<link-file-list>","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp.build/OculusApp.swift.o","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusKit.build/Client.swift.o","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusKit.build/Crypto.swift.o","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusKit.build/Protocol.swift.o"]
+    outputs: ["/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp.product/Objects.LinkFileList"]
+    description: "Write auxiliary file /Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp.product/Objects.LinkFileList"
+
+  "/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusKit.build/sources":
+    tool: write-auxiliary-file
+    inputs: ["<sources-file-list>","/Users/jacob/projects/oculus/app/OculusKit/Sources/OculusKit/Client.swift","/Users/jacob/projects/oculus/app/OculusKit/Sources/OculusKit/Crypto.swift","/Users/jacob/projects/oculus/app/OculusKit/Sources/OculusKit/Protocol.swift"]
+    outputs: ["/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusKit.build/sources"]
+    description: "Write auxiliary file /Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusKit.build/sources"
+
+  "/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt":
+    tool: write-auxiliary-file
+    inputs: ["<swift-get-version>","/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc"]
+    outputs: ["/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"]
+    always-out-of-date: "true"
+    description: "Write auxiliary file /Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
+
+  "<OculusApp-arm64-apple-macosx-debug.exe>":
+    tool: phony
+    inputs: ["<OculusApp-arm64-apple-macosx-debug.exe-CodeSigning>"]
+    outputs: ["<OculusApp-arm64-apple-macosx-debug.exe>"]
+
+  "<OculusApp-arm64-apple-macosx-debug.module>":
+    tool: phony
+    inputs: ["/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp.build/OculusApp.swift.o","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/Modules/OculusApp.swiftmodule"]
+    outputs: ["<OculusApp-arm64-apple-macosx-debug.module>"]
+
+  "<OculusKit-arm64-apple-macosx-debug.module>":
+    tool: phony
+    inputs: ["/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusKit.build/Client.swift.o","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusKit.build/Crypto.swift.o","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusKit.build/Protocol.swift.o","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/Modules/OculusKit.swiftmodule"]
+    outputs: ["<OculusKit-arm64-apple-macosx-debug.module>"]
+
+  "C.OculusApp-arm64-apple-macosx-debug.exe":
+    tool: shell
+    inputs: ["/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp.build/OculusApp.swift.o","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusKit.build/Client.swift.o","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusKit.build/Crypto.swift.o","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusKit.build/Protocol.swift.o","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp.product/Objects.LinkFileList"]
+    outputs: ["/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp"]
+    description: "Linking ./.build/arm64-apple-macosx/debug/OculusApp"
+    args: ["/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc","-L","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug","-o","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp","-module-name","OculusApp","-Xlinker","-no_warn_duplicate_libraries","-emit-executable","-Xlinker","-alias","-Xlinker","_OculusApp_main","-Xlinker","_main","-Xlinker","-rpath","-Xlinker","@loader_path","@/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp.product/Objects.LinkFileList","-Xlinker","-rpath","-Xlinker","/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-6.2/macosx","-target","arm64-apple-macosx14.0","-Xlinker","-add_ast_path","-Xlinker","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/Modules/OculusApp.swiftmodule","-Xlinker","-add_ast_path","-Xlinker","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/Modules/OculusKit.swiftmodule","-plugin-path","/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing","-sdk","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk","-F","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-I","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-L","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-g"]
+
+  "C.OculusApp-arm64-apple-macosx-debug.exe-entitlements":
+    tool: shell
+    inputs: ["/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp-entitlement.plist"]
+    outputs: ["<OculusApp-arm64-apple-macosx-debug.exe-CodeSigning>"]
+    description: "Applying debug entitlements to ./.build/arm64-apple-macosx/debug/OculusApp"
+    args: ["codesign","--force","--sign","-","--entitlements","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp-entitlement.plist","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp"]
+
+  "C.OculusApp-arm64-apple-macosx-debug.module":
+    tool: shell
+    inputs: ["/Users/jacob/projects/oculus/app/OculusApp/Sources/OculusApp/OculusApp.swift","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/Modules/OculusKit.swiftmodule","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp.build/sources"]
+    outputs: ["/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp.build/OculusApp.swift.o","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/Modules/OculusApp.swiftmodule"]
+    description: "Compiling Swift Module 'OculusApp' (1 sources)"
+    args: ["/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc","-module-name","OculusApp","-emit-dependencies","-emit-module","-emit-module-path","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/Modules/OculusApp.swiftmodule","-output-file-map","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp.build/output-file-map.json","-incremental","-c","@/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp.build/sources","-I","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/Modules","-target","arm64-apple-macosx14.0","-incremental","-enable-batch-mode","-serialize-diagnostics","-index-store-path","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/index/store","-Onone","-enable-testing","-j10","-DSWIFT_PACKAGE","-DDEBUG","-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE","-module-cache-path","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/ModuleCache","-parseable-output","-Xfrontend","-entry-point-function-name","-Xfrontend","OculusApp_main","-parse-as-library","-swift-version","5","-plugin-path","/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing","-sdk","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk","-F","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-I","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-L","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-g","-Xcc","-isysroot","-Xcc","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk","-Xcc","-F","-Xcc","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-Xcc","-fPIC","-Xcc","-g","-package-name","oculusapp"]
+
+  "C.OculusKit-arm64-apple-macosx-debug.module":
+    tool: shell
+    inputs: ["/Users/jacob/projects/oculus/app/OculusKit/Sources/OculusKit/Client.swift","/Users/jacob/projects/oculus/app/OculusKit/Sources/OculusKit/Crypto.swift","/Users/jacob/projects/oculus/app/OculusKit/Sources/OculusKit/Protocol.swift","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusKit.build/sources"]
+    outputs: ["/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusKit.build/Client.swift.o","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusKit.build/Crypto.swift.o","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusKit.build/Protocol.swift.o","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/Modules/OculusKit.swiftmodule"]
+    description: "Compiling Swift Module 'OculusKit' (3 sources)"
+    args: ["/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc","-module-name","OculusKit","-emit-dependencies","-emit-module","-emit-module-path","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/Modules/OculusKit.swiftmodule","-output-file-map","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusKit.build/output-file-map.json","-parse-as-library","-incremental","-c","@/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusKit.build/sources","-I","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/Modules","-target","arm64-apple-macosx13.0","-incremental","-enable-batch-mode","-serialize-diagnostics","-index-store-path","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/index/store","-Onone","-enable-testing","-j10","-DSWIFT_PACKAGE","-DDEBUG","-DSWIFT_MODULE_RESOURCE_BUNDLE_UNAVAILABLE","-module-cache-path","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/ModuleCache","-parseable-output","-parse-as-library","-emit-objc-header","-emit-objc-header-path","/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusKit.build/include/OculusKit-Swift.h","-swift-version","5","-plugin-path","/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing","-sdk","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk","-F","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-I","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-L","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib","-g","-Xcc","-isysroot","-Xcc","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk","-Xcc","-F","-Xcc","/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks","-Xcc","-fPIC","-Xcc","-g","-package-name","oculuskit"]
+
+  "PackageStructure":
+    tool: package-structure-tool
+    inputs: ["/Users/jacob/projects/oculus/app/OculusApp/Sources/OculusApp/","/Users/jacob/projects/oculus/app/OculusApp/Package.swift","/Users/jacob/projects/oculus/app/OculusApp/Package.resolved"]
+    outputs: ["<PackageStructure>"]
+    description: "Planning build"
+    allow-missing-inputs: true
+

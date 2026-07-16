@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp.build/primary.swiftdeps"
+  },
+  "/Users/jacob/projects/oculus/app/OculusApp/Sources/OculusApp/OculusApp.swift": {
+    "dependencies": "/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp.build/OculusApp.d",
+    "object": "/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp.build/OculusApp.swift.o",
+    "swiftmodule": "/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp.build/OculusApp~partial.swiftmodule",
+    "swift-dependencies": "/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp.build/OculusApp.swiftdeps",
+    "diagnostics": "/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusApp.build/OculusApp.dia"
+  }
+}

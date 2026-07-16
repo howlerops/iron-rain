@@ -1,0 +1,27 @@
+{
+  "object" : {
+    "artifacts" : [
+
+    ],
+    "dependencies" : [
+      {
+        "basedOn" : null,
+        "packageRef" : {
+          "identity" : "oculuskit",
+          "kind" : "fileSystem",
+          "location" : "/Users/jacob/projects/oculus/app/OculusKit",
+          "name" : "OculusKit"
+        },
+        "state" : {
+          "name" : "fileSystem",
+          "path" : "/Users/jacob/projects/oculus/app/OculusKit"
+        },
+        "subpath" : "oculuskit"
+      }
+    ],
+    "prebuilts" : [
+
+    ]
+  },
+  "version" : 7
+}
