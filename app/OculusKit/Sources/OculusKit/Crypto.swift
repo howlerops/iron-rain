@@ -16,6 +16,11 @@ public enum OculusCrypto {
         public let d2c: SymmetricKey
     }
 
+    /// Generates a fresh random X25519 private key (32 raw bytes).
+    public static func generatePrivateKey() -> Data {
+        Curve25519.KeyAgreement.PrivateKey().rawRepresentation
+    }
+
     /// The 32-byte X25519 public key for a raw private key.
     public static func publicKey(fromPrivate priv: Data) throws -> Data {
         try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: priv).publicKey.rawRepresentation

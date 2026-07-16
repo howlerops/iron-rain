@@ -28,7 +28,15 @@
       "inputs" : [
         {
           "kind" : "file",
+          "name" : "/Users/jacob/projects/oculus/app/OculusKit/Sources/OculusKit/Client.swift"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/jacob/projects/oculus/app/OculusKit/Sources/OculusKit/Crypto.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jacob/projects/oculus/app/OculusKit/Sources/OculusKit/Protocol.swift"
         },
         {
           "kind" : "file",
@@ -43,7 +51,9 @@
       "moduleName" : "OculusKit",
       "moduleOutputPath" : "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/Modules/OculusKit.swiftmodule",
       "objects" : [
-        "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKit.build/Crypto.swift.o"
+        "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKit.build/Client.swift.o",
+        "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKit.build/Crypto.swift.o",
+        "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKit.build/Protocol.swift.o"
       ],
       "otherArguments" : [
         "-target",
@@ -98,7 +108,15 @@
       "outputs" : [
         {
           "kind" : "file",
+          "name" : "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKit.build/Client.swift.o"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKit.build/Crypto.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKit.build/Protocol.swift.o"
         },
         {
           "kind" : "file",
@@ -107,7 +125,9 @@
       ],
       "prepareForIndexing" : false,
       "sources" : [
-        "/Users/jacob/projects/oculus/app/OculusKit/Sources/OculusKit/Crypto.swift"
+        "/Users/jacob/projects/oculus/app/OculusKit/Sources/OculusKit/Client.swift",
+        "/Users/jacob/projects/oculus/app/OculusKit/Sources/OculusKit/Crypto.swift",
+        "/Users/jacob/projects/oculus/app/OculusKit/Sources/OculusKit/Protocol.swift"
       ],
       "tempsPath" : "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKit.build",
       "wholeModuleOptimization" : false
@@ -218,6 +238,10 @@
         },
         {
           "kind" : "file",
+          "name" : "/Users/jacob/projects/oculus/app/OculusKit/Tests/OculusKitTests/LiveE2ETests.swift"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/swift-version--58304C5D6DBC2206.txt"
         },
         {
@@ -233,7 +257,8 @@
       "moduleName" : "OculusKitTests",
       "moduleOutputPath" : "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/Modules/OculusKitTests.swiftmodule",
       "objects" : [
-        "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKitTests.build/CryptoVectorsTests.swift.o"
+        "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKitTests.build/CryptoVectorsTests.swift.o",
+        "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKitTests.build/LiveE2ETests.swift.o"
       ],
       "otherArguments" : [
         "-target",
@@ -291,12 +316,17 @@
         },
         {
           "kind" : "file",
+          "name" : "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKitTests.build/LiveE2ETests.swift.o"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/Modules/OculusKitTests.swiftmodule"
         }
       ],
       "prepareForIndexing" : false,
       "sources" : [
-        "/Users/jacob/projects/oculus/app/OculusKit/Tests/OculusKitTests/CryptoVectorsTests.swift"
+        "/Users/jacob/projects/oculus/app/OculusKit/Tests/OculusKitTests/CryptoVectorsTests.swift",
+        "/Users/jacob/projects/oculus/app/OculusKit/Tests/OculusKitTests/LiveE2ETests.swift"
       ],
       "tempsPath" : "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKitTests.build",
       "wholeModuleOptimization" : false
@@ -313,7 +343,9 @@
       "-package-name",
       "oculuskit",
       "-c",
+      "/Users/jacob/projects/oculus/app/OculusKit/Sources/OculusKit/Client.swift",
       "/Users/jacob/projects/oculus/app/OculusKit/Sources/OculusKit/Crypto.swift",
+      "/Users/jacob/projects/oculus/app/OculusKit/Sources/OculusKit/Protocol.swift",
       "-I",
       "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/Modules",
       "-target",
@@ -434,6 +466,7 @@
       "oculuskit",
       "-c",
       "/Users/jacob/projects/oculus/app/OculusKit/Tests/OculusKitTests/CryptoVectorsTests.swift",
+      "/Users/jacob/projects/oculus/app/OculusKit/Tests/OculusKitTests/LiveE2ETests.swift",
       "-I",
       "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/Modules",
       "-target",
@@ -529,7 +562,15 @@
         },
         {
           "kind" : "file",
+          "name" : "/Users/jacob/projects/oculus/app/OculusKit/Sources/OculusKit/Client.swift"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/jacob/projects/oculus/app/OculusKit/Sources/OculusKit/Crypto.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jacob/projects/oculus/app/OculusKit/Sources/OculusKit/Protocol.swift"
         }
       ],
       "outputFilePath" : "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKit.build/sources"
@@ -557,7 +598,15 @@
         },
         {
           "kind" : "file",
+          "name" : "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKit.build/Client.swift.o"
+        },
+        {
+          "kind" : "file",
           "name" : "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKit.build/Crypto.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKit.build/Protocol.swift.o"
         },
         {
           "kind" : "file",
@@ -566,6 +615,10 @@
         {
           "kind" : "file",
           "name" : "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKitTests.build/CryptoVectorsTests.swift.o"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKitTests.build/LiveE2ETests.swift.o"
         }
       ],
       "outputFilePath" : "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKitPackageTests.product/Objects.LinkFileList"
@@ -580,6 +633,10 @@
         {
           "kind" : "file",
           "name" : "/Users/jacob/projects/oculus/app/OculusKit/Tests/OculusKitTests/CryptoVectorsTests.swift"
+        },
+        {
+          "kind" : "file",
+          "name" : "/Users/jacob/projects/oculus/app/OculusKit/Tests/OculusKitTests/LiveE2ETests.swift"
         }
       ],
       "outputFilePath" : "/Users/jacob/projects/oculus/app/OculusKit/.build/arm64-apple-macosx/debug/OculusKitTests.build/sources"
