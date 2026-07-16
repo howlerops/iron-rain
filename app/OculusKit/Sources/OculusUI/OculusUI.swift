@@ -332,7 +332,10 @@ public final class Model: ObservableObject {
                             busy = false
                         default:
                             busy = true
-                            pendingApproval = nil // resolved on some client → clear on all
+                            // NOTE: do NOT clear pendingApproval here — with parallel tool
+                            // calls a sibling tool can be "running" while another awaits
+                            // approval. Cross-client clear happens on idle / when a new
+                            // approval replaces it.
                         }
                         refreshLiveActivity()
                     }
