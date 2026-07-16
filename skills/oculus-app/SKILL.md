@@ -34,6 +34,15 @@ Verified: the iOS target builds for the simulator SDK and launches (renders the 
 protocol path is proven by `OculusKit` LiveE2ETests (Swift client ↔ real Go daemon) — the app reuses
 that same code, so a live daemon connection works transitively.
 
+## Theme & assets
+- `OculusUI/OculusTheme.swift` — the **HowlerOps palette** (amber `#d9a520` on black, dark+light),
+  migrated from linear-orchestrator's `apps/mobile/src/theme/colors.ts`. Use `OculusPalette.current(scheme)`
+  (`@Environment(\.colorScheme)`); `Color(hex:)` helper included. Aesthetic: sparse, dark, session-first.
+- `app/Oculus/Assets.xcassets` (in both app targets): `AppIcon` (gold wolf-circuit mark, iOS + macOS
+  sizes) and `WolfMark` (dark/light imageset for the in-app header logo, `Image("WolfMark")`). The
+  1024 source is HowlerOps' `howlerops-icon-dark.png`. Fonts (Inter + Fira Code) are the intended
+  brand type; the app currently uses system + `.monospaced` (bundling the .ttf is a follow-up).
+
 ## v0 surface (`ContentView`)
 Connect form (ws URL · daemon pubkey hex · pairing secret) → prompt an agent → **approve/deny** banner
 → streamed output. On connect it fires `discover.list` and shows **autodetected** host sessions

@@ -143,13 +143,21 @@ public final class Model: ObservableObject {
 public struct ContentView: View {
     @ObservedObject var model: Model
     @State private var prompt = ""
+    @Environment(\.colorScheme) private var scheme
+    private var palette: OculusPalette { .current(scheme) }
 
     public init(model: Model) { self.model = model }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Oculus").font(.largeTitle.bold())
-            Text(model.status).font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                Image("WolfMark")
+                    .resizable().scaledToFit()
+                    .frame(width: 34, height: 34)
+                Text("Oculus").font(.largeTitle.bold())
+                Spacer()
+            }
+            Text(model.status).font(.caption).foregroundStyle(palette.mutedForeground)
 
             if !model.connected {
                 connectForm
@@ -159,6 +167,10 @@ public struct ContentView: View {
             Spacer()
         }
         .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(palette.background.ignoresSafeArea())
+        .foregroundStyle(palette.foreground)
+        .tint(palette.primary)
         // Handoff: advertise the active session so the other device can continue it.
         .userActivity(oculusSessionActivityType, isActive: model.sessionID != nil) { activity in
             activity.title = "Oculus session"
@@ -225,9 +237,10 @@ public struct ContentView: View {
                 ForEach(Array(model.output.enumerated()), id: \.offset) { _, line in
                     Text(line).font(.system(.body, design: .monospaced)).textSelection(.enabled)
                 }
-            }.frame(maxWidth: .infinity, alignment: .leading)
+            }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
         }
-        .background(Color.primary.opacity(0.03))
+        .background(palette.card)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     private func describe(_ d: Discovered) -> String {

@@ -1,0 +1,7 @@
+{
+  "images" : [
+    { "idiom" : "universal", "filename" : "wolf-dark.png", "appearances" : [ { "appearance" : "luminosity", "value" : "dark" } ] },
+    { "idiom" : "universal", "filename" : "wolf-light.png" }
+  ],
+  "info" : { "author" : "xcode", "version" : 1 }
+}
