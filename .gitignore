@@ -28,3 +28,5 @@ node_modules/
 
 # OMC tooling state
 .omc/
+/app/Oculus/Info-iOS.plist
+/app/Oculus/Info-macOS.plist

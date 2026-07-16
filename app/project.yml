@@ -19,9 +19,7 @@ settings:
     MARKETING_VERSION: "0.0.1"
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_VERSION: "5.9"
-    GENERATE_INFOPLIST_FILE: YES
     CODE_SIGNING_ALLOWED: NO
-    INFOPLIST_KEY_CFBundleDisplayName: Oculus
 
 targets:
   Oculus-iOS:
@@ -32,19 +30,35 @@ targets:
     dependencies:
       - package: OculusKit
         product: OculusUI
+    info:
+      path: Oculus/Info-iOS.plist
+      properties:
+        CFBundleDisplayName: Oculus
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UIApplicationSupportsIndirectInputEvents: true
+        NSUserActivityTypes:
+          - com.howlerops.oculus.session
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.howlerops.oculus
         TARGETED_DEVICE_FAMILY: "1,2"
-        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
-        INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
 
   Oculus-macOS:
     type: application
     platform: macOS
     sources:
       - Oculus/Sources
+    info:
+      path: Oculus/Info-macOS.plist
+      properties:
+        CFBundleDisplayName: Oculus
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
+        NSUserActivityTypes:
+          - com.howlerops.oculus.session
     dependencies:
       - package: OculusKit
         product: OculusUI

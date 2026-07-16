@@ -39,6 +39,11 @@ public final class Model: ObservableObject {
             status = "Connected"
             Task { await receiveLoop() }
             await discover()
+            // Start any prompt queued by the "Start Session" App Intent.
+            if let queued = OculusStore.shared.pendingPrompt {
+                OculusStore.shared.pendingPrompt = nil
+                await startSession(prompt: queued)
+            }
         } catch {
             status = "Connect failed: \(error)"
         }
@@ -154,6 +159,18 @@ public struct ContentView: View {
             Spacer()
         }
         .padding()
+        // Handoff: advertise the active session so the other device can continue it.
+        .userActivity(oculusSessionActivityType, isActive: model.sessionID != nil) { activity in
+            activity.title = "Oculus session"
+            if let sid = model.sessionID { activity.userInfo = ["session_id": sid] }
+            activity.isEligibleForHandoff = true
+        }
+        .onContinueUserActivity(oculusSessionActivityType) { activity in
+            if let sid = activity.userInfo?["session_id"] as? String {
+                OculusStore.shared.handoffSessionID = sid
+                model.output.append("↩︎ Handoff: continue session \(sid)")
+            }
+        }
     }
 
     private var connectForm: some View {
