@@ -59,7 +59,7 @@ public final class Model: ObservableObject {
     /// saved pairing it reads the daemon's local pairing file (~/.oculus/pairing.json)
     /// so a same-machine app connects with zero config.
     public func autoConnectIfPaired() async {
-        if !hasSavedPairing { loadLocalPairing() }
+        loadLocalPairing() // macOS: refresh the reachable URL (and pair if unpaired)
         if hasSavedPairing && !connected { await connect() }
     }
 
@@ -69,8 +69,10 @@ public final class Model: ObservableObject {
         guard let data = FileManager.default.contents(atPath: path),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: String],
               let ws = obj["ws"], let pub = obj["pub"], let sec = obj["secret"] else { return }
-        applyPairing(url: ws, pub: pub, secret: sec)
+        // Always refresh the reachable URL for the pairing QR — even once we're paired,
+        // since the daemon's public URL (relay/tunnel) can change between launches.
         pairingPublicURL = obj["public"]
+        if !hasSavedPairing { applyPairing(url: ws, pub: pub, secret: sec) }
         #endif
     }
 
