@@ -14,10 +14,15 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+
+	"github.com/mdp/qrterminal/v3"
 
 	"github.com/howlerops/oculus/daemon/agent/claudecode"
 	"github.com/howlerops/oculus/daemon/agent/opencode"
@@ -72,6 +77,7 @@ func serve(args []string) error {
 	apnsTeamID := fs.String("apns-team-id", "", "Apple Team ID (with --apns-key)")
 	apnsBundle := fs.String("apns-bundle", "com.howlerops.oculus", "app bundle id / APNs topic")
 	apnsSandbox := fs.Bool("apns-sandbox", false, "use the APNs sandbox endpoint")
+	publicURL := fs.String("public-url", "", "reachable base ws/wss URL for the pairing QR (e.g. wss://x.ngrok-free.app); default derives a LAN URL from --addr")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -127,7 +133,57 @@ func serve(args []string) error {
 	if pushEnabled {
 		fmt.Printf("  push:           APNs enabled (bundle %s)\n", *apnsBundle)
 	}
+	printPairing(wsPublicURL(*publicURL, *addr), hex.EncodeToString(kp.Public()), sec)
 	return http.ListenAndServe(*addr, mux)
+}
+
+// wsPublicURL returns the reachable ws URL clients should dial. If publicURL is set
+// it's used as the base (…/ws appended); otherwise a LAN URL is derived from addr.
+func wsPublicURL(publicURL, addr string) string {
+	if publicURL != "" {
+		base := strings.TrimRight(publicURL, "/")
+		if strings.HasSuffix(base, "/ws") {
+			return base
+		}
+		return base + "/ws"
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "ws://" + addr + "/ws"
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = lanIP()
+	}
+	return "ws://" + net.JoinHostPort(host, port) + "/ws"
+}
+
+// lanIP returns the first non-loopback IPv4 address, or 127.0.0.1.
+func lanIP() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "127.0.0.1"
+	}
+	for _, a := range addrs {
+		if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+			if ip4 := ipnet.IP.To4(); ip4 != nil {
+				return ip4.String()
+			}
+		}
+	}
+	return "127.0.0.1"
+}
+
+// printPairing prints the oculus:// pairing URL and a scannable QR to the terminal.
+func printPairing(wsURL, pubHex, secret string) {
+	pairURL := fmt.Sprintf("oculus://pair?ws=%s&pub=%s&secret=%s",
+		url.QueryEscape(wsURL), pubHex, url.QueryEscape(secret))
+	fmt.Printf("\n  pair from your phone — scan this QR (Oculus app → Scan QR):\n\n")
+	qrterminal.GenerateWithConfig(pairURL, qrterminal.Config{
+		Level: qrterminal.L, Writer: os.Stdout, HalfBlocks: true,
+		BlackChar: qrterminal.BLACK_BLACK, WhiteChar: qrterminal.WHITE_WHITE,
+		QuietZone: 1,
+	})
+	fmt.Printf("\n  or paste: %s\n\n", pairURL)
 }
 
 // enablePush parses the .p8 auth key and installs an APNs notifier on the hub.
