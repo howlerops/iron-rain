@@ -284,8 +284,14 @@ public final class Model: ObservableObject {
                     }
                 case MessageType.sessionMessage:
                     if let m = try? Protocol.payload(data, as: SessionMessage.self) {
-                        finalizeStreaming()
                         let role: ChatMessage.Role = m.role == "user" ? .user : (m.role == "tool" ? .tool : .assistant)
+                        let trimmed = m.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                        // Skip the echo of our own just-sent user turn (appended locally for instant feedback).
+                        if role == .user, let last = messages.last, last.role == .user,
+                           last.text.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed {
+                            break
+                        }
+                        finalizeStreaming()
                         messages.append(ChatMessage(role: role, text: m.text))
                     }
                 case MessageType.outputDelta:
@@ -373,6 +379,7 @@ public struct ContentView: View {
     @ObservedObject var model: Model
     @Environment(\.colorScheme) private var scheme
     private var palette: OculusPalette { .current(scheme) }
+    @State private var selection: String?
 
     public init(model: Model) { self.model = model }
 
@@ -380,10 +387,18 @@ public struct ContentView: View {
         Group {
             if model.connected {
                 NavigationSplitView {
-                    SessionSidebar(model: model)
-                        .navigationSplitViewColumnWidth(min: 220, ideal: 260)
+                    SessionSidebar(model: model, selection: $selection)
+                        .navigationSplitViewColumnWidth(min: 230, ideal: 270)
                 } detail: {
                     ChatView(model: model)
+                }
+                .onChange(of: selection) { sel in
+                    guard let sel else { return }
+                    if sel == SessionSidebar.newSessionTag {
+                        model.newSession()
+                    } else if let d = model.discovered.first(where: { $0.sessionID == sel }) {
+                        Task { await model.attach(d) }
+                    }
                 }
             } else {
                 ConnectView(model: model)

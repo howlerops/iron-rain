@@ -13,14 +13,11 @@ public struct ChatView: View {
     private var palette: OculusPalette { .current(scheme) }
 
     @State private var draft = ""
-    @State private var showPairingQR = false
 
     public init(model: Model) { self.model = model }
 
     public var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider().overlay(palette.border)
             transcript
             if let ap = model.pendingApproval {
                 ApprovalCard(approval: ap, palette: palette,
@@ -33,33 +30,10 @@ public struct ChatView: View {
         }
         .background(palette.background.ignoresSafeArea())
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: model.pendingApproval)
-    }
-
-    private var header: some View {
-        HStack(spacing: 10) {
-            Image("WolfMark").resizable().scaledToFit().frame(width: 26, height: 26)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Oculus").font(.headline)
-                HStack(spacing: 5) {
-                    Circle().fill(statusColor).frame(width: 7, height: 7)
-                    Text(statusLabel).font(.caption2).foregroundStyle(palette.mutedForeground)
-                }
-            }
-            Spacer()
-            Menu {
-                Button("New session") { model.newSession() }
-                if model.pairingURL != nil {
-                    Button("Pair a phone…") { showPairingQR = true }
-                }
-                Button("Disconnect", role: .destructive) { model.disconnect() }
-            } label: {
-                Image(systemName: "ellipsis.circle").foregroundStyle(palette.mutedForeground)
-            }
-        }
-        .padding(.horizontal, 16).padding(.vertical, 10)
-        .sheet(isPresented: $showPairingQR) {
-            PairingQRView(url: model.pairingURL ?? "", palette: palette) { showPairingQR = false }
-        }
+        .navigationTitle(model.sessionID == nil ? "New session" : statusLabel)
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
     }
 
     private var transcript: some View {
@@ -93,12 +67,6 @@ public struct ChatView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, 40)
-    }
-
-    private var statusColor: Color {
-        if model.pendingApproval != nil { return palette.primary }
-        if model.busy { return .green }
-        return model.connected ? palette.mutedForeground : .red
     }
 
     private var statusLabel: String {

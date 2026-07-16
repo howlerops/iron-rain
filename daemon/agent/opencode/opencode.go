@@ -175,6 +175,10 @@ type session struct {
 	cancel    context.CancelFunc
 	closeOnce sync.Once
 	done      chan struct{}
+
+	// populated in the (single) readEvents goroutine — no mutex needed.
+	msgRoles    map[string]string // messageID -> role (from message.updated)
+	emittedUser map[string]bool   // messageIDs already forwarded as a user turn
 }
 
 func (s *session) ID() string                 { return s.id }
@@ -232,6 +236,49 @@ func (s *session) handle(raw []byte) {
 		return
 	}
 	switch e.Type {
+	case "message.updated":
+		// Record messageID -> role so we can tell user turns from assistant turns.
+		var mu struct {
+			Info struct {
+				ID   string `json:"id"`
+				Role string `json:"role"`
+			} `json:"info"`
+		}
+		if json.Unmarshal(e.Properties, &mu) == nil && mu.Info.ID != "" {
+			if s.msgRoles == nil {
+				s.msgRoles = map[string]string{}
+			}
+			s.msgRoles[mu.Info.ID] = mu.Info.Role
+		}
+
+	case "message.part.updated":
+		// Forward USER turns (so every attached client shows a prompt sent by any
+		// other client). Assistant text streams via message.part.delta, so we only
+		// emit user parts here, once per message.
+		var pu struct {
+			Part struct {
+				Type      string `json:"type"`
+				Text      string `json:"text"`
+				MessageID string `json:"messageID"`
+				SessionID string `json:"sessionID"`
+			} `json:"part"`
+		}
+		if json.Unmarshal(e.Properties, &pu) != nil || pu.Part.SessionID != s.id ||
+			pu.Part.Type != "text" || pu.Part.Text == "" {
+			return
+		}
+		if s.msgRoles[pu.Part.MessageID] != "user" {
+			return
+		}
+		if s.emittedUser == nil {
+			s.emittedUser = map[string]bool{}
+		}
+		if s.emittedUser[pu.Part.MessageID] {
+			return
+		}
+		s.emittedUser[pu.Part.MessageID] = true
+		s.emit(agent.Event{Type: protocol.TypeSessionMessage, Payload: protocol.SessionMessage{SessionID: s.id, Role: "user", Text: pu.Part.Text}})
+
 	case "message.part.delta":
 		// Real opencode streams assistant tokens as message.part.delta events with a
 		// top-level {sessionID, field, delta}. (message.part.updated carries the full
