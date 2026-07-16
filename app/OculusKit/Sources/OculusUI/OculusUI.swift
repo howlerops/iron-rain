@@ -23,6 +23,7 @@ public final class Model: ObservableObject {
     @Published public var pendingApproval: ApprovalRequest?
     @Published public var discovered: [Discovered] = []
     @Published public var busy = false // agent is producing output
+    @Published public var activity: String? // current step, e.g. "running bash"
     @Published public var pairingPublicURL: String? // reachable URL for the phone-pairing QR
 
     private var client: OculusClient?
@@ -248,6 +249,8 @@ public final class Model: ObservableObject {
     // MARK: streaming helpers
 
     private func appendAssistantDelta(_ text: String) {
+        // The answer starting means thinking is done — finalize any streaming thinking.
+        finalizeThinking()
         if let last = messages.last, last.role == .assistant, last.streaming {
             messages[messages.count - 1].text += text
         } else {
@@ -255,7 +258,22 @@ public final class Model: ObservableObject {
         }
     }
 
+    private func appendThinkingDelta(_ text: String) {
+        if let last = messages.last, last.role == .thinking, last.streaming {
+            messages[messages.count - 1].text += text
+        } else {
+            messages.append(ChatMessage(role: .thinking, text: text, streaming: true))
+        }
+    }
+
+    private func finalizeThinking() {
+        if let last = messages.last, last.role == .thinking, last.streaming {
+            messages[messages.count - 1].streaming = false
+        }
+    }
+
     private func finalizeStreaming() {
+        finalizeThinking()
         if let last = messages.last, last.role == .assistant, last.streaming {
             messages[messages.count - 1].streaming = false
         }
@@ -294,6 +312,11 @@ public final class Model: ObservableObject {
                         finalizeStreaming()
                         messages.append(ChatMessage(role: role, text: m.text))
                     }
+                case MessageType.thinking:
+                    if let t = try? Protocol.payload(data, as: Thinking.self) {
+                        appendThinkingDelta(t.text)
+                        busy = true
+                    }
                 case MessageType.outputDelta:
                     if let d = try? Protocol.payload(data, as: OutputDelta.self) {
                         appendAssistantDelta(d.text)
@@ -301,14 +324,15 @@ public final class Model: ObservableObject {
                 case MessageType.sessionStatus:
                     if let ss = try? Protocol.payload(data, as: SessionStatus.self) {
                         status = ss.status
-                        if ss.status == SessionStatusValue.idle || ss.status == SessionStatusValue.done {
-                            pendingApproval = nil
+                        activity = ss.detail
+                        switch ss.status {
+                        case SessionStatusValue.idle, SessionStatusValue.done:
+                            pendingApproval = nil; busy = false; activity = nil; finalizeStreaming()
+                        case SessionStatusValue.awaitingApproval:
                             busy = false
-                            finalizeStreaming()
-                        } else if ss.status == SessionStatusValue.awaitingApproval {
-                            busy = false
-                        } else {
+                        default:
                             busy = true
+                            pendingApproval = nil // resolved on some client → clear on all
                         }
                         refreshLiveActivity()
                     }

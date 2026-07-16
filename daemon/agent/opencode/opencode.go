@@ -252,47 +252,64 @@ func (s *session) handle(raw []byte) {
 		}
 
 	case "message.part.updated":
-		// Forward USER turns (so every attached client shows a prompt sent by any
-		// other client). Assistant text streams via message.part.delta, so we only
-		// emit user parts here, once per message.
 		var pu struct {
 			Part struct {
 				Type      string `json:"type"`
 				Text      string `json:"text"`
+				Tool      string `json:"tool"`
 				MessageID string `json:"messageID"`
 				SessionID string `json:"sessionID"`
+				State     struct {
+					Status string `json:"status"`
+				} `json:"state"`
 			} `json:"part"`
 		}
-		if json.Unmarshal(e.Properties, &pu) != nil || pu.Part.SessionID != s.id ||
-			pu.Part.Type != "text" || pu.Part.Text == "" {
+		if json.Unmarshal(e.Properties, &pu) != nil || pu.Part.SessionID != s.id {
 			return
 		}
-		if s.msgRoles[pu.Part.MessageID] != "user" {
-			return
+		switch pu.Part.Type {
+		case "tool":
+			// A tool that's running/completed → the agent is doing work; surface it as
+			// activity ("running bash") and mark the session running, which clears any
+			// pending approval on EVERY attached client once it's resolved.
+			if pu.Part.State.Status == "running" || pu.Part.State.Status == "completed" {
+				s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{
+					SessionID: s.id, Status: protocol.StatusRunning, Detail: "running " + pu.Part.Tool,
+				}})
+			}
+		case "text":
+			// Forward USER turns (so every attached client shows a prompt from any client;
+			// assistant text streams via message.part.delta). Once per message.
+			if pu.Part.Text == "" || s.msgRoles[pu.Part.MessageID] != "user" {
+				return
+			}
+			if s.emittedUser == nil {
+				s.emittedUser = map[string]bool{}
+			}
+			if s.emittedUser[pu.Part.MessageID] {
+				return
+			}
+			s.emittedUser[pu.Part.MessageID] = true
+			s.emit(agent.Event{Type: protocol.TypeSessionMessage, Payload: protocol.SessionMessage{SessionID: s.id, Role: "user", Text: pu.Part.Text}})
 		}
-		if s.emittedUser == nil {
-			s.emittedUser = map[string]bool{}
-		}
-		if s.emittedUser[pu.Part.MessageID] {
-			return
-		}
-		s.emittedUser[pu.Part.MessageID] = true
-		s.emit(agent.Event{Type: protocol.TypeSessionMessage, Payload: protocol.SessionMessage{SessionID: s.id, Role: "user", Text: pu.Part.Text}})
 
 	case "message.part.delta":
-		// Real opencode streams assistant tokens as message.part.delta events with a
-		// top-level {sessionID, field, delta}. (message.part.updated carries the full
-		// accumulated part — incl. the echoed user prompt — so we stream deltas only,
-		// avoiding duplication. Verified vs opencode 1.17.19.)
+		// opencode streams assistant output as {sessionID, field, delta}. field "text"
+		// is the answer; field "reasoning" is the thinking ("it's working").
 		var pr struct {
 			SessionID string `json:"sessionID"`
 			Field     string `json:"field"`
 			Delta     string `json:"delta"`
 		}
-		if json.Unmarshal(e.Properties, &pr) != nil || pr.SessionID != s.id || pr.Field != "text" || pr.Delta == "" {
+		if json.Unmarshal(e.Properties, &pr) != nil || pr.SessionID != s.id || pr.Delta == "" {
 			return
 		}
-		s.emit(agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: s.id, Text: pr.Delta}})
+		switch pr.Field {
+		case "text":
+			s.emit(agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: s.id, Text: pr.Delta}})
+		case "reasoning":
+			s.emit(agent.Event{Type: protocol.TypeThinking, Payload: protocol.Thinking{SessionID: s.id, Text: pr.Delta}})
+		}
 
 	case "permission.asked", "permission.updated":
 		// opencode 1.17.x emits `permission.asked` with properties.permission (the tool);

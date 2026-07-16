@@ -27,6 +27,7 @@ const (
 	// events (daemon -> client), no id
 	TypeSessionStatus   = "session.status"
 	TypeSessionMessage  = "session.message" // a full (historical/replayed) turn
+	TypeThinking        = "thinking.delta"  // streaming reasoning ("it's working")
 	TypeOutputDelta     = "output.delta"
 	TypeApprovalRequest = "approval.request"
 
@@ -92,6 +93,13 @@ type SessionPrompt struct {
 type SessionStatus struct {
 	SessionID string `json:"session_id"`
 	Status    string `json:"status"`
+	Detail    string `json:"detail,omitempty"` // current activity, e.g. "running bash"
+}
+
+// Thinking is a streaming chunk of the agent's reasoning (shown as "thinking…").
+type Thinking struct {
+	SessionID string `json:"session_id"`
+	Text      string `json:"text"`
 }
 
 type OutputDelta struct {

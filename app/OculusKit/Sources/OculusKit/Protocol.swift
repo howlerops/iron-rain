@@ -15,6 +15,7 @@ public enum MessageType {
 
     public static let sessionStatus = "session.status"
     public static let sessionMessage = "session.message"
+    public static let thinking = "thinking.delta"
     public static let outputDelta = "output.delta"
     public static let approvalRequest = "approval.request"
 
@@ -57,8 +58,12 @@ public struct OutputDelta: Codable {
     enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case text }
 }
 public struct SessionStatus: Codable {
-    public var sessionID: String; public var status: String
-    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case status }
+    public var sessionID: String; public var status: String; public var detail: String?
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case status; case detail }
+}
+public struct Thinking: Codable {
+    public var sessionID: String; public var text: String
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case text }
 }
 public struct ApprovalRequest: Codable, Equatable {
     public var approvalID: String; public var sessionID: String; public var tool: String; public var detail: String?

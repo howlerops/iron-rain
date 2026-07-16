@@ -6,6 +6,7 @@ public struct ChatMessage: Identifiable, Equatable {
     public enum Role: Equatable {
         case user
         case assistant
+        case thinking // the agent's reasoning ("it's working")
         case tool     // a tool invocation / result note
         case system   // session lifecycle, status, handoff
     }

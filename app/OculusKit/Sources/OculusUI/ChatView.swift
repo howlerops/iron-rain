@@ -46,8 +46,14 @@ public struct ChatView: View {
                     ForEach(model.messages) { msg in
                         MessageRow(message: msg, palette: palette).id(msg.id)
                     }
-                    if model.busy && model.messages.last?.role != .assistant {
-                        TypingIndicator(palette: palette).id("typing")
+                    if model.busy && model.messages.last?.streaming != true {
+                        HStack(spacing: 8) {
+                            TypingIndicator(palette: palette)
+                            if let a = model.activity, !a.isEmpty {
+                                Text(a).font(.system(.caption, design: .monospaced))
+                                    .foregroundStyle(palette.mutedForeground)
+                            }
+                        }.id("typing")
                     }
                     Color.clear.frame(height: 1).id("bottom")
                 }
@@ -105,6 +111,15 @@ struct MessageRow: View {
                 .font(.system(.body, design: message.text.contains("```") ? .monospaced : .default))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
+        case .thinking:
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "brain").font(.caption2).padding(.top, 2)
+                Text(message.text).font(.callout).italic()
+                    .textSelection(.enabled)
+            }
+            .foregroundStyle(palette.mutedForeground)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, 2)
         case .tool:
             HStack(spacing: 8) {
                 Image(systemName: "wrench.and.screwdriver.fill").font(.caption2)
