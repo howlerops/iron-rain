@@ -1,0 +1,37 @@
+{
+  "approval_request": {
+    "type": "approval.request",
+    "payload": {
+      "approval_id": "a1",
+      "session_id": "s1",
+      "tool": "bash",
+      "input": {
+        "command": "rm -rf build"
+      }
+    }
+  },
+  "approval_respond": {
+    "id": "req-2",
+    "type": "approval.respond",
+    "payload": {
+      "approval_id": "a1",
+      "decision": "allow"
+    }
+  },
+  "session_create": {
+    "id": "req-1",
+    "type": "session.create",
+    "payload": {
+      "provider": "opencode",
+      "cwd": "/work/repo",
+      "prompt": "add tests"
+    }
+  },
+  "session_status": {
+    "type": "session.status",
+    "payload": {
+      "session_id": "s1",
+      "status": "awaiting_approval"
+    }
+  }
+}
