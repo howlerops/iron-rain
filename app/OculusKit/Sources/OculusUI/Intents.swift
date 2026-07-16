@@ -9,6 +9,10 @@ public final class OculusStore: ObservableObject {
     public static let shared = OculusStore()
     @Published public var pendingPrompt: String?
     @Published public var handoffSessionID: String?
+    /// APNs device token (hex) captured by the app delegate once the OS grants one.
+    @Published public var deviceToken: String?
+    /// A decision (allow/deny) chosen from a notification action, to apply on connect.
+    @Published public var pendingDecision: String?
     private init() {}
 }
 

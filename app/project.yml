@@ -49,6 +49,9 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.howlerops.oculus
         TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_ENTITLEMENTS: Oculus/Oculus.entitlements
+        # For a device build / TestFlight, set DEVELOPMENT_TEAM to your Team ID,
+        # CODE_SIGN_STYLE: Automatic, and CODE_SIGNING_ALLOWED: YES (see docs/apple-setup.md).
 
   OculusWidgets:
     type: app-extension

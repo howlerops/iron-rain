@@ -72,10 +72,19 @@ public final class Model: ObservableObject {
             status = "Connected"
             Task { await receiveLoop() }
             await discover()
+            // Register this device's APNs token so the daemon can push approvals.
+            if let token = OculusStore.shared.deviceToken {
+                await registerDevice(token: token)
+            }
             // Start any prompt queued by the "Start Session" App Intent.
             if let queued = OculusStore.shared.pendingPrompt {
                 OculusStore.shared.pendingPrompt = nil
                 await startSession(prompt: queued)
+            }
+            // Apply a decision chosen from a notification action while disconnected.
+            if let decision = OculusStore.shared.pendingDecision, pendingApproval != nil {
+                OculusStore.shared.pendingDecision = nil
+                await respond(decision)
             }
         } catch {
             status = "Connect failed: \(error)"

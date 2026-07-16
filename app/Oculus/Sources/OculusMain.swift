@@ -8,6 +8,9 @@ import OculusUI
 @main
 struct OculusMain: App {
     @StateObject private var model = Model()
+    #if os(iOS)
+    @UIApplicationDelegateAdaptor(PushDelegate.self) private var pushDelegate
+    #endif
 
     var body: some Scene {
         WindowGroup {
