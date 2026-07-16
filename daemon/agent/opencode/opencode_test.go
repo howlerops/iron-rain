@@ -93,10 +93,10 @@ func (s *stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *stub) scenario() {
 	<-s.connected // ensure an SSE reader is attached before emitting
-	s.events <- `{"type":"message.part.updated","properties":{"part":{"sessionID":"ses_test"},"delta":"Hello"}}`
+	s.events <- `{"type":"message.part.delta","properties":{"sessionID":"ses_test","field":"text","delta":"Hello"}}`
 	s.events <- `{"type":"permission.updated","properties":{"id":"perm_1","type":"bash","sessionID":"ses_test","messageID":"msg_1","title":"run bash command","metadata":{"command":"ls"},"time":{"created":0}}}`
 	<-s.permCh // wait for the client's decision
-	s.events <- `{"type":"message.part.updated","properties":{"part":{"sessionID":"ses_test"},"delta":" done"}}`
+	s.events <- `{"type":"message.part.delta","properties":{"sessionID":"ses_test","field":"text","delta":" done"}}`
 	s.events <- `{"type":"session.idle","properties":{"sessionID":"ses_test"}}`
 }
 

@@ -172,14 +172,17 @@ func (s *session) handle(raw []byte) {
 		return
 	}
 	switch e.Type {
-	case "message.part.updated":
+	case "message.part.delta":
+		// Real opencode streams assistant tokens as message.part.delta events with a
+		// top-level {sessionID, field, delta}. (message.part.updated carries the full
+		// accumulated part — incl. the echoed user prompt — so we stream deltas only,
+		// avoiding duplication. Verified vs opencode 1.17.19.)
 		var pr struct {
-			Part struct {
-				SessionID string `json:"sessionID"`
-			} `json:"part"`
-			Delta string `json:"delta"`
+			SessionID string `json:"sessionID"`
+			Field     string `json:"field"`
+			Delta     string `json:"delta"`
 		}
-		if json.Unmarshal(e.Properties, &pr) != nil || pr.Part.SessionID != s.id || pr.Delta == "" {
+		if json.Unmarshal(e.Properties, &pr) != nil || pr.SessionID != s.id || pr.Field != "text" || pr.Delta == "" {
 			return
 		}
 		s.emit(agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: s.id, Text: pr.Delta}})

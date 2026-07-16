@@ -3,10 +3,12 @@
 // a per-session HTTP endpoint the provider hosts; the hook blocks until the app
 // responds, then returns the decision to claude-code.
 //
-// NOTE: the exact claude-code settings/hook schema and stream-json event shapes
-// should be verified against the installed claude-code; the parsing here targets
-// the documented `{"type":"assistant","message":{"content":[{"type":"text","text"}]}}`
-// and `{"type":"result"}` events and the PreToolUse `permissionDecision` contract.
+// The stream-json parse is verified LIVE against claude-code 2.1.207:
+// `{"type":"assistant","message":{"content":[{"type":"text","text"}]}}` for output
+// and `{"type":"result"}` for completion (see live_test.go). --verbose is required
+// with --output-format stream-json in -p mode. The PreToolUse hook -> approval
+// callback contract is exercised by the fake-claude test; a real tool-approval turn
+// remains to be smoke-tested against live claude.
 package claudecode
 
 import (
@@ -160,11 +162,14 @@ func (s *session) spawn(ctx context.Context, cwd, prompt string) error {
 		_ = os.WriteFile(settingsPath, b, 0o600)
 	}
 
-	cmd := exec.CommandContext(runCtx, s.p.binary, "-p", prompt, "--output-format", "stream-json", "--settings", settingsPath)
+	// --verbose is REQUIRED with --output-format stream-json in -p/--print mode
+	// (claude-code 2.x errors out otherwise — verified live vs 2.1.207).
+	cmd := exec.CommandContext(runCtx, s.p.binary, "-p", prompt, "--output-format", "stream-json", "--verbose", "--settings", settingsPath)
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
 	cmd.Env = append(os.Environ(), "OCULUS_APPROVE_URL="+s.approve)
+	cmd.Stderr = os.Stderr // surface claude errors instead of silently dropping them
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		cancel()
