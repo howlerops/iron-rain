@@ -67,6 +67,10 @@ func KeyPairFromPrivate(priv []byte) (KeyPair, error) {
 // Public returns the 32-byte X25519 public key.
 func (k KeyPair) Public() []byte { return k.priv.PublicKey().Bytes() }
 
+// PrivateBytes returns the 32-byte X25519 private key (persist to disk to keep a
+// stable daemon identity; keep it secret — file mode 0600).
+func (k KeyPair) PrivateBytes() []byte { return k.priv.Bytes() }
+
 // SessionKeys are the two directional AEAD keys for a paired channel.
 // C2D encrypts client->daemon traffic; D2C encrypts daemon->client traffic.
 type SessionKeys struct {
