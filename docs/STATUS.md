@@ -8,7 +8,7 @@ Built TDD, cross-language, end-to-end tested. This tracks what's proven vs. what
 | E2EE crypto (X25519→HKDF-SHA256→ChaCha20-Poly1305) | `daemon/crypto` | RFC 7748 KAT, agreement symmetry, AEAD round-trip/tamper/nonce, golden vectors |
 | Protocol (typed JSON envelope) | `daemon/protocol` | round-trip, event-omits-id, golden vectors |
 | Encrypted transport (handshake + sealed frames) | `daemon/transport` | handshake, auth rejection, wire-is-encrypted, **pairing-secret-never-in-clear** |
-| opencode provider (create/stream/approve) | `daemon/agent/opencode` | E2E vs realistic stub incl. approval; **live vs real opencode 1.17.19** (streaming delta + idle) |
+| opencode provider (create/stream/approve) | `daemon/agent/opencode` | E2E vs realistic stub; **live vs real opencode 1.17.19** — streaming delta + idle AND full **tool-approval round-trip** (permission.asked → allow → idle) |
 | claude-code provider (stream-json + hook approvals) | `daemon/agent/claudecode` | E2E vs fake claude incl. hook approval; **live vs real claude-code 2.1.207** (streaming + idle) |
 | Daemon core (dispatch + event forward + approvals) | `daemon/hub` | full-stack E2E over encrypted transport |
 | WebSocket server + runnable `oculusd` | `daemon/server` | full E2E over a real WebSocket |
@@ -46,8 +46,10 @@ Autodetect what's already running (no config): `cd daemon && go run . discover`.
   `live_test.go` in each provider (run with `OCULUS_OPENCODE_URL` / `OCULUS_CLAUDE_BIN`). This caught +
   fixed **two real wire-shape bugs**: opencode streams `message.part.delta` (not `message.part.updated`
   with a top-level `delta`), and claude-code `stream-json` **requires `--verbose`** in `-p` mode.
-  Remaining (spend-gated): a real *tool-approval* turn (opencode `permission.updated` reply +
-  claude-code `PreToolUse` hook callback) end-to-end against a live model.
+  A real opencode **tool-approval turn is now validated live** (permission.asked → allow → command
+  runs → idle), which caught a third bug: `POST /message` blocks until the turn yields, so the prompt
+  must be fired async or the approval deadlocks. Remaining (spend-gated): the claude-code `PreToolUse`
+  hook callback against a live tool-calling turn.
 - **Relay hardening** — ✅ **done.** The pairing secret is now sent as a sealed frame (never in the
   clear); a passive relay can't derive the ECDH shared secret to verify/replay it. Validated by a
   `pairing-secret-not-in-clear` unit test + the live cross-language E2E. Residual (tracked): the secret

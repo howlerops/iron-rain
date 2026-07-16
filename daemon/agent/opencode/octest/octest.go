@@ -95,7 +95,7 @@ func (s *Stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Stub) scenario() {
 	<-s.connected
 	s.events <- `{"type":"message.part.delta","properties":{"sessionID":"` + SessionID + `","field":"text","delta":"working"}}`
-	s.events <- `{"type":"permission.updated","properties":{"id":"perm_stub","type":"bash","sessionID":"` + SessionID + `","messageID":"m1","title":"run","metadata":{},"time":{"created":0}}}`
+	s.events <- `{"type":"permission.asked","properties":{"id":"perm_stub","permission":"bash","sessionID":"` + SessionID + `","patterns":["run"],"metadata":{"command":"run"},"tool":{"messageID":"m1","callID":"c1"}}}`
 	<-s.permCh
 	s.events <- `{"type":"message.part.delta","properties":{"sessionID":"` + SessionID + `","field":"text","delta":"done"}}`
 	s.events <- `{"type":"session.idle","properties":{"sessionID":"` + SessionID + `"}}`

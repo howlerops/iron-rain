@@ -25,7 +25,13 @@ A provider adapts one agent backend to the uniform `agent` interface the daemon 
   (allow→`once`, deny→`reject`); `POST /session/{id}/abort` → stop.
 - **Streaming output** = `message.part.delta` with `properties.{sessionID, field:"text", delta}` —
   NOT `message.part.updated` (that carries the full accumulated part, incl. the echoed user prompt).
-  Stream deltas only, or you double-emit. Idle = `session.idle`. Approval = `permission.updated`.
+  Stream deltas only, or you double-emit. Idle = `session.idle`.
+- **Approval** = `permission.asked` with `properties.{id, sessionID, permission, metadata}` (older
+  builds: `permission.updated` + `properties.type`; handle both). Reply: `POST
+  /session/{id}/permissions/{permID}` `{response: once|always|reject}` (unchanged).
+- **`POST /message` blocks server-side until the turn yields** (it parks on a permission ask). Fire it
+  **async** and drive progress from SSE — a synchronous prompt deadlocks (you can't answer the very
+  approval the turn is waiting on). See `opencode.session.Prompt`.
 
 ## Next: claude-code (`daemon/agent/claudecode`) — verified vs 2.1.207
 - Headless `stream-json`; **requires `--verbose`** with `-p`. Output = `{"type":"assistant",

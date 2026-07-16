@@ -15,7 +15,7 @@ import (
 )
 
 // stub mimics the subset of the opencode `serve` HTTP/SSE API the provider uses,
-// with the real event shapes (message.part.updated, permission.updated, session.idle).
+// with the real event shapes (message.part.delta, permission.asked, session.idle).
 type stub struct {
 	events    chan string
 	connected chan struct{}
@@ -94,7 +94,7 @@ func (s *stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *stub) scenario() {
 	<-s.connected // ensure an SSE reader is attached before emitting
 	s.events <- `{"type":"message.part.delta","properties":{"sessionID":"ses_test","field":"text","delta":"Hello"}}`
-	s.events <- `{"type":"permission.updated","properties":{"id":"perm_1","type":"bash","sessionID":"ses_test","messageID":"msg_1","title":"run bash command","metadata":{"command":"ls"},"time":{"created":0}}}`
+	s.events <- `{"type":"permission.asked","properties":{"id":"perm_1","permission":"bash","sessionID":"ses_test","patterns":["ls"],"metadata":{"command":"ls"},"tool":{"messageID":"msg_1","callID":"call_1"}}}`
 	<-s.permCh // wait for the client's decision
 	s.events <- `{"type":"message.part.delta","properties":{"sessionID":"ses_test","field":"text","delta":" done"}}`
 	s.events <- `{"type":"session.idle","properties":{"sessionID":"ses_test"}}`

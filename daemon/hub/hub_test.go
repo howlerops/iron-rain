@@ -77,7 +77,7 @@ func (s *stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *stub) scenario() {
 	<-s.connected
 	s.events <- `{"type":"message.part.delta","properties":{"sessionID":"ses_e2e","field":"text","delta":"working"}}`
-	s.events <- `{"type":"permission.updated","properties":{"id":"perm_e2e","type":"bash","sessionID":"ses_e2e","messageID":"m1","title":"run","metadata":{},"time":{"created":0}}}`
+	s.events <- `{"type":"permission.asked","properties":{"id":"perm_e2e","permission":"bash","sessionID":"ses_e2e","patterns":["run"],"metadata":{"command":"run"},"tool":{"messageID":"m1","callID":"c1"}}}`
 	<-s.permCh
 	s.events <- `{"type":"message.part.delta","properties":{"sessionID":"ses_e2e","field":"text","delta":"done"}}`
 	s.events <- `{"type":"session.idle","properties":{"sessionID":"ses_e2e"}}`

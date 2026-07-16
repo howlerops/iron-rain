@@ -113,6 +113,7 @@ type session struct {
 	id     string
 	events chan agent.Event
 
+	ctx       context.Context
 	cancel    context.CancelFunc
 	closeOnce sync.Once
 	done      chan struct{}
@@ -124,6 +125,7 @@ func (s *session) Events() <-chan agent.Event { return s.events }
 
 func (s *session) subscribe() error {
 	ctx, cancel := context.WithCancel(context.Background())
+	s.ctx = ctx
 	s.cancel = cancel
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.p.baseURL+"/event", nil)
 	if err != nil {
@@ -187,18 +189,26 @@ func (s *session) handle(raw []byte) {
 		}
 		s.emit(agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: s.id, Text: pr.Delta}})
 
-	case "permission.updated":
+	case "permission.asked", "permission.updated":
+		// opencode 1.17.x emits `permission.asked` with properties.permission (the tool);
+		// older builds used `permission.updated` with properties.type/title. Handle both.
+		// The reply endpoint (POST /session/{id}/permissions/{permID} once|reject) is
+		// unchanged — verified live vs 1.17.19.
 		var perm struct {
-			ID        string          `json:"id"`
-			Type      string          `json:"type"`
-			SessionID string          `json:"sessionID"`
-			Title     string          `json:"title"`
-			Metadata  json.RawMessage `json:"metadata"`
+			ID         string          `json:"id"`
+			SessionID  string          `json:"sessionID"`
+			Permission string          `json:"permission"`
+			Type       string          `json:"type"`
+			Title      string          `json:"title"`
+			Metadata   json.RawMessage `json:"metadata"`
 		}
 		if json.Unmarshal(e.Properties, &perm) != nil || perm.SessionID != s.id {
 			return
 		}
-		tool := perm.Type
+		tool := perm.Permission
+		if tool == "" {
+			tool = perm.Type
+		}
 		if tool == "" {
 			tool = perm.Title
 		}
@@ -223,11 +233,23 @@ func (s *session) emit(ev agent.Event) {
 	}
 }
 
-// Prompt sends a follow-up. TODO: match opencode's full message body (model/agent);
-// v0 sends a single text part, which is sufficient for a default-configured server.
-func (s *session) Prompt(ctx context.Context, text string) error {
+// Prompt sends a message. opencode's POST /message blocks server-side until the
+// turn yields (e.g. it parks on a tool-permission ask), so we fire it async and let
+// progress arrive over SSE — otherwise the caller would deadlock, unable to answer
+// the very approval the turn is waiting on. Errors surface as an error status event.
+// v0 sends a single text part, sufficient for a default-configured server.
+func (s *session) Prompt(_ context.Context, text string) error {
 	body := map[string]any{"parts": []map[string]any{{"type": "text", "text": text}}}
-	return s.p.postJSON(ctx, "/session/"+s.id+"/message", body, nil)
+	ctx := s.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	go func() {
+		if err := s.p.postJSON(ctx, "/session/"+s.id+"/message", body, nil); err != nil && ctx.Err() == nil {
+			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusError}})
+		}
+	}()
+	return nil
 }
 
 // Respond maps allow->"once", deny->"reject".
