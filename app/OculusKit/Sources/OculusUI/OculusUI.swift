@@ -52,6 +52,20 @@ public final class Model: ObservableObject {
         }
     }
 
+    /// Registers this device's APNs token so the daemon can push approval requests
+    /// to the lock screen. Call after the OS grants a token (iOS
+    /// `didRegisterForRemoteNotificationsWithDeviceToken`).
+    public func registerDevice(token: String) async {
+        guard let client else { return }
+        do {
+            let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.deviceRegister,
+                                          payload: DeviceRegister(token: token))
+            try await client.send(env)
+        } catch {
+            status = "Device register failed: \(error)"
+        }
+    }
+
     public func startSession(prompt: String) async {
         guard let client else { return }
         do {

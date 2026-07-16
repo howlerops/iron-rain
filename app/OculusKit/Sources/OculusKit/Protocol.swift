@@ -10,6 +10,7 @@ public enum MessageType {
     public static let sessionStop = "session.stop"
     public static let approvalRespond = "approval.respond"
     public static let discover = "discover.list"
+    public static let deviceRegister = "device.register"
 
     public static let sessionStatus = "session.status"
     public static let outputDelta = "output.delta"
@@ -91,6 +92,13 @@ public struct Discovered: Codable {
     }
 }
 public struct DiscoverList: Codable { public var items: [Discovered] }
+
+/// Registers this device's APNs token to receive approval pushes. Mirrors
+/// `protocol.DeviceRegister`.
+public struct DeviceRegister: Codable {
+    public var token: String
+    public init(token: String) { self.token = token }
+}
 
 /// Shared encoder/decoder for the wire format. Keys are set explicitly via each
 /// type's CodingKeys (matching the Go JSON), so no key-strategy is used.

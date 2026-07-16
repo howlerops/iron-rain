@@ -13,6 +13,7 @@ Built TDD, cross-language, end-to-end tested. This tracks what's proven vs. what
 | Daemon core (dispatch + event forward + approvals) | `daemon/hub` | full-stack E2E over encrypted transport |
 | WebSocket server + runnable `oculusd` | `daemon/server` | full E2E over a real WebSocket |
 | Relay ("from anywhere", outbound-only) | `daemon/relay` | full session driven through the relay |
+| **Push / APNs sender** (ES256 JWT, actionable approvals) | `daemon/push`, `daemon/hub` | mock-APNs test (request shape + **JWT verified**); `device.register` → approval → push over encrypted transport |
 | **Session autodetection** (opencode servers + sessions, claude-code transcripts) | `daemon/discovery`, `daemon/hub` | unit + `discover.list` over encrypted transport; **live vs real opencode 1.17.19 + real claude-code** (`oculusd discover`) |
 | **Swift↔Go crypto parity** | `app/OculusKit` | CryptoKit reproduces Go golden vectors byte-for-byte |
 | **LIVE Swift client ↔ real Go daemon** | `app/OculusKit` LiveE2ETests | spawns the daemon, handshakes, create→output→approval→idle |
@@ -33,8 +34,10 @@ Autodetect what's already running (no config): `cd daemon && go run . discover`.
 `opencode serve` instances + their live sessions and recent claude-code transcripts.
 
 ## Remaining (device / credential / real-LLM gated — not automatable here)
-- **Push / APNs** — daemon-side sender + actionable lock-screen approvals. Needs an Apple Developer
-  APNs key + a real device. (Design: hosted default + self-host BYO-key.)
+- **Push / APNs** — ✅ **sender built + wired + tested** (`daemon/push`; `oculusd serve --apns-key …`;
+  approvals push to registered devices). Genuinely device-gated remainder: a real Apple APNs key, a
+  real device token (iOS `didRegisterForRemoteNotifications` → `Model.registerDevice`), the
+  notification-action entitlements, and delivery to a physical device.
 - **iOS app target** — ✅ **buildable + runs.** `app/Oculus.xcodeproj` (xcodegen) has universal
   iOS + macOS app targets sharing `OculusUI.ContentView`; the iOS target builds for the simulator SDK
   and launches. Still ahead (device/entitlement-gated): Live Activities, Handoff, App Intents,

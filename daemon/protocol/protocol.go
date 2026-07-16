@@ -21,6 +21,7 @@ const (
 	TypeSessionStop     = "session.stop"
 	TypeApprovalRespond = "approval.respond"
 	TypeDiscover        = "discover.list"
+	TypeDeviceRegister  = "device.register"
 
 	// events (daemon -> client), no id
 	TypeSessionStatus   = "session.status"
@@ -120,6 +121,11 @@ type Discovered struct {
 // DiscoverList is the response to a discover.list request.
 type DiscoverList struct {
 	Items []Discovered `json:"items"`
+}
+
+// DeviceRegister registers an APNs device token to receive approval pushes.
+type DeviceRegister struct {
+	Token string `json:"token"`
 }
 
 // Discovery kinds.

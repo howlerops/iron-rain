@@ -9,6 +9,7 @@ import (
 
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/protocol"
+	"github.com/howlerops/oculus/daemon/push"
 	"github.com/howlerops/oculus/daemon/transport"
 )
 
@@ -22,6 +23,9 @@ type Hub struct {
 	sessions  map[string]agent.Session // sessionID -> session
 	approvals map[string]agent.Session // approvalID -> owning session
 	discover  DiscoverFunc
+
+	notifier   push.Notifier // optional: push actionable approvals to a device
+	pushTokens []string      // registered device tokens
 }
 
 // New returns an empty Hub.
@@ -45,6 +49,47 @@ func (h *Hub) SetDiscoverer(f DiscoverFunc) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.discover = f
+}
+
+// SetNotifier installs a push Notifier; approval requests are then pushed to every
+// registered device token (see RegisterDevice). A nil Notifier disables push.
+func (h *Hub) SetNotifier(n push.Notifier) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.notifier = n
+}
+
+// RegisterDevice adds a device token to receive approval pushes.
+func (h *Hub) RegisterDevice(token string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, t := range h.pushTokens {
+		if t == token {
+			return
+		}
+	}
+	h.pushTokens = append(h.pushTokens, token)
+}
+
+// pushApproval delivers an approval to every registered device (best-effort, async).
+func (h *Hub) pushApproval(ar protocol.ApprovalRequest) {
+	h.mu.Lock()
+	n := h.notifier
+	tokens := append([]string(nil), h.pushTokens...)
+	h.mu.Unlock()
+	if n == nil || len(tokens) == 0 {
+		return
+	}
+	notif := push.Notification{
+		Title:    "Approve " + ar.Tool,
+		Body:     "Tap to review in Oculus",
+		Category: "APPROVAL",
+		ThreadID: ar.SessionID,
+		Custom:   map[string]any{"approval_id": ar.ApprovalID, "session_id": ar.SessionID},
+	}
+	for _, t := range tokens {
+		go func(token string) { _ = n.Notify(context.Background(), token, notif) }(t)
+	}
 }
 
 // Serve handles one client connection until it closes or errors.
@@ -144,6 +189,15 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		}
 		h.sendOK(conn, env.ID, protocol.DiscoverList{Items: items})
 
+	case protocol.TypeDeviceRegister:
+		var req protocol.DeviceRegister
+		if err := env.Unmarshal(&req); err != nil || req.Token == "" {
+			h.sendErr(conn, env.ID, "bad device.register")
+			return
+		}
+		h.RegisterDevice(req.Token)
+		h.sendOK(conn, env.ID, nil)
+
 	case protocol.TypeSessionStop:
 		var req protocol.SessionRef
 		_ = env.Unmarshal(&req)
@@ -165,6 +219,7 @@ func (h *Hub) forward(conn *transport.Conn, sess agent.Session) {
 				h.mu.Lock()
 				h.approvals[ar.ApprovalID] = sess
 				h.mu.Unlock()
+				h.pushApproval(ar) // actionable lock-screen push (no-op if unconfigured)
 			}
 		}
 		raw, err := ev.Encode()

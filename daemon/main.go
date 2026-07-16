@@ -25,6 +25,7 @@ import (
 	"github.com/howlerops/oculus/daemon/discovery"
 	"github.com/howlerops/oculus/daemon/hub"
 	"github.com/howlerops/oculus/daemon/protocol"
+	"github.com/howlerops/oculus/daemon/push"
 	"github.com/howlerops/oculus/daemon/server"
 )
 
@@ -66,6 +67,11 @@ func serve(args []string) error {
 	claudeBin := fs.String("claude", "", "claude-code binary to enable the claude-code provider (e.g. claude)")
 	secret := fs.String("secret", "", "pairing secret clients must present (default: generated)")
 	keyPath := fs.String("key", defaultKeyPath(), "path to the daemon private key")
+	apnsKey := fs.String("apns-key", "", "path to an APNs auth key (.p8) to enable push")
+	apnsKeyID := fs.String("apns-key-id", "", "APNs Key ID (with --apns-key)")
+	apnsTeamID := fs.String("apns-team-id", "", "Apple Team ID (with --apns-key)")
+	apnsBundle := fs.String("apns-bundle", "com.howlerops.oculus", "app bundle id / APNs topic")
+	apnsSandbox := fs.Bool("apns-sandbox", false, "use the APNs sandbox endpoint")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -95,6 +101,14 @@ func serve(args []string) error {
 		providers = append(providers, "claude-code -> "+*claudeBin)
 	}
 
+	pushEnabled := false
+	if *apnsKey != "" {
+		if err := enablePush(h, *apnsKey, *apnsKeyID, *apnsTeamID, *apnsBundle, *apnsSandbox); err != nil {
+			return err
+		}
+		pushEnabled = true
+	}
+
 	srv := server.New(h, kp, func(_ []byte, presented string) bool {
 		return presented == sec
 	})
@@ -110,7 +124,37 @@ func serve(args []string) error {
 	for _, pv := range providers {
 		fmt.Printf("  provider:       %s\n", pv)
 	}
+	if pushEnabled {
+		fmt.Printf("  push:           APNs enabled (bundle %s)\n", *apnsBundle)
+	}
 	return http.ListenAndServe(*addr, mux)
+}
+
+// enablePush parses the .p8 auth key and installs an APNs notifier on the hub.
+func enablePush(h *hub.Hub, keyPath, keyID, teamID, bundle string, sandbox bool) error {
+	if keyID == "" || teamID == "" {
+		return fmt.Errorf("push: --apns-key-id and --apns-team-id are required with --apns-key")
+	}
+	pem, err := os.ReadFile(keyPath)
+	if err != nil {
+		return fmt.Errorf("push: read %s: %w", keyPath, err)
+	}
+	key, err := push.ParseP8(pem)
+	if err != nil {
+		return err
+	}
+	baseURL := "https://api.push.apple.com"
+	if sandbox {
+		baseURL = "https://api.sandbox.push.apple.com"
+	}
+	n, err := push.NewAPNs(push.APNsConfig{
+		KeyID: keyID, TeamID: teamID, BundleID: bundle, Key: key, BaseURL: baseURL,
+	})
+	if err != nil {
+		return err
+	}
+	h.SetNotifier(n)
+	return nil
 }
 
 // runDiscover autodetects active agent sessions on this host and prints them.
