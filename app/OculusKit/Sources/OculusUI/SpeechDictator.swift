@@ -1,11 +1,10 @@
-#if os(iOS)
 import AVFoundation
 import Foundation
 import Speech
 
-/// On-device (when available) speech-to-text for the composer mic button. Publishes
-/// a live `transcript` while `isRecording`. Requires NSMicrophoneUsageDescription +
-/// NSSpeechRecognitionUsageDescription in Info.plist.
+/// Speech-to-text for the composer mic button (iOS + macOS). Publishes a live
+/// `transcript` while `isRecording`. Requires NSMicrophoneUsageDescription +
+/// NSSpeechRecognitionUsageDescription in Info.plist (both platforms).
 @MainActor
 final class SpeechDictator: ObservableObject {
     @Published var transcript = ""
@@ -19,19 +18,29 @@ final class SpeechDictator: ObservableObject {
     func start() {
         SFSpeechRecognizer.requestAuthorization { [weak self] status in
             guard status == .authorized else { return }
-            AVAudioSession.sharedInstance().requestRecordPermission { granted in
+            Self.requestMic { granted in
                 guard granted else { return }
                 Task { @MainActor in self?.beginSession() }
             }
         }
     }
 
+    private static func requestMic(_ completion: @escaping (Bool) -> Void) {
+        #if os(iOS)
+        AVAudioSession.sharedInstance().requestRecordPermission(completion)
+        #else
+        AVCaptureDevice.requestAccess(for: .audio, completionHandler: completion)
+        #endif
+    }
+
     private func beginSession() {
         guard let recognizer, recognizer.isAvailable, !isRecording else { return }
         transcript = ""
+        #if os(iOS)
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.record, mode: .measurement, options: .duckOthers)
         try? session.setActive(true, options: .notifyOthersOnDeactivation)
+        #endif
 
         let req = SFSpeechAudioBufferRecognitionRequest()
         req.shouldReportPartialResults = true
@@ -43,7 +52,7 @@ final class SpeechDictator: ObservableObject {
             self?.request?.append(buffer)
         }
         audioEngine.prepare()
-        try? audioEngine.start()
+        do { try audioEngine.start() } catch { return }
         isRecording = true
 
         task = recognizer.recognitionTask(with: req) { [weak self] result, error in
@@ -65,4 +74,3 @@ final class SpeechDictator: ObservableObject {
         isRecording = false
     }
 }
-#endif

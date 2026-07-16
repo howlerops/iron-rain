@@ -95,6 +95,8 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
+        NSMicrophoneUsageDescription: "Dictate prompts to your agent by voice."
+        NSSpeechRecognitionUsageDescription: "Transcribe your voice into prompts."
         NSUserActivityTypes:
           - com.howlerops.oculus.session
     dependencies:

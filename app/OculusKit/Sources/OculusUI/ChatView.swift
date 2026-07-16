@@ -14,6 +14,7 @@ public struct ChatView: View {
 
     @State private var draft = ""
     @State private var showDiscovered = false
+    @State private var showPairingQR = false
 
     public init(model: Model) { self.model = model }
 
@@ -53,6 +54,9 @@ public struct ChatView: View {
             }
             Menu {
                 Button("New session") { model.sessionID = nil; model.messages.removeAll() }
+                if model.pairingURL != nil {
+                    Button("Pair a phone…") { showPairingQR = true }
+                }
                 Button("Disconnect", role: .destructive) { model.disconnect() }
             } label: {
                 Image(systemName: "ellipsis.circle").foregroundStyle(palette.mutedForeground)
@@ -60,6 +64,9 @@ public struct ChatView: View {
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
         .popover(isPresented: $showDiscovered) { discoveredList }
+        .sheet(isPresented: $showPairingQR) {
+            PairingQRView(url: model.pairingURL ?? "", palette: palette) { showPairingQR = false }
+        }
     }
 
     private var transcript: some View {

@@ -134,10 +134,12 @@ func serve(args []string) error {
 	if pushEnabled {
 		fmt.Printf("  push:           APNs enabled (bundle %s)\n", *apnsBundle)
 	}
-	printPairing(wsPublicURL(*publicURL, *addr), hex.EncodeToString(kp.Public()), sec)
+	pubURL := wsPublicURL(*publicURL, *addr)
+	printPairing(pubURL, hex.EncodeToString(kp.Public()), sec)
 	// Drop a local pairing file so an app on THIS machine (the macOS app) can
-	// auto-discover + connect with zero config. 0600, same-user only.
-	writeLocalPairing(localWSURL(*addr), hex.EncodeToString(kp.Public()), sec)
+	// auto-discover + connect with zero config, and show a QR (using the reachable
+	// public URL) to pair a phone. 0600, same-user only.
+	writeLocalPairing(localWSURL(*addr), pubURL, hex.EncodeToString(kp.Public()), sec)
 	return http.ListenAndServe(*addr, mux)
 }
 
@@ -151,7 +153,9 @@ func localWSURL(addr string) string {
 }
 
 // writeLocalPairing writes ~/.oculus/pairing.json for the local app to read.
-func writeLocalPairing(wsURL, pub, secret string) {
+// ws is the loopback URL the local app connects to; publicWS is the reachable URL
+// encoded into the QR shown to a phone.
+func writeLocalPairing(wsURL, publicWS, pub, secret string) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return
@@ -160,7 +164,9 @@ func writeLocalPairing(wsURL, pub, secret string) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return
 	}
-	data, err := json.Marshal(map[string]string{"ws": wsURL, "pub": pub, "secret": secret})
+	data, err := json.Marshal(map[string]string{
+		"ws": wsURL, "public": publicWS, "pub": pub, "secret": secret,
+	})
 	if err != nil {
 		return
 	}

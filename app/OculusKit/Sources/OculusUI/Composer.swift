@@ -1,27 +1,29 @@
 import SwiftUI
 import OculusKit
+import UniformTypeIdentifiers
 #if os(iOS)
 import PhotosUI
 #endif
 
-/// The sticky bottom composer: attach · multiline text · voice · send.
+/// The sticky bottom composer: attach · multiline text · voice · send. Available on
+/// iOS and macOS.
 struct Composer: View {
     @ObservedObject var model: Model
     @Binding var draft: String
     let palette: OculusPalette
 
-    #if os(iOS)
     @StateObject private var dictator = SpeechDictator()
+    #if os(iOS)
     @State private var photoItem: PhotosPickerItem?
+    #else
+    @State private var showFileImporter = false
     #endif
 
     var body: some View {
         VStack(spacing: 0) {
             Divider().overlay(palette.border)
             HStack(alignment: .bottom, spacing: 8) {
-                #if os(iOS)
                 attachButton
-                #endif
                 TextField("Message the agent…", text: $draft, axis: .vertical)
                     .lineLimit(1...5)
                     #if os(iOS)
@@ -31,17 +33,20 @@ struct Composer: View {
                     .background(palette.input)
                     .clipShape(RoundedRectangle(cornerRadius: 20))
                     .overlay(RoundedRectangle(cornerRadius: 20).stroke(palette.border))
-                #if os(iOS)
                 micButton
-                #endif
                 sendButton
             }
             .padding(.horizontal, 12).padding(.vertical, 8)
         }
         .background(palette.background)
-        #if os(iOS)
         .onChange(of: dictator.transcript) { newValue in
             if dictator.isRecording { draft = newValue }
+        }
+        #if os(macOS)
+        .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.item]) { result in
+            if case let .success(url) = result {
+                draft += (draft.isEmpty ? "" : "\n") + "[attached \(url.lastPathComponent)]"
+            }
         }
         #endif
     }
@@ -50,15 +55,12 @@ struct Composer: View {
         Button {
             let text = draft
             draft = ""
-            #if os(iOS)
             if dictator.isRecording { dictator.stop() }
-            #endif
             Task { await model.send(text) }
         } label: {
-            Image(systemName: "arrow.up.circle.fill").font(.system(size: 30))
+            Image(systemName: "arrow.up.circle.fill").font(.system(size: 28))
         }
         .buttonStyle(.plain)
-        .tint(palette.primary)
         .foregroundStyle(canSend ? palette.primary : palette.mutedForeground)
         .disabled(!canSend)
     }
@@ -67,7 +69,6 @@ struct Composer: View {
         !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    #if os(iOS)
     private var micButton: some View {
         Button {
             if dictator.isRecording { dictator.stop() } else { dictator.start() }
@@ -81,18 +82,24 @@ struct Composer: View {
     }
 
     private var attachButton: some View {
-        PhotosPicker(selection: $photoItem, matching: .images) {
+        #if os(iOS)
+        return PhotosPicker(selection: $photoItem, matching: .images) {
             Image(systemName: "paperclip").font(.title3)
                 .foregroundStyle(palette.mutedForeground).padding(.bottom, 4)
         }
         .buttonStyle(.plain)
         .onChange(of: photoItem) { item in
             guard item != nil else { return }
-            // Scaffold: image parts over the protocol are a follow-up (opencode message
-            // parts support images). For now, note the attachment in the draft.
+            // Scaffold: image parts over the protocol are a follow-up.
             draft += (draft.isEmpty ? "" : "\n") + "[attached an image]"
             photoItem = nil
         }
+        #else
+        return Button { showFileImporter = true } label: {
+            Image(systemName: "paperclip").font(.title3)
+                .foregroundStyle(palette.mutedForeground).padding(.bottom, 4)
+        }
+        .buttonStyle(.plain)
+        #endif
     }
-    #endif
 }

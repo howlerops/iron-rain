@@ -23,6 +23,7 @@ public final class Model: ObservableObject {
     @Published public var pendingApproval: ApprovalRequest?
     @Published public var discovered: [Discovered] = []
     @Published public var busy = false // agent is producing output
+    @Published public var pairingPublicURL: String? // reachable URL for the phone-pairing QR
 
     private var client: OculusClient?
     private let clientPrivate = OculusCrypto.generatePrivateKey()
@@ -69,7 +70,24 @@ public final class Model: ObservableObject {
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: String],
               let ws = obj["ws"], let pub = obj["pub"], let sec = obj["secret"] else { return }
         applyPairing(url: ws, pub: pub, secret: sec)
+        pairingPublicURL = obj["public"]
         #endif
+    }
+
+    /// The `oculus://pair?…` payload to encode in a QR for pairing a phone, using the
+    /// daemon's reachable public URL. Nil until we know a reachable URL + creds.
+    public var pairingURL: String? {
+        let base = pairingPublicURL ?? (wsURL.isEmpty ? nil : wsURL)
+        guard let base, !daemonPubHex.isEmpty, !secret.isEmpty else { return nil }
+        var c = URLComponents()
+        c.scheme = "oculus"
+        c.host = "pair"
+        c.queryItems = [
+            .init(name: "ws", value: base),
+            .init(name: "pub", value: daemonPubHex),
+            .init(name: "secret", value: secret),
+        ]
+        return c.url?.absoluteString
     }
 
     public func connect() async {
