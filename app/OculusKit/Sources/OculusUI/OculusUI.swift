@@ -20,6 +20,7 @@ public final class Model: ObservableObject {
     @Published public var status = "Not connected"
     @Published public var messages: [ChatMessage] = []
     @Published public var sessionID: String?
+    @Published public var currentSession: Session? // metadata (project/worktree/branch) of the active session
     @Published public var pendingApproval: ApprovalRequest?
     @Published public var discovered: [Discovered] = []
     @Published public var busy = false // agent is producing output
@@ -206,6 +207,7 @@ public final class Model: ObservableObject {
     /// Clears the current conversation to start a fresh session on the next message.
     public func newSession() {
         sessionID = nil
+        currentSession = nil
         messages.removeAll()
         pendingApproval = nil
         busy = false
@@ -375,6 +377,7 @@ public final class Model: ObservableObject {
                         status = pr.url.map { "PR: \($0)" } ?? "Pushed \(pr.branch)"
                     } else if let s = try? Protocol.payload(data, as: Session.self) {
                         sessionID = s.id
+                        currentSession = s
                         refreshLiveActivity()
                     }
                 case MessageType.sessionMessage:
@@ -496,6 +499,7 @@ public struct ContentView: View {
     @Environment(\.colorScheme) private var scheme
     private var palette: OculusPalette { .current(scheme) }
     @State private var selection: String?
+    @State private var showNewSession = false
 
     public init(model: Model) { self.model = model }
 
@@ -511,10 +515,14 @@ public struct ContentView: View {
                 .onChange(of: selection) { sel in
                     guard let sel else { return }
                     if sel == SessionSidebar.newSessionTag {
-                        model.newSession()
+                        showNewSession = true
+                        selection = nil // allow re-triggering
                     } else if let d = model.discovered.first(where: { $0.sessionID == sel }) {
                         Task { await model.attach(d) }
                     }
+                }
+                .sheet(isPresented: $showNewSession) {
+                    NewSessionView(model: model, palette: palette) { showNewSession = false }
                 }
             } else {
                 ConnectView(model: model)

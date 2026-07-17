@@ -13,11 +13,15 @@ public struct ChatView: View {
     private var palette: OculusPalette { .current(scheme) }
 
     @State private var draft = ""
+    @State private var showWorktreePanel = false
 
     public init(model: Model) { self.model = model }
 
+    private var isWorktreeSession: Bool { model.currentSession?.branch != nil }
+
     public var body: some View {
         VStack(spacing: 0) {
+            if isWorktreeSession { worktreeBanner }
             transcript
             if let ap = model.pendingApproval {
                 ApprovalCard(approval: ap, palette: palette,
@@ -34,6 +38,33 @@ public struct ChatView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+        .toolbar {
+            if isWorktreeSession {
+                ToolbarItem(placement: .primaryAction) {
+                    Button { showWorktreePanel = true } label: {
+                        Label("Finish worktree", systemImage: "arrow.triangle.branch")
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showWorktreePanel) {
+            WorktreePanel(model: model, palette: palette) { showWorktreePanel = false }
+        }
+    }
+
+    private var worktreeBanner: some View {
+        Button { showWorktreePanel = true } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "arrow.triangle.branch").font(.caption)
+                Text(model.currentSession?.branch ?? "worktree").font(.caption).lineLimit(1)
+                Spacer()
+                Text("Finish").font(.caption.bold())
+            }
+            .foregroundStyle(palette.primary)
+            .padding(.horizontal, 14).padding(.vertical, 7)
+            .background(palette.primary.opacity(0.10))
+        }
+        .buttonStyle(.plain)
     }
 
     private var transcript: some View {
