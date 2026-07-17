@@ -38,6 +38,7 @@ type Hub struct {
 	projects      *project.Registry        // optional: registered folders sessions spawn in
 	autoProjects  bool                     // auto-register projects from active agents' cwds
 	issues        *issues.Manager          // optional: connected trackers (Linear/Jira)
+	oauthRedirect string                   // loopback OAuth callback URL for tracker connect
 	worktreeBase  string                   // base dir for worktrees ("" = worktree.DefaultBase)
 	reservedPorts map[int]bool             // ports handed to worktree setup hooks (collision-free)
 }
@@ -291,6 +292,16 @@ func (h *Hub) SetIssues(m *issues.Manager) {
 // callback). Exported so main.go can wire it as the Manager's onUpdate.
 func (h *Hub) BroadcastIssues(in []issues.Issue) {
 	h.broadcast(protocol.TypeIssueList, protocol.IssueList{Issues: toProtoIssues(in)})
+	if m := h.issuesMgr(); m != nil {
+		h.broadcast(protocol.TypeIntegrationStatus, protocol.IntegrationStatus{Connected: m.Connected()})
+	}
+}
+
+// SetOAuthRedirect sets the loopback callback URL used to start tracker OAuth flows.
+func (h *Hub) SetOAuthRedirect(uri string) {
+	h.mu.Lock()
+	h.oauthRedirect = uri
+	h.mu.Unlock()
 }
 
 func (h *Hub) issuesMgr() *issues.Manager {
@@ -679,6 +690,24 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			connected = m.Connected()
 		}
 		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: connected})
+
+	case protocol.TypeIntegrationOAuth:
+		var req protocol.IntegrationOAuth
+		_ = env.Unmarshal(&req)
+		m := h.issuesMgr()
+		h.mu.Lock()
+		redirect := h.oauthRedirect
+		h.mu.Unlock()
+		if m == nil || redirect == "" {
+			h.sendErr(conn, env.ID, "integrations/oauth not enabled")
+			return
+		}
+		url, err := m.OAuthStart(req.Provider, redirect)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, protocol.IntegrationOAuth{Provider: req.Provider, URL: url})
 
 	case protocol.TypeIssueList:
 		m := h.issuesMgr()

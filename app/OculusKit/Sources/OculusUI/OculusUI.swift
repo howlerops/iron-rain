@@ -44,6 +44,7 @@ public final class Model: ObservableObject {
     // Trackers (Linear/Jira).
     @Published public var issues: [Issue] = []
     @Published public var connectedTrackers: [String] = []
+    @Published public var oauthURL: URL? // set when an OAuth flow returns an authorize URL to open
     /// Options applied to the NEXT session created (by the first send). Set via newSession(...).
     @Published public var newSessionProvider = "opencode"
     public var pendingProjectID: String?
@@ -288,6 +289,15 @@ public final class Model: ObservableObject {
         }
     }
 
+    /// Begins a Linear OAuth flow; the daemon returns an authorize URL to open in a browser.
+    public func startLinearOAuth() async {
+        guard let client else { return }
+        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.integrationOAuth,
+                                          payload: IntegrationOAuth(provider: "linear")) {
+            try? await client.send(env)
+        }
+    }
+
     public func loadIntegrationStatus() async {
         guard let client else { return }
         if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.integrationStatus, payload: Optional<Int>.none) {
@@ -477,6 +487,8 @@ public final class Model: ObservableObject {
                         connectedTrackers = st.connected
                     } else if let il = try? Protocol.payload(data, as: IssueList.self) {
                         issues = il.issues
+                    } else if let oa = try? Protocol.payload(data, as: IntegrationOAuth.self), let u = oa.url, let url = URL(string: u) {
+                        oauthURL = url
                     } else if let wd = try? Protocol.payload(data, as: WorktreeDiff.self), wd.diff != nil {
                         lastDiff = wd.diff
                     } else if let wc = try? Protocol.payload(data, as: WorktreeConflicts.self), wc.files != nil {
@@ -548,6 +560,10 @@ public final class Model: ObservableObject {
                 case MessageType.issueList: // broadcast from the 60s tracker poll
                     if let il = try? Protocol.payload(data, as: IssueList.self) {
                         issues = il.issues
+                    }
+                case MessageType.integrationStatus: // broadcast after (re)connect
+                    if let st = try? Protocol.payload(data, as: IntegrationStatus.self) {
+                        connectedTrackers = st.connected
                     }
                 case MessageType.error:
                     if let e = try? Protocol.payload(data, as: ProtocolError.self) {

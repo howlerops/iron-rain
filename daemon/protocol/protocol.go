@@ -33,6 +33,7 @@ const (
 	TypeWorktreeConflicts  = "worktree.conflicts"  // files this worktree shares with other active worktrees
 	TypeIntegrationConnect = "integration.connect" // connect a tracker (Linear/Jira) with a token
 	TypeIntegrationStatus  = "integration.status"  // which trackers are connected
+	TypeIntegrationOAuth   = "integration.oauth"   // begin an OAuth flow; returns an authorize URL
 	TypeIssueList          = "issue.list"          // assigned issues (request + broadcast)
 	TypeIssueStates        = "issue.states"        // workflow states (kanban columns) for a team
 	TypeIssueLaunch        = "issue.launch"        // launch an agent on an issue (worktree)
@@ -152,6 +153,11 @@ type IntegrationConnect struct {
 
 type IntegrationStatus struct {
 	Connected []string `json:"connected"` // provider names currently connected
+}
+
+type IntegrationOAuth struct {
+	Provider string `json:"provider"`
+	URL      string `json:"url,omitempty"` // authorize URL (on the response)
 }
 
 type Issue struct {

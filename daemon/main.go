@@ -109,13 +109,16 @@ func serve(args []string) error {
 		h.SetAutoProjects(*autoProjects)
 	}
 	// Trackers (Linear/Jira): load saved tokens, connect, and poll every 60s.
-	{
-		mgr := issues.NewManager(integrationsPath(), h.BroadcastIssues)
-		h.SetIssues(mgr)
-		if len(mgr.Connected()) > 0 {
-			go func() { _ = mgr.Refresh(context.Background()) }() // initial fetch
-		}
-		mgr.StartPolling(context.Background(), 60*time.Second)
+	issuesMgr := issues.NewManager(integrationsPath(), h.BroadcastIssues)
+	h.SetIssues(issuesMgr)
+	if len(issuesMgr.Connected()) > 0 {
+		go func() { _ = issuesMgr.Refresh(context.Background()) }() // initial fetch
+	}
+	issuesMgr.StartPolling(context.Background(), 60*time.Second)
+	oauthRedirect := ""
+	if _, port, err := net.SplitHostPort(*addr); err == nil && port != "" {
+		oauthRedirect = issues.OAuthRedirectURI(net.JoinHostPort("127.0.0.1", port))
+		h.SetOAuthRedirect(oauthRedirect)
 	}
 	h.SetAttacherFactory(func(provider, url string) agent.Attacher {
 		if provider == "opencode" && url != "" {
@@ -144,6 +147,18 @@ func serve(args []string) error {
 	mux := http.NewServeMux()
 	mux.Handle("/ws", srv.Handler())
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
+	// Loopback OAuth callback for tracker connect (Linear). The redirect URI must be
+	// registered on the Linear OAuth app.
+	mux.HandleFunc("/oauth/linear/callback", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		code, state := r.URL.Query().Get("code"), r.URL.Query().Get("state")
+		if err := issuesMgr.OAuthCallback(r.Context(), code, state, oauthRedirect); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprintf(w, "<h2>Linear connection failed</h2><p>%s</p>", err.Error())
+			return
+		}
+		fmt.Fprint(w, "<h2>Iron Rain connected to Linear ✓</h2><p>You can close this tab and return to the app.</p>")
+	})
 
 	fmt.Printf("oculusd %s\n", version)
 	fmt.Printf("  listening:      ws://%s/ws\n", *addr)

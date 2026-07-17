@@ -22,6 +22,7 @@ public enum MessageType {
     public static let worktreeConflicts = "worktree.conflicts"
     public static let integrationConnect = "integration.connect"
     public static let integrationStatus = "integration.status"
+    public static let integrationOAuth = "integration.oauth"
     public static let issueList = "issue.list"
     public static let issueStates = "issue.states"
     public static let issueLaunch = "issue.launch"
@@ -195,6 +196,10 @@ public struct IntegrationConnect: Codable {
     public init(provider: String, token: String) { self.provider = provider; self.token = token }
 }
 public struct IntegrationStatus: Codable { public var connected: [String] }
+public struct IntegrationOAuth: Codable {
+    public var provider: String; public var url: String?
+    public init(provider: String, url: String? = nil) { self.provider = provider; self.url = url }
+}
 public struct Issue: Codable, Identifiable, Hashable {
     public var id: String
     public var key: String

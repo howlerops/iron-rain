@@ -12,6 +12,7 @@ public struct IssuesView: View {
     @State private var kanban = true
     @State private var token = ""
     @State private var launching: Issue?
+    @Environment(\.openURL) private var openURL
 
     public init(model: Model, palette: OculusPalette, onLaunched: @escaping () -> Void = {}) {
         self.model = model; self.palette = palette; self.onLaunched = onLaunched
@@ -24,13 +25,16 @@ public struct IssuesView: View {
     public var body: some View {
         NavigationStack {
             Group {
-                if model.connectedTrackers.isEmpty {
+                if model.connectedTrackers.isEmpty && model.issues.isEmpty {
                     connectScreen
                 } else if kanban {
                     board
                 } else {
                     table
                 }
+            }
+            .onChange(of: model.oauthURL) { url in
+                if let url { openURL(url); model.oauthURL = nil }
             }
             .background(palette.background)
             .navigationTitle("Issues")
@@ -65,16 +69,24 @@ public struct IssuesView: View {
             Text("Paste a Linear API key (Settings → Security & access → Personal API keys) to see your assigned issues and launch agents on them.")
                 .font(.subheadline).foregroundStyle(palette.mutedForeground)
                 .multilineTextAlignment(.center).padding(.horizontal, 28)
+            Button {
+                Task { await model.startLinearOAuth() }
+            } label: {
+                Label("Connect with Linear", systemImage: "link").frame(maxWidth: 360)
+            }
+            .buttonStyle(.borderedProminent).tint(palette.primary)
+
+            Text("or paste a key").font(.caption2).foregroundStyle(palette.mutedForeground)
             SecureField("Linear API key", text: $token)
                 .textFieldStyle(.roundedBorder).frame(maxWidth: 360)
                 #if os(iOS)
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
                 #endif
-            Button("Connect") {
+            Button("Connect with key") {
                 let t = token; token = ""
                 Task { await model.connectTracker(provider: "linear", token: t) }
             }
-            .buttonStyle(.borderedProminent).tint(palette.primary)
+            .buttonStyle(.bordered).tint(palette.primary)
             .disabled(token.isEmpty)
             Spacer()
         }

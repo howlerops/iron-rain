@@ -34,6 +34,7 @@ type Manager struct {
 	providers map[string]Provider
 	cache     []Issue
 	onUpdate  func([]Issue)
+	pending   map[string]string // oauth state -> provider
 }
 
 // NewManager loads config from path and reconnects any provider that has a saved token.
