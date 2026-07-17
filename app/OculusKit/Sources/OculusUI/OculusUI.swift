@@ -26,6 +26,15 @@ public final class Model: ObservableObject {
     @Published public var activity: String? // current step, e.g. "running bash"
     @Published public var pairingPublicURL: String? // reachable URL for the phone-pairing QR
 
+    // Projects + worktrees.
+    @Published public var projects: [Project] = []
+    @Published public var lastDiff: String? // populated by worktreeDiff()
+    /// Options applied to the NEXT session created (by the first send). Set via newSession(...).
+    @Published public var newSessionProvider = "opencode"
+    public var pendingProjectID: String?
+    public var pendingWorktree = false
+    public var pendingWorkspaceName: String?
+
     private var client: OculusClient?
     private let clientPrivate = OculusCrypto.generatePrivateKey()
     private let defaults = UserDefaults.standard
@@ -112,6 +121,7 @@ public final class Model: ObservableObject {
             savePairing()
             Task { await receiveLoop() }
             await discover()
+            await loadProjects()
             if let token = OculusStore.shared.deviceToken {
                 await registerDevice(token: token)
             }
@@ -178,7 +188,11 @@ public final class Model: ObservableObject {
                 try await client.send(env)
             } else {
                 let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.sessionCreate,
-                                              payload: SessionCreate(provider: "opencode", prompt: trimmed))
+                                              payload: SessionCreate(provider: newSessionProvider,
+                                                                     projectID: pendingProjectID,
+                                                                     prompt: trimmed,
+                                                                     worktree: pendingWorktree ? true : nil,
+                                                                     workspaceName: pendingWorkspaceName))
                 try await client.send(env)
             }
         } catch {
@@ -195,6 +209,63 @@ public final class Model: ObservableObject {
         messages.removeAll()
         pendingApproval = nil
         busy = false
+        lastDiff = nil
+    }
+
+    /// Starts a fresh session with explicit options (provider, project folder, and an
+    /// opt-in git worktree). The options apply when the first message creates the session.
+    public func newSession(provider: String, projectID: String? = nil, worktree: Bool = false, workspaceName: String? = nil) {
+        newSessionProvider = provider
+        pendingProjectID = projectID
+        pendingWorktree = worktree
+        pendingWorkspaceName = workspaceName
+        newSession()
+    }
+
+    // MARK: projects + worktrees
+
+    public func loadProjects() async {
+        guard let client else { return }
+        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.projectList, payload: Optional<Int>.none) {
+            try? await client.send(env)
+        }
+    }
+
+    public func addProject(path: String) async {
+        guard let client, !path.isEmpty else { return }
+        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.projectAdd, payload: ProjectAdd(path: path)) {
+            try? await client.send(env)
+            await loadProjects()
+        }
+    }
+
+    public func removeProject(id: String) async {
+        guard let client else { return }
+        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.projectRemove, payload: ProjectRef(projectID: id)) {
+            try? await client.send(env)
+        }
+    }
+
+    /// Requests the diff of the current worktree session (result lands in lastDiff).
+    public func worktreeDiff() async {
+        guard let client, let sid = sessionID else { return }
+        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.worktreeDiff, payload: WorktreeDiff(sessionID: sid)) {
+            try? await client.send(env)
+        }
+    }
+
+    public func removeWorktree(force: Bool = false) async {
+        guard let client, let sid = sessionID else { return }
+        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.worktreeRemove, payload: WorktreeRemove(sessionID: sid, force: force)) {
+            try? await client.send(env)
+        }
+    }
+
+    public func createPR(title: String, body: String? = nil) async {
+        guard let client, let sid = sessionID else { return }
+        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.worktreePR, payload: WorktreePR(sessionID: sid, title: title, body: body)) {
+            try? await client.send(env)
+        }
     }
 
     public func attach(_ d: Discovered) async {
@@ -296,6 +367,12 @@ public final class Model: ObservableObject {
                 case MessageType.ok:
                     if let dl = try? Protocol.payload(data, as: DiscoverList.self), !dl.items.isEmpty {
                         discovered = dl.items
+                    } else if let pl = try? Protocol.payload(data, as: ProjectList.self) {
+                        projects = pl.projects
+                    } else if let wd = try? Protocol.payload(data, as: WorktreeDiff.self), wd.diff != nil {
+                        lastDiff = wd.diff
+                    } else if let pr = try? Protocol.payload(data, as: WorktreePRResult.self) {
+                        status = pr.url.map { "PR: \($0)" } ?? "Pushed \(pr.branch)"
                     } else if let s = try? Protocol.payload(data, as: Session.self) {
                         sessionID = s.id
                         refreshLiveActivity()
