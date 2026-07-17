@@ -10,6 +10,7 @@ public struct RootView: View {
     private var palette: OculusPalette { .current(scheme) }
     @State private var selection: String?
     @State private var showNewSession = false
+    @State private var selectedTab = 0
     #if os(macOS)
     @StateObject private var launcher = DaemonLauncher()
     #endif
@@ -21,29 +22,37 @@ public struct RootView: View {
             if store.isEmpty {
                 DesktopOnboardView(store: store, palette: palette)
             } else if let model = store.active {
-                NavigationSplitView {
-                    VStack(spacing: 0) {
-                        DesktopBar(store: store, palette: palette)
-                        Divider().overlay(palette.border)
-                        SessionSidebar(model: model, selection: $selection)
+                TabView(selection: $selectedTab) {
+                    NavigationSplitView {
+                        VStack(spacing: 0) {
+                            DesktopBar(store: store, palette: palette)
+                            Divider().overlay(palette.border)
+                            SessionSidebar(model: model, selection: $selection)
+                        }
+                        .navigationSplitViewColumnWidth(min: 240, ideal: 280)
+                    } detail: {
+                        ChatView(model: model)
                     }
-                    .navigationSplitViewColumnWidth(min: 240, ideal: 280)
-                } detail: {
-                    ChatView(model: model)
-                }
-                .onChange(of: selection) { sel in
-                    guard let sel else { return }
-                    if sel == SessionSidebar.newSessionTag {
-                        showNewSession = true
-                        selection = nil
-                    } else if model.sessions.contains(where: { $0.id == sel }) {
-                        Task { await model.openSession(sel) }
-                    } else if let d = model.discovered.first(where: { $0.sessionID == sel }) {
-                        Task { await model.attach(d) }
+                    .onChange(of: selection) { sel in
+                        guard let sel else { return }
+                        if sel == SessionSidebar.newSessionTag {
+                            showNewSession = true
+                            selection = nil
+                        } else if model.sessions.contains(where: { $0.id == sel }) {
+                            Task { await model.openSession(sel) }
+                        } else if let d = model.discovered.first(where: { $0.sessionID == sel }) {
+                            Task { await model.attach(d) }
+                        }
                     }
-                }
-                .sheet(isPresented: $showNewSession) {
-                    NewSessionView(model: model, palette: palette) { showNewSession = false }
+                    .sheet(isPresented: $showNewSession) {
+                        NewSessionView(model: model, palette: palette) { showNewSession = false }
+                    }
+                    .tabItem { Label("Sessions", systemImage: "bubble.left.and.bubble.right.fill") }
+                    .tag(0)
+
+                    IssuesView(model: model, palette: palette) { selectedTab = 0 }
+                        .tabItem { Label("Issues", systemImage: "checklist") }
+                        .tag(1)
                 }
             }
         }

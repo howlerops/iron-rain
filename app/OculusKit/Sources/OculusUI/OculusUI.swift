@@ -40,6 +40,10 @@ public final class Model: ObservableObject {
     @Published public var lastDiff: String? // populated by worktreeDiff()
     @Published public var conflicts: [FileConflict] = [] // files shared with other worktrees
     @Published public var pendingImages: [ImageAttachment] = [] // attached, sent with the next prompt
+
+    // Trackers (Linear/Jira).
+    @Published public var issues: [Issue] = []
+    @Published public var connectedTrackers: [String] = []
     /// Options applied to the NEXT session created (by the first send). Set via newSession(...).
     @Published public var newSessionProvider = "opencode"
     public var pendingProjectID: String?
@@ -145,6 +149,8 @@ public final class Model: ObservableObject {
             await discover()
             await loadProjects()
             await loadSessions()
+            await loadIntegrationStatus()
+            await loadIssues()
             if let token = OculusStore.shared.deviceToken {
                 await registerDevice(token: token)
             }
@@ -267,6 +273,42 @@ public final class Model: ObservableObject {
     public func loadSessions() async {
         guard let client else { return }
         if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.sessionList, payload: Optional<Int>.none) {
+            try? await client.send(env)
+        }
+    }
+
+    // MARK: trackers (Linear/Jira)
+
+    public func connectTracker(provider: String, token: String) async {
+        guard let client else { return }
+        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.integrationConnect,
+                                          payload: IntegrationConnect(provider: provider, token: token)) {
+            try? await client.send(env)
+            await loadIssues()
+        }
+    }
+
+    public func loadIntegrationStatus() async {
+        guard let client else { return }
+        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.integrationStatus, payload: Optional<Int>.none) {
+            try? await client.send(env)
+        }
+    }
+
+    public func loadIssues() async {
+        guard let client else { return }
+        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.issueList, payload: Optional<Int>.none) {
+            try? await client.send(env)
+        }
+    }
+
+    /// Launches an agent on a ticket (worktree on its branch). Requires a project (repo).
+    public func launchIssue(_ issue: Issue, projectID: String, agentProvider: String? = nil) async {
+        guard let client else { return }
+        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.issueLaunch,
+                                          payload: IssueLaunch(issueID: issue.id, provider: issue.provider,
+                                                               projectID: projectID, worktree: true,
+                                                               agentProvider: agentProvider)) {
             try? await client.send(env)
         }
     }
@@ -431,6 +473,10 @@ public final class Model: ObservableObject {
                         projects = pl.projects
                     } else if let sl = try? Protocol.payload(data, as: SessionList.self) {
                         sessions = sl.sessions
+                    } else if let st = try? Protocol.payload(data, as: IntegrationStatus.self) {
+                        connectedTrackers = st.connected
+                    } else if let il = try? Protocol.payload(data, as: IssueList.self) {
+                        issues = il.issues
                     } else if let wd = try? Protocol.payload(data, as: WorktreeDiff.self), wd.diff != nil {
                         lastDiff = wd.diff
                     } else if let wc = try? Protocol.payload(data, as: WorktreeConflicts.self), wc.files != nil {
@@ -498,6 +544,10 @@ public final class Model: ObservableObject {
                         appendTool("\(verb) \(ap.tool)\(cmd)")
                         pendingApproval = nil
                         refreshLiveActivity()
+                    }
+                case MessageType.issueList: // broadcast from the 60s tracker poll
+                    if let il = try? Protocol.payload(data, as: IssueList.self) {
+                        issues = il.issues
                     }
                 case MessageType.error:
                     if let e = try? Protocol.payload(data, as: ProtocolError.self) {

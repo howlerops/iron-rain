@@ -20,6 +20,11 @@ public enum MessageType {
     public static let worktreeRemove = "worktree.remove"
     public static let worktreePR = "worktree.pr"
     public static let worktreeConflicts = "worktree.conflicts"
+    public static let integrationConnect = "integration.connect"
+    public static let integrationStatus = "integration.status"
+    public static let issueList = "issue.list"
+    public static let issueStates = "issue.states"
+    public static let issueLaunch = "issue.launch"
 
     public static let sessionStatus = "session.status"
     public static let sessionMessage = "session.message"
@@ -117,10 +122,14 @@ public struct Session: Codable, Identifiable {
     public var workspaceName: String?
     public var branch: String?
     public var port: Int?
+    public var issueKey: String?
+    public var issueID: String?
     enum CodingKeys: String, CodingKey {
         case id, provider, status, title, cwd, branch, port
         case projectID = "project_id"
         case workspaceName = "workspace_name"
+        case issueKey = "issue_key"
+        case issueID = "issue_id"
     }
 }
 public struct ProtocolError: Codable { public var message: String }
@@ -178,6 +187,57 @@ public struct WorktreeConflicts: Codable {
     public var sessionID: String; public var files: [FileConflict]?
     public init(sessionID: String, files: [FileConflict]? = nil) { self.sessionID = sessionID; self.files = files }
     enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case files }
+}
+
+// Integrations / issues.
+public struct IntegrationConnect: Codable {
+    public var provider: String; public var token: String
+    public init(provider: String, token: String) { self.provider = provider; self.token = token }
+}
+public struct IntegrationStatus: Codable { public var connected: [String] }
+public struct Issue: Codable, Identifiable, Hashable {
+    public var id: String
+    public var key: String
+    public var title: String
+    public var body: String?
+    public var status: String
+    public var category: String // todo | in_progress | done | other
+    public var assignee: String?
+    public var url: String?
+    public var provider: String
+    public var branchName: String?
+    public var teamID: String?
+    public var priority: Int?
+    public var updatedAt: String?
+    enum CodingKeys: String, CodingKey {
+        case id, key, title, body, status, category, assignee, url, provider, priority
+        case branchName = "branch_name"
+        case teamID = "team_id"
+        case updatedAt = "updated_at"
+    }
+}
+public struct IssueList: Codable { public var issues: [Issue] }
+public struct IssueState: Codable, Identifiable, Hashable {
+    public var id: String; public var name: String; public var category: String; public var position: Double
+}
+public struct IssueStatesReq: Codable {
+    public var provider: String; public var teamID: String
+    public init(provider: String, teamID: String) { self.provider = provider; self.teamID = teamID }
+    enum CodingKeys: String, CodingKey { case provider; case teamID = "team_id" }
+}
+public struct IssueStateList: Codable { public var states: [IssueState] }
+public struct IssueLaunch: Codable {
+    public var issueID: String; public var provider: String; public var projectID: String
+    public var worktree: Bool?; public var agentProvider: String?
+    public init(issueID: String, provider: String, projectID: String, worktree: Bool? = true, agentProvider: String? = nil) {
+        self.issueID = issueID; self.provider = provider; self.projectID = projectID; self.worktree = worktree; self.agentProvider = agentProvider
+    }
+    enum CodingKeys: String, CodingKey {
+        case provider, worktree
+        case issueID = "issue_id"
+        case projectID = "project_id"
+        case agentProvider = "agent_provider"
+    }
 }
 
 public struct SessionAttach: Codable {
