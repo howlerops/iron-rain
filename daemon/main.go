@@ -30,6 +30,7 @@ import (
 	"github.com/howlerops/oculus/daemon/crypto"
 	"github.com/howlerops/oculus/daemon/discovery"
 	"github.com/howlerops/oculus/daemon/hub"
+	"github.com/howlerops/oculus/daemon/issues"
 	"github.com/howlerops/oculus/daemon/project"
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/push"
@@ -106,6 +107,15 @@ func serve(args []string) error {
 	} else {
 		h.SetProjects(reg)
 		h.SetAutoProjects(*autoProjects)
+	}
+	// Trackers (Linear/Jira): load saved tokens, connect, and poll every 60s.
+	{
+		mgr := issues.NewManager(integrationsPath(), h.BroadcastIssues)
+		h.SetIssues(mgr)
+		if len(mgr.Connected()) > 0 {
+			go func() { _ = mgr.Refresh(context.Background()) }() // initial fetch
+		}
+		mgr.StartPolling(context.Background(), 60*time.Second)
 	}
 	h.SetAttacherFactory(func(provider, url string) agent.Attacher {
 		if provider == "opencode" && url != "" {
@@ -319,6 +329,14 @@ func projectsPath() string {
 		return "oculus-projects.json"
 	}
 	return filepath.Join(home, ".oculus", "projects.json")
+}
+
+func integrationsPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "oculus-integrations.json"
+	}
+	return filepath.Join(home, ".oculus", "integrations.json")
 }
 
 func loadOrCreateKey(path string) (crypto.KeyPair, error) {

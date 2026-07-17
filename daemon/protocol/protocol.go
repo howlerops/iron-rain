@@ -14,27 +14,32 @@ import (
 // Message types.
 const (
 	// requests (client -> daemon), carry an id echoed on the response
-	TypeSessionList     = "session.list"
-	TypeSessionGet      = "session.get"
-	TypeSessionCreate   = "session.create"
-	TypeSessionPrompt   = "session.prompt"
-	TypeSessionStop      = "session.stop"
-	TypeSessionAttach    = "session.attach"
-	TypeSessionSubscribe = "session.subscribe" // observe an already-owned session (no dup subscription)
-	TypeApprovalRespond  = "approval.respond"
-	TypeDiscover        = "discover.list"
-	TypeDeviceRegister  = "device.register"
-	TypeProjectList     = "project.list"
-	TypeProjectAdd      = "project.add"
-	TypeProjectRemove   = "project.remove"
-	TypeWorktreeDiff      = "worktree.diff"      // request the diff of a worktree session
-	TypeWorktreeRemove    = "worktree.remove"    // stop a worktree session + remove its worktree
-	TypeWorktreePR        = "worktree.pr"        // commit + push + open a PR for a worktree session
-	TypeWorktreeConflicts = "worktree.conflicts" // files this worktree shares with other active worktrees
+	TypeSessionList        = "session.list"
+	TypeSessionGet         = "session.get"
+	TypeSessionCreate      = "session.create"
+	TypeSessionPrompt      = "session.prompt"
+	TypeSessionStop        = "session.stop"
+	TypeSessionAttach      = "session.attach"
+	TypeSessionSubscribe   = "session.subscribe" // observe an already-owned session (no dup subscription)
+	TypeApprovalRespond    = "approval.respond"
+	TypeDiscover           = "discover.list"
+	TypeDeviceRegister     = "device.register"
+	TypeProjectList        = "project.list"
+	TypeProjectAdd         = "project.add"
+	TypeProjectRemove      = "project.remove"
+	TypeWorktreeDiff       = "worktree.diff"       // request the diff of a worktree session
+	TypeWorktreeRemove     = "worktree.remove"     // stop a worktree session + remove its worktree
+	TypeWorktreePR         = "worktree.pr"         // commit + push + open a PR for a worktree session
+	TypeWorktreeConflicts  = "worktree.conflicts"  // files this worktree shares with other active worktrees
+	TypeIntegrationConnect = "integration.connect" // connect a tracker (Linear/Jira) with a token
+	TypeIntegrationStatus  = "integration.status"  // which trackers are connected
+	TypeIssueList          = "issue.list"          // assigned issues (request + broadcast)
+	TypeIssueStates        = "issue.states"        // workflow states (kanban columns) for a team
+	TypeIssueLaunch        = "issue.launch"        // launch an agent on an issue (worktree)
 
 	// events (daemon -> client), no id
-	TypeSessionStatus   = "session.status"
-	TypeSessionMessage  = "session.message" // a full (historical/replayed) turn
+	TypeSessionStatus    = "session.status"
+	TypeSessionMessage   = "session.message" // a full (historical/replayed) turn
 	TypeThinking         = "thinking.delta"  // streaming reasoning ("it's working")
 	TypeOutputDelta      = "output.delta"
 	TypeApprovalRequest  = "approval.request"
@@ -71,9 +76,9 @@ type Envelope struct {
 // Payload types.
 
 type SessionCreate struct {
-	Provider      string `json:"provider"`
-	Cwd           string `json:"cwd,omitempty"`
-	ProjectID     string `json:"project_id,omitempty"` // resolve cwd from this registered project
+	Provider      string            `json:"provider"`
+	Cwd           string            `json:"cwd,omitempty"`
+	ProjectID     string            `json:"project_id,omitempty"` // resolve cwd from this registered project
 	Prompt        string            `json:"prompt,omitempty"`
 	Images        []ImageAttachment `json:"images,omitempty"`         // images for the first prompt
 	Worktree      bool              `json:"worktree,omitempty"`       // run in a fresh git worktree (opt-in)
@@ -136,6 +141,61 @@ type WorktreeConflicts struct {
 type FileConflict struct {
 	Path     string   `json:"path"`
 	Branches []string `json:"branches"` // other worktree branches that also touched Path
+}
+
+// Integrations / issues (mirrors daemon/issues).
+
+type IntegrationConnect struct {
+	Provider string `json:"provider"` // "linear" | "jira"
+	Token    string `json:"token"`
+}
+
+type IntegrationStatus struct {
+	Connected []string `json:"connected"` // provider names currently connected
+}
+
+type Issue struct {
+	ID         string `json:"id"`
+	Key        string `json:"key"`
+	Title      string `json:"title"`
+	Body       string `json:"body,omitempty"`
+	Status     string `json:"status"`
+	Category   string `json:"category"` // todo | in_progress | done | other
+	Assignee   string `json:"assignee,omitempty"`
+	URL        string `json:"url,omitempty"`
+	Provider   string `json:"provider"`
+	BranchName string `json:"branch_name,omitempty"`
+	TeamID     string `json:"team_id,omitempty"`
+	Priority   int    `json:"priority,omitempty"`
+	UpdatedAt  string `json:"updated_at,omitempty"`
+}
+
+type IssueList struct {
+	Issues []Issue `json:"issues"`
+}
+
+type IssueState struct {
+	ID       string  `json:"id"`
+	Name     string  `json:"name"`
+	Category string  `json:"category"`
+	Position float64 `json:"position"`
+}
+
+type IssueStatesReq struct {
+	Provider string `json:"provider"`
+	TeamID   string `json:"team_id"`
+}
+
+type IssueStateList struct {
+	States []IssueState `json:"states"`
+}
+
+type IssueLaunch struct {
+	IssueID       string `json:"issue_id"`
+	Provider      string `json:"provider"`
+	ProjectID     string `json:"project_id"`               // which registered repo to work in
+	Worktree      bool   `json:"worktree,omitempty"`
+	AgentProvider string `json:"agent_provider,omitempty"` // opencode|claude-code|pi (default opencode)
 }
 
 type SessionRef struct {
@@ -216,6 +276,8 @@ type Session struct {
 	WorkspaceName string `json:"workspace_name,omitempty"` // human name of a worktree workspace
 	Branch        string `json:"branch,omitempty"`         // git branch (for worktree sessions)
 	Port          int    `json:"port,omitempty"`           // port a setup hook assigned to this worktree
+	IssueKey      string `json:"issue_key,omitempty"`      // the ticket this session works (e.g. ENG-42)
+	IssueID       string `json:"issue_id,omitempty"`
 }
 
 type SessionList struct {

@@ -7,10 +7,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"log"
 	"sync"
 
 	"github.com/howlerops/oculus/daemon/agent"
+	"github.com/howlerops/oculus/daemon/issues"
 	"github.com/howlerops/oculus/daemon/project"
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/push"
@@ -35,6 +37,7 @@ type Hub struct {
 	clients       map[*transport.Conn]bool // all connected clients (for global broadcasts)
 	projects      *project.Registry        // optional: registered folders sessions spawn in
 	autoProjects  bool                     // auto-register projects from active agents' cwds
+	issues        *issues.Manager          // optional: connected trackers (Linear/Jira)
 	worktreeBase  string                   // base dir for worktrees ("" = worktree.DefaultBase)
 	reservedPorts map[int]bool             // ports handed to worktree setup hooks (collision-free)
 }
@@ -55,6 +58,162 @@ func (h *Hub) SetWorktreeBase(dir string) {
 	h.mu.Lock()
 	h.worktreeBase = dir
 	h.mu.Unlock()
+}
+
+// startSession creates a managed session per req — resolving the project cwd, optionally
+// creating + bootstrapping a git worktree, and merging extra metadata (e.g. an issue
+// link). It does NOT subscribe a client or start the run loop; the caller does that.
+func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta sessionMeta) (*managedSession, error) {
+	h.mu.Lock()
+	p := h.providers[req.Provider]
+	h.mu.Unlock()
+	if p == nil {
+		return nil, fmt.Errorf("unknown provider: %s", req.Provider)
+	}
+	cwd := req.Cwd
+	if req.ProjectID != "" {
+		reg := h.projectRegistry()
+		if reg == nil {
+			return nil, fmt.Errorf("projects not enabled")
+		}
+		proj, ok := reg.Get(req.ProjectID)
+		if !ok {
+			return nil, fmt.Errorf("unknown project: %s", req.ProjectID)
+		}
+		cwd = proj.Path
+	}
+	if req.ProjectID == "" {
+		h.autoRegisterCwd(cwd)
+	}
+	meta.projectID = req.ProjectID
+	meta.cwd = cwd
+	if req.Worktree {
+		name := req.WorkspaceName
+		if name == "" {
+			name = "session-" + randToken()
+		}
+		h.mu.Lock()
+		base := h.worktreeBase
+		h.mu.Unlock()
+		repoRoot, _ := worktree.RepoRoot(cwd)
+		wt, err := worktree.Create(base, cwd, name)
+		if err != nil {
+			return nil, err
+		}
+		cwd = wt.Path
+		meta.cwd = wt.Path
+		meta.branch = wt.Branch
+		meta.workspaceName = name
+		meta.worktreePath = wt.Path
+		meta.repoRoot = repoRoot
+		meta.baseCommit, _ = worktree.HeadCommit(repoRoot)
+		if repoRoot != "" {
+			if cfg, ok, _ := worktree.LoadConfig(repoRoot); ok {
+				port := 0
+				if len(cfg.PortRange) >= 2 {
+					port = h.reservePort(cfg.PortRange[0], cfg.PortRange[1])
+				}
+				res, berr := worktree.Bootstrap(repoRoot, wt.Path, cfg, port)
+				if berr != nil {
+					_ = worktree.Remove(repoRoot, wt.Path, true)
+					return nil, fmt.Errorf("worktree setup failed: %w", berr)
+				}
+				meta.port = res.Port
+			}
+		}
+	}
+	createPrompt := req.Prompt
+	if len(req.Images) > 0 {
+		createPrompt = ""
+	}
+	sess, err := p.Create(ctx, cwd, createPrompt)
+	if err != nil {
+		return nil, err
+	}
+	if len(req.Images) > 0 {
+		_ = promptSession(ctx, sess, req.Prompt, req.Images)
+	}
+	return h.addSession(sess, meta), nil
+}
+
+// handleIssueLaunch launches an agent on a ticket: a worktree session on the issue's
+// branch, prompted with the issue, linked back to the ticket, and (write-back) moves the
+// ticket to "in progress" with a comment.
+func (h *Hub) handleIssueLaunch(ctx context.Context, conn *transport.Conn, env protocol.Envelope) {
+	var req protocol.IssueLaunch
+	if err := env.Unmarshal(&req); err != nil {
+		h.sendErr(conn, env.ID, "bad issue.launch")
+		return
+	}
+	m := h.issuesMgr()
+	if m == nil {
+		h.sendErr(conn, env.ID, "integrations not enabled")
+		return
+	}
+	var issue *issues.Issue
+	for _, i := range m.Issues() {
+		if i.ID == req.IssueID {
+			cp := i
+			issue = &cp
+			break
+		}
+	}
+	if issue == nil {
+		h.sendErr(conn, env.ID, "issue not found")
+		return
+	}
+	if req.ProjectID == "" {
+		h.sendErr(conn, env.ID, "choose a project for this ticket")
+		return
+	}
+	agentProvider := req.AgentProvider
+	if agentProvider == "" {
+		agentProvider = "opencode"
+	}
+	branch := issue.BranchName
+	if branch == "" {
+		branch = issue.Key
+	}
+	create := protocol.SessionCreate{
+		Provider:      agentProvider,
+		ProjectID:     req.ProjectID,
+		Prompt:        fmt.Sprintf("Work on %s — %s\n\n%s\n\n%s", issue.Key, issue.Title, issue.Body, issue.URL),
+		Worktree:      true,
+		WorkspaceName: branch,
+	}
+	ms, err := h.startSession(ctx, create, sessionMeta{issueID: issue.ID, issueKey: issue.Key, issueProvider: issue.Provider})
+	if err != nil {
+		h.sendErr(conn, env.ID, err.Error())
+		return
+	}
+	go h.writeBackStarted(issue.Provider, issue.ID, issue.TeamID) // move ticket → in progress
+	h.sendOK(conn, env.ID, ms.info())
+	ms.subscribe(conn)
+	go ms.run()
+}
+
+// writeBackStarted moves a ticket to its "in progress" state + comments (best-effort).
+func (h *Hub) writeBackStarted(provider, issueID, teamID string) {
+	m := h.issuesMgr()
+	if m == nil {
+		return
+	}
+	p := m.Provider(provider)
+	if p == nil {
+		return
+	}
+	ctx := context.Background()
+	states, err := p.WorkflowStates(ctx, teamID)
+	if err != nil {
+		return
+	}
+	for _, s := range states {
+		if s.Category == "in_progress" {
+			_ = p.Transition(ctx, issueID, s.ID)
+			break
+		}
+	}
+	_ = p.Comment(ctx, issueID, "🤖 Iron Rain started an agent on this issue.")
 }
 
 // promptSession sends text (+ optional images) to a session, using the multimodal path
@@ -119,6 +278,41 @@ func (h *Hub) projectRegistry() *project.Registry {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.projects
+}
+
+// SetIssues attaches a tracker manager (Linear/Jira) and broadcasts issue updates.
+func (h *Hub) SetIssues(m *issues.Manager) {
+	h.mu.Lock()
+	h.issues = m
+	h.mu.Unlock()
+}
+
+// BroadcastIssues pushes the current assigned issues to every device (the Manager's poll
+// callback). Exported so main.go can wire it as the Manager's onUpdate.
+func (h *Hub) BroadcastIssues(in []issues.Issue) {
+	h.broadcast(protocol.TypeIssueList, protocol.IssueList{Issues: toProtoIssues(in)})
+}
+
+func (h *Hub) issuesMgr() *issues.Manager {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.issues
+}
+
+func toProtoIssue(i issues.Issue) protocol.Issue {
+	return protocol.Issue{
+		ID: i.ID, Key: i.Key, Title: i.Title, Body: i.Body, Status: i.Status,
+		Category: i.Category, Assignee: i.Assignee, URL: i.URL, Provider: i.Provider,
+		BranchName: i.BranchName, TeamID: i.TeamID, Priority: i.Priority, UpdatedAt: i.UpdatedAt,
+	}
+}
+
+func toProtoIssues(in []issues.Issue) []protocol.Issue {
+	out := make([]protocol.Issue, len(in))
+	for i, v := range in {
+		out[i] = toProtoIssue(v)
+	}
+	return out
 }
 
 func toProtoProject(p project.Project) protocol.Project {
@@ -309,91 +503,11 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, "bad session.create")
 			return
 		}
-		h.mu.Lock()
-		p := h.providers[req.Provider]
-		h.mu.Unlock()
-		if p == nil {
-			h.sendErr(conn, env.ID, "unknown provider: "+req.Provider)
-			return
-		}
-		cwd := req.Cwd
-		if req.ProjectID != "" {
-			h.mu.Lock()
-			reg := h.projects
-			h.mu.Unlock()
-			if reg == nil {
-				h.sendErr(conn, env.ID, "projects not enabled")
-				return
-			}
-			proj, ok := reg.Get(req.ProjectID)
-			if !ok {
-				h.sendErr(conn, env.ID, "unknown project: "+req.ProjectID)
-				return
-			}
-			cwd = proj.Path
-		}
-		if req.ProjectID == "" {
-			h.autoRegisterCwd(cwd) // a session in a raw folder auto-creates its project
-		}
-		meta := sessionMeta{projectID: req.ProjectID, cwd: cwd}
-		if req.Worktree {
-			name := req.WorkspaceName
-			if name == "" {
-				name = "session-" + randToken()
-			}
-			h.mu.Lock()
-			base := h.worktreeBase
-			h.mu.Unlock()
-			// Resolve the MAIN repo root from the project cwd (a worktree's own toplevel
-			// is itself, so .oculus/project.json must be read from the main repo).
-			repoRoot, _ := worktree.RepoRoot(cwd)
-			wt, err := worktree.Create(base, cwd, name)
-			if err != nil {
-				h.sendErr(conn, env.ID, err.Error())
-				return
-			}
-			cwd = wt.Path
-			meta.cwd = wt.Path
-			meta.branch = wt.Branch
-			meta.workspaceName = name
-			meta.worktreePath = wt.Path
-			meta.repoRoot = repoRoot
-			meta.baseCommit, _ = worktree.HeadCommit(repoRoot)
-			// Bootstrap the worktree from .oculus/project.json (copy .env, install deps,
-			// assign a port) so the agent starts in a ready folder. Failure aborts the
-			// session and removes the half-baked worktree.
-			if repoRoot != "" {
-				root := repoRoot
-				if cfg, ok, _ := worktree.LoadConfig(root); ok {
-					port := 0
-					if len(cfg.PortRange) >= 2 {
-						port = h.reservePort(cfg.PortRange[0], cfg.PortRange[1])
-					}
-					res, berr := worktree.Bootstrap(root, wt.Path, cfg, port)
-					if berr != nil {
-						_ = worktree.Remove(root, wt.Path, true)
-						h.sendErr(conn, env.ID, "worktree setup failed: "+berr.Error())
-						return
-					}
-					meta.port = res.Port
-				}
-			}
-		}
-		// With images, create the session without a first turn, then send the prompt +
-		// images together so the agent gets a single multimodal message.
-		createPrompt := req.Prompt
-		if len(req.Images) > 0 {
-			createPrompt = ""
-		}
-		sess, err := p.Create(ctx, cwd, createPrompt)
+		m, err := h.startSession(ctx, req, sessionMeta{})
 		if err != nil {
 			h.sendErr(conn, env.ID, err.Error())
 			return
 		}
-		if len(req.Images) > 0 {
-			_ = promptSession(ctx, sess, req.Prompt, req.Images)
-		}
-		m := h.addSession(sess, meta)
 		h.sendOK(conn, env.ID, m.info())
 		m.subscribe(conn) // the creator observes its own session
 		go m.run()
@@ -541,6 +655,60 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			files = append(files, protocol.FileConflict{Path: path, Branches: branches})
 		}
 		h.sendOK(conn, env.ID, protocol.WorktreeConflicts{SessionID: req.SessionID, Files: files})
+
+	case protocol.TypeIntegrationConnect:
+		var req protocol.IntegrationConnect
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad integration.connect")
+			return
+		}
+		m := h.issuesMgr()
+		if m == nil {
+			h.sendErr(conn, env.ID, "integrations not enabled")
+			return
+		}
+		if err := m.Connect(ctx, req.Provider, req.Token); err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: m.Connected()})
+
+	case protocol.TypeIntegrationStatus:
+		var connected []string
+		if m := h.issuesMgr(); m != nil {
+			connected = m.Connected()
+		}
+		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: connected})
+
+	case protocol.TypeIssueList:
+		m := h.issuesMgr()
+		if m == nil {
+			h.sendErr(conn, env.ID, "integrations not enabled")
+			return
+		}
+		h.sendOK(conn, env.ID, protocol.IssueList{Issues: toProtoIssues(m.Issues())})
+
+	case protocol.TypeIssueStates:
+		var req protocol.IssueStatesReq
+		_ = env.Unmarshal(&req)
+		m := h.issuesMgr()
+		if m == nil {
+			h.sendErr(conn, env.ID, "integrations not enabled")
+			return
+		}
+		states, err := m.States(ctx, req.Provider, req.TeamID)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		out := make([]protocol.IssueState, len(states))
+		for i, s := range states {
+			out[i] = protocol.IssueState{ID: s.ID, Name: s.Name, Category: s.Category, Position: s.Position}
+		}
+		h.sendOK(conn, env.ID, protocol.IssueStateList{States: out})
+
+	case protocol.TypeIssueLaunch:
+		h.handleIssueLaunch(ctx, conn, env)
 
 	case protocol.TypeSessionSubscribe:
 		var req protocol.SessionRef

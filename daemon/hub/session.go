@@ -33,6 +33,9 @@ type sessionMeta struct {
 	baseCommit    string // repo HEAD when the worktree was created (stable diff base)
 	repoRoot      string // main repo root (for worktree remove/prune)
 	port          int    // port allocated to this worktree by a setup hook (0 = none)
+	issueID       string // the ticket this session works (for write-back)
+	issueKey      string // human ticket id (ENG-42)
+	issueProvider string // "linear" | "jira"
 }
 
 func newManagedSession(h *Hub, sess agent.Session, meta sessionMeta) *managedSession {
@@ -50,6 +53,8 @@ func (m *managedSession) info() protocol.Session {
 		WorkspaceName: m.meta.workspaceName,
 		Branch:        m.meta.branch,
 		Port:          m.meta.port,
+		IssueKey:      m.meta.issueKey,
+		IssueID:       m.meta.issueID,
 	}
 }
 
