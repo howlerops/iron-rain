@@ -107,6 +107,35 @@ platform :ios do
     UI.success("Release archive + app-store signing OK — `fastlane ios beta` will upload cleanly once the app record exists.")
   end
 
+  WIDGET_ID = "#{APP_ID}.OculusWidgets"
+
+  # Explicitly provision (distribution cert + app-store profiles) via the API key, then
+  # return the {bundle_id => profile_name} map for manual-signing export. This avoids
+  # Xcode "cloud signing" which the API key can't drive.
+  def provision(key)
+    require "spaceship"
+    Spaceship::ConnectAPI.token = Spaceship::ConnectAPI::Token.create(key_id: KEY_ID, issuer_id: ISSUER_ID, filepath: KEY_PATH)
+    [APP_ID, WIDGET_ID].each do |bid|
+      next if Spaceship::ConnectAPI::BundleId.all.any? { |b| b.identifier == bid }
+      Spaceship::ConnectAPI::BundleId.create(name: bid.tr(".", " "), identifier: bid, seed_id: TEAM_ID, platform: "IOS")
+    end
+    # The app entitlement needs Push — enable it on the App ID so the profile includes it.
+    app_bid = Spaceship::ConnectAPI::BundleId.all.find { |b| b.identifier == APP_ID }
+    begin
+      app_bid.create_capability(Spaceship::ConnectAPI::BundleIdCapability::Type::PUSH_NOTIFICATIONS)
+      UI.message("Enabled Push Notifications on #{APP_ID}.")
+    rescue => e
+      UI.message("Push capability: #{e.message} (likely already enabled).")
+    end
+    get_certificates(api_key: key, output_path: "fastlane/build/certs")
+    get_provisioning_profile(api_key: key, app_identifier: APP_ID, output_path: "fastlane/build/profiles")
+    get_provisioning_profile(api_key: key, app_identifier: WIDGET_ID, output_path: "fastlane/build/profiles")
+    {
+      APP_ID => ENV["sigh_#{APP_ID}_appstore_profile-name"],
+      WIDGET_ID => ENV["sigh_#{WIDGET_ID}_appstore_profile-name"],
+    }
+  end
+
   desc "Build the iOS app and upload it to TestFlight (external testers)."
   lane :beta do
     key = asc_key
@@ -114,14 +143,19 @@ platform :ios do
       api_key: key, app_identifier: APP_ID, initial_build_number: 0,
     ).to_i + 1
 
+    profiles = provision(key)
     sh("cd .. && xcodegen generate --spec app/project.yml")
     build_app(
       project: XCODEPROJ,
       scheme: SCHEME,
       export_method: "app-store",
-      xcargs: signing_xcargs(next_build),
+      xcargs: "CURRENT_PROJECT_VERSION=#{next_build}",
       output_directory: "build",
       clean: true,
+      export_options: {
+        signingStyle: "manual",
+        provisioningProfiles: profiles,
+      },
     )
 
     upload_to_testflight(

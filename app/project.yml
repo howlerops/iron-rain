@@ -47,6 +47,16 @@ targets:
         # lets TestFlight skip the per-build "Missing Compliance" prompt. Verify for your
         # jurisdiction if you add non-standard cryptography.
         ITSAppUsesNonExemptEncryption: false
+        # Universal (iPhone+iPad) apps must declare orientations; iPad requires all four.
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         # Allow cleartext ws:// to the daemon on the local network (direct/LAN mode).
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
