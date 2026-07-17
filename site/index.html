@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Oculus — drive your coding agents from anywhere</title>
+<meta name="description" content="Oculus is a native Apple app to drive and approve claude-code and opencode sessions on your Mac from your iPhone — with git-worktree isolation and multi-desktop support." />
+<link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+<header class="wrap">
+  <div class="brand"><span class="mark">◉</span> Oculus</div>
+  <nav><a href="#features">Features</a><a href="./support.html">Support</a><a href="./privacy.html">Privacy</a></nav>
+</header>
+
+<main>
+  <section class="hero wrap">
+    <h1>Drive your coding agents<br/>from anywhere.</h1>
+    <p class="lede">Oculus is a native Apple app that lets you start, steer, and approve
+      <strong>claude-code</strong> and <strong>opencode</strong> sessions running on your Mac —
+      from your iPhone, on your subscription, end-to-end encrypted.</p>
+    <div class="cta">
+      <a class="btn primary" href="./support.html#testflight">Join the TestFlight</a>
+      <a class="btn" href="https://github.com/howlerops/oculus">View on GitHub</a>
+    </div>
+  </section>
+
+  <section id="features" class="features wrap">
+    <div class="card">
+      <h3>Projects &amp; worktrees</h3>
+      <p>Spawn sessions in any project folder, or in an isolated <code>git worktree</code> on its own
+        branch — with per-project setup hooks that copy your <code>.env</code>, install deps, and
+        assign a port. Review the diff and open a PR when you're done.</p>
+    </div>
+    <div class="card">
+      <h3>Approve from your pocket</h3>
+      <p>Tool calls block until you approve them — with a real Allow / Deny you can answer from the
+        lock screen. Live Activities show what the agent is doing in real time.</p>
+    </div>
+    <div class="card">
+      <h3>Multiple Macs, grouped</h3>
+      <p>Pair every Mac you own, name them, and switch between them instantly. Your sessions stay
+        grouped by machine and project.</p>
+    </div>
+    <div class="card">
+      <h3>Your keys, your subscription</h3>
+      <p>claude-code runs on <em>your</em> Claude subscription. Traffic is end-to-end encrypted
+        between phone and Mac — Oculus never sees your code or your keys.</p>
+    </div>
+  </section>
+
+  <section class="how wrap">
+    <h2>How it works</h2>
+    <ol>
+      <li>Run the Oculus daemon on your Mac (it auto-detects opencode, claude-code, and pi).</li>
+      <li>Scan the pairing QR from the iOS app.</li>
+      <li>Start a session in any project — approve tools, review worktree diffs, ship.</li>
+    </ol>
+  </section>
+</main>
+
+<footer class="wrap">
+  <span>© <span id="y"></span> HowlerOps</span>
+  <span><a href="./privacy.html">Privacy</a> · <a href="./support.html">Support</a> · <a href="https://github.com/howlerops/oculus">GitHub</a></span>
+</footer>
+<script>document.getElementById('y').textContent = new Date().getFullYear();</script>
+</body>
+</html>

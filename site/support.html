@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Oculus — Support</title>
+<link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+<header class="wrap">
+  <div class="brand"><span class="mark">◉</span> Oculus</div>
+  <nav><a href="./index.html">Home</a><a href="./privacy.html">Privacy</a></nav>
+</header>
+
+<main class="doc wrap">
+  <a class="back" href="./index.html">← Back</a>
+  <h1>Support</h1>
+  <p class="updated">We're here to help.</p>
+
+  <h2 id="testflight">Joining the TestFlight beta</h2>
+  <p>Oculus for iOS is currently in external beta via TestFlight.</p>
+  <ol>
+    <li>Install <a href="https://apps.apple.com/app/testflight/id899247664">TestFlight</a> from the App Store.</li>
+    <li>Open the public invitation link (posted on the <a href="https://github.com/howlerops/oculus">GitHub repo</a>).</li>
+    <li>Tap <em>Install</em> in TestFlight.</li>
+  </ol>
+
+  <h2>Setting up the Mac daemon</h2>
+  <p>The app drives coding agents that run on your Mac via the Oculus daemon. Build and run it from
+  the <a href="https://github.com/howlerops/oculus">repository</a>:</p>
+  <p><code>cd daemon &amp;&amp; go run . serve --secret &lt;your-secret&gt;</code></p>
+  <p>It auto-detects opencode, claude-code, and pi if they're installed. Then scan the pairing QR it
+  prints from the iOS app.</p>
+
+  <h2>Common questions</h2>
+  <p><strong>Do I need an API key?</strong> No — claude-code runs on your existing Claude
+  subscription. Only headless/CI setups need an <code>ANTHROPIC_API_KEY</code>.</p>
+  <p><strong>Is my code sent anywhere?</strong> No. Traffic is end-to-end encrypted between your
+  phone and your Mac. See our <a href="./privacy.html">Privacy Policy</a>.</p>
+  <p><strong>Can I connect to more than one Mac?</strong> Yes — pair each one, name it, and switch
+  between them in the app.</p>
+
+  <h2>Report a bug or request a feature</h2>
+  <p>Open an issue at
+  <a href="https://github.com/howlerops/oculus/issues">github.com/howlerops/oculus/issues</a>,
+  or email <a href="mailto:support@howlerops.com">support@howlerops.com</a>.</p>
+</main>
+
+<footer class="wrap">
+  <span>© <span id="y"></span> HowlerOps</span>
+  <span><a href="./privacy.html">Privacy</a> · <a href="./support.html">Support</a></span>
+</footer>
+<script>document.getElementById('y').textContent = new Date().getFullYear();</script>
+</body>
+</html>
