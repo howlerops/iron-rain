@@ -53,13 +53,14 @@ public struct SessionCreate: Codable {
     public var cwd: String?
     public var projectID: String?
     public var prompt: String?
+    public var images: [ImageAttachment]?
     public var worktree: Bool?
     public var workspaceName: String?
-    public init(provider: String, cwd: String? = nil, projectID: String? = nil, prompt: String? = nil, worktree: Bool? = nil, workspaceName: String? = nil) {
-        self.provider = provider; self.cwd = cwd; self.projectID = projectID; self.prompt = prompt; self.worktree = worktree; self.workspaceName = workspaceName
+    public init(provider: String, cwd: String? = nil, projectID: String? = nil, prompt: String? = nil, images: [ImageAttachment]? = nil, worktree: Bool? = nil, workspaceName: String? = nil) {
+        self.provider = provider; self.cwd = cwd; self.projectID = projectID; self.prompt = prompt; self.images = images; self.worktree = worktree; self.workspaceName = workspaceName
     }
     enum CodingKeys: String, CodingKey {
-        case provider, cwd, prompt, worktree
+        case provider, cwd, prompt, images, worktree
         case projectID = "project_id"
         case workspaceName = "workspace_name"
     }
@@ -69,10 +70,17 @@ public struct SessionRef: Codable {
     public init(sessionID: String) { self.sessionID = sessionID }
     enum CodingKeys: String, CodingKey { case sessionID = "session_id" }
 }
+public struct ImageAttachment: Codable, Hashable {
+    public var mime: String
+    public var data: String // base64, no data: prefix
+    public init(mime: String, data: String) { self.mime = mime; self.data = data }
+}
 public struct SessionPrompt: Codable {
-    public var sessionID: String; public var text: String
-    public init(sessionID: String, text: String) { self.sessionID = sessionID; self.text = text }
-    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case text }
+    public var sessionID: String; public var text: String; public var images: [ImageAttachment]?
+    public init(sessionID: String, text: String, images: [ImageAttachment]? = nil) {
+        self.sessionID = sessionID; self.text = text; self.images = images
+    }
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case text; case images }
 }
 public struct OutputDelta: Codable {
     public var sessionID: String; public var text: String

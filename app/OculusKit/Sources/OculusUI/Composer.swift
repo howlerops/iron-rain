@@ -3,6 +3,9 @@ import OculusKit
 import UniformTypeIdentifiers
 #if os(iOS)
 import PhotosUI
+import UIKit
+#elseif os(macOS)
+import AppKit
 #endif
 
 /// The sticky bottom composer, styled like the Claude Code / opencode input: a single
@@ -25,6 +28,7 @@ struct Composer: View {
         VStack(spacing: 0) {
             Divider().overlay(palette.border)
             VStack(alignment: .leading, spacing: 10) {
+                if !model.pendingImages.isEmpty { attachmentChips }
                 TextField("Message the agent…", text: $draft, axis: .vertical)
                     .lineLimit(1...8)
                     .textFieldStyle(.plain)
@@ -56,9 +60,13 @@ struct Composer: View {
             if dictator.isRecording { draft = newValue }
         }
         #if os(macOS)
-        .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.item]) { result in
+        .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.image]) { result in
             if case let .success(url) = result {
-                draft += (draft.isEmpty ? "" : "\n") + "[attached \(url.lastPathComponent)]"
+                let scoped = url.startAccessingSecurityScopedResource()
+                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                if let data = try? Data(contentsOf: url), let jpeg = toJPEG(data) {
+                    model.attachImage(mime: "image/jpeg", data: jpeg)
+                }
             }
         }
         #endif
@@ -72,7 +80,56 @@ struct Composer: View {
     }
 
     private var canSend: Bool {
-        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.pendingImages.isEmpty
+    }
+
+    private var attachmentChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(Array(model.pendingImages.enumerated()), id: \.offset) { idx, img in
+                    HStack(spacing: 5) {
+                        attachmentThumb(img)
+                        Text("Image \(idx + 1)").font(.caption2)
+                        Button { model.pendingImages.remove(at: idx) } label: {
+                            Image(systemName: "xmark.circle.fill").font(.caption2)
+                        }.buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 8).padding(.vertical, 5)
+                    .background(palette.muted.opacity(0.3)).clipShape(Capsule())
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func attachmentThumb(_ img: ImageAttachment) -> some View {
+        if let data = Data(base64Encoded: img.data), let ui = platformImage(data) {
+            ui.resizable().scaledToFill().frame(width: 18, height: 18).clipShape(RoundedRectangle(cornerRadius: 4))
+        } else {
+            Image(systemName: "photo").font(.caption2)
+        }
+    }
+
+    private func platformImage(_ data: Data) -> Image? {
+        #if os(iOS)
+        return UIImage(data: data).map { Image(uiImage: $0) }
+        #elseif os(macOS)
+        return NSImage(data: data).map { Image(nsImage: $0) }
+        #else
+        return nil
+        #endif
+    }
+
+    /// Converts arbitrary image data (HEIC/PNG/…) to JPEG, which every provider accepts.
+    private func toJPEG(_ data: Data) -> Data? {
+        #if os(iOS)
+        return UIImage(data: data)?.jpegData(compressionQuality: 0.8)
+        #elseif os(macOS)
+        guard let img = NSImage(data: data), let tiff = img.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff) else { return nil }
+        return rep.representation(using: .jpeg, properties: [.compressionFactor: 0.8])
+        #else
+        return nil
+        #endif
     }
 
     private var sendButton: some View {
@@ -106,9 +163,14 @@ struct Composer: View {
         }
         .buttonStyle(.plain)
         .onChange(of: photoItem) { item in
-            guard item != nil else { return }
-            draft += (draft.isEmpty ? "" : "\n") + "[attached an image]" // scaffold
-            photoItem = nil
+            guard let item else { return }
+            Task {
+                if let data = try? await item.loadTransferable(type: Data.self),
+                   let jpeg = toJPEG(data) {
+                    await MainActor.run { model.attachImage(mime: "image/jpeg", data: jpeg) }
+                }
+                await MainActor.run { photoItem = nil }
+            }
         }
         #else
         return Button { showFileImporter = true } label: {

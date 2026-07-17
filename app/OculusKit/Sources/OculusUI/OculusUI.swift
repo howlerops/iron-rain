@@ -39,6 +39,7 @@ public final class Model: ObservableObject {
     @Published public var sessions: [Session] = [] // hub-managed sessions (for sidebar grouping)
     @Published public var lastDiff: String? // populated by worktreeDiff()
     @Published public var conflicts: [FileConflict] = [] // files shared with other worktrees
+    @Published public var pendingImages: [ImageAttachment] = [] // attached, sent with the next prompt
     /// Options applied to the NEXT session created (by the first send). Set via newSession(...).
     @Published public var newSessionProvider = "opencode"
     public var pendingProjectID: String?
@@ -200,19 +201,23 @@ public final class Model: ObservableObject {
     /// go to the same session (a real multi-turn conversation).
     public func send(_ text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let client else { return }
-        messages.append(ChatMessage(role: .user, text: trimmed))
+        let imgs = pendingImages
+        guard (!trimmed.isEmpty || !imgs.isEmpty), let client else { return }
+        let shown = trimmed.isEmpty ? "🖼️ \(imgs.count) image\(imgs.count == 1 ? "" : "s")" : trimmed
+        messages.append(ChatMessage(role: .user, text: shown))
         busy = true
+        pendingImages = []
         do {
             if let sid = sessionID {
                 let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.sessionPrompt,
-                                              payload: SessionPrompt(sessionID: sid, text: trimmed))
+                                              payload: SessionPrompt(sessionID: sid, text: trimmed, images: imgs.isEmpty ? nil : imgs))
                 try await client.send(env)
             } else {
                 let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.sessionCreate,
                                               payload: SessionCreate(provider: newSessionProvider,
                                                                      projectID: pendingProjectID,
                                                                      prompt: trimmed,
+                                                                     images: imgs.isEmpty ? nil : imgs,
                                                                      worktree: pendingWorktree ? true : nil,
                                                                      workspaceName: pendingWorkspaceName))
                 try await client.send(env)
@@ -221,6 +226,11 @@ public final class Model: ObservableObject {
             status = "Send failed: \(error)"
             busy = false
         }
+    }
+
+    /// Adds an image to be sent with the next prompt (converted to base64).
+    public func attachImage(mime: String, data: Data) {
+        pendingImages.append(ImageAttachment(mime: mime, data: data.base64EncodedString()))
     }
 
     /// Attaches to an existing session discovered on the host: loads its history and
