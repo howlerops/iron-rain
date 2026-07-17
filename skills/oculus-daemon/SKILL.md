@@ -7,6 +7,14 @@ description: The Oculus daemon core (hub) that routes protocol messages between 
 
 `daemon/hub` is the core: it holds providers + live sessions and drives one client connection.
 
+## Providers auto-detect (`autodetect.go`)
+`oculusd serve` (no provider flags) enables every provider present on the host — `enableProviders`
+registers: a running/installed **opencode** (reuse a discovered `opencode serve`, else start one if
+the binary exists), the **claude-code** sidecar if `claude`+`node`+`sidecar.mjs`(+`node_modules`) are
+found (candidates: `$OCULUS_CLAUDE_SIDECAR`, cwd, exe-dir, `~/.oculus/claude-sidecar`), and **pi** if
+on PATH. `--opencode/--claude-sidecar/--pi` only OVERRIDE a specific provider's detection. No provider
+found → warn + serve anyway.
+
 ## Model
 - `hub.New()` → `Register(provider)` (by `Name()`).
 - `Serve(ctx, *transport.Conn)` loops: `Recv` a protocol envelope → `dispatch`. Blocks until the

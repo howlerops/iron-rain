@@ -26,9 +26,7 @@ import (
 	"github.com/mdp/qrterminal/v3"
 
 	"github.com/howlerops/oculus/daemon/agent"
-	"github.com/howlerops/oculus/daemon/agent/claudecode"
 	"github.com/howlerops/oculus/daemon/agent/opencode"
-	"github.com/howlerops/oculus/daemon/agent/pi"
 	"github.com/howlerops/oculus/daemon/crypto"
 	"github.com/howlerops/oculus/daemon/discovery"
 	"github.com/howlerops/oculus/daemon/hub"
@@ -71,9 +69,11 @@ func main() {
 func serve(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", "127.0.0.1:6000", "listen address")
-	opencodeURL := fs.String("opencode", "", "URL of a running `opencode serve` (e.g. http://127.0.0.1:4096)")
-	claudeSidecar := fs.String("claude-sidecar", "", "path to the claude-code sidecar (sidecar/sidecar.mjs, run via node) to enable the claude-code provider")
-	piBin := fs.String("pi", "", "path to the pi binary to enable the pi provider (spike; runs `pi --mode rpc`)")
+	// Providers are AUTO-DETECTED (a running/installed opencode, the claude-code sidecar
+	// if claude+node are present, and pi on PATH). These flags only OVERRIDE detection.
+	opencodeURL := fs.String("opencode", "", "override: URL of a running `opencode serve` (else auto-detected/started)")
+	claudeSidecar := fs.String("claude-sidecar", "", "override: path to the claude-code sidecar.mjs (else auto-detected)")
+	piBin := fs.String("pi", "", "override: path to the pi binary (else auto-detected on PATH)")
 	secret := fs.String("secret", "", "pairing secret clients must present (default: generated)")
 	keyPath := fs.String("key", defaultKeyPath(), "path to the daemon private key")
 	apnsKey := fs.String("apns-key", "", "path to an APNs auth key (.p8) to enable push")
@@ -84,10 +84,6 @@ func serve(args []string) error {
 	publicURL := fs.String("public-url", "", "reachable base ws/wss URL for the pairing QR (e.g. wss://x.ngrok-free.app); default derives a LAN URL from --addr")
 	if err := fs.Parse(args); err != nil {
 		return err
-	}
-
-	if *opencodeURL == "" && *claudeSidecar == "" && *piBin == "" {
-		return fmt.Errorf("enable at least one provider: --opencode URL, --claude-sidecar PATH, and/or --pi PATH")
 	}
 
 	kp, err := loadOrCreateKey(*keyPath)
@@ -107,18 +103,10 @@ func serve(args []string) error {
 		}
 		return nil
 	})
-	providers := []string{}
-	if *opencodeURL != "" {
-		h.Register(opencode.New(*opencodeURL))
-		providers = append(providers, "opencode -> "+*opencodeURL)
-	}
-	if *piBin != "" {
-		h.Register(pi.New([]string{*piBin, "--mode", "rpc"}))
-		providers = append(providers, "pi -> "+*piBin+" --mode rpc")
-	}
-	if *claudeSidecar != "" {
-		h.Register(claudecode.New([]string{"node", *claudeSidecar}))
-		providers = append(providers, "claude-code -> node "+*claudeSidecar)
+	// Auto-detect every provider present on this host; the flags override a specific one.
+	providers := enableProviders(context.Background(), h, *opencodeURL, *claudeSidecar, *piBin)
+	if len(providers) == 0 {
+		fmt.Fprintln(os.Stderr, "  warning: no coding-agent providers detected (install opencode, claude-code, or pi and re-run) — serving anyway")
 	}
 
 	pushEnabled := false
