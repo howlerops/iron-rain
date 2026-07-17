@@ -7,6 +7,7 @@ private struct SidebarSession: Identifiable {
     let id: String
     let title: String
     let provider: String
+    let projectName: String // the natural (project) group this session belongs to
     let branch: String?
     let isRunning: Bool
     let viewOnly: Bool
@@ -17,6 +18,7 @@ private struct SessionGroup: Identifiable {
     let name: String
     let items: [SidebarSession]
     let showProvider: Bool // only when a group actually mixes providers
+    let showProject: Bool  // the "Recent" group spans projects, so show each row's project
     let hasRunning: Bool
     var id: String { name }
 }
@@ -59,7 +61,8 @@ struct SessionSidebar: View {
                 Section {
                     ForEach(group.items) { item in
                         SessionRow(item: item, active: model.sessionID == item.id,
-                                   showProvider: group.showProvider, palette: palette)
+                                   showProvider: group.showProvider, showProject: group.showProject,
+                                   palette: palette)
                             .tag(item.id)
                             .listRowBackground(
                                 model.sessionID == item.id
@@ -114,38 +117,65 @@ struct SessionSidebar: View {
 
         for s in model.sessions {
             let title = s.workspaceName ?? clean(s.title) ?? clean(discoveredTitles[s.id]) ?? "ses \(s.id.prefix(6))"
-            let item = SidebarSession(id: s.id, title: title, provider: s.provider,
-                                      branch: s.branch, isRunning: s.status == SessionStatusValue.running,
-                                      viewOnly: false, updatedAt: date(s.updatedAt))
             let key = s.projectID.flatMap { projectNames[$0] } ?? ((s.projectID?.isEmpty ?? true) ? "On this Mac" : s.projectID!)
-            add(key, item)
+            add(key, SidebarSession(id: s.id, title: title, provider: s.provider, projectName: key,
+                                    branch: s.branch, isRunning: s.status == SessionStatusValue.running,
+                                    viewOnly: false, updatedAt: date(s.updatedAt)))
         }
         for d in model.discovered where d.provider == "opencode" && d.kind == DiscoveredKind.session {
             guard let sid = d.sessionID, !managedIDs.contains(sid) else { continue }
             add("On this Mac", SidebarSession(id: sid, title: clean(d.title) ?? "ses \(sid.prefix(6))",
-                                              provider: "opencode", branch: nil, isRunning: false,
-                                              viewOnly: false, updatedAt: date(d.updatedAt)))
+                                              provider: "opencode", projectName: "On this Mac", branch: nil,
+                                              isRunning: false, viewOnly: false, updatedAt: date(d.updatedAt)))
         }
         for d in model.discovered where d.provider == "claude-code" {
             let name = (d.cwd as NSString?)?.lastPathComponent ?? "session"
             add("View-only", SidebarSession(id: d.discoveryID, title: name, provider: "claude-code",
-                                            branch: nil, isRunning: false, viewOnly: true, updatedAt: date(d.updatedAt)))
+                                            projectName: "View-only", branch: nil, isRunning: false,
+                                            viewOnly: true, updatedAt: date(d.updatedAt)))
         }
 
-        let special = ["On this Mac", "View-only"]
-        let projects = order.filter { !special.contains($0) }.sorted()
-        let tail = special.filter { buckets[$0] != nil }
-        return (projects + tail).map { name in
-            // Most-recent first; running sessions always float to the top of their group.
-            let items = (buckets[name] ?? []).sorted { a, b in
+        // Pull recently-active sessions (active within the window, or running) out of their
+        // project buckets into a single "Recent" section at the top. View-only sessions stay
+        // in their own section — they're a different interaction class.
+        let cutoff = Date().addingTimeInterval(-recentWindow)
+        var recent: [SidebarSession] = []
+        for key in order where key != "View-only" {
+            var kept: [SidebarSession] = []
+            for it in buckets[key] ?? [] {
+                if it.isRunning || (it.updatedAt.map { $0 >= cutoff } ?? false) {
+                    recent.append(it)
+                } else {
+                    kept.append(it)
+                }
+            }
+            buckets[key] = kept
+        }
+
+        func group(_ name: String, _ items: [SidebarSession], showProject: Bool) -> SessionGroup {
+            let sorted = items.sorted { a, b in
                 if a.isRunning != b.isRunning { return a.isRunning }
                 return (a.updatedAt ?? .distantPast) > (b.updatedAt ?? .distantPast)
             }
-            return SessionGroup(name: name, items: items,
-                                showProvider: Set(items.map { $0.provider }).count > 1,
-                                hasRunning: items.contains { $0.isRunning })
+            return SessionGroup(name: name, items: sorted,
+                                showProvider: Set(sorted.map { $0.provider }).count > 1,
+                                showProject: showProject,
+                                hasRunning: sorted.contains { $0.isRunning })
         }
+
+        var result: [SessionGroup] = []
+        if !recent.isEmpty { result.append(group("Recent", recent, showProject: true)) }
+        let special = ["On this Mac", "View-only"]
+        let projects = order.filter { !special.contains($0) }.sorted()
+        let tail = special.filter { !(buckets[$0]?.isEmpty ?? true) }
+        for name in projects + tail where !(buckets[name]?.isEmpty ?? true) {
+            result.append(group(name, buckets[name] ?? [], showProject: false))
+        }
+        return result
     }
+
+    /// A session counts as "Recent" if it was active within this window (or is running).
+    private let recentWindow: TimeInterval = 24 * 3600
 
     private func date(_ secs: Int?) -> Date? {
         guard let s = secs, s > 0 else { return nil }
@@ -169,6 +199,7 @@ private struct SessionRow: View {
     let item: SidebarSession
     let active: Bool
     let showProvider: Bool
+    let showProject: Bool
     let palette: OculusPalette
 
     var body: some View {
@@ -212,6 +243,7 @@ private struct SessionRow: View {
     /// relative time. Nil → the row is a single clean line of just the title.
     private var secondary: String? {
         var parts: [String] = []
+        if showProject { parts.append(item.projectName) } // Recent section spans projects
         if item.viewOnly { parts.append("\(item.provider) · view-only") }
         else if showProvider { parts.append(item.provider) }
         if let t = item.updatedAt { parts.append(Self.relative(t)) }

@@ -97,6 +97,8 @@ public struct ChatView: View {
         }
     }
 
+    private static let starters = ["Explain this project", "Find and fix a bug", "Review my changes"]
+
     private var emptyState: some View {
         VStack(spacing: 14) {
             Spacer()
@@ -106,6 +108,19 @@ public struct ChatView: View {
                 .font(.system(size: 14)).foregroundStyle(palette.mutedForeground)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 360).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                ForEach(Self.starters, id: \.self) { prompt in
+                    Button { draft = prompt } label: {
+                        Text(prompt).font(.system(size: 12))
+                            .foregroundStyle(palette.foreground)
+                            .padding(.horizontal, 12).padding(.vertical, 7)
+                            .background(Capsule().fill(palette.muted.opacity(0.45)))
+                            .overlay(Capsule().stroke(palette.border))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.top, 4)
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
