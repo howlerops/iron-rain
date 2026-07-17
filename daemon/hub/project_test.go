@@ -160,6 +160,13 @@ func TestProjectFlow(t *testing.T) {
 func TestWorktreeSession(t *testing.T) {
 	repo := t.TempDir()
 	gitInitRepo(t, repo)
+	// A setup manifest: copy a gitignored .env and assign a port. Proves bootstrap runs.
+	if err := os.WriteFile(filepath.Join(repo, ".env"), []byte("K=v"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.MkdirAll(filepath.Join(repo, ".oculus"), 0o755)
+	_ = os.WriteFile(filepath.Join(repo, ".oculus", "project.json"),
+		[]byte(`{"copy":[".env"],"portRange":[47120,47139]}`), 0o644)
 	reg, _ := project.Load(t.TempDir() + "/projects.json")
 	prov := &cwdProvider{}
 	h := hub.New()
@@ -196,5 +203,12 @@ func TestWorktreeSession(t *testing.T) {
 	}
 	if sess.WorkspaceName != "Feature X" || sess.Cwd != got {
 		t.Errorf("session meta = {ws:%q cwd:%q}, want {Feature X, %q}", sess.WorkspaceName, sess.Cwd, got)
+	}
+	// Bootstrap ran: the gitignored .env was copied into the worktree, and a port assigned.
+	if b, err := os.ReadFile(filepath.Join(got, ".env")); err != nil || string(b) != "K=v" {
+		t.Errorf(".env not bootstrapped into worktree: %v %q", err, b)
+	}
+	if sess.Port < 47120 || sess.Port > 47139 {
+		t.Errorf("session port = %d, want in [47120,47139]", sess.Port)
 	}
 }

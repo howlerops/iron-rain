@@ -30,6 +30,7 @@ type sessionMeta struct {
 	workspaceName string
 	branch        string
 	worktreePath  string // set when this session runs in a git worktree (for cleanup)
+	port          int    // port allocated to this worktree by a setup hook (0 = none)
 }
 
 func newManagedSession(h *Hub, sess agent.Session, meta sessionMeta) *managedSession {
@@ -46,6 +47,7 @@ func (m *managedSession) info() protocol.Session {
 		Cwd:           m.meta.cwd,
 		WorkspaceName: m.meta.workspaceName,
 		Branch:        m.meta.branch,
+		Port:          m.meta.port,
 	}
 }
 

@@ -29,12 +29,24 @@ type Hub struct {
 	approvals map[string]*managedSession // approvalID -> owning session
 	discover  DiscoverFunc
 
-	notifier     push.Notifier // optional: push actionable approvals to a device
-	pushTokens   []string      // registered device tokens
-	attach       AttacherFactory
-	clients      map[*transport.Conn]bool // all connected clients (for global broadcasts)
-	projects     *project.Registry        // optional: registered folders sessions spawn in
-	worktreeBase string                   // base dir for worktrees ("" = worktree.DefaultBase)
+	notifier      push.Notifier // optional: push actionable approvals to a device
+	pushTokens    []string      // registered device tokens
+	attach        AttacherFactory
+	clients       map[*transport.Conn]bool // all connected clients (for global broadcasts)
+	projects      *project.Registry        // optional: registered folders sessions spawn in
+	worktreeBase  string                   // base dir for worktrees ("" = worktree.DefaultBase)
+	reservedPorts map[int]bool             // ports handed to worktree setup hooks (collision-free)
+}
+
+// reservePort allocates a free port in [lo,hi] not already handed to another worktree.
+func (h *Hub) reservePort(lo, hi int) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.reservedPorts == nil {
+		h.reservedPorts = map[int]bool{}
+	}
+	p, _ := worktree.AllocPort(lo, hi, h.reservedPorts)
+	return p
 }
 
 // SetWorktreeBase overrides where session worktrees are created (default: ~/.oculus/worktrees).
@@ -283,6 +295,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.mu.Lock()
 			base := h.worktreeBase
 			h.mu.Unlock()
+			// Resolve the MAIN repo root from the project cwd (a worktree's own toplevel
+			// is itself, so .oculus/project.json must be read from the main repo).
+			repoRoot, _ := worktree.RepoRoot(cwd)
 			wt, err := worktree.Create(base, cwd, name)
 			if err != nil {
 				h.sendErr(conn, env.ID, err.Error())
@@ -293,6 +308,25 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			meta.branch = wt.Branch
 			meta.workspaceName = name
 			meta.worktreePath = wt.Path
+			// Bootstrap the worktree from .oculus/project.json (copy .env, install deps,
+			// assign a port) so the agent starts in a ready folder. Failure aborts the
+			// session and removes the half-baked worktree.
+			if repoRoot != "" {
+				root := repoRoot
+				if cfg, ok, _ := worktree.LoadConfig(root); ok {
+					port := 0
+					if len(cfg.PortRange) >= 2 {
+						port = h.reservePort(cfg.PortRange[0], cfg.PortRange[1])
+					}
+					res, berr := worktree.Bootstrap(root, wt.Path, cfg, port)
+					if berr != nil {
+						_ = worktree.Remove(root, wt.Path, true)
+						h.sendErr(conn, env.ID, "worktree setup failed: "+berr.Error())
+						return
+					}
+					meta.port = res.Port
+				}
+			}
 		}
 		sess, err := p.Create(ctx, cwd, req.Prompt)
 		if err != nil {

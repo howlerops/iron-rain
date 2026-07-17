@@ -165,6 +165,7 @@ type Session struct {
 	Cwd           string `json:"cwd,omitempty"`            // working directory (project path or worktree)
 	WorkspaceName string `json:"workspace_name,omitempty"` // human name of a worktree workspace
 	Branch        string `json:"branch,omitempty"`         // git branch (for worktree sessions)
+	Port          int    `json:"port,omitempty"`           // port a setup hook assigned to this worktree
 }
 
 type SessionList struct {
