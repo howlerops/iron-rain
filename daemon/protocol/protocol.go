@@ -18,9 +18,10 @@ const (
 	TypeSessionGet      = "session.get"
 	TypeSessionCreate   = "session.create"
 	TypeSessionPrompt   = "session.prompt"
-	TypeSessionStop     = "session.stop"
-	TypeSessionAttach   = "session.attach"
-	TypeApprovalRespond = "approval.respond"
+	TypeSessionStop      = "session.stop"
+	TypeSessionAttach    = "session.attach"
+	TypeSessionSubscribe = "session.subscribe" // observe an already-owned session (no dup subscription)
+	TypeApprovalRespond  = "approval.respond"
 	TypeDiscover        = "discover.list"
 	TypeDeviceRegister  = "device.register"
 

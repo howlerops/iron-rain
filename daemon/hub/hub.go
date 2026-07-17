@@ -21,14 +21,14 @@ type DiscoverFunc func(context.Context) ([]protocol.Discovered, error)
 type Hub struct {
 	mu        sync.Mutex
 	providers map[string]agent.Provider
-	sessions  map[string]agent.Session // sessionID -> session
-	approvals map[string]agent.Session // approvalID -> owning session
+	sessions  map[string]*managedSession // sessionID -> hub-owned shared session
+	approvals map[string]*managedSession // approvalID -> owning session
 	discover  DiscoverFunc
 
 	notifier   push.Notifier // optional: push actionable approvals to a device
 	pushTokens []string      // registered device tokens
 	attach     AttacherFactory
-	clients    map[*transport.Conn]bool // all connected clients (for broadcasts)
+	clients    map[*transport.Conn]bool // all connected clients (for global broadcasts)
 }
 
 // AttacherFactory returns an Attacher for a discovered session (by provider + URL),
@@ -39,10 +39,37 @@ type AttacherFactory func(provider, url string) agent.Attacher
 func New() *Hub {
 	return &Hub{
 		providers: map[string]agent.Provider{},
-		sessions:  map[string]agent.Session{},
-		approvals: map[string]agent.Session{},
+		sessions:  map[string]*managedSession{},
+		approvals: map[string]*managedSession{},
 		clients:   map[*transport.Conn]bool{},
 	}
+}
+
+// addSession creates and stores a managed (shared) session for a provider session.
+func (h *Hub) addSession(sess agent.Session) *managedSession {
+	m := newManagedSession(h, sess)
+	h.mu.Lock()
+	h.sessions[sess.ID()] = m
+	h.mu.Unlock()
+	return m
+}
+
+func (h *Hub) managed(id string) *managedSession {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.sessions[id]
+}
+
+func (h *Hub) removeSession(id string) {
+	h.mu.Lock()
+	delete(h.sessions, id)
+	h.mu.Unlock()
+}
+
+func (h *Hub) recordApproval(approvalID string, m *managedSession) {
+	h.mu.Lock()
+	h.approvals[approvalID] = m
+	h.mu.Unlock()
 }
 
 // Register adds a provider (keyed by Name()).
@@ -129,7 +156,16 @@ func (h *Hub) Serve(ctx context.Context, conn *transport.Conn) error {
 	defer func() {
 		h.mu.Lock()
 		delete(h.clients, conn)
+		sessions := make([]*managedSession, 0, len(h.sessions))
+		for _, m := range h.sessions {
+			sessions = append(sessions, m)
+		}
 		h.mu.Unlock()
+		// Detach this client from every session it was observing. Sessions persist
+		// (work runs on the host) — they end only when the provider stream closes.
+		for _, m := range sessions {
+			m.unsubscribe(conn)
+		}
 	}()
 	for {
 		raw, err := conn.Recv()
@@ -182,30 +218,40 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, err.Error())
 			return
 		}
-		h.mu.Lock()
-		h.sessions[sess.ID()] = sess
-		h.mu.Unlock()
-		go h.forward(conn, sess)
+		m := h.addSession(sess)
 		h.sendOK(conn, env.ID, protocol.Session{ID: sess.ID(), Provider: sess.Provider(), Status: protocol.StatusRunning})
+		m.subscribe(conn) // the creator observes its own session
+		go m.run()
 
 	case protocol.TypeSessionList:
 		h.mu.Lock()
 		list := make([]protocol.Session, 0, len(h.sessions))
-		for _, s := range h.sessions {
-			list = append(list, protocol.Session{ID: s.ID(), Provider: s.Provider(), Status: protocol.StatusRunning})
+		for _, m := range h.sessions {
+			list = append(list, protocol.Session{ID: m.sess.ID(), Provider: m.sess.Provider(), Status: protocol.StatusRunning})
 		}
 		h.mu.Unlock()
 		h.sendOK(conn, env.ID, protocol.SessionList{Sessions: list})
 
-	case protocol.TypeSessionPrompt:
-		var req protocol.SessionPrompt
+	case protocol.TypeSessionSubscribe:
+		var req protocol.SessionRef
 		_ = env.Unmarshal(&req)
-		s := h.session(req.SessionID)
-		if s == nil {
+		m := h.managed(req.SessionID)
+		if m == nil {
 			h.sendErr(conn, env.ID, "no such session")
 			return
 		}
-		if err := s.Prompt(ctx, req.Text); err != nil {
+		h.sendOK(conn, env.ID, protocol.Session{ID: m.sess.ID(), Provider: m.sess.Provider(), Status: protocol.StatusRunning})
+		m.subscribe(conn) // replays the transcript, then live events flow
+
+	case protocol.TypeSessionPrompt:
+		var req protocol.SessionPrompt
+		_ = env.Unmarshal(&req)
+		m := h.managed(req.SessionID)
+		if m == nil {
+			h.sendErr(conn, env.ID, "no such session")
+			return
+		}
+		if err := m.sess.Prompt(ctx, req.Text); err != nil {
 			h.sendErr(conn, env.ID, err.Error())
 			return
 		}
@@ -215,14 +261,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		var req protocol.ApprovalRespond
 		_ = env.Unmarshal(&req)
 		h.mu.Lock()
-		s := h.approvals[req.ApprovalID]
+		m := h.approvals[req.ApprovalID]
 		delete(h.approvals, req.ApprovalID)
 		h.mu.Unlock()
-		if s == nil {
+		if m == nil {
 			h.sendErr(conn, env.ID, "no such approval")
 			return
 		}
-		if err := s.Respond(ctx, req.ApprovalID, req.Decision); err != nil {
+		if err := m.sess.Respond(ctx, req.ApprovalID, req.Decision); err != nil {
 			h.sendErr(conn, env.ID, err.Error())
 			return
 		}
@@ -234,6 +280,13 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		var req protocol.SessionAttach
 		if err := env.Unmarshal(&req); err != nil {
 			h.sendErr(conn, env.ID, "bad session.attach")
+			return
+		}
+		// If the daemon already owns this session, just subscribe — no duplicate
+		// provider subscription. This is the crux of the single-session-broadcast model.
+		if m := h.managed(req.SessionID); m != nil {
+			h.sendOK(conn, env.ID, protocol.Session{ID: m.sess.ID(), Provider: m.sess.Provider(), Status: protocol.StatusRunning})
+			m.subscribe(conn)
 			return
 		}
 		h.mu.Lock()
@@ -256,11 +309,10 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, err.Error())
 			return
 		}
-		h.mu.Lock()
-		h.sessions[sess.ID()] = sess
-		h.mu.Unlock()
-		go h.forward(conn, sess)
+		m := h.addSession(sess)
 		h.sendOK(conn, env.ID, protocol.Session{ID: sess.ID(), Provider: sess.Provider(), Status: protocol.StatusRunning})
+		m.subscribe(conn)
+		go m.run()
 
 	case protocol.TypeDiscover:
 		h.mu.Lock()
@@ -290,44 +342,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 	case protocol.TypeSessionStop:
 		var req protocol.SessionRef
 		_ = env.Unmarshal(&req)
-		if s := h.session(req.SessionID); s != nil {
-			_ = s.Stop(ctx)
+		if m := h.managed(req.SessionID); m != nil {
+			_ = m.sess.Stop(ctx)
 		}
 		h.sendOK(conn, env.ID, nil)
 
 	default:
 		h.sendErr(conn, env.ID, "unknown type: "+env.Type)
 	}
-}
-
-// forward pumps a session's events to the client, recording approval ownership.
-func (h *Hub) forward(conn *transport.Conn, sess agent.Session) {
-	for ev := range sess.Events() {
-		if ev.Type == protocol.TypeApprovalRequest {
-			if ar, ok := ev.Payload.(protocol.ApprovalRequest); ok {
-				h.mu.Lock()
-				h.approvals[ar.ApprovalID] = sess
-				h.mu.Unlock()
-				h.pushApproval(ar) // actionable lock-screen push (no-op if unconfigured)
-			}
-		}
-		raw, err := ev.Encode()
-		if err != nil {
-			continue
-		}
-		if err := conn.Send(raw); err != nil {
-			return
-		}
-	}
-	h.mu.Lock()
-	delete(h.sessions, sess.ID())
-	h.mu.Unlock()
-}
-
-func (h *Hub) session(id string) agent.Session {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.sessions[id]
 }
 
 func (h *Hub) sendOK(conn *transport.Conn, id string, payload any) {
