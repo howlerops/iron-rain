@@ -203,6 +203,54 @@ platform :ios do
     UI.success("Submitted the latest build to External Testers.")
   end
 
+  desc "Set Test Information + submit the latest build for external beta review (spaceship-direct)."
+  lane :submit_external do
+    require "spaceship"
+    Spaceship::ConnectAPI.token = Spaceship::ConnectAPI::Token.create(key_id: KEY_ID, issuer_id: ISSUER_ID, filepath: KEY_PATH)
+    app = Spaceship::ConnectAPI::App.find(APP_ID)
+    email = ENV["BETA_CONTACT_EMAIL"] || "support@howlerops.com"
+
+    # 1) Beta App Review contact (required for external; phone is a placeholder — change later).
+    contact = {
+      contactFirstName: ENV["BETA_CONTACT_FIRST"] || "Jacob",
+      contactLastName:  ENV["BETA_CONTACT_LAST"]  || "Beck",
+      contactPhone:     ENV["BETA_CONTACT_PHONE"] || "5555550123",
+      contactEmail:     email,
+      demoAccountRequired: false,
+    }
+    detail = Spaceship::ConnectAPI.get_beta_app_review_detail(filter: { app: app.id }).to_a.first
+    UI.message("review detail id=#{detail&.id.inspect} (app.id=#{app.id})")
+    detail_id = detail&.id || app.id
+    Spaceship::ConnectAPI.patch_beta_app_review_detail(app_id: detail_id, attributes: contact)
+    UI.success("Set Beta App Review contact.")
+
+    # 2) Beta app localization (description + feedback email) for en-US.
+    attrs = {
+      description: "Iron Rain lets you drive and approve claude-code and opencode sessions on your Mac from your iPhone.",
+      feedbackEmail: email,
+    }
+    locs = Spaceship::ConnectAPI.get_beta_app_localizations(filter: { app: app.id }).to_a
+    loc = locs.find { |l| l.locale == "en-US" } || locs.first
+    if loc
+      Spaceship::ConnectAPI.patch_beta_app_localizations(localization_id: loc.id, attributes: attrs)
+    else
+      Spaceship::ConnectAPI.post_beta_app_localizations(app_id: app.id, attributes: attrs.merge(locale: "en-US"))
+    end
+    UI.success("Set beta app description + feedback email.")
+
+    # 3) Latest build → add to External Testers + submit for review.
+    build = Spaceship::ConnectAPI::Build.all(app_id: app.id, sort: "-uploadedDate", limit: 1).first
+    UI.user_error!("No build found for #{APP_ID}") unless build
+    group = app.get_beta_groups.find { |g| g.name == "External Testers" }
+    begin
+      Spaceship::ConnectAPI.add_beta_groups_to_build(build_id: build.id, beta_group_ids: [group.id]) if group
+    rescue => e
+      UI.message("add-to-group: #{e.message}")
+    end
+    Spaceship::ConnectAPI.post_beta_app_review_submissions(build_id: build.id)
+    UI.success("Submitted build #{build.version} (#{build.id}) for external beta review.")
+  end
+
   desc "Build + upload without submitting for external review (internal testing only)."
   lane :beta_internal do
     key = asc_key
