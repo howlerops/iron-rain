@@ -28,6 +28,7 @@ import (
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/agent/claudecode"
 	"github.com/howlerops/oculus/daemon/agent/opencode"
+	"github.com/howlerops/oculus/daemon/agent/pi"
 	"github.com/howlerops/oculus/daemon/crypto"
 	"github.com/howlerops/oculus/daemon/discovery"
 	"github.com/howlerops/oculus/daemon/hub"
@@ -72,6 +73,7 @@ func serve(args []string) error {
 	addr := fs.String("addr", "127.0.0.1:6000", "listen address")
 	opencodeURL := fs.String("opencode", "", "URL of a running `opencode serve` (e.g. http://127.0.0.1:4096)")
 	claudeSidecar := fs.String("claude-sidecar", "", "path to the claude-code sidecar (sidecar/sidecar.mjs, run via node) to enable the claude-code provider")
+	piBin := fs.String("pi", "", "path to the pi binary to enable the pi provider (spike; runs `pi --mode rpc`)")
 	secret := fs.String("secret", "", "pairing secret clients must present (default: generated)")
 	keyPath := fs.String("key", defaultKeyPath(), "path to the daemon private key")
 	apnsKey := fs.String("apns-key", "", "path to an APNs auth key (.p8) to enable push")
@@ -84,8 +86,8 @@ func serve(args []string) error {
 		return err
 	}
 
-	if *opencodeURL == "" && *claudeSidecar == "" {
-		return fmt.Errorf("enable at least one provider: --opencode URL and/or --claude-sidecar PATH")
+	if *opencodeURL == "" && *claudeSidecar == "" && *piBin == "" {
+		return fmt.Errorf("enable at least one provider: --opencode URL, --claude-sidecar PATH, and/or --pi PATH")
 	}
 
 	kp, err := loadOrCreateKey(*keyPath)
@@ -109,6 +111,10 @@ func serve(args []string) error {
 	if *opencodeURL != "" {
 		h.Register(opencode.New(*opencodeURL))
 		providers = append(providers, "opencode -> "+*opencodeURL)
+	}
+	if *piBin != "" {
+		h.Register(pi.New([]string{*piBin, "--mode", "rpc"}))
+		providers = append(providers, "pi -> "+*piBin+" --mode rpc")
 	}
 	if *claudeSidecar != "" {
 		h.Register(claudecode.New([]string{"node", *claudeSidecar}))
