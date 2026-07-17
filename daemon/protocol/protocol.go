@@ -287,6 +287,7 @@ type Session struct {
 	Port          int    `json:"port,omitempty"`           // port a setup hook assigned to this worktree
 	IssueKey      string `json:"issue_key,omitempty"`      // the ticket this session works (e.g. ENG-42)
 	IssueID       string `json:"issue_id,omitempty"`
+	UpdatedAt     int64  `json:"updated_at,omitempty"`     // unix seconds of last activity (0 = unknown)
 }
 
 type SessionList struct {
@@ -304,6 +305,7 @@ type Discovered struct {
 	Cwd       string `json:"cwd,omitempty"`  // claude-code working dir (best-effort)
 	Path      string `json:"path,omitempty"` // claude-code transcript path
 	PID       int    `json:"pid,omitempty"`
+	UpdatedAt int64  `json:"updated_at,omitempty"` // unix seconds of last activity (0 = unknown)
 }
 
 // DiscoverList is the response to a discover.list request.

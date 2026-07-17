@@ -10,6 +10,7 @@ private struct SidebarSession: Identifiable {
     let branch: String?
     let isRunning: Bool
     let viewOnly: Bool
+    let updatedAt: Date?
 }
 
 private struct SessionGroup: Identifiable {
@@ -114,30 +115,41 @@ struct SessionSidebar: View {
         for s in model.sessions {
             let title = s.workspaceName ?? clean(s.title) ?? clean(discoveredTitles[s.id]) ?? "ses \(s.id.prefix(6))"
             let item = SidebarSession(id: s.id, title: title, provider: s.provider,
-                                      branch: s.branch, isRunning: s.status == SessionStatusValue.running, viewOnly: false)
+                                      branch: s.branch, isRunning: s.status == SessionStatusValue.running,
+                                      viewOnly: false, updatedAt: date(s.updatedAt))
             let key = s.projectID.flatMap { projectNames[$0] } ?? ((s.projectID?.isEmpty ?? true) ? "On this Mac" : s.projectID!)
             add(key, item)
         }
         for d in model.discovered where d.provider == "opencode" && d.kind == DiscoveredKind.session {
             guard let sid = d.sessionID, !managedIDs.contains(sid) else { continue }
             add("On this Mac", SidebarSession(id: sid, title: clean(d.title) ?? "ses \(sid.prefix(6))",
-                                              provider: "opencode", branch: nil, isRunning: false, viewOnly: false))
+                                              provider: "opencode", branch: nil, isRunning: false,
+                                              viewOnly: false, updatedAt: date(d.updatedAt)))
         }
         for d in model.discovered where d.provider == "claude-code" {
             let name = (d.cwd as NSString?)?.lastPathComponent ?? "session"
             add("View-only", SidebarSession(id: d.discoveryID, title: name, provider: "claude-code",
-                                            branch: nil, isRunning: false, viewOnly: true))
+                                            branch: nil, isRunning: false, viewOnly: true, updatedAt: date(d.updatedAt)))
         }
 
         let special = ["On this Mac", "View-only"]
         let projects = order.filter { !special.contains($0) }.sorted()
         let tail = special.filter { buckets[$0] != nil }
         return (projects + tail).map { name in
-            let items = buckets[name] ?? []
+            // Most-recent first; running sessions always float to the top of their group.
+            let items = (buckets[name] ?? []).sorted { a, b in
+                if a.isRunning != b.isRunning { return a.isRunning }
+                return (a.updatedAt ?? .distantPast) > (b.updatedAt ?? .distantPast)
+            }
             return SessionGroup(name: name, items: items,
                                 showProvider: Set(items.map { $0.provider }).count > 1,
                                 hasRunning: items.contains { $0.isRunning })
         }
+    }
+
+    private func date(_ secs: Int?) -> Date? {
+        guard let s = secs, s > 0 else { return nil }
+        return Date(timeIntervalSince1970: TimeInterval(s))
     }
 
     /// Cleans a raw title: strips the "New session - <ISO8601>" pattern and blanks.
@@ -169,8 +181,8 @@ private struct SessionRow: View {
                     .font(.system(size: 13, weight: active ? .semibold : .medium))
                     .foregroundStyle(active ? palette.primary : palette.foreground)
                     .lineLimit(1)
-                if showProvider || item.viewOnly {
-                    Text(item.viewOnly ? "\(item.provider) · view-only" : item.provider)
+                if let sub = secondary {
+                    Text(sub)
                         .font(.system(size: 11))
                         .foregroundStyle(palette.mutedForeground)
                         .lineLimit(1)
@@ -194,6 +206,33 @@ private struct SessionRow: View {
         }
         .padding(.vertical, 3)
         .contentShape(Rectangle())
+    }
+
+    /// Provider (only when its group mixes providers, or view-only) joined with a compact
+    /// relative time. Nil → the row is a single clean line of just the title.
+    private var secondary: String? {
+        var parts: [String] = []
+        if item.viewOnly { parts.append("\(item.provider) · view-only") }
+        else if showProvider { parts.append(item.provider) }
+        if let t = item.updatedAt { parts.append(Self.relative(t)) }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    private static let weekdayFmt: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "EEE"; return f // Mon
+    }()
+    private static let dateFmt: DateFormatter = {
+        let f = DateFormatter(); f.setLocalizedDateFormatFromTemplate("MMMd"); return f // Jul 3
+    }()
+
+    static func relative(_ date: Date) -> String {
+        let s = Date().timeIntervalSince(date)
+        if s < 45 { return "now" }
+        if s < 3600 { return "\(Int(s / 60))m ago" }
+        if s < 86_400 { return "\(Int(s / 3600))h ago" }
+        if Calendar.current.isDateInYesterday(date) { return "Yesterday" }
+        if s < 7 * 86_400 { return weekdayFmt.string(from: date) }
+        return dateFmt.string(from: date)
     }
 }
 

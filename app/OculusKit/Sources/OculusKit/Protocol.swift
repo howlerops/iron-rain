@@ -136,12 +136,14 @@ public struct Session: Codable, Identifiable {
     public var port: Int?
     public var issueKey: String?
     public var issueID: String?
+    public var updatedAt: Int? // unix seconds of last activity
     enum CodingKeys: String, CodingKey {
         case id, provider, status, title, cwd, branch, port
         case projectID = "project_id"
         case workspaceName = "workspace_name"
         case issueKey = "issue_key"
         case issueID = "issue_id"
+        case updatedAt = "updated_at"
     }
 }
 public struct ProtocolError: Codable { public var message: String }
@@ -284,10 +286,12 @@ public struct Discovered: Codable {
     public var cwd: String?
     public var path: String?
     public var pid: Int?
+    public var updatedAt: Int? // unix seconds of last activity
     enum CodingKeys: String, CodingKey {
         case provider, kind, url
         case sessionID = "session_id"
         case title, cwd, path, pid
+        case updatedAt = "updated_at"
     }
 }
 public struct DiscoverList: Codable { public var items: [Discovered] }

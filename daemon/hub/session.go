@@ -2,6 +2,7 @@ package hub
 
 import (
 	"sync"
+	"time"
 
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/protocol"
@@ -31,8 +32,9 @@ type managedSession struct {
 
 	mu              sync.Mutex
 	subs            map[*transport.Conn]*subscriber
-	transcript      [][]byte // encoded protocol events, replayed to new subscribers
-	transcriptBytes int      // running size of transcript (for the byte cap)
+	transcript      [][]byte  // encoded protocol events, replayed to new subscribers
+	transcriptBytes int       // running size of transcript (for the byte cap)
+	lastActivity    time.Time // last event time; surfaced as Session.UpdatedAt for sorting/relative time
 }
 
 // subscriber owns one client's outbound queue plus the writer goroutine that drains it.
@@ -63,11 +65,14 @@ type sessionMeta struct {
 }
 
 func newManagedSession(h *Hub, sess agent.Session, meta sessionMeta) *managedSession {
-	return &managedSession{hub: h, sess: sess, meta: meta, subs: map[*transport.Conn]*subscriber{}}
+	return &managedSession{hub: h, sess: sess, meta: meta, subs: map[*transport.Conn]*subscriber{}, lastActivity: time.Now()}
 }
 
 // info renders the session's identity + grouping metadata for the wire.
 func (m *managedSession) info() protocol.Session {
+	m.mu.Lock()
+	updated := m.lastActivity.Unix()
+	m.mu.Unlock()
 	return protocol.Session{
 		ID:            m.sess.ID(),
 		Provider:      m.sess.Provider(),
@@ -79,6 +84,7 @@ func (m *managedSession) info() protocol.Session {
 		Port:          m.meta.port,
 		IssueKey:      m.meta.issueKey,
 		IssueID:       m.meta.issueID,
+		UpdatedAt:     updated,
 	}
 }
 
@@ -155,6 +161,7 @@ func (m *managedSession) broadcast(raw []byte) {
 	m.mu.Lock()
 	m.transcript = append(m.transcript, raw)
 	m.transcriptBytes += len(raw)
+	m.lastActivity = time.Now()
 	m.trimTranscript()
 	subs := make([]*subscriber, 0, len(m.subs))
 	for _, s := range m.subs {

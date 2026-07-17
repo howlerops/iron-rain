@@ -237,14 +237,14 @@ func combine(
 		for _, sess := range sessions {
 			items = append(items, protocol.Discovered{
 				Provider: "opencode", Kind: protocol.KindSession,
-				URL: s.URL, SessionID: sess.ID, Title: sess.Title,
+				URL: s.URL, SessionID: sess.ID, Title: sess.Title, UpdatedAt: sess.UpdatedAt,
 			})
 		}
 	}
 	for _, c := range claude {
 		items = append(items, protocol.Discovered{
 			Provider: "claude-code", Kind: protocol.KindSession,
-			SessionID: c.ID, Cwd: c.Cwd, Path: c.Path,
+			SessionID: c.ID, Cwd: c.Cwd, Path: c.Path, UpdatedAt: c.ModTime.Unix(),
 		})
 	}
 	return items

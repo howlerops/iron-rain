@@ -57,13 +57,19 @@ func (p *Provider) List(ctx context.Context) ([]protocol.Session, error) {
 	var raw []struct {
 		ID    string `json:"id"`
 		Title string `json:"title"`
+		Time  struct {
+			Updated int64 `json:"updated"` // opencode reports millis
+		} `json:"time"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return nil, err
 	}
 	out := make([]protocol.Session, 0, len(raw))
 	for _, s := range raw {
-		out = append(out, protocol.Session{ID: s.ID, Provider: "opencode", Status: protocol.StatusIdle, Title: s.Title})
+		out = append(out, protocol.Session{
+			ID: s.ID, Provider: "opencode", Status: protocol.StatusIdle, Title: s.Title,
+			UpdatedAt: s.Time.Updated / 1000, // millis -> seconds
+		})
 	}
 	return out, nil
 }
