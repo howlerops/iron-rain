@@ -46,7 +46,7 @@ targets:
         # Allow cleartext ws:// to the daemon on the local network (direct/LAN mode).
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
-        NSLocalNetworkUsageDescription: "Oculus connects to the Oculus daemon on your Mac over your local network."
+        NSLocalNetworkUsageDescription: "Iron Rain connects to the daemon on your Mac over your local network."
         NSCameraUsageDescription: "Scan the daemon's QR code to pair."
         NSMicrophoneUsageDescription: "Dictate prompts to your agent by voice."
         NSSpeechRecognitionUsageDescription: "Transcribe your voice into prompts."
@@ -105,3 +105,24 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.howlerops.oculus
+
+# Shared schemes (written to xcshareddata) so xcodebuild / gym / CI can find them.
+schemes:
+  Oculus-iOS:
+    build:
+      targets:
+        Oculus-iOS: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+    profile:
+      config: Release
+  Oculus-macOS:
+    build:
+      targets:
+        Oculus-macOS: all
+    run:
+      config: Debug
+    archive:
+      config: Release
