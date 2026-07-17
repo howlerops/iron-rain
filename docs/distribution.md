@@ -37,14 +37,15 @@ Store Connect **API cannot create app records** (Apple only allows it in the web
 3. `fastlane ios bootstrap_app` again — now it creates the **External Testers** group
    (public link enabled).
 
-### External testers — one-time Test Information
-Apple requires "Beta App Review Information" (contact **name + phone** + email) before a
-build can go to external testers, and reviews the first external build (~24–48h). fastlane's
-`beta_app_review_info` is flaky at setting this, so set it once in the UI (it persists):
-App Store Connect → your app → **TestFlight → Test Information** → fill Beta App Review
-contact (name, phone, email) + a beta description + feedback email. Then
-`fastlane ios distribute` submits the already-uploaded build to External Testers. (Set
-`BETA_CONTACT_PHONE`/`BETA_CONTACT_FIRST`/`BETA_CONTACT_LAST` in `.env` to try automating it.)
+### External testers — automated
+`fastlane ios submit_external` sets the Test Information (review contact, description,
+feedback email) via the raw App Store Connect REST API (spaceship masks the real errors —
+e.g. it reported "missing contactFirstName" when Apple actually rejected an INVALID phone
+format), adds the latest build to the **External Testers** group, and submits it for
+external beta review. Apple's phone validation requires a *possible* number (the fictional
+`555-01xx` range is rejected) — set `BETA_CONTACT_PHONE` in `.env` to your real number
+(a format-valid placeholder is used otherwise). Apple reviews the first external build
+(~24-48h), then External Testers get it.
 
 Internal testers (added in App Store Connect → TestFlight → Internal Testing) get every
 build immediately with no review.

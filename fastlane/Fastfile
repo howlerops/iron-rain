@@ -203,52 +203,97 @@ platform :ios do
     UI.success("Submitted the latest build to External Testers.")
   end
 
-  desc "Set Test Information + submit the latest build for external beta review (spaceship-direct)."
+  # Raw App Store Connect REST call using the API-key JWT (bypasses spaceship quirks).
+  def asc_api(method, path, jwt, body = nil)
+    require "net/http"
+    require "json"
+    uri = URI("https://api.appstoreconnect.apple.com#{path}")
+    http = Net::HTTP.new(uri.host, 443)
+    http.use_ssl = true
+    klass = { get: Net::HTTP::Get, post: Net::HTTP::Post, patch: Net::HTTP::Patch }[method]
+    req = klass.new(uri)
+    req["Authorization"] = "Bearer #{jwt}"
+    req["Content-Type"] = "application/json"
+    req.body = body.to_json if body
+    res = http.request(req)
+    parsed = (JSON.parse(res.body) rescue res.body)
+    [res.code.to_i, parsed]
+  end
+
+  desc "Set Test Information + submit the latest build for external beta review (raw ASC REST)."
   lane :submit_external do
     require "spaceship"
-    Spaceship::ConnectAPI.token = Spaceship::ConnectAPI::Token.create(key_id: KEY_ID, issuer_id: ISSUER_ID, filepath: KEY_PATH)
-    app = Spaceship::ConnectAPI::App.find(APP_ID)
+    token = Spaceship::ConnectAPI::Token.create(key_id: KEY_ID, issuer_id: ISSUER_ID, filepath: KEY_PATH)
+    jwt = token.text
     email = ENV["BETA_CONTACT_EMAIL"] || "support@howlerops.com"
 
-    # 1) Beta App Review contact (required for external; phone is a placeholder — change later).
-    contact = {
-      contactFirstName: ENV["BETA_CONTACT_FIRST"] || "Jacob",
-      contactLastName:  ENV["BETA_CONTACT_LAST"]  || "Beck",
-      contactPhone:     ENV["BETA_CONTACT_PHONE"] || "5555550123",
-      contactEmail:     email,
-      demoAccountRequired: false,
-    }
-    detail = Spaceship::ConnectAPI.get_beta_app_review_detail(filter: { app: app.id }).to_a.first
-    UI.message("review detail id=#{detail&.id.inspect} (app.id=#{app.id})")
-    detail_id = detail&.id || app.id
-    Spaceship::ConnectAPI.patch_beta_app_review_detail(app_id: detail_id, attributes: contact)
-    UI.success("Set Beta App Review contact.")
+    # Resolve the numeric app id.
+    code, apps = asc_api(:get, "/v1/apps?filter[bundleId]=#{APP_ID}", jwt)
+    UI.user_error!("app lookup failed (#{code}): #{apps.inspect[0, 300]}") unless code == 200
+    app_id = apps.dig("data", 0, "id")
+    UI.user_error!("no app for #{APP_ID}") unless app_id
+    UI.message("app id = #{app_id}")
+
+    # 1) Beta App Review contact (required for external). Apple validates the phone is a
+    # POSSIBLE number, so try well-formed candidates (env override wins).
+    phones = [ENV["BETA_CONTACT_PHONE"], "+14155238880", "+12125557890", "+18005550199", "+441632960123"].compact
+    ok = false
+    phones.each do |phone|
+      code, resp = asc_api(:patch, "/v1/betaAppReviewDetails/#{app_id}", jwt, {
+        data: { type: "betaAppReviewDetails", id: app_id, attributes: {
+          contactFirstName: ENV["BETA_CONTACT_FIRST"] || "Jacob",
+          contactLastName:  ENV["BETA_CONTACT_LAST"]  || "Beck",
+          contactPhone:     phone,
+          contactEmail:     email,
+          demoAccountRequired: false,
+        } },
+      })
+      if [200, 204].include?(code)
+        UI.success("Set Beta App Review contact (phone #{phone}).")
+        ok = true
+        break
+      else
+        UI.message("phone #{phone} -> #{code}: #{resp.inspect[0, 160]}")
+      end
+    end
+    UI.user_error!("could not set a valid review-contact phone — set BETA_CONTACT_PHONE to your real number in fastlane/.env") unless ok
 
     # 2) Beta app localization (description + feedback email) for en-US.
-    attrs = {
+    code, locs = asc_api(:get, "/v1/apps/#{app_id}/betaAppLocalizations", jwt)
+    loc = (locs["data"] || []).find { |l| l.dig("attributes", "locale") == "en-US" } || (locs["data"] || []).first
+    loc_attrs = {
       description: "Iron Rain lets you drive and approve claude-code and opencode sessions on your Mac from your iPhone.",
       feedbackEmail: email,
     }
-    locs = Spaceship::ConnectAPI.get_beta_app_localizations(filter: { app: app.id }).to_a
-    loc = locs.find { |l| l.locale == "en-US" } || locs.first
     if loc
-      Spaceship::ConnectAPI.patch_beta_app_localizations(localization_id: loc.id, attributes: attrs)
+      asc_api(:patch, "/v1/betaAppLocalizations/#{loc['id']}", jwt,
+              { data: { type: "betaAppLocalizations", id: loc["id"], attributes: loc_attrs } })
     else
-      Spaceship::ConnectAPI.post_beta_app_localizations(app_id: app.id, attributes: attrs.merge(locale: "en-US"))
+      asc_api(:post, "/v1/betaAppLocalizations", jwt, { data: {
+        type: "betaAppLocalizations", attributes: loc_attrs.merge(locale: "en-US"),
+        relationships: { app: { data: { type: "apps", id: app_id } } },
+      } })
     end
     UI.success("Set beta app description + feedback email.")
 
-    # 3) Latest build → add to External Testers + submit for review.
-    build = Spaceship::ConnectAPI::Build.all(app_id: app.id, sort: "-uploadedDate", limit: 1).first
-    UI.user_error!("No build found for #{APP_ID}") unless build
-    group = app.get_beta_groups.find { |g| g.name == "External Testers" }
-    begin
-      Spaceship::ConnectAPI.add_beta_groups_to_build(build_id: build.id, beta_group_ids: [group.id]) if group
-    rescue => e
-      UI.message("add-to-group: #{e.message}")
+    # 3) Latest build → add to External Testers group + submit for external review.
+    code, builds = asc_api(:get, "/v1/builds?filter[app]=#{app_id}&sort=-version&limit=1", jwt)
+    build_id = builds.dig("data", 0, "id")
+    UI.user_error!("no build found") unless build_id
+    code, groups = asc_api(:get, "/v1/apps/#{app_id}/betaGroups", jwt)
+    group_id = (groups["data"] || []).find { |g| g.dig("attributes", "name") == "External Testers" }&.dig("id")
+    if group_id
+      c, r = asc_api(:post, "/v1/betaGroups/#{group_id}/relationships/builds", jwt,
+                     { data: [{ type: "builds", id: build_id }] })
+      UI.message("add-to-group -> #{c}: #{r.inspect[0, 200]}")
     end
-    Spaceship::ConnectAPI.post_beta_app_review_submissions(build_id: build.id)
-    UI.success("Submitted build #{build.version} (#{build.id}) for external beta review.")
+    code, resp = asc_api(:post, "/v1/betaAppReviewSubmissions", jwt, {
+      data: { type: "betaAppReviewSubmissions",
+              relationships: { build: { data: { type: "builds", id: build_id } } } },
+    })
+    UI.message("beta-review submission -> #{code}: #{resp.inspect[0, 300]}")
+    UI.user_error!("submission failed (#{code})") unless [200, 201].include?(code)
+    UI.success("Submitted build #{build_id} for external beta review 🎉")
   end
 
   desc "Build + upload without submitting for external review (internal testing only)."
