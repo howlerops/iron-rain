@@ -3,6 +3,10 @@ package hub_test
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -13,6 +17,24 @@ import (
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/transport"
 )
+
+func gitInitRepo(t *testing.T, dir string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"init", "-q"}, {"symbolic-ref", "HEAD", "refs/heads/main"},
+		{"config", "user.email", "t@t"}, {"config", "user.name", "t"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
+	}
+	_ = os.WriteFile(filepath.Join(dir, "f"), []byte("x"), 0o644)
+	for _, args := range [][]string{{"add", "."}, {"commit", "-qm", "init"}} {
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
+	}
+}
 
 // cwdProvider records the cwd passed to Create so the test can assert a project's path
 // was resolved and threaded through.
@@ -34,10 +56,10 @@ func (p *cwdProvider) cwd() string { p.mu.Lock(); defer p.mu.Unlock(); return p.
 // idleSession is a no-op session whose event stream just stays open.
 type idleSession struct{ events chan agent.Event }
 
-func (s *idleSession) ID() string                           { return "sess_x" }
-func (s *idleSession) Provider() string                     { return "fake" }
-func (s *idleSession) Events() <-chan agent.Event           { return s.events }
-func (s *idleSession) Prompt(context.Context, string) error { return nil }
+func (s *idleSession) ID() string                                    { return "sess_x" }
+func (s *idleSession) Provider() string                              { return "fake" }
+func (s *idleSession) Events() <-chan agent.Event                    { return s.events }
+func (s *idleSession) Prompt(context.Context, string) error          { return nil }
 func (s *idleSession) Respond(context.Context, string, string) error { return nil }
 func (s *idleSession) Stop(context.Context) error                    { return nil }
 func (s *idleSession) Close() error                                  { close(s.events); return nil }
@@ -129,5 +151,50 @@ func TestProjectFlow(t *testing.T) {
 	}
 	if len(sl.Sessions) != 1 || sl.Sessions[0].ProjectID != added.ID || sl.Sessions[0].Cwd != dir {
 		t.Fatalf("session.list meta = %+v, want project %s cwd %s", sl.Sessions, added.ID, dir)
+	}
+}
+
+// TestWorktreeSession: creating a session with Worktree=true in a git project runs the
+// provider in a fresh worktree (not the repo root) on an oculus/<slug> branch, and the
+// session metadata reflects that.
+func TestWorktreeSession(t *testing.T) {
+	repo := t.TempDir()
+	gitInitRepo(t, repo)
+	reg, _ := project.Load(t.TempDir() + "/projects.json")
+	prov := &cwdProvider{}
+	h := hub.New()
+	h.Register(prov)
+	h.SetProjects(reg)
+	h.SetWorktreeBase(t.TempDir())
+
+	daemonKP, _ := crypto.GenerateKeyPair()
+	conn := connectClient(t, h, daemonKP)
+	r := newReader(conn)
+
+	send(t, conn, "p1", protocol.TypeProjectAdd, protocol.ProjectAdd{Path: repo})
+	var proj protocol.Project
+	_ = json.Unmarshal(r.waitOK(t, "p1"), &proj)
+
+	send(t, conn, "s1", protocol.TypeSessionCreate, protocol.SessionCreate{
+		Provider: "fake", ProjectID: proj.ID, Worktree: true, WorkspaceName: "Feature X",
+	})
+	var sess protocol.Session
+	if err := json.Unmarshal(r.waitOK(t, "s1"), &sess); err != nil {
+		t.Fatal(err)
+	}
+
+	// Provider ran in the worktree, NOT the repo root.
+	got := prov.cwd()
+	if got == repo || got == "" {
+		t.Fatalf("session cwd = %q, expected a worktree path (not the repo root)", got)
+	}
+	if out, err := exec.Command("git", "-C", got, "rev-parse", "--is-inside-work-tree").Output(); err != nil || strings.TrimSpace(string(out)) != "true" {
+		t.Fatalf("session cwd %q is not a git work tree", got)
+	}
+	if sess.Branch != "oculus/feature-x" {
+		t.Errorf("session branch = %q, want oculus/feature-x", sess.Branch)
+	}
+	if sess.WorkspaceName != "Feature X" || sess.Cwd != got {
+		t.Errorf("session meta = {ws:%q cwd:%q}, want {Feature X, %q}", sess.WorkspaceName, sess.Cwd, got)
 	}
 }

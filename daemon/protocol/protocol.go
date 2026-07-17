@@ -67,10 +67,12 @@ type Envelope struct {
 // Payload types.
 
 type SessionCreate struct {
-	Provider  string `json:"provider"`
-	Cwd       string `json:"cwd,omitempty"`
-	ProjectID string `json:"project_id,omitempty"` // resolve cwd from this registered project
-	Prompt    string `json:"prompt,omitempty"`
+	Provider      string `json:"provider"`
+	Cwd           string `json:"cwd,omitempty"`
+	ProjectID     string `json:"project_id,omitempty"` // resolve cwd from this registered project
+	Prompt        string `json:"prompt,omitempty"`
+	Worktree      bool   `json:"worktree,omitempty"`       // run in a fresh git worktree (opt-in)
+	WorkspaceName string `json:"workspace_name,omitempty"` // human name for the worktree branch
 }
 
 // Project is a registered folder sessions can be spawned in (mirrors project.Project).

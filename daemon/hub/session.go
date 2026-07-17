@@ -29,6 +29,7 @@ type sessionMeta struct {
 	cwd           string
 	workspaceName string
 	branch        string
+	worktreePath  string // set when this session runs in a git worktree (for cleanup)
 }
 
 func newManagedSession(h *Hub, sess agent.Session, meta sessionMeta) *managedSession {

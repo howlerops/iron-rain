@@ -5,6 +5,8 @@ package hub
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"log"
 	"sync"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/push"
 	"github.com/howlerops/oculus/daemon/transport"
+	"github.com/howlerops/oculus/daemon/worktree"
 )
 
 // DiscoverFunc autodetects active agent artifacts on the host (see daemon/discovery).
@@ -26,11 +29,25 @@ type Hub struct {
 	approvals map[string]*managedSession // approvalID -> owning session
 	discover  DiscoverFunc
 
-	notifier   push.Notifier // optional: push actionable approvals to a device
-	pushTokens []string      // registered device tokens
-	attach     AttacherFactory
-	clients    map[*transport.Conn]bool // all connected clients (for global broadcasts)
-	projects   *project.Registry        // optional: registered folders sessions spawn in
+	notifier     push.Notifier // optional: push actionable approvals to a device
+	pushTokens   []string      // registered device tokens
+	attach       AttacherFactory
+	clients      map[*transport.Conn]bool // all connected clients (for global broadcasts)
+	projects     *project.Registry        // optional: registered folders sessions spawn in
+	worktreeBase string                   // base dir for worktrees ("" = worktree.DefaultBase)
+}
+
+// SetWorktreeBase overrides where session worktrees are created (default: ~/.oculus/worktrees).
+func (h *Hub) SetWorktreeBase(dir string) {
+	h.mu.Lock()
+	h.worktreeBase = dir
+	h.mu.Unlock()
+}
+
+func randToken() string {
+	var b [4]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }
 
 // SetProjects attaches a project registry so clients can list/add/remove projects and
@@ -257,12 +274,32 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			}
 			cwd = proj.Path
 		}
+		meta := sessionMeta{projectID: req.ProjectID, cwd: cwd}
+		if req.Worktree {
+			name := req.WorkspaceName
+			if name == "" {
+				name = "session-" + randToken()
+			}
+			h.mu.Lock()
+			base := h.worktreeBase
+			h.mu.Unlock()
+			wt, err := worktree.Create(base, cwd, name)
+			if err != nil {
+				h.sendErr(conn, env.ID, err.Error())
+				return
+			}
+			cwd = wt.Path
+			meta.cwd = wt.Path
+			meta.branch = wt.Branch
+			meta.workspaceName = name
+			meta.worktreePath = wt.Path
+		}
 		sess, err := p.Create(ctx, cwd, req.Prompt)
 		if err != nil {
 			h.sendErr(conn, env.ID, err.Error())
 			return
 		}
-		m := h.addSession(sess, sessionMeta{projectID: req.ProjectID, cwd: cwd})
+		m := h.addSession(sess, meta)
 		h.sendOK(conn, env.ID, m.info())
 		m.subscribe(conn) // the creator observes its own session
 		go m.run()
