@@ -1,0 +1,5 @@
+app_identifier("com.howlerops.oculus")
+team_id("Q6JSHJ4DQN") # Apple Developer Team ID (signing)
+
+# Authentication uses the App Store Connect API key (see fastlane/.env), so no Apple ID
+# / 2FA login is needed. apple_id / itc_team_id are intentionally omitted.

@@ -31,3 +31,12 @@ node_modules/
 /app/Oculus/Info-iOS.plist
 /app/Oculus/Info-macOS.plist
 /app/OculusWidgets/Info.plist
+
+# Allow the committed fastlane env template (real .env stays ignored)
+!fastlane/.env.example
+
+# fastlane run artifacts
+fastlane/report.xml
+fastlane/*.log
+fastlane/test_output/
+build/

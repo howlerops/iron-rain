@@ -1,0 +1,120 @@
+# Oculus — TestFlight distribution via fastlane.
+#
+# Auth is via the App Store Connect API key (fastlane/.env — gitignored). No Apple ID /
+# 2FA. Signing is Xcode-managed (automatic) using the same API key + -allowProvisioningUpdates,
+# so no certificates/profiles are checked in.
+#
+#   cp fastlane/.env.example fastlane/.env   # fill in the 3 values (once)
+#   fastlane ios bootstrap_app               # create the App Store Connect app record (once)
+#   fastlane ios beta                        # build + upload to TestFlight (external)
+
+default_platform(:ios)
+
+APP_ID       = "com.howlerops.oculus"
+XCODEPROJ    = "app/Oculus.xcodeproj"
+SCHEME       = "Oculus-iOS"
+TEAM_ID      = "Q6JSHJ4DQN"
+KEY_ID       = ENV["ASC_KEY_ID"]
+ISSUER_ID    = ENV["ASC_ISSUER_ID"]
+KEY_PATH     = File.expand_path(ENV["ASC_KEY_PATH"] || "~/.appstoreconnect/private_keys/AuthKey_#{KEY_ID}.p8")
+
+def asc_key
+  app_store_connect_api_key(
+    key_id: KEY_ID,
+    issuer_id: ISSUER_ID,
+    key_filepath: KEY_PATH,
+    in_house: false,
+  )
+end
+
+# xcodebuild flags that let Xcode do automatic signing against App Store Connect using
+# the API key (no Apple ID login), and create any missing App IDs / profiles.
+def signing_xcargs(build_number)
+  [
+    "-allowProvisioningUpdates",
+    "-authenticationKeyPath", KEY_PATH.shellescape,
+    "-authenticationKeyID", KEY_ID,
+    "-authenticationKeyIssuerID", ISSUER_ID,
+    "CURRENT_PROJECT_VERSION=#{build_number}",
+  ].join(" ")
+end
+
+platform :ios do
+  before_all do
+    UI.user_error!("Set ASC_KEY_ID / ASC_ISSUER_ID in fastlane/.env (copy fastlane/.env.example).") if KEY_ID.to_s.empty? || ISSUER_ID.to_s.empty?
+    UI.user_error!("API key not found at #{KEY_PATH}") unless File.exist?(KEY_PATH)
+  end
+
+  desc "Verify the App Store Connect API key authenticates and whether the app exists."
+  lane :check do
+    require "spaceship"
+    token = Spaceship::ConnectAPI::Token.create(key_id: KEY_ID, issuer_id: ISSUER_ID, filepath: KEY_PATH)
+    Spaceship::ConnectAPI.token = token
+    app = Spaceship::ConnectAPI::App.find(APP_ID)
+    if app
+      UI.success("Authenticated ✔  App record exists: #{app.name} (#{app.bundle_id})")
+    else
+      UI.important("Authenticated ✔  but no app record for #{APP_ID} yet — run `fastlane ios bootstrap_app`.")
+    end
+  end
+
+  desc "Create the app record in App Store Connect (run once)."
+  lane :bootstrap_app do
+    produce(
+      api_key: asc_key,
+      app_identifier: APP_ID,
+      app_name: "Oculus",
+      language: "en-US",
+      app_version: "0.1",
+      sku: "oculus-#{Time.now.to_i}",
+      team_id: TEAM_ID,
+    )
+    UI.success("App record ready. Create an 'External Testers' group in App Store Connect → TestFlight, then run `fastlane ios beta`.")
+  end
+
+  desc "Build the iOS app and upload it to TestFlight (external testers)."
+  lane :beta do
+    key = asc_key
+    next_build = latest_testflight_build_number(
+      api_key: key, app_identifier: APP_ID, initial_build_number: 0,
+    ).to_i + 1
+
+    sh("cd .. && xcodegen generate")
+    build_app(
+      project: XCODEPROJ,
+      scheme: SCHEME,
+      export_method: "app-store",
+      xcargs: signing_xcargs(next_build),
+      output_directory: "build",
+      clean: true,
+    )
+
+    upload_to_testflight(
+      api_key: key,
+      app_identifier: APP_ID,
+      distribute_external: true,
+      groups: ["External Testers"],
+      changelog: ENV["CHANGELOG"] || "New Oculus beta build.",
+      notify_external_testers: true,
+      submit_beta_review: true,
+      beta_app_review_info: {
+        contact_email: ENV["BETA_CONTACT_EMAIL"] || "support@howlerops.com",
+        contact_first_name: ENV["BETA_CONTACT_FIRST"] || "Oculus",
+        contact_last_name: ENV["BETA_CONTACT_LAST"] || "Team",
+        contact_phone: ENV["BETA_CONTACT_PHONE"] || "0000000000",
+      },
+    )
+    UI.success("Uploaded build #{next_build} to TestFlight (External Testers).")
+  end
+
+  desc "Build + upload without submitting for external review (internal testing only)."
+  lane :beta_internal do
+    key = asc_key
+    next_build = latest_testflight_build_number(api_key: key, app_identifier: APP_ID, initial_build_number: 0).to_i + 1
+    sh("cd .. && xcodegen generate")
+    build_app(project: XCODEPROJ, scheme: SCHEME, export_method: "app-store",
+              xcargs: signing_xcargs(next_build), output_directory: "build", clean: true)
+    upload_to_testflight(api_key: key, app_identifier: APP_ID, distribute_external: false,
+                         changelog: ENV["CHANGELOG"] || "New Oculus internal build.")
+  end
+end
