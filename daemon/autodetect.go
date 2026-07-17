@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/howlerops/oculus/daemon/agent/claudecode"
@@ -19,10 +21,19 @@ import (
 	"github.com/howlerops/oculus/daemon/hub"
 )
 
+// setupMode controls whether a missing claude-code sidecar (node_modules) is installed.
+type setupMode int
+
+const (
+	setupOff  setupMode = iota // never install
+	setupAsk                    // prompt on a TTY, else skip
+	setupAuto                   // install without asking
+)
+
 // enableProviders registers every provider available on the host — a running (or
 // auto-started) opencode, the claude-code sidecar if claude+node are present, and pi
 // if it's on PATH. Explicit flags override the auto-detected value for that provider.
-func enableProviders(ctx context.Context, h *hub.Hub, opencodeURL, claudeSidecar, piBin string) []string {
+func enableProviders(ctx context.Context, h *hub.Hub, opencodeURL, claudeSidecar, piBin string, claudeSetup setupMode) []string {
 	var enabled []string
 
 	if opencodeURL == "" {
@@ -34,7 +45,7 @@ func enableProviders(ctx context.Context, h *hub.Hub, opencodeURL, claudeSidecar
 	}
 
 	if claudeSidecar == "" {
-		claudeSidecar = detectClaudeSidecar()
+		claudeSidecar = detectOrSetupClaudeSidecar(claudeSetup)
 	}
 	if claudeSidecar != "" {
 		h.Register(claudecode.New([]string{"node", claudeSidecar}))
@@ -107,16 +118,121 @@ func freePort() int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
-// detectClaudeSidecar finds the claude-code sidecar if claude + node are present and
-// the sidecar (with its node_modules) is installed at a known location.
-func detectClaudeSidecar() string {
+// detectOrSetupClaudeSidecar finds a ready claude-code sidecar; if claude+node are
+// present but the sidecar isn't installed, it materializes the embedded sidecar into
+// ~/.oculus/claude-sidecar and (per mode) installs node_modules — auto, or after a
+// TTY prompt. Returns the sidecar.mjs path, or "" if unavailable/declined.
+func detectOrSetupClaudeSidecar(mode setupMode) string {
 	if _, err := exec.LookPath("claude"); err != nil {
 		return ""
 	}
 	if _, err := exec.LookPath("node"); err != nil {
 		return ""
 	}
-	return firstUsableSidecar(claudeSidecarCandidates())
+	// Already installed somewhere? Use it as-is.
+	if p := firstUsableSidecar(claudeSidecarCandidates()); p != "" {
+		return p
+	}
+	if mode == setupOff {
+		fmt.Fprintln(os.Stderr, "  note: claude-code available but its sidecar isn't installed — run `oculusd serve` (it will offer to set it up) or `cd daemon/agent/claudecode/sidecar && npm install`")
+		return ""
+	}
+
+	dir := defaultSidecarDir()
+	if dir == "" {
+		return ""
+	}
+	mjs := filepath.Join(dir, "sidecar.mjs")
+	if err := materializeSidecar(dir); err != nil {
+		fmt.Fprintf(os.Stderr, "  claude-code setup: could not write sidecar to %s: %v\n", dir, err)
+		return ""
+	}
+
+	if !isDir(filepath.Join(dir, "node_modules")) {
+		if mode == setupAsk && !confirmSidecarInstall(dir) {
+			fmt.Fprintf(os.Stderr, "  claude-code: skipped setup — run `cd %s && npm install` to enable it later\n", dir)
+			return ""
+		}
+		fmt.Fprintf(os.Stderr, "  claude-code: installing sidecar deps in %s (one-time)...\n", dir)
+		if err := npmInstall(dir); err != nil {
+			fmt.Fprintf(os.Stderr, "  claude-code setup failed: %v\n", err)
+			return ""
+		}
+	}
+	if isFile(mjs) && isDir(filepath.Join(dir, "node_modules")) {
+		return mjs
+	}
+	return ""
+}
+
+func defaultSidecarDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".oculus", "claude-sidecar")
+}
+
+// materializeSidecar writes the embedded sidecar.mjs + package.json into dir (creating
+// it). Existing files are overwritten so an upgraded daemon refreshes the sidecar.
+func materializeSidecar(dir string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sidecar.mjs"), claudecode.SidecarMJS, 0o644); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "package.json"), claudecode.SidecarPackageJSON, 0o644)
+}
+
+// confirmSidecarInstall asks on a TTY; a non-interactive stdin declines (can't prompt).
+func confirmSidecarInstall(dir string) bool {
+	if !stdinIsTTY() {
+		fmt.Fprintf(os.Stderr, "  claude-code: sidecar not installed and stdin isn't a terminal — skipping (use --claude-setup=auto to install non-interactively)\n")
+		return false
+	}
+	fmt.Fprintf(os.Stderr, "  claude-code needs a one-time setup: run `npm install` in %s now? [Y/n] ", dir)
+	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	line = strings.ToLower(strings.TrimSpace(line))
+	return line == "" || line == "y" || line == "yes"
+}
+
+func stdinIsTTY() bool {
+	fi, err := os.Stdin.Stat()
+	return err == nil && (fi.Mode()&os.ModeCharDevice) != 0
+}
+
+// npmInstall runs the node package installer in dir, streaming progress to stderr.
+func npmInstall(dir string) error {
+	bin, args := pickInstaller()
+	if bin == "" {
+		return fmt.Errorf("no node package manager found (need npm or bun on PATH)")
+	}
+	cmd := exec.Command(bin, args...)
+	cmd.Dir = dir
+	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
+	return cmd.Run()
+}
+
+func pickInstaller() (string, []string) {
+	if p, err := exec.LookPath("npm"); err == nil {
+		return p, []string{"install", "--no-fund", "--no-audit"}
+	}
+	if p, err := exec.LookPath("bun"); err == nil {
+		return p, []string{"install"}
+	}
+	return "", nil
+}
+
+func parseSetupMode(s string) setupMode {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "auto", "yes", "y":
+		return setupAuto
+	case "off", "no", "n", "false":
+		return setupOff
+	default:
+		return setupAsk
+	}
 }
 
 func claudeSidecarCandidates() []string {

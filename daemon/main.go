@@ -74,6 +74,7 @@ func serve(args []string) error {
 	opencodeURL := fs.String("opencode", "", "override: URL of a running `opencode serve` (else auto-detected/started)")
 	claudeSidecar := fs.String("claude-sidecar", "", "override: path to the claude-code sidecar.mjs (else auto-detected)")
 	piBin := fs.String("pi", "", "override: path to the pi binary (else auto-detected on PATH)")
+	claudeSetup := fs.String("claude-setup", "ask", "claude-code sidecar one-time install when missing: ask|auto|off")
 	secret := fs.String("secret", "", "pairing secret clients must present (default: generated)")
 	keyPath := fs.String("key", defaultKeyPath(), "path to the daemon private key")
 	apnsKey := fs.String("apns-key", "", "path to an APNs auth key (.p8) to enable push")
@@ -104,7 +105,7 @@ func serve(args []string) error {
 		return nil
 	})
 	// Auto-detect every provider present on this host; the flags override a specific one.
-	providers := enableProviders(context.Background(), h, *opencodeURL, *claudeSidecar, *piBin)
+	providers := enableProviders(context.Background(), h, *opencodeURL, *claudeSidecar, *piBin, parseSetupMode(*claudeSetup))
 	if len(providers) == 0 {
 		fmt.Fprintln(os.Stderr, "  warning: no coding-agent providers detected (install opencode, claude-code, or pi and re-run) — serving anyway")
 	}

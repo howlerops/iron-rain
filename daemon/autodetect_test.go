@@ -4,7 +4,47 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/howlerops/oculus/daemon/agent/claudecode"
 )
+
+func TestParseSetupMode(t *testing.T) {
+	cases := map[string]setupMode{
+		"auto": setupAuto, "yes": setupAuto,
+		"off": setupOff, "no": setupOff, "false": setupOff,
+		"ask": setupAsk, "": setupAsk, "garbage": setupAsk, "AUTO": setupAuto,
+	}
+	for in, want := range cases {
+		if got := parseSetupMode(in); got != want {
+			t.Errorf("parseSetupMode(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestMaterializeSidecar(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "claude-sidecar")
+	if err := materializeSidecar(dir); err != nil {
+		t.Fatal(err)
+	}
+	mjs, err := os.ReadFile(filepath.Join(dir, "sidecar.mjs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mjs) == 0 || len(claudecode.SidecarMJS) == 0 || string(mjs) != string(claudecode.SidecarMJS) {
+		t.Fatal("sidecar.mjs not materialized from the embedded copy")
+	}
+	pkg, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(pkg) != string(claudecode.SidecarPackageJSON) {
+		t.Fatal("package.json not materialized from the embedded copy")
+	}
+	// Idempotent: a second call (upgrade refresh) must not error.
+	if err := materializeSidecar(dir); err != nil {
+		t.Fatalf("second materialize: %v", err)
+	}
+}
 
 func TestFirstUsableSidecar(t *testing.T) {
 	dir := t.TempDir()

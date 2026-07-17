@@ -15,6 +15,13 @@ found (candidates: `$OCULUS_CLAUDE_SIDECAR`, cwd, exe-dir, `~/.oculus/claude-sid
 on PATH. `--opencode/--claude-sidecar/--pi` only OVERRIDE a specific provider's detection. No provider
 found → warn + serve anyway.
 
+**claude-code auto-setup:** the sidecar's `sidecar.mjs`+`package.json` are `go:embed`ded into the
+daemon (`agent/claudecode/embed.go`); when claude+node are present but no installed sidecar is found,
+`detectOrSetupClaudeSidecar` materializes them into `~/.oculus/claude-sidecar` and runs `npm install`
+(prefers npm, falls back to bun). `--claude-setup=ask|auto|off` (default **ask** — prompts on a TTY,
+skips on non-interactive stdin; `auto` installs silently; `off` never installs). Verified live: a fresh
+HOME auto-installs 102 pkgs and registers claude-code.
+
 ## Model
 - `hub.New()` → `Register(provider)` (by `Name()`).
 - `Serve(ctx, *transport.Conn)` loops: `Recv` a protocol envelope → `dispatch`. Blocks until the

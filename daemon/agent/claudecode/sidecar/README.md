@@ -7,6 +7,10 @@ single-shot `claude -p` provider, whose `PreToolUse` hook does **not** block in 
 `canUseTool` callback genuinely blocks the tool until the daemon answers.
 
 ## Install
+**The daemon installs this for you.** On `oculusd serve`, if `claude`+`node` are present
+but the sidecar isn't installed, it materializes this sidecar (embedded in the daemon
+binary) into `~/.oculus/claude-sidecar` and runs `npm install` — prompting first unless
+you pass `--claude-setup=auto` (or `off` to skip). Manual install still works:
 ```sh
 cd daemon/agent/claudecode/sidecar
 npm install        # or: bun install
