@@ -1,3 +1,0 @@
-module OculusKit {
-    header "/Users/jacob/projects/oculus/app/OculusApp/.build/arm64-apple-macosx/debug/OculusKit.build/include/OculusKit-Swift.h"
-}
