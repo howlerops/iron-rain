@@ -25,6 +25,7 @@ public final class Model: ObservableObject {
 
     @Published public var connected = false
     @Published public var status = "Not connected"
+    @Published public var statusDetail: String? // human reason when not connected (unreachable, wrong secret, key mismatch)
     @Published public var messages: [ChatMessage] = []
     @Published public var sessionID: String?
     @Published public var currentSession: Session? // metadata (project/worktree/branch) of the active session
@@ -145,6 +146,7 @@ public final class Model: ObservableObject {
             client = c
             connected = true
             status = "Connected"
+            statusDetail = nil
             savePairing()
             Task { await receiveLoop() }
             await discover()
@@ -163,8 +165,15 @@ public final class Model: ObservableObject {
                 OculusStore.shared.pendingDecision = nil
                 await respond(decision)
             }
+        } catch OculusClientError.handshakeRejected(let msg) {
+            status = "Connect failed"
+            statusDetail = msg.isEmpty ? "Pairing rejected" : "Pairing rejected: \(msg)"
+            scheduleReconnect()
         } catch {
             status = "Connect failed"
+            statusDetail = (error as NSError).domain == NSURLErrorDomain
+                ? "Can’t reach this Mac"          // daemon down / wrong address
+                : "Handshake failed — re-pair?"    // key mismatch / another daemon on the port
             scheduleReconnect()
         }
     }
@@ -619,60 +628,6 @@ extension Model {
         if pendingApproval != nil { return "bell.badge.fill" }
         if connected { return "bolt.horizontal.circle.fill" }
         return "bolt.horizontal.circle"
-    }
-}
-
-/// Routes between the connect screen and the chat surface.
-public struct ContentView: View {
-    @ObservedObject var model: Model
-    @Environment(\.colorScheme) private var scheme
-    private var palette: OculusPalette { .current(scheme) }
-    @State private var selection: String?
-    @State private var showNewSession = false
-
-    public init(model: Model) { self.model = model }
-
-    public var body: some View {
-        Group {
-            if model.connected {
-                NavigationSplitView {
-                    SessionSidebar(model: model, selection: $selection)
-                        .navigationSplitViewColumnWidth(min: 230, ideal: 270)
-                } detail: {
-                    ChatView(model: model)
-                }
-                .onChange(of: selection) { sel in
-                    guard let sel else { return }
-                    if sel == SessionSidebar.newSessionTag {
-                        showNewSession = true
-                        selection = nil // allow re-triggering
-                    } else if model.sessions.contains(where: { $0.id == sel }) {
-                        Task { await model.openSession(sel) }
-                    } else if let d = model.discovered.first(where: { $0.sessionID == sel }) {
-                        Task { await model.attach(d) }
-                    }
-                }
-                .sheet(isPresented: $showNewSession) {
-                    NewSessionView(model: model, palette: palette) { showNewSession = false }
-                }
-            } else {
-                ConnectView(model: model)
-            }
-        }
-        .background(palette.background.ignoresSafeArea())
-        .foregroundStyle(palette.foreground)
-        .tint(palette.primary)
-        .task { await model.autoConnectIfPaired() }
-        .userActivity(oculusSessionActivityType, isActive: model.sessionID != nil) { activity in
-            activity.title = "Iron Rain session"
-            if let sid = model.sessionID { activity.userInfo = ["session_id": sid] }
-            activity.isEligibleForHandoff = true
-        }
-        .onContinueUserActivity(oculusSessionActivityType) { activity in
-            if let sid = activity.userInfo?["session_id"] as? String {
-                OculusStore.shared.handoffSessionID = sid
-            }
-        }
     }
 }
 

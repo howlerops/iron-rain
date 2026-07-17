@@ -5,6 +5,7 @@ import OculusKit
 /// New session and the live opencode / claude-code sessions detected on the host.
 /// Selection navigates to the chat (a drawer on iPhone, side-by-side on macOS/iPad).
 struct SessionSidebar: View {
+    @ObservedObject var store: DesktopStore
     @ObservedObject var model: Model
     @Binding var selection: String?
     @Environment(\.colorScheme) private var scheme
@@ -33,7 +34,7 @@ struct SessionSidebar: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
+            SidebarHeader(store: store, model: model, palette: palette) { showPairingQR = true }
             Divider().overlay(palette.border)
             List(selection: $selection) {
                 Label("New session", systemImage: "plus.circle").tag(Self.newSessionTag)
@@ -77,31 +78,6 @@ struct SessionSidebar: View {
         }
     }
 
-    private var header: some View {
-        HStack(spacing: 10) {
-            Image("WolfMark").resizable().scaledToFit().frame(width: 26, height: 26)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Iron Rain").font(.headline)
-                HStack(spacing: 5) {
-                    Circle().fill(statusColor).frame(width: 7, height: 7)
-                    Text(statusLabel).font(.caption2).foregroundStyle(palette.mutedForeground)
-                }
-            }
-            Spacer()
-            Menu {
-                if model.pairingURL != nil {
-                    Button("Pair a phone…") { showPairingQR = true }
-                }
-                Button("Refresh sessions") { Task { await model.discover() } }
-                Button("Disconnect", role: .destructive) { model.disconnect() }
-            } label: {
-                Image(systemName: "ellipsis.circle").foregroundStyle(palette.mutedForeground)
-            }
-            .menuStyle(.borderlessButton).fixedSize()
-        }
-        .padding(.horizontal, 14).padding(.vertical, 12)
-    }
-
     private func row(title: String, subtitle: String, active: Bool) -> some View {
         HStack(spacing: 8) {
             Circle().fill(active ? palette.primary : palette.mutedForeground.opacity(0.4))
@@ -116,15 +92,92 @@ struct SessionSidebar: View {
         }
         .contentShape(Rectangle())
     }
+}
 
+/// Unified sidebar header: a single row that switches desktops (tap the name),
+/// shows live connection status with a real reason when it can't connect, and hosts
+/// the overflow menu. Replaces the old stacked DesktopBar + branding header.
+struct SidebarHeader: View {
+    @ObservedObject var store: DesktopStore
+    @ObservedObject var model: Model
+    let palette: OculusPalette
+    var onPairPhone: () -> Void
+
+    @State private var showAdd = false
+    @State private var renaming = false
+    @State private var newName = ""
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Menu {
+                ForEach(store.models, id: \.id) { m in
+                    Button { store.selectedID = m.id } label: {
+                        Label(m.name.isEmpty ? "Desktop" : m.name,
+                              systemImage: m.id == store.selectedID ? "checkmark"
+                                : (m.connected ? "circle.fill" : "circle"))
+                    }
+                }
+                Divider()
+                Button { showAdd = true } label: { Label("Add desktop…", systemImage: "plus") }
+                if let a = store.active {
+                    Button { newName = a.name; renaming = true } label: { Label("Rename…", systemImage: "pencil") }
+                    Button(role: .destructive) { store.remove(a.id) } label: { Label("Remove desktop", systemImage: "trash") }
+                }
+            } label: {
+                HStack(spacing: 10) {
+                    Image("WolfMark").resizable().scaledToFit().frame(width: 26, height: 26)
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 5) {
+                            Text(desktopName).font(.headline).lineLimit(1)
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.caption2).foregroundStyle(palette.mutedForeground)
+                        }
+                        HStack(spacing: 5) {
+                            Circle().fill(statusColor).frame(width: 7, height: 7)
+                            Text(statusLabel).font(.caption2)
+                                .foregroundStyle(palette.mutedForeground).lineLimit(1)
+                        }
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton).fixedSize()
+
+            Spacer()
+
+            Menu {
+                if model.pairingURL != nil {
+                    Button { onPairPhone() } label: { Label("Pair a phone…", systemImage: "qrcode") }
+                }
+                Button { Task { await model.discover() } } label: { Label("Refresh sessions", systemImage: "arrow.clockwise") }
+                Button(role: .destructive) { model.disconnect() } label: { Label("Disconnect", systemImage: "bolt.horizontal.circle") }
+            } label: {
+                Image(systemName: "ellipsis.circle").foregroundStyle(palette.mutedForeground)
+            }
+            .menuStyle(.borderlessButton).fixedSize()
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .sheet(isPresented: $showAdd) { AddDesktopView(store: store, palette: palette) { showAdd = false } }
+        .alert("Rename desktop", isPresented: $renaming) {
+            TextField("Name", text: $newName)
+            Button("Save") { if let a = store.active { store.rename(a.id, to: newName) } }
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+
+    private var desktopName: String {
+        let n = store.active?.name ?? model.name
+        return n.isEmpty ? "Desktop" : n
+    }
     private var statusColor: Color {
         if model.pendingApproval != nil { return palette.primary }
         if model.busy { return .green }
-        return model.connected ? palette.mutedForeground : .red
+        return model.connected ? .green : .red
     }
     private var statusLabel: String {
-        if model.pendingApproval != nil { return "awaiting approval" }
-        if model.busy { return "working…" }
-        return model.status
+        if model.pendingApproval != nil { return "Awaiting approval" }
+        if model.busy { return "Working…" }
+        if model.connected { return "Connected" }
+        return model.statusDetail ?? model.status
     }
 }

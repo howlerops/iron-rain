@@ -24,12 +24,8 @@ public struct RootView: View {
             } else if let model = store.active {
                 TabView(selection: $selectedTab) {
                     NavigationSplitView {
-                        VStack(spacing: 0) {
-                            DesktopBar(store: store, palette: palette)
-                            Divider().overlay(palette.border)
-                            SessionSidebar(model: model, selection: $selection)
-                        }
-                        .navigationSplitViewColumnWidth(min: 240, ideal: 280)
+                        SessionSidebar(store: store, model: model, selection: $selection)
+                            .navigationSplitViewColumnWidth(min: 240, ideal: 280)
                     } detail: {
                         ChatView(model: model)
                     }
@@ -64,53 +60,6 @@ public struct RootView: View {
             await launcher.ensureRunning() // start the local daemon (no terminal) if needed
             #endif
             await store.bootstrap()
-        }
-    }
-}
-
-/// Desktop switcher shown atop the sidebar: pick the active Mac, add/rename/remove.
-struct DesktopBar: View {
-    @ObservedObject var store: DesktopStore
-    let palette: OculusPalette
-    @State private var showAdd = false
-    @State private var renaming = false
-    @State private var newName = ""
-
-    var body: some View {
-        Menu {
-            ForEach(store.models, id: \.id) { m in
-                Button {
-                    store.selectedID = m.id
-                } label: {
-                    Label(m.name.isEmpty ? "Desktop" : m.name,
-                          systemImage: m.id == store.selectedID ? "checkmark" : (m.connected ? "circle.fill" : "circle"))
-                }
-            }
-            Divider()
-            Button { showAdd = true } label: { Label("Add desktop…", systemImage: "plus") }
-            if let a = store.active {
-                Button { newName = a.name; renaming = true } label: { Label("Rename…", systemImage: "pencil") }
-                Button(role: .destructive) { store.remove(a.id) } label: { Label("Remove desktop", systemImage: "trash") }
-            }
-        } label: {
-            HStack(spacing: 7) {
-                Circle().fill((store.active?.connected ?? false) ? Color.green : palette.mutedForeground)
-                    .frame(width: 7, height: 7)
-                Text((store.active?.name.isEmpty == false) ? store.active!.name : "Desktop")
-                    .font(.subheadline.bold()).lineLimit(1)
-                Image(systemName: "chevron.up.chevron.down").font(.caption2)
-                Spacer()
-            }
-            .foregroundStyle(palette.foreground)
-        }
-        .menuStyle(.borderlessButton)
-        .padding(.horizontal, 14).padding(.vertical, 9)
-        .background(palette.card)
-        .sheet(isPresented: $showAdd) { AddDesktopView(store: store, palette: palette) { showAdd = false } }
-        .alert("Rename desktop", isPresented: $renaming) {
-            TextField("Name", text: $newName)
-            Button("Save") { if let a = store.active { store.rename(a.id, to: newName) } }
-            Button("Cancel", role: .cancel) {}
         }
     }
 }
