@@ -30,6 +30,8 @@ type sessionMeta struct {
 	workspaceName string
 	branch        string
 	worktreePath  string // set when this session runs in a git worktree (for cleanup)
+	baseCommit    string // repo HEAD when the worktree was created (stable diff base)
+	repoRoot      string // main repo root (for worktree remove/prune)
 	port          int    // port allocated to this worktree by a setup hook (0 = none)
 }
 

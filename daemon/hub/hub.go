@@ -308,6 +308,8 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			meta.branch = wt.Branch
 			meta.workspaceName = name
 			meta.worktreePath = wt.Path
+			meta.repoRoot = repoRoot
+			meta.baseCommit, _ = worktree.HeadCommit(repoRoot)
 			// Bootstrap the worktree from .oculus/project.json (copy .env, install deps,
 			// assign a port) so the agent starts in a ready folder. Failure aborts the
 			// session and removes the half-baked worktree.
@@ -389,6 +391,67 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			return
 		}
 		h.sendOK(conn, env.ID, protocol.ProjectList{Projects: toProtoProjects(reg.List())})
+
+	case protocol.TypeWorktreeDiff:
+		var req protocol.WorktreeDiff
+		_ = env.Unmarshal(&req)
+		m := h.managed(req.SessionID)
+		if m == nil || m.meta.worktreePath == "" {
+			h.sendErr(conn, env.ID, "not a worktree session")
+			return
+		}
+		diff, err := worktree.Diff(m.meta.worktreePath, m.meta.baseCommit)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, protocol.WorktreeDiff{SessionID: req.SessionID, Diff: diff})
+
+	case protocol.TypeWorktreeRemove:
+		var req protocol.WorktreeRemove
+		_ = env.Unmarshal(&req)
+		m := h.managed(req.SessionID)
+		if m == nil || m.meta.worktreePath == "" {
+			h.sendErr(conn, env.ID, "not a worktree session")
+			return
+		}
+		_ = m.sess.Stop(ctx)
+		_ = m.sess.Close()
+		if err := worktree.Remove(m.meta.repoRoot, m.meta.worktreePath, req.Force); err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		_ = worktree.Prune(m.meta.repoRoot)
+		h.removeSession(req.SessionID)
+		h.sendOK(conn, env.ID, protocol.SessionRef{SessionID: req.SessionID})
+
+	case protocol.TypeWorktreePR:
+		var req protocol.WorktreePR
+		_ = env.Unmarshal(&req)
+		m := h.managed(req.SessionID)
+		if m == nil || m.meta.worktreePath == "" {
+			h.sendErr(conn, env.ID, "not a worktree session")
+			return
+		}
+		wtPath, branch := m.meta.worktreePath, m.meta.branch
+		title := req.Title
+		if title == "" {
+			title = branch
+		}
+		if _, err := worktree.CommitAll(wtPath, title); err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		if !worktree.HasRemote(wtPath) {
+			h.sendErr(conn, env.ID, "no 'origin' remote — ask the agent to push and open the PR")
+			return
+		}
+		if err := worktree.Push(wtPath, branch); err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		url, _ := worktree.CreatePR(wtPath, branch, title, req.Body) // gh optional; branch is pushed regardless
+		h.sendOK(conn, env.ID, protocol.WorktreePRResult{SessionID: req.SessionID, Branch: branch, Pushed: true, URL: url})
 
 	case protocol.TypeSessionSubscribe:
 		var req protocol.SessionRef

@@ -27,6 +27,9 @@ const (
 	TypeProjectList     = "project.list"
 	TypeProjectAdd      = "project.add"
 	TypeProjectRemove   = "project.remove"
+	TypeWorktreeDiff    = "worktree.diff"   // request the diff of a worktree session
+	TypeWorktreeRemove  = "worktree.remove" // stop a worktree session + remove its worktree
+	TypeWorktreePR      = "worktree.pr"     // commit + push + open a PR for a worktree session
 
 	// events (daemon -> client), no id
 	TypeSessionStatus   = "session.status"
@@ -94,6 +97,31 @@ type ProjectRef struct {
 
 type ProjectList struct {
 	Projects []Project `json:"projects"`
+}
+
+// Worktree finish-flow messages.
+
+type WorktreeRemove struct {
+	SessionID string `json:"session_id"`
+	Force     bool   `json:"force,omitempty"` // remove even if the worktree has uncommitted changes
+}
+
+type WorktreeDiff struct {
+	SessionID string `json:"session_id"`
+	Diff      string `json:"diff,omitempty"` // populated on the response
+}
+
+type WorktreePR struct {
+	SessionID string `json:"session_id"`
+	Title     string `json:"title"`
+	Body      string `json:"body,omitempty"`
+}
+
+type WorktreePRResult struct {
+	SessionID string `json:"session_id"`
+	Branch    string `json:"branch"`
+	Pushed    bool   `json:"pushed"`
+	URL       string `json:"url,omitempty"` // set when a PR was opened via gh
 }
 
 type SessionRef struct {

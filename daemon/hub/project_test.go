@@ -212,3 +212,55 @@ func TestWorktreeSession(t *testing.T) {
 		t.Errorf("session port = %d, want in [47120,47139]", sess.Port)
 	}
 }
+
+// TestWorktreeFinish: after a worktree session makes changes, worktree.diff shows them
+// and worktree.remove tears down the worktree + drops the session.
+func TestWorktreeFinish(t *testing.T) {
+	repo := t.TempDir()
+	gitInitRepo(t, repo)
+	reg, _ := project.Load(t.TempDir() + "/projects.json")
+	prov := &cwdProvider{}
+	h := hub.New()
+	h.Register(prov)
+	h.SetProjects(reg)
+	h.SetWorktreeBase(t.TempDir())
+
+	daemonKP, _ := crypto.GenerateKeyPair()
+	conn := connectClient(t, h, daemonKP)
+	r := newReader(conn)
+
+	send(t, conn, "p1", protocol.TypeProjectAdd, protocol.ProjectAdd{Path: repo})
+	var proj protocol.Project
+	_ = json.Unmarshal(r.waitOK(t, "p1"), &proj)
+	send(t, conn, "s1", protocol.TypeSessionCreate, protocol.SessionCreate{
+		Provider: "fake", ProjectID: proj.ID, Worktree: true, WorkspaceName: "finish",
+	})
+	var sess protocol.Session
+	_ = json.Unmarshal(r.waitOK(t, "s1"), &sess)
+
+	// Simulate the agent editing a file in the worktree.
+	if err := os.WriteFile(filepath.Join(sess.Cwd, "f"), []byte("edited by agent"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// worktree.diff surfaces the change.
+	send(t, conn, "d1", protocol.TypeWorktreeDiff, protocol.WorktreeDiff{SessionID: sess.ID})
+	var wd protocol.WorktreeDiff
+	_ = json.Unmarshal(r.waitOK(t, "d1"), &wd)
+	if !strings.Contains(wd.Diff, "edited by agent") {
+		t.Fatalf("diff missing change:\n%s", wd.Diff)
+	}
+
+	// worktree.remove tears it down (force: it's dirty).
+	send(t, conn, "rm", protocol.TypeWorktreeRemove, protocol.WorktreeRemove{SessionID: sess.ID, Force: true})
+	r.waitOK(t, "rm")
+	if _, err := os.Stat(sess.Cwd); !os.IsNotExist(err) {
+		t.Errorf("worktree still exists after remove: %v", err)
+	}
+	send(t, conn, "l1", protocol.TypeSessionList, struct{}{})
+	var sl protocol.SessionList
+	_ = json.Unmarshal(r.waitOK(t, "l1"), &sl)
+	if len(sl.Sessions) != 0 {
+		t.Errorf("session.list = %+v, want empty after remove", sl.Sessions)
+	}
+}
