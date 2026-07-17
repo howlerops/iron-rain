@@ -34,6 +34,7 @@ type Hub struct {
 	attach        AttacherFactory
 	clients       map[*transport.Conn]bool // all connected clients (for global broadcasts)
 	projects      *project.Registry        // optional: registered folders sessions spawn in
+	autoProjects  bool                     // auto-register projects from active agents' cwds
 	worktreeBase  string                   // base dir for worktrees ("" = worktree.DefaultBase)
 	reservedPorts map[int]bool             // ports handed to worktree setup hooks (collision-free)
 }
@@ -81,6 +82,39 @@ func (h *Hub) SetProjects(r *project.Registry) {
 	h.mu.Unlock()
 }
 
+// SetAutoProjects toggles auto-registering projects from active agents' working dirs.
+func (h *Hub) SetAutoProjects(on bool) {
+	h.mu.Lock()
+	h.autoProjects = on
+	h.mu.Unlock()
+}
+
+// autoRegisterProjects registers a project for every discovered agent's cwd (git root).
+func (h *Hub) autoRegisterProjects(items []protocol.Discovered) {
+	for _, it := range items {
+		h.autoRegisterCwd(it.Cwd)
+	}
+}
+
+// autoRegisterCwd resolves cwd to its git root and adds it to the registry (deduped),
+// when auto-projects is enabled and a registry is attached.
+func (h *Hub) autoRegisterCwd(cwd string) {
+	if cwd == "" {
+		return
+	}
+	h.mu.Lock()
+	on, reg := h.autoProjects, h.projects
+	h.mu.Unlock()
+	if !on || reg == nil {
+		return
+	}
+	root := cwd
+	if r, err := worktree.RepoRoot(cwd); err == nil {
+		root = r
+	}
+	_, _ = reg.Add(root)
+}
+
 func (h *Hub) projectRegistry() *project.Registry {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -106,10 +140,11 @@ type AttacherFactory func(provider, url string) agent.Attacher
 // New returns an empty Hub.
 func New() *Hub {
 	return &Hub{
-		providers: map[string]agent.Provider{},
-		sessions:  map[string]*managedSession{},
-		approvals: map[string]*managedSession{},
-		clients:   map[*transport.Conn]bool{},
+		providers:    map[string]agent.Provider{},
+		sessions:     map[string]*managedSession{},
+		approvals:    map[string]*managedSession{},
+		clients:      map[*transport.Conn]bool{},
+		autoProjects: true, // on by default; disable with --auto-projects=false
 	}
 }
 
@@ -296,6 +331,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 				return
 			}
 			cwd = proj.Path
+		}
+		if req.ProjectID == "" {
+			h.autoRegisterCwd(cwd) // a session in a raw folder auto-creates its project
 		}
 		meta := sessionMeta{projectID: req.ProjectID, cwd: cwd}
 		if req.Worktree {
@@ -599,6 +637,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			}
 			items = got
 		}
+		h.autoRegisterProjects(items) // auto-create projects from active agents' cwds
 		h.sendOK(conn, env.ID, protocol.DiscoverList{Items: items})
 
 	case protocol.TypeDeviceRegister:

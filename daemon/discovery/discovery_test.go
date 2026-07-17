@@ -143,3 +143,23 @@ func TestCombineSkipsUnreachableServer(t *testing.T) {
 		t.Fatalf("want 1 server item, got %+v", items)
 	}
 }
+
+// TestReadTranscriptCwd_BeatsLossyDecode: when the transcript records the real cwd, it's
+// used instead of the lossy dir-name decode (which mangles paths containing '-').
+func TestReadTranscriptCwd_BeatsLossyDecode(t *testing.T) {
+	dir := t.TempDir()
+	// Dir name encodes /Users/jacob/my-project as -Users-jacob-my-project → decode is lossy
+	// (would yield /Users/jacob/my/project). The transcript has the true cwd.
+	proj := filepath.Join(dir, "-Users-jacob-my-project")
+	_ = os.MkdirAll(proj, 0o755)
+	tx := filepath.Join(proj, "s1.jsonl")
+	_ = os.WriteFile(tx, []byte(`{"type":"user","cwd":"/Users/jacob/my-project"}`+"\n"), 0o644)
+
+	sessions, err := FindClaudeSessions(dir, 24*time.Hour, time.Now())
+	if err != nil || len(sessions) != 1 {
+		t.Fatalf("sessions = %+v err=%v", sessions, err)
+	}
+	if sessions[0].Cwd != "/Users/jacob/my-project" {
+		t.Errorf("cwd = %q, want /Users/jacob/my-project (real, not lossy decode)", sessions[0].Cwd)
+	}
+}

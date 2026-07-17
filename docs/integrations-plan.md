@@ -159,7 +159,16 @@ deployed service to reuse (see the fork below).
   from the session/chat view** (not crammed into the split-view detail) — likely a tab on macOS/iPad
   and a distinct screen on iPhone.
 
-### OPEN FORK — how to wire Linear into Iron Rain given the deployed service
+### RESOLVED — Linear lives in the Go daemon (option B)
+**Decision:** `oculus.fly.dev` / `linear-orchestrator` is being **deprecated** in favor of Iron Rain,
+which becomes the single product. So Linear is **reimplemented in the Go daemon** (local-first,
+E2E-consistent): the daemon holds the token in `~/.oculus/integrations.json` (0600), polls Linear
+every 60s, and (later) accepts webhooks only when `--public-url` (relay/ngrok) is set. We **reuse the
+existing OAuth app** — pull `LINEAR_CLIENT_ID/SECRET` + `LINEAR_WEBHOOK_SECRET` from the `oculus` Fly
+secrets before it's torn down (or re-create the app). `packages/linear` (TS) is the reference to
+mirror in Go. **Build order: Task 1 (auto-projects) first, then the Linear track.**
+
+### (historical) the fork we chose B from
 - **A. Reuse oculus.fly.dev as the Linear hub:** the daemon talks to the deployed service (`API_TOKEN`)
   for assigned issues + assignment-triggered launches; the service keeps doing OAuth + webhooks +
   sync; the daemon runs agents locally. Fastest, webhooks work today, reuses everything — but couples

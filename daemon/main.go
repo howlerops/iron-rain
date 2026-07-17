@@ -76,6 +76,7 @@ func serve(args []string) error {
 	claudeSidecar := fs.String("claude-sidecar", "", "override: path to the claude-code sidecar.mjs (else auto-detected)")
 	piBin := fs.String("pi", "", "override: path to the pi binary (else auto-detected on PATH)")
 	claudeSetup := fs.String("claude-setup", "ask", "claude-code sidecar one-time install when missing: ask|auto|off")
+	autoProjects := fs.Bool("auto-projects", true, "auto-register projects from the folders active agents run in")
 	secret := fs.String("secret", "", "pairing secret clients must present (default: generated)")
 	keyPath := fs.String("key", defaultKeyPath(), "path to the daemon private key")
 	apnsKey := fs.String("apns-key", "", "path to an APNs auth key (.p8) to enable push")
@@ -104,6 +105,7 @@ func serve(args []string) error {
 		fmt.Fprintf(os.Stderr, "  warning: could not load project registry: %v\n", err)
 	} else {
 		h.SetProjects(reg)
+		h.SetAutoProjects(*autoProjects)
 	}
 	h.SetAttacherFactory(func(provider, url string) agent.Attacher {
 		if provider == "opencode" && url != "" {

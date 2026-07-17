@@ -322,3 +322,39 @@ func TestWorktreeConflicts(t *testing.T) {
 		t.Fatalf("expected file 'f' flagged as a cross-worktree conflict; got %+v", wc.Files)
 	}
 }
+
+// TestAutoProjects: discovering an agent with a cwd auto-registers that folder as a project.
+func TestAutoProjects(t *testing.T) {
+	repo := t.TempDir()
+	gitInitRepo(t, repo)
+	reg, _ := project.Load(t.TempDir() + "/p.json")
+	h := hub.New()
+	h.Register(&cwdProvider{})
+	h.SetProjects(reg)
+	h.SetDiscoverer(func(context.Context) ([]protocol.Discovered, error) {
+		return []protocol.Discovered{{Provider: "claude-code", Kind: "session", Cwd: repo}}, nil
+	})
+
+	daemonKP, _ := crypto.GenerateKeyPair()
+	conn := connectClient(t, h, daemonKP)
+	r := newReader(conn)
+
+	send(t, conn, "d1", protocol.TypeDiscover, struct{}{})
+	r.waitOK(t, "d1")
+
+	send(t, conn, "pl", protocol.TypeProjectList, struct{}{})
+	var list protocol.ProjectList
+	if err := json.Unmarshal(r.waitOK(t, "pl"), &list); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := filepath.EvalSymlinks(repo) // git resolves /var → /private/var on macOS
+	found := false
+	for _, p := range list.Projects {
+		if rp, _ := filepath.EvalSymlinks(p.Path); rp == want && p.IsGitRepo {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected auto-registered git project %s; got %+v", want, list.Projects)
+	}
+}

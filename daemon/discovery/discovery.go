@@ -10,6 +10,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -138,10 +139,15 @@ func FindClaudeSessions(projectsDir string, within time.Duration, now time.Time)
 			if err != nil || info.ModTime().Before(cutoff) {
 				continue
 			}
+			full := filepath.Join(proj, f.Name())
+			cwd := readTranscriptCwd(full)
+			if cwd == "" {
+				cwd = decodeProjectDir(e.Name())
+			}
 			out = append(out, ClaudeSession{
 				ID:      strings.TrimSuffix(f.Name(), ".jsonl"),
-				Cwd:     decodeProjectDir(e.Name()),
-				Path:    filepath.Join(proj, f.Name()),
+				Cwd:     cwd,
+				Path:    full,
 				ModTime: info.ModTime(),
 			})
 		}
@@ -156,6 +162,42 @@ func decodeProjectDir(name string) string {
 		return ""
 	}
 	return "/" + strings.TrimPrefix(strings.ReplaceAll(name, "-", "/"), "/")
+}
+
+// readTranscriptCwd reads the real cwd recorded in a claude-code transcript's first
+// entries (each JSONL line carries a "cwd"), avoiding the lossy dir-name decode. Returns
+// "" if none found.
+func readTranscriptCwd(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for i := 0; i < 20 && sc.Scan(); i++ {
+		var rec struct {
+			Cwd string `json:"cwd"`
+		}
+		if json.Unmarshal(sc.Bytes(), &rec) == nil && rec.Cwd != "" {
+			return rec.Cwd
+		}
+	}
+	return ""
+}
+
+// procCwd returns a process's working directory (macOS/Linux via lsof); overridable in tests.
+var procCwd = func(pid int) string {
+	out, err := exec.Command("lsof", "-a", "-p", strconv.Itoa(pid), "-d", "cwd", "-Fn").Output()
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "n") {
+			return strings.TrimPrefix(line, "n")
+		}
+	}
+	return ""
 }
 
 // listOpenCodeSessions enumerates a server's live sessions; overridable in tests.
@@ -182,6 +224,7 @@ func combine(
 	for _, s := range servers {
 		items = append(items, protocol.Discovered{
 			Provider: "opencode", Kind: protocol.KindServer, URL: s.URL, PID: s.PID,
+			Cwd: procCwd(s.PID), // dir where `opencode serve` was launched → a project root
 		})
 		sessions, err := list(ctx, s.URL)
 		if err != nil {
