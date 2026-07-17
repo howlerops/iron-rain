@@ -80,6 +80,58 @@ func TestBootstrap_SetupFailurePropagates(t *testing.T) {
 	}
 }
 
+// TestCopyPath_PreservesSymlinksAndCircular guards against copyPath dereferencing
+// symlinks (which blows up node_modules copies) and recursing forever on circular
+// symlinked directories.
+func TestCopyPath_PreservesSymlinks(t *testing.T) {
+	src := t.TempDir()
+	// A regular file, a symlink to it, and a directory containing a symlink that
+	// points back up to its own parent (a circular link, as pnpm trees produce).
+	if err := os.WriteFile(filepath.Join(src, "real.txt"), []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real.txt", filepath.Join(src, "link.txt")); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+	sub := filepath.Join(src, "pkg")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Circular: pkg/self -> .. (the src dir). Following this would recurse forever.
+	if err := os.Symlink("..", filepath.Join(sub, "self")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	dst := filepath.Join(t.TempDir(), "out")
+	if err := copyPath(src, dst); err != nil {
+		t.Fatalf("copyPath: %v", err)
+	}
+
+	// The file symlink is recreated as a symlink, not dereferenced into a copy.
+	fi, err := os.Lstat(filepath.Join(dst, "link.txt"))
+	if err != nil {
+		t.Fatalf("link.txt not copied: %v", err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Error("link.txt was dereferenced; want a symlink")
+	}
+	if target, _ := os.Readlink(filepath.Join(dst, "link.txt")); target != "real.txt" {
+		t.Errorf("link.txt target = %q, want real.txt", target)
+	}
+	// The circular link is recreated as a link (no recursion / duplication).
+	sfi, err := os.Lstat(filepath.Join(dst, "pkg", "self"))
+	if err != nil {
+		t.Fatalf("pkg/self not copied: %v", err)
+	}
+	if sfi.Mode()&os.ModeSymlink == 0 {
+		t.Error("pkg/self was followed; want a symlink")
+	}
+	// The regular file still copied by value.
+	if b, err := os.ReadFile(filepath.Join(dst, "real.txt")); err != nil || string(b) != "hi" {
+		t.Fatalf("real.txt = %q, %v", b, err)
+	}
+}
+
 func TestAllocPort_SkipsReserved(t *testing.T) {
 	// Reserve the whole small range but one, and confirm we get the free one.
 	reserved := map[int]bool{}

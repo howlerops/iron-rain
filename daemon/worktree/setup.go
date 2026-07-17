@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,7 +10,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"time"
 )
+
+// setupTimeout bounds the per-worktree setup command so a hung install (stdin
+// prompt, lock wait, stalled network) can't block the calling goroutine forever.
+// Generous enough for real installs (pnpm/npm), but not unbounded.
+const setupTimeout = 15 * time.Minute
 
 // Config is an optional per-repo setup manifest at <repoRoot>/.oculus/project.json. It
 // bootstraps a fresh worktree past the classic pitfalls: gitignored files (.env,
@@ -56,7 +63,10 @@ func Bootstrap(repoRoot, worktreePath string, cfg Config, port int) (Result, err
 	res := Result{Port: port}
 
 	for _, pat := range cfg.Copy {
-		matches, _ := filepath.Glob(filepath.Join(repoRoot, pat))
+		matches, err := filepath.Glob(filepath.Join(repoRoot, pat))
+		if err != nil {
+			return res, fmt.Errorf("copy pattern %q: %w", pat, err)
+		}
 		for _, src := range matches {
 			rel, err := filepath.Rel(repoRoot, src)
 			if err != nil {
@@ -76,7 +86,9 @@ func Bootstrap(repoRoot, worktreePath string, cfg Config, port int) (Result, err
 	}
 
 	if cfg.Setup != "" {
-		cmd := exec.Command("sh", "-c", cfg.Setup)
+		ctx, cancel := context.WithTimeout(context.Background(), setupTimeout)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "sh", "-c", cfg.Setup)
 		cmd.Dir = worktreePath
 		cmd.Env = os.Environ()
 		if res.Port != 0 {
@@ -120,10 +132,27 @@ func allocPort(lo, hi int, reserved map[int]bool) (int, bool) {
 }
 
 // copyPath copies a file or directory tree from src to dst, creating parents.
+// It uses Lstat (not Stat) and recreates symlinks verbatim rather than
+// dereferencing them: node_modules trees are symlink farms, often with circular
+// links, so following them would blow up the copy size and drive copyDir into
+// unbounded recursion.
 func copyPath(src, dst string) error {
-	fi, err := os.Stat(src)
+	fi, err := os.Lstat(src)
 	if err != nil {
 		return err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(src)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		if err := os.Symlink(target, dst); err != nil && !os.IsExist(err) {
+			return err
+		}
+		return nil
 	}
 	if fi.IsDir() {
 		return copyDir(src, dst)

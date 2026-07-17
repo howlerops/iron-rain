@@ -23,7 +23,12 @@ type Worktree struct {
 func RepoRoot(dir string) (string, error) {
 	out, err := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel").Output()
 	if err != nil {
-		return "", fmt.Errorf("%s is not a git repository", dir)
+		// Surface git's real stderr (missing git, permissions, corrupt repo) rather
+		// than flattening every failure to "not a git repository".
+		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
+			return "", fmt.Errorf("%s: not a git repository: %w: %s", dir, err, strings.TrimSpace(string(ee.Stderr)))
+		}
+		return "", fmt.Errorf("%s: not a git repository: %w", dir, err)
 	}
 	return strings.TrimSpace(string(out)), nil
 }

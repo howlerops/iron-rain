@@ -1,10 +1,17 @@
 package worktree
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
+
+// gitNetworkTimeout bounds git/gh operations that touch the network (push, PR
+// creation) so a stalled remote can't block a session teardown indefinitely.
+const gitNetworkTimeout = 5 * time.Minute
 
 // HeadCommit returns the current HEAD commit SHA of dir (used to pin a worktree's base
 // so its diff is stable even if the main repo moves on).
@@ -23,11 +30,16 @@ func Diff(worktreePath, baseRef string) (string, error) {
 	if baseRef != "" {
 		args = append(args, baseRef)
 	}
-	out, err := exec.Command("git", args...).CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("git diff: %v: %s", err, strings.TrimSpace(string(out)))
+	// Keep stdout (the diff) and stderr (git warnings/advice) separate so warnings
+	// like "LF will be replaced by CRLF" don't get interleaved into the diff text.
+	var outBuf, errBuf bytes.Buffer
+	cmd := exec.Command("git", args...)
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("git diff: %v: %s", err, strings.TrimSpace(errBuf.String()))
 	}
-	return string(out), nil
+	return outBuf.String(), nil
 }
 
 // CommitAll stages and commits everything in the worktree (no-op if clean). Returns
@@ -48,7 +60,9 @@ func CommitAll(worktreePath, message string) (bool, error) {
 
 // Push pushes branch from the worktree to origin, setting upstream.
 func Push(worktreePath, branch string) error {
-	if out, err := exec.Command("git", "-C", worktreePath, "push", "-u", "origin", branch).CombinedOutput(); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), gitNetworkTimeout)
+	defer cancel()
+	if out, err := exec.CommandContext(ctx, "git", "-C", worktreePath, "push", "-u", "origin", branch).CombinedOutput(); err != nil {
 		return fmt.Errorf("git push: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
@@ -66,7 +80,9 @@ func CreatePR(worktreePath, branch, title, body string) (string, error) {
 	if _, err := exec.LookPath("gh"); err != nil {
 		return "", fmt.Errorf("gh not found: push %s and open the PR manually, or ask the agent to run `gh pr create`", branch)
 	}
-	cmd := exec.Command("gh", "pr", "create", "--head", branch, "--title", title, "--body", body)
+	ctx, cancel := context.WithTimeout(context.Background(), gitNetworkTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gh", "pr", "create", "--head", branch, "--title", title, "--body", body)
 	cmd.Dir = worktreePath // gh operates on the repo in its working directory
 	res, err := cmd.CombinedOutput()
 	if err != nil {

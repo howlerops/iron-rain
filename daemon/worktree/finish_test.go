@@ -32,6 +32,50 @@ func TestDiffAndHeadCommit(t *testing.T) {
 	}
 }
 
+// TestDiff_ExcludesStderrWarnings verifies Diff returns only stdout, so git's
+// stderr warnings (e.g. CRLF conversion notices) never corrupt the diff text.
+func TestDiff_ExcludesStderrWarnings(t *testing.T) {
+	repo := t.TempDir()
+	gitInit(t, repo)
+	base, err := HeadCommit(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// autocrlf=true makes git emit "warning: ... CRLF will be replaced by LF" on
+	// files with CRLF line endings.
+	if out, err := exec.Command("git", "-C", repo, "config", "core.autocrlf", "true").CombinedOutput(); err != nil {
+		t.Fatalf("config autocrlf: %v %s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "crlf.txt"), []byte("a\r\nb\r\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", repo, "add", "crlf.txt").CombinedOutput(); err != nil {
+		t.Fatalf("add: %v %s", err, out)
+	}
+
+	diff, err := Diff(repo, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(diff, "crlf.txt") {
+		t.Errorf("Diff missing the actual change:\n%s", diff)
+	}
+	// Deterministic: Diff must equal git's stdout only, never stdout+stderr.
+	stdoutOnly, err := exec.Command("git", "-C", repo, "diff", base).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diff != string(stdoutOnly) {
+		t.Errorf("Diff != git stdout; stderr may be leaking in.\ngot:  %q\nwant: %q", diff, string(stdoutOnly))
+	}
+
+	// Stronger check when git actually emits a stderr warning in this environment.
+	combined, _ := exec.Command("git", "-C", repo, "diff", base).CombinedOutput()
+	if strings.Contains(string(combined), "warning:") && strings.Contains(diff, "warning:") {
+		t.Errorf("Diff leaked a stderr warning into the diff text:\n%s", diff)
+	}
+}
+
 func TestCommitAllAndPush(t *testing.T) {
 	// A bare "remote" and a repo whose origin points at it.
 	remote := t.TempDir()
