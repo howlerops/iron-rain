@@ -58,18 +58,39 @@ platform :ios do
     end
   end
 
-  desc "Create the app record in App Store Connect (run once)."
+  desc "Register the bundle id + ensure an External Testers group (run once)."
   lane :bootstrap_app do
-    produce(
-      api_key: asc_key,
-      app_identifier: APP_ID,
-      app_name: "Oculus",
-      language: "en-US",
-      app_version: "0.1",
-      sku: "oculus-#{Time.now.to_i}",
-      team_id: TEAM_ID,
-    )
-    UI.success("App record ready. Create an 'External Testers' group in App Store Connect → TestFlight, then run `fastlane ios beta`.")
+    require "spaceship"
+    Spaceship::ConnectAPI.token = Spaceship::ConnectAPI::Token.create(key_id: KEY_ID, issuer_id: ISSUER_ID, filepath: KEY_PATH)
+    app_name = ENV["APP_NAME"] || "Iron Rain"
+
+    # Register the bundle id in the Developer portal if needed (this the API DOES allow).
+    unless Spaceship::ConnectAPI::BundleId.all.any? { |b| b.identifier == APP_ID }
+      Spaceship::ConnectAPI::BundleId.create(name: app_name.gsub(/[^0-9A-Za-z ]/, "").strip, identifier: APP_ID, seed_id: TEAM_ID)
+      UI.success("Registered bundle id #{APP_ID} in the Developer portal.")
+    end
+
+    app = Spaceship::ConnectAPI::App.find(APP_ID)
+    unless app
+      # The App Store Connect API does NOT allow creating app records — do it once in the UI.
+      UI.important("Create the app record once in App Store Connect (the API can't):")
+      UI.message("  https://appstoreconnect.apple.com  →  Apps  →  +  →  New App")
+      UI.message("  Platform: iOS   Name: #{app_name}   Bundle ID: #{APP_ID}   SKU: howlerops-oculus")
+      UI.message("Then re-run `fastlane ios bootstrap_app` to create the External Testers group.")
+      next
+    end
+    UI.success("App exists: #{app.name} (#{APP_ID}).")
+
+    begin
+      if app.get_beta_groups.any? { |g| g.name == "External Testers" }
+        UI.message("External Testers group already exists.")
+      else
+        Spaceship::ConnectAPI::BetaGroup.create(app_id: app.id, name: "External Testers", is_internal_group: false, public_link_enabled: true)
+        UI.success("Created 'External Testers' beta group (public link enabled).")
+      end
+    rescue => e
+      UI.important("Couldn't auto-create the beta group (#{e.message}). Create 'External Testers' in App Store Connect → TestFlight.")
+    end
   end
 
   desc "Build the iOS app and upload it to TestFlight (external testers)."

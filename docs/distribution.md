@@ -26,13 +26,16 @@ checked in.
 4. Verify auth: `fastlane ios check`.
 
 ### Create the app record (once)
-```sh
-fastlane ios bootstrap_app          # creates the App Store Connect app + App ID
-```
-Note: the App Store **display name must be globally unique** — set `app_name` in the
-`bootstrap_app` lane (or create the record in the App Store Connect UI) if "Oculus" is
-taken. Then, in App Store Connect → your app → TestFlight, create an **External Testers**
-group (and, optionally, enable a public link).
+The app is branded **Iron Rain** (the bundle id stays `com.howlerops.oculus`). The App
+Store Connect **API cannot create app records** (Apple only allows it in the web UI), so:
+
+1. `fastlane ios bootstrap_app` — registers the bundle id in the Developer portal (this
+   the API *can* do) and prints the web-UI steps.
+2. In [App Store Connect](https://appstoreconnect.apple.com) → **Apps → + → New App**:
+   Platform **iOS**, Name **Iron Rain**, Bundle ID **com.howlerops.oculus**, SKU
+   **howlerops-oculus**.
+3. `fastlane ios bootstrap_app` again — now it creates the **External Testers** group
+   (public link enabled).
 
 ### Ship a build to TestFlight
 ```sh
