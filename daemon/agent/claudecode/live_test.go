@@ -10,22 +10,22 @@ import (
 	"github.com/howlerops/oculus/daemon/protocol"
 )
 
-// TestLive_RealClaudeCode drives real claude-code headless to validate the
-// stream-json parse. Opt-in (invokes the LLM):
+// TestLive_RealClaudeCode drives the real Node sidecar (Agent SDK) against real
+// claude-code to validate the streaming session end to end. Opt-in (invokes the LLM):
 //
-//	OCULUS_CLAUDE_BIN=claude go test ./agent/claudecode/ -run TestLive_RealClaudeCode -v
+//	OCULUS_CLAUDE_SIDECAR=/abs/sidecar/sidecar.mjs go test ./agent/claudecode/ -run TestLive_RealClaudeCode -v
 //
-// Skipped unless OCULUS_CLAUDE_BIN is set.
+// Skipped unless OCULUS_CLAUDE_SIDECAR is set.
 func TestLive_RealClaudeCode(t *testing.T) {
-	bin := os.Getenv("OCULUS_CLAUDE_BIN")
-	if bin == "" {
-		t.Skip("set OCULUS_CLAUDE_BIN to run the live claude-code test")
+	sidecar := os.Getenv("OCULUS_CLAUDE_SIDECAR")
+	if sidecar == "" {
+		t.Skip("set OCULUS_CLAUDE_SIDECAR (path to sidecar.mjs) to run the live claude-code test")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	p := claudecode.New(bin)
+	p := claudecode.New([]string{"node", sidecar})
 	sess, err := p.Create(ctx, "", "Reply with exactly: hi")
 	if err != nil {
 		t.Fatalf("create: %v", err)

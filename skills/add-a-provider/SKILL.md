@@ -33,11 +33,17 @@ A provider adapts one agent backend to the uniform `agent` interface the daemon 
   **async** and drive progress from SSE — a synchronous prompt deadlocks (you can't answer the very
   approval the turn is waiting on). See `opencode.session.Prompt`.
 
-## Next: claude-code (`daemon/agent/claudecode`) — verified vs 2.1.207
-- Headless `stream-json`; **requires `--verbose`** with `-p`. Output = `{"type":"assistant",
-  "message":{"content":[{"type":"text","text"}]}}`; completion = `{"type":"result"}`. A `PreToolUse`
-  hook that blocks and calls back to the daemon becomes the `ApprovalRequest`; the hook's returned
-  decision is the `Respond`.
+## claude-code (`daemon/agent/claudecode`) — persistent streaming via a Node sidecar
+- **Not** single-shot `-p` anymore. The old `claude -p` + `PreToolUse` HTTP hook **doesn't block**
+  in `-p` mode (anthropics/claude-code#36071) — tools ran unapproved. Now a **Node sidecar**
+  (`sidecar/sidecar.mjs`, Claude Agent SDK) runs one persistent streaming session; the SDK's
+  `canUseTool` callback genuinely blocks the tool until answered.
+- The Go provider spawns the sidecar and speaks **line-delimited JSON over stdio** (protocol at the
+  top of `claudecode.go`): `prompt`/`approval`/`stop` in; `session`/`text`/`thinking`/`tool`/
+  `approval`/`idle`/`error` out. `New([]string{"node", sidecarPath})`; enable via `--claude-sidecar`.
+- Auth: the Agent SDK needs **`ANTHROPIC_API_KEY`** (no claude.ai login for the SDK).
+- Streaming deltas via the SDK's `includePartialMessages` (`stream_event` → `content_block_delta`,
+  `text_delta`/`thinking_delta`); tool runs via `content_block_start`.
 
 ## Test it (two layers)
 1. **Stub/fake** (fast, offline): emit the backend's real event shapes and drive create → output →

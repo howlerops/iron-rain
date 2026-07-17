@@ -71,7 +71,7 @@ func serve(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", "127.0.0.1:6000", "listen address")
 	opencodeURL := fs.String("opencode", "", "URL of a running `opencode serve` (e.g. http://127.0.0.1:4096)")
-	claudeBin := fs.String("claude", "", "claude-code binary to enable the claude-code provider (e.g. claude)")
+	claudeSidecar := fs.String("claude-sidecar", "", "path to the claude-code sidecar (sidecar/sidecar.mjs, run via node) to enable the claude-code provider")
 	secret := fs.String("secret", "", "pairing secret clients must present (default: generated)")
 	keyPath := fs.String("key", defaultKeyPath(), "path to the daemon private key")
 	apnsKey := fs.String("apns-key", "", "path to an APNs auth key (.p8) to enable push")
@@ -84,8 +84,8 @@ func serve(args []string) error {
 		return err
 	}
 
-	if *opencodeURL == "" && *claudeBin == "" {
-		return fmt.Errorf("enable at least one provider: --opencode URL and/or --claude BINARY")
+	if *opencodeURL == "" && *claudeSidecar == "" {
+		return fmt.Errorf("enable at least one provider: --opencode URL and/or --claude-sidecar PATH")
 	}
 
 	kp, err := loadOrCreateKey(*keyPath)
@@ -110,9 +110,9 @@ func serve(args []string) error {
 		h.Register(opencode.New(*opencodeURL))
 		providers = append(providers, "opencode -> "+*opencodeURL)
 	}
-	if *claudeBin != "" {
-		h.Register(claudecode.New(*claudeBin))
-		providers = append(providers, "claude-code -> "+*claudeBin)
+	if *claudeSidecar != "" {
+		h.Register(claudecode.New([]string{"node", *claudeSidecar}))
+		providers = append(providers, "claude-code -> node "+*claudeSidecar)
 	}
 
 	pushEnabled := false

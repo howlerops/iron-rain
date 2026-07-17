@@ -1,0 +1,13 @@
+{
+  "name": "oculus-claude-sidecar",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Oculus claude-code sidecar — drives a persistent streaming claude-code session via the Claude Agent SDK, bridged to the Go daemon over stdio.",
+  "bin": {
+    "oculus-claude-sidecar": "./sidecar.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "*"
+  }
+}
