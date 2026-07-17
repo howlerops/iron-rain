@@ -118,10 +118,15 @@ func (s *session) Events() <-chan agent.Event { return s.events }
 
 // inMsg / outMsg are the stdio protocol frames.
 type inMsg struct {
-	T        string `json:"t"`
-	Text     string `json:"text,omitempty"`
-	ID       string `json:"id,omitempty"`
-	Decision string `json:"decision,omitempty"`
+	T        string   `json:"t"`
+	Text     string   `json:"text,omitempty"`
+	ID       string   `json:"id,omitempty"`
+	Decision string   `json:"decision,omitempty"`
+	Images   []imgAtt `json:"images,omitempty"`
+}
+type imgAtt struct {
+	Mime string `json:"mime"`
+	Data string `json:"data"`
 }
 type outMsg struct {
 	T       string `json:"t"`
@@ -147,6 +152,15 @@ func (s *session) send(m inMsg) error {
 // Prompt sends a follow-up user turn into the SAME running session.
 func (s *session) Prompt(_ context.Context, text string) error {
 	return s.send(inMsg{T: "prompt", Text: text})
+}
+
+// PromptImages sends a multimodal turn; the sidecar builds Anthropic image content blocks.
+func (s *session) PromptImages(_ context.Context, text string, images []protocol.ImageAttachment) error {
+	ims := make([]imgAtt, len(images))
+	for i, im := range images {
+		ims[i] = imgAtt{Mime: im.Mime, Data: im.Data}
+	}
+	return s.send(inMsg{T: "prompt", Text: text, Images: ims})
 }
 
 // Respond answers a tool approval; the sidecar's canUseTool unblocks. allow/always→allow.

@@ -56,6 +56,17 @@ func (h *Hub) SetWorktreeBase(dir string) {
 	h.mu.Unlock()
 }
 
+// promptSession sends text (+ optional images) to a session, using the multimodal path
+// when images are present and the session supports it, else falling back to text.
+func promptSession(ctx context.Context, sess agent.Session, text string, images []protocol.ImageAttachment) error {
+	if len(images) > 0 {
+		if ip, ok := sess.(agent.ImagePrompter); ok {
+			return ip.PromptImages(ctx, text, images)
+		}
+	}
+	return sess.Prompt(ctx, text)
+}
+
 func randToken() string {
 	var b [4]byte
 	_, _ = rand.Read(b[:])
@@ -330,10 +341,19 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 				}
 			}
 		}
-		sess, err := p.Create(ctx, cwd, req.Prompt)
+		// With images, create the session without a first turn, then send the prompt +
+		// images together so the agent gets a single multimodal message.
+		createPrompt := req.Prompt
+		if len(req.Images) > 0 {
+			createPrompt = ""
+		}
+		sess, err := p.Create(ctx, cwd, createPrompt)
 		if err != nil {
 			h.sendErr(conn, env.ID, err.Error())
 			return
+		}
+		if len(req.Images) > 0 {
+			_ = promptSession(ctx, sess, req.Prompt, req.Images)
 		}
 		m := h.addSession(sess, meta)
 		h.sendOK(conn, env.ID, m.info())
@@ -503,7 +523,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, "no such session")
 			return
 		}
-		if err := m.sess.Prompt(ctx, req.Text); err != nil {
+		if err := promptSession(ctx, m.sess, req.Text, req.Images); err != nil {
 			h.sendErr(conn, env.ID, err.Error())
 			return
 		}

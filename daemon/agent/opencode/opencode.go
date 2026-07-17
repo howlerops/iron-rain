@@ -377,7 +377,31 @@ func (s *session) emit(ev agent.Event) {
 // the very approval the turn is waiting on. Errors surface as an error status event.
 // v0 sends a single text part, sufficient for a default-configured server.
 func (s *session) Prompt(_ context.Context, text string) error {
-	body := map[string]any{"parts": []map[string]any{{"type": "text", "text": text}}}
+	return s.sendParts([]map[string]any{{"type": "text", "text": text}})
+}
+
+// PromptImages sends a multimodal turn: a text part + opencode "file" parts carrying each
+// image as a base64 data URL (opencode decodes data: URLs directly).
+func (s *session) PromptImages(_ context.Context, text string, images []protocol.ImageAttachment) error {
+	parts := []map[string]any{}
+	if text != "" {
+		parts = append(parts, map[string]any{"type": "text", "text": text})
+	}
+	for i, im := range images {
+		parts = append(parts, map[string]any{
+			"type":     "file",
+			"mime":     im.Mime,
+			"filename": fmt.Sprintf("image-%d%s", i+1, extForMime(im.Mime)),
+			"url":      "data:" + im.Mime + ";base64," + im.Data,
+		})
+	}
+	return s.sendParts(parts)
+}
+
+// sendParts fires a message with the given parts asynchronously (opencode's POST blocks
+// until the turn yields, so we drive progress from SSE — see the note above).
+func (s *session) sendParts(parts []map[string]any) error {
+	body := map[string]any{"parts": parts}
 	ctx := s.ctx
 	if ctx == nil {
 		ctx = context.Background()
@@ -388,6 +412,21 @@ func (s *session) Prompt(_ context.Context, text string) error {
 		}
 	}()
 	return nil
+}
+
+func extForMime(mime string) string {
+	switch mime {
+	case "image/png":
+		return ".png"
+	case "image/jpeg", "image/jpg":
+		return ".jpg"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	default:
+		return ""
+	}
 }
 
 // Respond maps allow->"once", always->"always", deny->"reject".

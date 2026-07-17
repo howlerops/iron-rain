@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/protocol"
 )
 
@@ -21,10 +23,11 @@ type stub struct {
 	connected chan struct{}
 	permCh    chan string
 
-	mu         sync.Mutex
-	permResp   string
-	sessionDir string // ?directory= seen on POST /session
-	messageDir string // ?directory= seen on POST /session/{id}/message
+	mu          sync.Mutex
+	permResp    string
+	sessionDir  string // ?directory= seen on POST /session
+	messageDir  string // ?directory= seen on POST /session/{id}/message
+	messageBody string // raw body of the last POST /message
 }
 
 func newStub() *stub {
@@ -74,8 +77,10 @@ func (s *stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/message"):
+		body, _ := io.ReadAll(r.Body)
 		s.mu.Lock()
 		s.messageDir = r.URL.Query().Get("directory")
+		s.messageBody = string(body)
 		s.mu.Unlock()
 		go s.scenario()
 		w.WriteHeader(http.StatusOK)
@@ -204,5 +209,50 @@ func TestOpenCode_SendsDirectory(t *testing.T) {
 	}
 	if stub.messageDir != dir {
 		t.Errorf("POST /message directory = %q, want %q", stub.messageDir, dir)
+	}
+}
+
+// TestOpenCode_PromptImages: PromptImages sends a text part + a "file" part carrying the
+// image as a base64 data URL (opencode's multimodal format).
+func TestOpenCode_PromptImages(t *testing.T) {
+	stub := newStub()
+	srv := httptest.NewServer(stub)
+	defer srv.Close()
+
+	sess, err := New(srv.URL).Create(context.Background(), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	ip, ok := sess.(agent.ImagePrompter)
+	if !ok {
+		t.Fatal("opencode session should implement agent.ImagePrompter")
+	}
+	if err := ip.PromptImages(context.Background(), "what is this?",
+		[]protocol.ImageAttachment{{Mime: "image/png", Data: "AAAA"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.After(3 * time.Second)
+	for {
+		stub.mu.Lock()
+		b := stub.messageBody
+		stub.mu.Unlock()
+		if b != "" {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("no /message POST observed")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	stub.mu.Lock()
+	body := stub.messageBody
+	stub.mu.Unlock()
+	for _, want := range []string{`"type":"text"`, `what is this?`, `"type":"file"`, `"mime":"image/png"`, `data:image/png;base64,AAAA`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("message body missing %q:\n%s", want, body)
+		}
 	}
 }

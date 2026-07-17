@@ -74,9 +74,10 @@ type SessionCreate struct {
 	Provider      string `json:"provider"`
 	Cwd           string `json:"cwd,omitempty"`
 	ProjectID     string `json:"project_id,omitempty"` // resolve cwd from this registered project
-	Prompt        string `json:"prompt,omitempty"`
-	Worktree      bool   `json:"worktree,omitempty"`       // run in a fresh git worktree (opt-in)
-	WorkspaceName string `json:"workspace_name,omitempty"` // human name for the worktree branch
+	Prompt        string            `json:"prompt,omitempty"`
+	Images        []ImageAttachment `json:"images,omitempty"`         // images for the first prompt
+	Worktree      bool              `json:"worktree,omitempty"`       // run in a fresh git worktree (opt-in)
+	WorkspaceName string            `json:"workspace_name,omitempty"` // human name for the worktree branch
 }
 
 // Project is a registered folder sessions can be spawned in (mirrors project.Project).
@@ -156,8 +157,16 @@ type SessionMessage struct {
 }
 
 type SessionPrompt struct {
-	SessionID string `json:"session_id"`
-	Text      string `json:"text"`
+	SessionID string            `json:"session_id"`
+	Text      string            `json:"text"`
+	Images    []ImageAttachment `json:"images,omitempty"`
+}
+
+// ImageAttachment is a user-attached image passed to a multimodal agent. Data is
+// base64-encoded (no data: prefix); Mime is e.g. "image/png".
+type ImageAttachment struct {
+	Mime string `json:"mime"`
+	Data string `json:"data"`
 }
 
 type SessionStatus struct {

@@ -119,6 +119,16 @@ func (s *session) Prompt(_ context.Context, text string) error {
 	return s.send(map[string]any{"type": "prompt", "message": text})
 }
 
+// PromptImages sends a multimodal turn: pi takes an images array of {type,data,mimeType}
+// (bare base64) alongside the message.
+func (s *session) PromptImages(_ context.Context, text string, images []protocol.ImageAttachment) error {
+	ims := make([]map[string]any, len(images))
+	for i, im := range images {
+		ims[i] = map[string]any{"type": "image", "data": im.Data, "mimeType": im.Mime}
+	}
+	return s.send(map[string]any{"type": "prompt", "message": text, "images": ims})
+}
+
 // Respond answers a confirm() approval. allow/always→confirmed:true.
 func (s *session) Respond(_ context.Context, approvalID, decision string) error {
 	confirmed := decision == protocol.DecisionAllow || decision == protocol.DecisionAlways

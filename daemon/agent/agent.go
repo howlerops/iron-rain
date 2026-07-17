@@ -49,3 +49,9 @@ type Provider interface {
 type Attacher interface {
 	Attach(ctx context.Context, sessionID string) (Session, error)
 }
+
+// ImagePrompter is an optional Session capability: send a prompt with attached images
+// to a multimodal agent. Sessions that don't implement it fall back to text-only Prompt.
+type ImagePrompter interface {
+	PromptImages(ctx context.Context, text string, images []protocol.ImageAttachment) error
+}

@@ -76,7 +76,17 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     return;
   }
   if (m.t === "prompt") {
-    pushInput(String(m.text ?? ""));
+    if (Array.isArray(m.images) && m.images.length) {
+      // Multimodal turn: a content array of a text block + Anthropic image blocks.
+      const content = [];
+      if (m.text) content.push({ type: "text", text: String(m.text) });
+      for (const im of m.images) {
+        content.push({ type: "image", source: { type: "base64", media_type: im.mime, data: im.data } });
+      }
+      pushInput(content);
+    } else {
+      pushInput(String(m.text ?? ""));
+    }
   } else if (m.t === "approval") {
     const a = approvals.get(m.id);
     if (a) {
