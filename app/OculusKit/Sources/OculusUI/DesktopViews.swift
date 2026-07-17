@@ -111,7 +111,7 @@ struct AddDesktopView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 16) {
-                Text("Pair another Mac's Oculus daemon.")
+                Text("Pair another Mac's Iron Rain daemon.")
                     .font(.subheadline).foregroundStyle(palette.mutedForeground)
                 #if os(iOS)
                 Button { showScanner = true } label: {
@@ -157,8 +157,8 @@ struct DesktopOnboardView: View {
         VStack(spacing: 20) {
             Spacer()
             Image("WolfMark").resizable().scaledToFit().frame(width: 72, height: 72)
-            Text("Oculus").font(.largeTitle.bold())
-            Text("Pair with your Mac's Oculus daemon to get started.")
+            Text("Iron Rain").font(.largeTitle.bold())
+            Text("Pair with your Mac's Iron Rain daemon to get started.")
                 .font(.subheadline).foregroundStyle(palette.mutedForeground)
                 .multilineTextAlignment(.center).padding(.horizontal, 32)
             Button { showAdd = true } label: {

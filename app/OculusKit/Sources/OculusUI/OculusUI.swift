@@ -588,7 +588,7 @@ public struct ContentView: View {
         .tint(palette.primary)
         .task { await model.autoConnectIfPaired() }
         .userActivity(oculusSessionActivityType, isActive: model.sessionID != nil) { activity in
-            activity.title = "Oculus session"
+            activity.title = "Iron Rain session"
             if let sid = model.sessionID { activity.userInfo = ["session_id": sid] }
             activity.isEligibleForHandoff = true
         }
@@ -611,11 +611,11 @@ public struct MenuBarView: View {
             MenuBarBody(model: model, store: store)
         } else {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Oculus").font(.headline)
+                Text("Iron Rain").font(.headline)
                 Text("No desktop paired. Open the window to add one.")
                     .font(.caption).foregroundStyle(.secondary)
                 Divider()
-                Button("Quit Oculus") { NSApplication.shared.terminate(nil) }
+                Button("Quit Iron Rain") { NSApplication.shared.terminate(nil) }
             }.padding(12).frame(width: 240)
         }
     }
@@ -628,7 +628,7 @@ struct MenuBarBody: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Oculus").font(.headline)
+                Text("Iron Rain").font(.headline)
                 Spacer()
                 if store.models.count > 1 {
                     Menu(model.name.isEmpty ? "Desktop" : model.name) {
@@ -655,7 +655,7 @@ struct MenuBarBody: View {
             }
 
             Divider()
-            Button("Quit Oculus") { NSApplication.shared.terminate(nil) }
+            Button("Quit Iron Rain") { NSApplication.shared.terminate(nil) }
         }
         .padding(12)
         .frame(width: 240)

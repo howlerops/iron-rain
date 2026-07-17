@@ -20,7 +20,7 @@ public final class OculusStore: ObservableObject {
 /// prompt; the app starts it once connected.
 @available(iOS 16.0, macOS 13.0, *)
 public struct StartSessionIntent: AppIntent {
-    public static var title: LocalizedStringResource = "Start Oculus Session"
+    public static var title: LocalizedStringResource = "Start Iron Rain Session"
     public static var openAppWhenRun: Bool = true
     public init() {}
 

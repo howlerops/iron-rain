@@ -16,7 +16,7 @@ struct OculusLiveActivity: Widget {
                     .foregroundStyle(Color(hex: 0xD9A520))
                     .font(.title2)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Oculus session").font(.headline)
+                    Text("Iron Rain session").font(.headline)
                     Text(subtitle(context.state)).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()

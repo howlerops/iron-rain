@@ -28,7 +28,7 @@ public struct PairingQRView: View {
     public var body: some View {
         VStack(spacing: 16) {
             Text("Pair your phone").font(.title2.bold())
-            Text("Open Oculus on your phone → Scan QR code")
+            Text("Open Iron Rain on your phone → Scan QR code")
                 .font(.subheadline).foregroundStyle(palette.mutedForeground)
 
             if let cg = qrCGImage(from: url) {

@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Oculus — Support</title>
+<title>Iron Rain — Support</title>
 <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
 <header class="wrap">
-  <div class="brand"><span class="mark">◉</span> Oculus</div>
+  <div class="brand"><span class="mark">◉</span> Iron Rain</div>
   <nav><a href="./index.html">Home</a><a href="./privacy.html">Privacy</a></nav>
 </header>
 
@@ -18,7 +18,7 @@
   <p class="updated">We're here to help.</p>
 
   <h2 id="testflight">Joining the TestFlight beta</h2>
-  <p>Oculus for iOS is currently in external beta via TestFlight.</p>
+  <p>Iron Rain for iOS is currently in external beta via TestFlight.</p>
   <ol>
     <li>Install <a href="https://apps.apple.com/app/testflight/id899247664">TestFlight</a> from the App Store.</li>
     <li>Open the public invitation link (posted on the <a href="https://github.com/howlerops/oculus">GitHub repo</a>).</li>
@@ -26,11 +26,14 @@
   </ol>
 
   <h2>Setting up the Mac daemon</h2>
-  <p>The app drives coding agents that run on your Mac via the Oculus daemon. Build and run it from
-  the <a href="https://github.com/howlerops/oculus">repository</a>:</p>
+  <p>Iron Rain drives coding agents that run on your Mac through a small daemon. Most of it is
+  automatic — the daemon <strong>auto-detects</strong> opencode, claude-code, and pi if they're
+  installed (and sets up the claude-code bridge for you on first run), and the Mac app
+  <strong>auto-connects</strong> to it with zero config. The one manual step today is starting the
+  daemon once:</p>
   <p><code>cd daemon &amp;&amp; go run . serve --secret &lt;your-secret&gt;</code></p>
-  <p>It auto-detects opencode, claude-code, and pi if they're installed. Then scan the pairing QR it
-  prints from the iOS app.</p>
+  <p>It prints a pairing QR — scan it from the iOS app and you're connected. A bundled menu-bar app
+  that launches the daemon for you (no terminal) is on the roadmap.</p>
 
   <h2>Common questions</h2>
   <p><strong>Do I need an API key?</strong> No — claude-code runs on your existing Claude

@@ -37,7 +37,7 @@ targets:
     info:
       path: Oculus/Info-iOS.plist
       properties:
-        CFBundleDisplayName: Oculus
+        CFBundleDisplayName: Iron Rain
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
@@ -75,7 +75,7 @@ targets:
     info:
       path: OculusWidgets/Info.plist
       properties:
-        CFBundleDisplayName: Oculus
+        CFBundleDisplayName: Iron Rain
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:
@@ -91,7 +91,7 @@ targets:
     info:
       path: Oculus/Info-macOS.plist
       properties:
-        CFBundleDisplayName: Oculus
+        CFBundleDisplayName: Iron Rain
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)

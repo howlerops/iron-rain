@@ -8,7 +8,7 @@ struct OculusApp: App {
     @StateObject private var store = DesktopStore()
 
     var body: some Scene {
-        WindowGroup("Oculus") {
+        WindowGroup("Iron Rain") {
             RootView(store: store)
                 .frame(minWidth: 520, minHeight: 420)
         }

@@ -81,7 +81,7 @@ struct SessionSidebar: View {
         HStack(spacing: 10) {
             Image("WolfMark").resizable().scaledToFit().frame(width: 26, height: 26)
             VStack(alignment: .leading, spacing: 1) {
-                Text("Oculus").font(.headline)
+                Text("Iron Rain").font(.headline)
                 HStack(spacing: 5) {
                     Circle().fill(statusColor).frame(width: 7, height: 7)
                     Text(statusLabel).font(.caption2).foregroundStyle(palette.mutedForeground)

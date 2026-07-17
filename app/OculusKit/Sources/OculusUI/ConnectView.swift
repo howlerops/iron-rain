@@ -20,8 +20,8 @@ public struct ConnectView: View {
             Spacer()
             Image("WolfMark").resizable().scaledToFit().frame(width: 72, height: 72)
             VStack(spacing: 4) {
-                Text("Oculus").font(.largeTitle.bold())
-                Text("Pair with your Mac's Oculus daemon")
+                Text("Iron Rain").font(.largeTitle.bold())
+                Text("Pair with your Mac's Iron Rain daemon")
                     .font(.subheadline).foregroundStyle(palette.mutedForeground)
             }
 

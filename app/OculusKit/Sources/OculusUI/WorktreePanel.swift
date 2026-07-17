@@ -74,7 +74,7 @@ struct WorktreePanel: View {
                     TextField("Description (optional)", text: $prBody, axis: .vertical)
                         .lineLimit(2...5).textFieldStyle(.roundedBorder)
                     Button {
-                        Task { await model.createPR(title: prTitle.isEmpty ? (session?.workspaceName ?? "Oculus changes") : prTitle,
+                        Task { await model.createPR(title: prTitle.isEmpty ? (session?.workspaceName ?? "Iron Rain changes") : prTitle,
                                                     body: prBody.isEmpty ? nil : prBody) }
                     } label: {
                         Label("Commit, push & open PR", systemImage: "arrow.up.forward.square")
