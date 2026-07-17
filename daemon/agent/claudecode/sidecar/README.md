@@ -12,11 +12,14 @@ cd daemon/agent/claudecode/sidecar
 npm install        # or: bun install
 ```
 
-## Auth
-The Agent SDK needs an **`ANTHROPIC_API_KEY`** (it does not use the claude.ai login):
-```sh
-export ANTHROPIC_API_KEY=sk-ant-...
-```
+## Auth — uses your claude subscription (verified live)
+The sidecar spawns your **logged-in `claude` CLI**, so it uses your **claude.ai
+subscription** — no API key required. Verified live: `TestLive_RealClaudeCode` passes
+with `ANTHROPIC_API_KEY` unset. Just make sure `claude` is logged in (`claude` once,
+or check `~/.claude/.credentials.json`).
+
+To use a metered API key instead (e.g. headless/CI where no login exists), set
+`ANTHROPIC_API_KEY=sk-ant-...`.
 
 ## Run (the daemon does this for you)
 ```sh

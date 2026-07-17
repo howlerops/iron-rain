@@ -41,7 +41,8 @@ A provider adapts one agent backend to the uniform `agent` interface the daemon 
 - The Go provider spawns the sidecar and speaks **line-delimited JSON over stdio** (protocol at the
   top of `claudecode.go`): `prompt`/`approval`/`stop` in; `session`/`text`/`thinking`/`tool`/
   `approval`/`idle`/`error` out. `New([]string{"node", sidecarPath})`; enable via `--claude-sidecar`.
-- Auth: the Agent SDK needs **`ANTHROPIC_API_KEY`** (no claude.ai login for the SDK).
+- Auth: uses your **logged-in `claude` CLI subscription** — no API key needed (verified live: the
+  sidecar spawns `claude`, which uses your claude.ai login). `ANTHROPIC_API_KEY` only for a metered key.
 - Streaming deltas via the SDK's `includePartialMessages` (`stream_event` → `content_block_delta`,
   `text_delta`/`thinking_delta`); tool runs via `content_block_start`.
 

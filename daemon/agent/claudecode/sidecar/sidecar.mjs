@@ -13,7 +13,8 @@
 //                       {"t":"tool","tool","detail"} | {"t":"approval","id","tool","detail"}
 //                       {"t":"idle"} | {"t":"error","message"}
 //
-// Auth: the Agent SDK requires ANTHROPIC_API_KEY (it does NOT use the claude.ai login).
+// Auth: uses your logged-in `claude` CLI, i.e. your claude.ai SUBSCRIPTION — no API
+// key needed (verified live). Set ANTHROPIC_API_KEY only to use a metered key instead.
 // Run:  node sidecar.mjs   (with OCULUS_SESSION_ID / OCULUS_MODE set by the daemon).
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { createInterface } from "node:readline";
