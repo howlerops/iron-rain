@@ -19,6 +19,7 @@ public enum MessageType {
     public static let worktreeDiff = "worktree.diff"
     public static let worktreeRemove = "worktree.remove"
     public static let worktreePR = "worktree.pr"
+    public static let worktreeConflicts = "worktree.conflicts"
 
     public static let sessionStatus = "session.status"
     public static let sessionMessage = "session.message"
@@ -160,6 +161,15 @@ public struct WorktreePR: Codable {
 public struct WorktreePRResult: Codable {
     public var sessionID: String; public var branch: String; public var pushed: Bool; public var url: String?
     enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case branch; case pushed; case url }
+}
+public struct FileConflict: Codable, Identifiable, Hashable {
+    public var path: String; public var branches: [String]
+    public var id: String { path }
+}
+public struct WorktreeConflicts: Codable {
+    public var sessionID: String; public var files: [FileConflict]?
+    public init(sessionID: String, files: [FileConflict]? = nil) { self.sessionID = sessionID; self.files = files }
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case files }
 }
 
 public struct SessionAttach: Codable {

@@ -38,6 +38,7 @@ public final class Model: ObservableObject {
     @Published public var projects: [Project] = []
     @Published public var sessions: [Session] = [] // hub-managed sessions (for sidebar grouping)
     @Published public var lastDiff: String? // populated by worktreeDiff()
+    @Published public var conflicts: [FileConflict] = [] // files shared with other worktrees
     /// Options applied to the NEXT session created (by the first send). Set via newSession(...).
     @Published public var newSessionProvider = "opencode"
     public var pendingProjectID: String?
@@ -309,6 +310,14 @@ public final class Model: ObservableObject {
         }
     }
 
+    /// Requests files this worktree shares with other active worktrees (result -> conflicts).
+    public func loadConflicts() async {
+        guard let client, let sid = sessionID else { return }
+        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.worktreeConflicts, payload: WorktreeConflicts(sessionID: sid)) {
+            try? await client.send(env)
+        }
+    }
+
     public func attach(_ d: Discovered) async {
         guard let client, d.provider == "opencode", let sid = d.sessionID else { return }
         messages.removeAll()
@@ -414,6 +423,8 @@ public final class Model: ObservableObject {
                         sessions = sl.sessions
                     } else if let wd = try? Protocol.payload(data, as: WorktreeDiff.self), wd.diff != nil {
                         lastDiff = wd.diff
+                    } else if let wc = try? Protocol.payload(data, as: WorktreeConflicts.self), wc.files != nil {
+                        conflicts = wc.files ?? []
                     } else if let pr = try? Protocol.payload(data, as: WorktreePRResult.self) {
                         status = pr.url.map { "PR: \($0)" } ?? "Pushed \(pr.branch)"
                     } else if let s = try? Protocol.payload(data, as: Session.self) {

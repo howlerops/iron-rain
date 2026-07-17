@@ -453,6 +453,37 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		url, _ := worktree.CreatePR(wtPath, branch, title, req.Body) // gh optional; branch is pushed regardless
 		h.sendOK(conn, env.ID, protocol.WorktreePRResult{SessionID: req.SessionID, Branch: branch, Pushed: true, URL: url})
 
+	case protocol.TypeWorktreeConflicts:
+		var req protocol.WorktreeConflicts
+		_ = env.Unmarshal(&req)
+		m := h.managed(req.SessionID)
+		if m == nil || m.meta.worktreePath == "" {
+			h.sendErr(conn, env.ID, "not a worktree session")
+			return
+		}
+		// Collect the files each active worktree changed vs its base, keyed by branch.
+		h.mu.Lock()
+		others := make([]*managedSession, 0, len(h.sessions))
+		for _, ms := range h.sessions {
+			others = append(others, ms)
+		}
+		h.mu.Unlock()
+		changed := map[string][]string{}
+		for _, ms := range others {
+			if ms.meta.worktreePath == "" || ms.meta.branch == "" {
+				continue
+			}
+			if files, err := worktree.ChangedFiles(ms.meta.worktreePath, ms.meta.baseCommit); err == nil {
+				changed[ms.meta.branch] = files
+			}
+		}
+		overlaps := worktree.Overlaps(m.meta.branch, changed)
+		files := make([]protocol.FileConflict, 0, len(overlaps))
+		for path, branches := range overlaps {
+			files = append(files, protocol.FileConflict{Path: path, Branches: branches})
+		}
+		h.sendOK(conn, env.ID, protocol.WorktreeConflicts{SessionID: req.SessionID, Files: files})
+
 	case protocol.TypeSessionSubscribe:
 		var req protocol.SessionRef
 		_ = env.Unmarshal(&req)

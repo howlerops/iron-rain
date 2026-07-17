@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -37,10 +38,12 @@ func gitInitRepo(t *testing.T, dir string) {
 }
 
 // cwdProvider records the cwd passed to Create so the test can assert a project's path
-// was resolved and threaded through.
+// was resolved and threaded through. Each Create returns a session with a UNIQUE id
+// (like a real provider), so multiple sessions coexist in the hub.
 type cwdProvider struct {
 	mu      sync.Mutex
 	lastCwd string
+	seq     int
 }
 
 func (p *cwdProvider) Name() string                                     { return "fake" }
@@ -48,15 +51,20 @@ func (p *cwdProvider) List(context.Context) ([]protocol.Session, error) { return
 func (p *cwdProvider) Create(_ context.Context, cwd, _ string) (agent.Session, error) {
 	p.mu.Lock()
 	p.lastCwd = cwd
+	p.seq++
+	id := "sess_" + strconv.Itoa(p.seq)
 	p.mu.Unlock()
-	return &idleSession{events: make(chan agent.Event)}, nil
+	return &idleSession{id: id, events: make(chan agent.Event)}, nil
 }
 func (p *cwdProvider) cwd() string { p.mu.Lock(); defer p.mu.Unlock(); return p.lastCwd }
 
 // idleSession is a no-op session whose event stream just stays open.
-type idleSession struct{ events chan agent.Event }
+type idleSession struct {
+	id     string
+	events chan agent.Event
+}
 
-func (s *idleSession) ID() string                                    { return "sess_x" }
+func (s *idleSession) ID() string                                    { return s.id }
 func (s *idleSession) Provider() string                              { return "fake" }
 func (s *idleSession) Events() <-chan agent.Event                    { return s.events }
 func (s *idleSession) Prompt(context.Context, string) error          { return nil }
@@ -262,5 +270,55 @@ func TestWorktreeFinish(t *testing.T) {
 	_ = json.Unmarshal(r.waitOK(t, "l1"), &sl)
 	if len(sl.Sessions) != 0 {
 		t.Errorf("session.list = %+v, want empty after remove", sl.Sessions)
+	}
+}
+
+// TestWorktreeConflicts: two worktree sessions in one repo editing the same file are
+// reported as a cross-worktree conflict.
+func TestWorktreeConflicts(t *testing.T) {
+	repo := t.TempDir()
+	gitInitRepo(t, repo)
+	reg, _ := project.Load(t.TempDir() + "/projects.json")
+	prov := &cwdProvider{}
+	h := hub.New()
+	h.Register(prov)
+	h.SetProjects(reg)
+	h.SetWorktreeBase(t.TempDir())
+
+	daemonKP, _ := crypto.GenerateKeyPair()
+	conn := connectClient(t, h, daemonKP)
+	r := newReader(conn)
+
+	send(t, conn, "p1", protocol.TypeProjectAdd, protocol.ProjectAdd{Path: repo})
+	var proj protocol.Project
+	_ = json.Unmarshal(r.waitOK(t, "p1"), &proj)
+
+	// Two worktree sessions.
+	var a, b protocol.Session
+	send(t, conn, "sa", protocol.TypeSessionCreate, protocol.SessionCreate{Provider: "fake", ProjectID: proj.ID, Worktree: true, WorkspaceName: "alpha"})
+	_ = json.Unmarshal(r.waitOK(t, "sa"), &a)
+	send(t, conn, "sb", protocol.TypeSessionCreate, protocol.SessionCreate{Provider: "fake", ProjectID: proj.ID, Worktree: true, WorkspaceName: "beta"})
+	_ = json.Unmarshal(r.waitOK(t, "sb"), &b)
+
+	// Both edit the shared committed file "f".
+	_ = os.WriteFile(filepath.Join(a.Cwd, "f"), []byte("from A"), 0o644)
+	_ = os.WriteFile(filepath.Join(b.Cwd, "f"), []byte("from B"), 0o644)
+
+	send(t, conn, "c1", protocol.TypeWorktreeConflicts, protocol.WorktreeConflicts{SessionID: a.ID})
+	var wc protocol.WorktreeConflicts
+	if err := json.Unmarshal(r.waitOK(t, "c1"), &wc); err != nil {
+		t.Fatal(err)
+	}
+	var fFlagged bool
+	for _, fc := range wc.Files {
+		if fc.Path == "f" {
+			fFlagged = true
+			if len(fc.Branches) != 1 || fc.Branches[0] != b.Branch {
+				t.Errorf("conflict branches for f = %v, want [%s]", fc.Branches, b.Branch)
+			}
+		}
+	}
+	if !fFlagged {
+		t.Fatalf("expected file 'f' flagged as a cross-worktree conflict; got %+v", wc.Files)
 	}
 }

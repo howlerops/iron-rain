@@ -27,9 +27,10 @@ const (
 	TypeProjectList     = "project.list"
 	TypeProjectAdd      = "project.add"
 	TypeProjectRemove   = "project.remove"
-	TypeWorktreeDiff    = "worktree.diff"   // request the diff of a worktree session
-	TypeWorktreeRemove  = "worktree.remove" // stop a worktree session + remove its worktree
-	TypeWorktreePR      = "worktree.pr"     // commit + push + open a PR for a worktree session
+	TypeWorktreeDiff      = "worktree.diff"      // request the diff of a worktree session
+	TypeWorktreeRemove    = "worktree.remove"    // stop a worktree session + remove its worktree
+	TypeWorktreePR        = "worktree.pr"        // commit + push + open a PR for a worktree session
+	TypeWorktreeConflicts = "worktree.conflicts" // files this worktree shares with other active worktrees
 
 	// events (daemon -> client), no id
 	TypeSessionStatus   = "session.status"
@@ -122,6 +123,18 @@ type WorktreePRResult struct {
 	Branch    string `json:"branch"`
 	Pushed    bool   `json:"pushed"`
 	URL       string `json:"url,omitempty"` // set when a PR was opened via gh
+}
+
+// WorktreeConflicts warns which files this worktree changed that OTHER active worktrees
+// also changed (they'll collide on merge). Request carries just SessionID.
+type WorktreeConflicts struct {
+	SessionID string         `json:"session_id"`
+	Files     []FileConflict `json:"files,omitempty"`
+}
+
+type FileConflict struct {
+	Path     string   `json:"path"`
+	Branches []string `json:"branches"` // other worktree branches that also touched Path
 }
 
 type SessionRef struct {

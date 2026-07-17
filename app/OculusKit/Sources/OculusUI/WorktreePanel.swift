@@ -25,6 +25,27 @@ struct WorktreePanel: View {
                     }
                 }
 
+                if !model.conflicts.isEmpty {
+                    Section {
+                        ForEach(model.conflicts) { c in
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.orange).font(.caption)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(c.path).font(.system(.caption, design: .monospaced))
+                                    Text("also edited on: \(c.branches.joined(separator: ", "))")
+                                        .font(.caption2).foregroundStyle(palette.mutedForeground)
+                                }
+                            }
+                        }
+                    } header: {
+                        Text("Shared-file conflicts")
+                    } footer: {
+                        Text("These files are also being changed in other active worktrees — expect merge conflicts.")
+                            .font(.caption)
+                    }
+                }
+
                 Section("Review") {
                     Button {
                         Task { await model.worktreeDiff() }
@@ -75,7 +96,7 @@ struct WorktreePanel: View {
             }
             .onAppear {
                 prTitle = session?.workspaceName ?? ""
-                Task { await model.worktreeDiff() }
+                Task { await model.worktreeDiff(); await model.loadConflicts() }
             }
             .confirmationDialog("Remove this worktree?", isPresented: $confirmRemove, titleVisibility: .visible) {
                 Button("Remove", role: .destructive) {

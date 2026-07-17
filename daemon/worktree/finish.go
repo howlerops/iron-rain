@@ -74,3 +74,45 @@ func CreatePR(worktreePath, branch, title, body string) (string, error) {
 	}
 	return strings.TrimSpace(string(res)), nil
 }
+
+// ChangedFiles returns the paths changed in worktreePath relative to baseRef (committed
+// + uncommitted). Used to detect cross-worktree overlaps.
+func ChangedFiles(worktreePath, baseRef string) ([]string, error) {
+	args := []string{"-C", worktreePath, "diff", "--name-only"}
+	if baseRef != "" {
+		args = append(args, baseRef)
+	}
+	out, err := exec.Command("git", args...).Output()
+	if err != nil {
+		return nil, err
+	}
+	var files []string
+	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			files = append(files, l)
+		}
+	}
+	return files, nil
+}
+
+// Overlaps returns, for each file changed by `target`, the OTHER keys (branches/labels)
+// in changed that also touched it — the cross-worktree conflict warning: two agents
+// editing the same file on different branches will collide on merge.
+func Overlaps(target string, changed map[string][]string) map[string][]string {
+	inTarget := map[string]bool{}
+	for _, f := range changed[target] {
+		inTarget[f] = true
+	}
+	result := map[string][]string{}
+	for label, files := range changed {
+		if label == target {
+			continue
+		}
+		for _, f := range files {
+			if inTarget[f] {
+				result[f] = append(result[f], label)
+			}
+		}
+	}
+	return result
+}

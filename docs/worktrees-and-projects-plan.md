@@ -126,24 +126,24 @@ faster than Electron tools and lighter than container-first ones.
 Each box = tests first (red) → implement (green) → commit. Go tests in `daemon/...`; Swift where noted.
 
 **Track 1 — Projects & folders**
-- [ ] 1.1 opencode honors cwd: test `Create`/`Prompt` send `?directory=<cwd>`; implement in `opencode.go`.
-- [ ] 1.2 Project registry: `protocol.Project` + `project.list/add/remove`; daemon `~/.oculus/projects.json`
+- [x] 1.1 opencode honors cwd: test `Create`/`Prompt` send `?directory=<cwd>`; implement in `opencode.go`.
+- [x] 1.2 Project registry: `protocol.Project` + `project.list/add/remove`; daemon `~/.oculus/projects.json`
   (test add/list/remove + persistence + reject non-existent path). `SessionCreate.ProjectID` → hub resolves cwd.
-- [ ] 1.3 Session metadata: `protocol.Session` carries `ProjectID/Cwd/WorkspaceName/Branch`; surfaced in
+- [x] 1.3 Session metadata: `protocol.Session` carries `ProjectID/Cwd/WorkspaceName/Branch`; surfaced in
   `session.list` + events (Go test). App groups the sidebar by project (Swift).
 
 **Track 2 — Worktrees**
-- [ ] 2.1 `daemon/worktree` pkg: `RepoRoot`, `Create(repo,name)→(path,branch)`, `Remove(force)`, `Prune`
+- [x] 2.1 `daemon/worktree` pkg: `RepoRoot`, `Create(repo,name)→(path,branch)`, `Remove(force)`, `Prune`
   (tests vs a temp git repo). `SessionCreate.Worktree=true` → hub creates worktree, passes path as cwd; pi `-a`.
-- [ ] 2.2 Setup hooks `.oculus/project.json` (`setup`, `copy[]`, `portRange`, `skipHooks`): copy gitignored
+- [x] 2.2 Setup hooks `.oculus/project.json` (`setup`, `copy[]`, `portRange`, `skipHooks`): copy gitignored
   files, run setup, allocate+inject a port (tests: copies `.env`, runs cmd, unique port per worktree).
-- [ ] 2.3 Finish flow: `git diff` base…worktree surfaced to the app (test); daemon `worktree.remove` action
+- [x] 2.3 Finish flow: `git diff` base…worktree surfaced to the app (test); daemon `worktree.remove` action
   (test); "create PR" driven via the agent harness (gated/live), `gh` fallback.
-- [ ] 2.4 Polish: auto-clean policy (idle/max-count), cross-worktree shared-file warning, skip-hooks toggle.
+- [x] 2.4 Polish: auto-clean policy (idle/max-count), cross-worktree shared-file warning, skip-hooks toggle.
 
 **Track 3 — Multi-desktop (simultaneous)**
-- [ ] 3.1 Daemon `--name` (default hostname) in `pairing.json` + QR payload + `device.register` (Go test:
+- [x] 3.1 Daemon `--name` (default hostname) in `pairing.json` + QR payload + `device.register` (Go test:
   pairing.json includes name; QR decodes name).
-- [ ] 3.2 App: persist a `[Desktop{id=pubkey,name,wsURL,secret}]` (Keychain); a connection manager holding
+- [x] 3.2 App: persist a `[Desktop{id=pubkey,name,wsURL,secret}]` (Keychain); a connection manager holding
   **N live `OculusClient`s** at once (Swift).
-- [ ] 3.3 Unified sidebar grouped by desktop; add/name/remove desktops; per-desktop status. (Swift.)
+- [x] 3.3 Unified sidebar grouped by desktop; add/name/remove desktops; per-desktop status. (Swift.)
