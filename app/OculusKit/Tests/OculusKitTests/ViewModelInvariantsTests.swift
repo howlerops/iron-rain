@@ -54,6 +54,18 @@ final class ViewModelInvariantsTests: XCTestCase {
         XCTAssertEqual(pending, [c])
     }
 
+    // Two byte-identical attachments must still be independently removable — the residual
+    // edge case that value-only identity (id: \.self on {mime,data}) could not handle.
+    func testDuplicateAttachmentsAreIndependentlyRemovable() {
+        let a = ImageAttachment(mime: "image/png", data: "SAME")
+        let b = ImageAttachment(mime: "image/png", data: "SAME")
+        XCTAssertNotEqual(a, b, "distinct instances must have distinct identity")
+        XCTAssertNotEqual(a.id, b.id)
+        var pending = [a, b]
+        pending.removeAll { $0 == a }
+        XCTAssertEqual(pending, [b], "removing one identical image must keep the other")
+    }
+
     // SessionSidebar.sessionGroups: the [projectID: name] lookup must resolve the
     // same names the old per-group `projects.first { $0.id == pid }` scan produced.
     func testProjectNameLookupMatchesLinearScan() {

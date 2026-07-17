@@ -76,10 +76,21 @@ public struct SessionRef: Codable {
     public init(sessionID: String) { self.sessionID = sessionID }
     enum CodingKeys: String, CodingKey { case sessionID = "session_id" }
 }
-public struct ImageAttachment: Codable, Hashable {
+public struct ImageAttachment: Codable, Hashable, Identifiable {
+    public let id: UUID // client-only stable identity for SwiftUI; never on the wire
     public var mime: String
     public var data: String // base64, no data: prefix
-    public init(mime: String, data: String) { self.mime = mime; self.data = data }
+    public init(mime: String, data: String) { self.id = UUID(); self.mime = mime; self.data = data }
+    // The daemon's ImageAttachment is just {mime, data}; id is excluded from CodingKeys so
+    // it isn't encoded, and a decoded attachment gets a fresh id. Distinct instances stay
+    // distinct (so two byte-identical images are still independently removable).
+    enum CodingKeys: String, CodingKey { case mime, data }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = UUID()
+        self.mime = try c.decode(String.self, forKey: .mime)
+        self.data = try c.decode(String.self, forKey: .data)
+    }
 }
 public struct SessionPrompt: Codable {
     public var sessionID: String; public var text: String; public var images: [ImageAttachment]?
