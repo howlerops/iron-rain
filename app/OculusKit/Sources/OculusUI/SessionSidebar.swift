@@ -46,21 +46,6 @@ struct SessionSidebar: View {
         // first rows of that List. Their sheet/alert live on the List (below), NOT on the
         // header view — presentation modifiers attached to a List row render it blank.
         List(selection: $selection) {
-            SidebarHeader(store: store, model: model, palette: palette,
-                          onPairPhone: { showPairingQR = true },
-                          onNewSession: { selection = Self.newSessionTag },
-                          onAddDesktop: { showAddDesktop = true },
-                          onRename: { name in desktopNewName = name; renamingDesktop = true })
-                .listRowInsets(EdgeInsets())
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
-            #if os(macOS)
-            SidebarTabPicker(tab: $tab, palette: palette)
-                .padding(.horizontal, 12).padding(.bottom, 6)
-                .listRowInsets(EdgeInsets())
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
-            #endif
             ForEach(groups) { group in
                 Section {
                     ForEach(group.items) { item in
@@ -84,6 +69,45 @@ struct SessionSidebar: View {
         .background(palette.background)
         .refreshable { await model.discover() }
         .task { await model.discover() }
+        // Header controls live in the window toolbar (native: correctly positioned in the
+        // titlebar, which also reserves that region so the List sits below it). The List
+        // holds only sessions — no custom header content to fight the titlebar.
+        #if os(macOS)
+        .navigationTitle(desktopName)
+        .toolbarTitleMenu {
+            ForEach(store.models, id: \.id) { m in
+                Button { store.selectedID = m.id } label: {
+                    Label(m.name.isEmpty ? "Desktop" : m.name,
+                          systemImage: m.id == store.selectedID ? "checkmark" : (m.connected ? "circle.fill" : "circle"))
+                }
+            }
+            Divider()
+            Button { showAddDesktop = true } label: { Label("Add desktop…", systemImage: "plus") }
+            if let a = store.active {
+                Button { desktopNewName = a.name; renamingDesktop = true } label: { Label("Rename…", systemImage: "pencil") }
+                Button(role: .destructive) { store.remove(a.id) } label: { Label("Remove desktop", systemImage: "trash") }
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                Picker("", selection: $tab) {
+                    Text("Sessions").tag(0)
+                    Text("Issues").tag(1)
+                }
+                .pickerStyle(.segmented).frame(width: 150)
+            }
+            ToolbarItemGroup(placement: .primaryAction) {
+                Menu {
+                    if model.pairingURL != nil {
+                        Button { showPairingQR = true } label: { Label("Pair a phone…", systemImage: "qrcode") }
+                    }
+                    Button { Task { await model.discover() } } label: { Label("Refresh sessions", systemImage: "arrow.clockwise") }
+                    Button(role: .destructive) { model.disconnect() } label: { Label("Disconnect", systemImage: "bolt.horizontal.circle") }
+                } label: { Image(systemName: "ellipsis.circle") }
+                Button { selection = Self.newSessionTag } label: { Image(systemName: "square.and.pencil") }
+            }
+        }
+        #endif
         .sheet(isPresented: $showPairingQR) {
             PairingQRView(url: model.pairingURL ?? "", palette: palette) { showPairingQR = false }
         }
@@ -95,6 +119,11 @@ struct SessionSidebar: View {
             Button("Save") { if let a = store.active { store.rename(a.id, to: desktopNewName) } }
             Button("Cancel", role: .cancel) {}
         }
+    }
+
+    private var desktopName: String {
+        let n = store.active?.name ?? model.name
+        return n.isEmpty ? "Desktop" : n
     }
 
     private func sectionHeader(_ name: String, running: Bool) -> some View {
