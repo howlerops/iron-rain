@@ -23,6 +23,9 @@ type Project struct {
 	Path          string `json:"path"`
 	IsGitRepo     bool   `json:"is_git_repo"`
 	DefaultBranch string `json:"default_branch,omitempty"`
+	// Source is "manual" (added via the Projects UI) or "auto" (discovered from an
+	// active agent's working directory). Empty in legacy records; treat as "manual".
+	Source string `json:"source,omitempty"`
 }
 
 // Registry is a persisted, concurrency-safe set of projects, deduped by path.
@@ -51,9 +54,17 @@ func Load(path string) (*Registry, error) {
 	return r, nil
 }
 
-// Add registers dir (idempotent by absolute path). It validates dir exists and is a
-// directory, detects whether it's a git repo, and records its current branch.
-func (r *Registry) Add(dir string) (Project, error) {
+// Add registers dir explicitly via the Projects UI (source "manual"). Idempotent by
+// absolute path; adding a path that was auto-discovered promotes it to "manual".
+func (r *Registry) Add(dir string) (Project, error) { return r.add(dir, "manual") }
+
+// AddAuto registers dir as auto-discovered from an active agent's cwd (source "auto").
+// If the path was already added manually, the "manual" source is preserved.
+func (r *Registry) AddAuto(dir string) (Project, error) { return r.add(dir, "auto") }
+
+// add registers dir with the given source. It validates dir exists and is a directory,
+// detects whether it's a git repo, and records its current branch.
+func (r *Registry) add(dir, source string) (Project, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return Project{}, err
@@ -69,9 +80,17 @@ func (r *Registry) Add(dir string) (Project, error) {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	// Dedup: same path -> return the existing entry.
-	for _, p := range r.list {
+	// Dedup: same path -> return the existing entry. A manual add promotes a previously
+	// auto-discovered project so the user's explicit "keep" survives.
+	for i, p := range r.list {
 		if p.Path == abs {
+			if source == "manual" && p.Source != "manual" {
+				r.list[i].Source = "manual"
+				if err := r.save(); err != nil {
+					return Project{}, err
+				}
+				return r.list[i], nil
+			}
 			return p, nil
 		}
 	}
@@ -82,6 +101,7 @@ func (r *Registry) Add(dir string) (Project, error) {
 		Path:          abs,
 		IsGitRepo:     isRepo,
 		DefaultBranch: branch,
+		Source:        source,
 	}
 	r.list = append(r.list, p)
 	if err := r.save(); err != nil {

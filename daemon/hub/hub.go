@@ -272,7 +272,7 @@ func (h *Hub) autoRegisterCwd(cwd string) {
 	if r, err := worktree.RepoRoot(cwd); err == nil {
 		root = r
 	}
-	_, _ = reg.Add(root)
+	_, _ = reg.AddAuto(root)
 }
 
 func (h *Hub) projectRegistry() *project.Registry {
@@ -327,7 +327,7 @@ func toProtoIssues(in []issues.Issue) []protocol.Issue {
 }
 
 func toProtoProject(p project.Project) protocol.Project {
-	return protocol.Project{ID: p.ID, Name: p.Name, Path: p.Path, IsGitRepo: p.IsGitRepo, DefaultBranch: p.DefaultBranch}
+	return protocol.Project{ID: p.ID, Name: p.Name, Path: p.Path, IsGitRepo: p.IsGitRepo, DefaultBranch: p.DefaultBranch, Source: p.Source}
 }
 
 func toProtoProjects(ps []project.Project) []protocol.Project {

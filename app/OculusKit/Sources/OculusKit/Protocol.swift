@@ -143,8 +143,10 @@ public struct Project: Codable, Identifiable, Hashable {
     public var path: String
     public var isGitRepo: Bool
     public var defaultBranch: String?
+    public var source: String? // "manual" or "auto" (discovered from an active agent's cwd)
+    public var isAuto: Bool { source == "auto" }
     enum CodingKeys: String, CodingKey {
-        case id, name, path
+        case id, name, path, source
         case isGitRepo = "is_git_repo"
         case defaultBranch = "default_branch"
     }

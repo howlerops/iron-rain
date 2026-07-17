@@ -93,6 +93,7 @@ type Project struct {
 	Path          string `json:"path"`
 	IsGitRepo     bool   `json:"is_git_repo"`
 	DefaultBranch string `json:"default_branch,omitempty"`
+	Source        string `json:"source,omitempty"` // "manual" or "auto" (discovered from an active agent's cwd)
 }
 
 type ProjectAdd struct {

@@ -116,3 +116,46 @@ func TestRegistry_RemoveAndPersist(t *testing.T) {
 		t.Fatalf("persisted list = %+v, want only %s", got, dirB)
 	}
 }
+
+func TestRegistry_Source(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "p.json")
+	auto, manual := t.TempDir(), t.TempDir()
+
+	r, _ := Load(path)
+	a, _ := r.AddAuto(auto)
+	if a.Source != "auto" {
+		t.Fatalf("AddAuto source = %q, want auto", a.Source)
+	}
+	m, _ := r.Add(manual)
+	if m.Source != "manual" {
+		t.Fatalf("Add source = %q, want manual", m.Source)
+	}
+
+	// Promotion: manually adding a previously auto-discovered path keeps the same
+	// project but flips it to "manual" (the user's explicit keep wins).
+	p, _ := r.Add(auto)
+	if p.ID != a.ID {
+		t.Fatalf("promote created a new project: %s vs %s", p.ID, a.ID)
+	}
+	if p.Source != "manual" {
+		t.Fatalf("promoted source = %q, want manual", p.Source)
+	}
+
+	// No downgrade: auto-discovering a manual path leaves it manual.
+	if p2, _ := r.AddAuto(manual); p2.Source != "manual" {
+		t.Fatalf("auto re-add downgraded to %q, want manual", p2.Source)
+	}
+
+	// Source survives a reload from disk.
+	r2, _ := Load(path)
+	src := map[string]string{}
+	for _, pp := range r2.List() {
+		src[pp.ID] = pp.Source
+	}
+	if len(r2.List()) != 2 {
+		t.Fatalf("want 2 projects after reload, got %d", len(r2.List()))
+	}
+	if src[a.ID] != "manual" {
+		t.Fatalf("reloaded promoted source = %q, want manual", src[a.ID])
+	}
+}
