@@ -8,6 +8,7 @@ struct SessionSidebar: View {
     @ObservedObject var store: DesktopStore
     @ObservedObject var model: Model
     @Binding var selection: String?
+    @Binding var tab: Int // 0 = Sessions, 1 = Issues (macOS mode switch lives in the sidebar)
     @Environment(\.colorScheme) private var scheme
     private var palette: OculusPalette { .current(scheme) }
     @State private var showPairingQR = false
@@ -40,6 +41,15 @@ struct SessionSidebar: View {
         VStack(spacing: 0) {
             SidebarHeader(store: store, model: model, palette: palette) { showPairingQR = true }
             Divider().overlay(palette.border)
+            #if os(macOS)
+            Picker("", selection: $tab) {
+                Text("Sessions").tag(0)
+                Text("Issues").tag(1)
+            }
+            .pickerStyle(.segmented).labelsHidden()
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            Divider().overlay(palette.border)
+            #endif
             List(selection: $selection) {
                 Label("New session", systemImage: "plus.circle").tag(Self.newSessionTag)
 

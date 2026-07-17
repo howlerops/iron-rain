@@ -22,34 +22,7 @@ public struct RootView: View {
             if store.isEmpty {
                 DesktopOnboardView(store: store, palette: palette)
             } else if let model = store.active {
-                TabView(selection: $selectedTab) {
-                    NavigationSplitView {
-                        SessionSidebar(store: store, model: model, selection: $selection)
-                            .navigationSplitViewColumnWidth(min: 240, ideal: 280)
-                    } detail: {
-                        ChatView(model: model)
-                    }
-                    .onChange(of: selection) { sel in
-                        guard let sel else { return }
-                        if sel == SessionSidebar.newSessionTag {
-                            showNewSession = true
-                            selection = nil
-                        } else if model.sessions.contains(where: { $0.id == sel }) {
-                            Task { await model.openSession(sel) }
-                        } else if let d = model.discovered.first(where: { $0.sessionID == sel }) {
-                            Task { await model.attach(d) }
-                        }
-                    }
-                    .sheet(isPresented: $showNewSession) {
-                        NewSessionView(model: model, palette: palette) { showNewSession = false }
-                    }
-                    .tabItem { Label("Sessions", systemImage: "bubble.left.and.bubble.right.fill") }
-                    .tag(0)
-
-                    IssuesView(model: model, palette: palette) { selectedTab = 0 }
-                        .tabItem { Label("Issues", systemImage: "checklist") }
-                        .tag(1)
-                }
+                mainSurface(model)
             }
         }
         .background(palette.background.ignoresSafeArea())
@@ -60,6 +33,60 @@ public struct RootView: View {
             await launcher.ensureRunning() // start the local daemon (no terminal) if needed
             #endif
             await store.bootstrap()
+        }
+    }
+
+    /// The Sessions/Issues surface. macOS uses ONE NavigationSplitView (the mode switch
+    /// lives in the sidebar, the detail swaps) — a TabView wrapping a split view with
+    /// per-view toolbars corrupts AppKit's toolbar bridge and crashes on window
+    /// close/reopen. iOS keeps a bottom TabView, which is the right idiom there.
+    @ViewBuilder private func mainSurface(_ model: Model) -> some View {
+        #if os(macOS)
+        NavigationSplitView {
+            SessionSidebar(store: store, model: model, selection: $selection, tab: $selectedTab)
+                .navigationSplitViewColumnWidth(min: 240, ideal: 280)
+        } detail: {
+            if selectedTab == 0 {
+                ChatView(model: model)
+            } else {
+                IssuesView(model: model, palette: palette, embedded: true) { selectedTab = 0 }
+            }
+        }
+        .onChange(of: selection) { handleSelection($0, model) }
+        .sheet(isPresented: $showNewSession) {
+            NewSessionView(model: model, palette: palette) { showNewSession = false }
+        }
+        #else
+        TabView(selection: $selectedTab) {
+            NavigationSplitView {
+                SessionSidebar(store: store, model: model, selection: $selection, tab: $selectedTab)
+                    .navigationSplitViewColumnWidth(min: 240, ideal: 280)
+            } detail: {
+                ChatView(model: model)
+            }
+            .onChange(of: selection) { handleSelection($0, model) }
+            .sheet(isPresented: $showNewSession) {
+                NewSessionView(model: model, palette: palette) { showNewSession = false }
+            }
+            .tabItem { Label("Sessions", systemImage: "bubble.left.and.bubble.right.fill") }
+            .tag(0)
+
+            IssuesView(model: model, palette: palette) { selectedTab = 0 }
+                .tabItem { Label("Issues", systemImage: "checklist") }
+                .tag(1)
+        }
+        #endif
+    }
+
+    private func handleSelection(_ sel: String?, _ model: Model) {
+        guard let sel else { return }
+        if sel == SessionSidebar.newSessionTag {
+            showNewSession = true
+            selection = nil
+        } else if model.sessions.contains(where: { $0.id == sel }) {
+            Task { await model.openSession(sel) }
+        } else if let d = model.discovered.first(where: { $0.sessionID == sel }) {
+            Task { await model.attach(d) }
         }
     }
 }

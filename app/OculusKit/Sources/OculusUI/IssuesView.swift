@@ -9,13 +9,14 @@ public struct IssuesView: View {
     let palette: OculusPalette
     var onLaunched: () -> Void = {}
 
+    var embedded = false // macOS: rendered inside a NavigationSplitView detail (no own nav/toolbar)
     @State private var kanban = true
     @State private var token = ""
     @State private var launching: Issue?
     @Environment(\.openURL) private var openURL
 
-    public init(model: Model, palette: OculusPalette, onLaunched: @escaping () -> Void = {}) {
-        self.model = model; self.palette = palette; self.onLaunched = onLaunched
+    public init(model: Model, palette: OculusPalette, embedded: Bool = false, onLaunched: @escaping () -> Void = {}) {
+        self.model = model; self.palette = palette; self.embedded = embedded; self.onLaunched = onLaunched
     }
 
     private let columns: [(name: String, category: String)] = [
@@ -23,40 +24,75 @@ public struct IssuesView: View {
     ]
 
     public var body: some View {
-        NavigationStack {
-            Group {
-                if model.connectedTrackers.isEmpty && model.issues.isEmpty {
-                    connectScreen
-                } else if kanban {
-                    board
-                } else {
-                    table
+        content
+            .sheet(item: $launching) { issue in
+                LaunchIssueSheet(model: model, issue: issue, palette: palette) { launched in
+                    launching = nil
+                    if launched { onLaunched() }
                 }
             }
+            .task { await model.loadIntegrationStatus(); await model.loadIssues() }
+    }
+
+    /// Embedded (macOS detail) uses an inline header + no NavigationStack/toolbar so it
+    /// doesn't fight the enclosing NavigationSplitView's toolbar. Standalone (iOS tab)
+    /// keeps its own NavigationStack + toolbar.
+    @ViewBuilder private var content: some View {
+        if embedded {
+            VStack(spacing: 0) {
+                inlineHeader
+                Divider().overlay(palette.border)
+                surface
+            }
+            .background(palette.background)
             .onChange(of: model.oauthURL) { url in
                 if let url { openURL(url); model.oauthURL = nil }
             }
-            .background(palette.background)
-            .navigationTitle("Issues")
-            .toolbar {
-                if !model.connectedTrackers.isEmpty {
-                    ToolbarItem(placement: .primaryAction) {
-                        Picker("", selection: $kanban) { Text("Board").tag(true); Text("List").tag(false) }
-                            .pickerStyle(.segmented).fixedSize()
+        } else {
+            NavigationStack {
+                surface
+                    .onChange(of: model.oauthURL) { url in
+                        if let url { openURL(url); model.oauthURL = nil }
                     }
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button { Task { await model.loadIssues() } } label: { Image(systemName: "arrow.clockwise") }
+                    .background(palette.background)
+                    .navigationTitle("Issues")
+                    .toolbar {
+                        if !model.connectedTrackers.isEmpty {
+                            ToolbarItem(placement: .primaryAction) {
+                                Picker("", selection: $kanban) { Text("Board").tag(true); Text("List").tag(false) }
+                                    .pickerStyle(.segmented).fixedSize()
+                            }
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button { Task { await model.loadIssues() } } label: { Image(systemName: "arrow.clockwise") }
+                            }
+                        }
                     }
-                }
             }
         }
-        .sheet(item: $launching) { issue in
-            LaunchIssueSheet(model: model, issue: issue, palette: palette) { launched in
-                launching = nil
-                if launched { onLaunched() }
+    }
+
+    @ViewBuilder private var surface: some View {
+        if model.connectedTrackers.isEmpty && model.issues.isEmpty {
+            connectScreen
+        } else if kanban {
+            board
+        } else {
+            table
+        }
+    }
+
+    private var inlineHeader: some View {
+        HStack(spacing: 10) {
+            Text("Issues").font(.headline)
+            Spacer()
+            if !model.connectedTrackers.isEmpty {
+                Picker("", selection: $kanban) { Text("Board").tag(true); Text("List").tag(false) }
+                    .pickerStyle(.segmented).labelsHidden().fixedSize()
+                Button { Task { await model.loadIssues() } } label: { Image(systemName: "arrow.clockwise") }
+                    .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
             }
         }
-        .task { await model.loadIntegrationStatus(); await model.loadIssues() }
+        .padding(.horizontal, 14).padding(.vertical, 10)
     }
 
     // MARK: connect
