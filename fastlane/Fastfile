@@ -93,6 +93,20 @@ platform :ios do
     end
   end
 
+  desc "Validate the release archive builds + signs (no TestFlight) — de-risks `beta`."
+  lane :archive_check do
+    sh("cd .. && xcodegen generate --spec app/project.yml")
+    build_app(
+      project: XCODEPROJ,
+      scheme: SCHEME,
+      export_method: "app-store",
+      xcargs: signing_xcargs(1),
+      output_directory: "build",
+      clean: true,
+    )
+    UI.success("Release archive + app-store signing OK — `fastlane ios beta` will upload cleanly once the app record exists.")
+  end
+
   desc "Build the iOS app and upload it to TestFlight (external testers)."
   lane :beta do
     key = asc_key
@@ -100,7 +114,7 @@ platform :ios do
       api_key: key, app_identifier: APP_ID, initial_build_number: 0,
     ).to_i + 1
 
-    sh("cd .. && xcodegen generate")
+    sh("cd .. && xcodegen generate --spec app/project.yml")
     build_app(
       project: XCODEPROJ,
       scheme: SCHEME,
@@ -115,7 +129,7 @@ platform :ios do
       app_identifier: APP_ID,
       distribute_external: true,
       groups: ["External Testers"],
-      changelog: ENV["CHANGELOG"] || "New Oculus beta build.",
+      changelog: ENV["CHANGELOG"] || "New Iron Rain beta build.",
       notify_external_testers: true,
       submit_beta_review: true,
       beta_app_review_info: {
@@ -132,10 +146,10 @@ platform :ios do
   lane :beta_internal do
     key = asc_key
     next_build = latest_testflight_build_number(api_key: key, app_identifier: APP_ID, initial_build_number: 0).to_i + 1
-    sh("cd .. && xcodegen generate")
+    sh("cd .. && xcodegen generate --spec app/project.yml")
     build_app(project: XCODEPROJ, scheme: SCHEME, export_method: "app-store",
               xcargs: signing_xcargs(next_build), output_directory: "build", clean: true)
     upload_to_testflight(api_key: key, app_identifier: APP_ID, distribute_external: false,
-                         changelog: ENV["CHANGELOG"] || "New Oculus internal build.")
+                         changelog: ENV["CHANGELOG"] || "New Iron Rain internal build.")
   end
 end
