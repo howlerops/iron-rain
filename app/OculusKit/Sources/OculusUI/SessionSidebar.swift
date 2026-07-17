@@ -38,21 +38,28 @@ struct SessionSidebar: View {
     static let newSessionTag = "__new__"
 
     var body: some View {
-        VStack(spacing: 0) {
-            SidebarHeader(store: store, model: model, palette: palette,
-                          onPairPhone: { showPairingQR = true },
-                          onNewSession: { selection = Self.newSessionTag })
-            Divider().overlay(palette.border)
-            #if os(macOS)
-            SidebarTabPicker(tab: $tab, palette: palette)
-                .padding(.horizontal, 12).padding(.top, 8).padding(.bottom, 2)
-            #endif
-            list
-        }
-        .background(palette.background)
-        .sheet(isPresented: $showPairingQR) {
-            PairingQRView(url: model.pairingURL ?? "", palette: palette) { showPairingQR = false }
-        }
+        // The List is the sidebar root (so macOS handles the titlebar safe area + column
+        // width natively); the header/segmented are pinned above it with a top safe-area
+        // inset instead of being stacked in a VStack (which broke the layout).
+        list
+            .safeAreaInset(edge: .top, spacing: 0) {
+                VStack(spacing: 0) {
+                    SidebarHeader(store: store, model: model, palette: palette,
+                                  onPairPhone: { showPairingQR = true },
+                                  onNewSession: { selection = Self.newSessionTag })
+                    #if os(macOS)
+                    Divider().overlay(palette.border)
+                    SidebarTabPicker(tab: $tab, palette: palette)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                    #endif
+                    Divider().overlay(palette.border)
+                }
+                .background(palette.background)
+            }
+            .background(palette.background)
+            .sheet(isPresented: $showPairingQR) {
+                PairingQRView(url: model.pairingURL ?? "", palette: palette) { showPairingQR = false }
+            }
     }
 
     private var list: some View {
