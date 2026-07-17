@@ -7,7 +7,7 @@ import CryptoKit
 final class CryptoVectorsTests: XCTestCase {
     struct Vectors: Codable {
         let client_priv, daemon_priv, client_pub, daemon_pub: String
-        let c2d_key, d2c_key, seal_plaintext, seal_counter0_frame: String
+        let c2d_key, d2c_key, seal_plaintext, open_frame: String
     }
 
     func loadVectors() throws -> Vectors {
@@ -35,14 +35,15 @@ final class CryptoVectorsTests: XCTestCase {
         XCTAssertEqual(keys.c2d.rawData.hexString, v.c2d_key, "c2d key must match Go")
         XCTAssertEqual(keys.d2c.rawData.hexString, v.d2c_key, "d2c key must match Go")
 
-        // Sealing the fixed plaintext at counter 0 must reproduce the exact Go frame.
-        let sealer = Sealer(key: keys.c2d)
+        // Production nonces are random, so parity is pinned on OPEN: CryptoKit must
+        // decrypt the Go-generated KAT frame back to the plaintext under c2d.
         let plaintext = try XCTUnwrap(Data(hexString: v.seal_plaintext))
-        let frame = try sealer.seal(plaintext)
-        XCTAssertEqual(frame.hexString, v.seal_counter0_frame, "sealed frame must match Go byte-for-byte")
-
-        // And the round-trip opens (daemon opens client->daemon traffic on c2d).
+        let goFrame = try XCTUnwrap(Data(hexString: v.open_frame))
         let opener = Opener(key: keys.c2d)
-        XCTAssertEqual(try opener.open(frame), plaintext)
+        XCTAssertEqual(try opener.open(goFrame), plaintext, "must open the Go KAT frame")
+
+        // And a locally-sealed frame (random nonce) round-trips through our own Opener.
+        let sealer = Sealer(key: keys.c2d)
+        XCTAssertEqual(try opener.open(try sealer.seal(plaintext)), plaintext)
     }
 }

@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"golang.org/x/crypto/chacha20poly1305"
 )
 
 // The golden vectors are the cross-language contract: the Swift/CryptoKit client
@@ -25,15 +27,18 @@ const (
 )
 
 type handshakeVectors struct {
-	Description       string `json:"description"`
-	ClientPriv        string `json:"client_priv"`
-	DaemonPriv        string `json:"daemon_priv"`
-	ClientPub         string `json:"client_pub"`
-	DaemonPub         string `json:"daemon_pub"`
-	C2DKey            string `json:"c2d_key"`
-	D2CKey            string `json:"d2c_key"`
-	SealPlaintext     string `json:"seal_plaintext"`
-	SealCounter0Frame string `json:"seal_counter0_frame"`
+	Description   string `json:"description"`
+	ClientPriv    string `json:"client_priv"`
+	DaemonPriv    string `json:"daemon_priv"`
+	ClientPub     string `json:"client_pub"`
+	DaemonPub     string `json:"daemon_pub"`
+	C2DKey        string `json:"c2d_key"`
+	D2CKey        string `json:"d2c_key"`
+	SealPlaintext string `json:"seal_plaintext"`
+	// OpenFrame is a nonce||ciphertext frame (fixed all-zero KAT nonce) that both
+	// languages must OPEN to SealPlaintext under C2DKey. Production Seal uses a random
+	// nonce, so the vector pins Open (deterministic), not Seal.
+	OpenFrame string `json:"open_frame"`
 }
 
 func TestHandshakeGoldenVectors(t *testing.T) {
@@ -63,25 +68,35 @@ func TestHandshakeGoldenVectors(t *testing.T) {
 	}
 
 	plaintext := []byte("oculus handshake vector")
-	sealer, err := NewSealer(ck.C2D)
+
+	// Build a deterministic KAT frame with a fixed all-zero nonce (production Seal is
+	// random, so we pin Open, not Seal). Both languages must decrypt this frame.
+	aead, err := chacha20poly1305.New(ck.C2D)
 	if err != nil {
 		t.Fatal(err)
 	}
-	frame, err := sealer.Seal(plaintext) // counter 0 -> deterministic nonce
+	katNonce := make([]byte, chacha20poly1305.NonceSize) // fixed all-zero KAT nonce
+	frame := append(append([]byte{}, katNonce...), aead.Seal(nil, katNonce, plaintext, nil)...)
+
+	// The production Opener must decrypt the KAT frame back to the plaintext.
+	opener, err := NewOpener(ck.C2D)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if got, err := opener.Open(frame); err != nil || string(got) != string(plaintext) {
+		t.Fatalf("Open(KAT frame) = %q, err %v; want %q", got, err, plaintext)
 	}
 
 	got := handshakeVectors{
-		Description:       "Oculus v0 E2EE KAT: X25519 static-static -> HKDF-SHA256 -> ChaCha20-Poly1305 (12-byte counter nonce, nonce-prefixed frame). Keys are RFC 7748 6.1. Swift CryptoKit must reproduce every field.",
-		ClientPriv:        rfcAlicePriv,
-		DaemonPriv:        rfcBobPriv,
-		ClientPub:         hex.EncodeToString(client.Public()),
-		DaemonPub:         hex.EncodeToString(daemon.Public()),
-		C2DKey:            hex.EncodeToString(ck.C2D),
-		D2CKey:            hex.EncodeToString(ck.D2C),
-		SealPlaintext:     hex.EncodeToString(plaintext),
-		SealCounter0Frame: hex.EncodeToString(frame),
+		Description:   "Oculus v0 E2EE KAT: X25519 static-static -> HKDF-SHA256 -> ChaCha20-Poly1305 (12-byte nonce, nonce-prefixed frame). Production nonces are random; open_frame is a fixed all-zero-nonce KAT both sides must OPEN. Keys are RFC 7748 6.1.",
+		ClientPriv:    rfcAlicePriv,
+		DaemonPriv:    rfcBobPriv,
+		ClientPub:     hex.EncodeToString(client.Public()),
+		DaemonPub:     hex.EncodeToString(daemon.Public()),
+		C2DKey:        hex.EncodeToString(ck.C2D),
+		D2CKey:        hex.EncodeToString(ck.D2C),
+		SealPlaintext: hex.EncodeToString(plaintext),
+		OpenFrame:     hex.EncodeToString(frame),
 	}
 
 	if os.Getenv("OCULUS_UPDATE_VECTORS") == "1" {

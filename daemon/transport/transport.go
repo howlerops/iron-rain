@@ -137,11 +137,13 @@ func newConn(mc MsgConn, sendKey, recvKey []byte) (*Conn, error) {
 	return &Conn{mc: mc, sealer: sealer, opener: opener}, nil
 }
 
-// Send encrypts and writes one message.
+// Send encrypts and writes one message. The lock is held across both the seal and the
+// write so concurrent senders can't interleave frames on the wire (which would reorder
+// the ordered event stream a client replays).
 func (c *Conn) Send(plaintext []byte) error {
 	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
 	frame, err := c.sealer.Seal(plaintext)
-	c.sendMu.Unlock()
 	if err != nil {
 		return err
 	}

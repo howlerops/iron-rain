@@ -1,5 +1,5 @@
 {
-  "description": "Oculus v0 E2EE KAT: X25519 static-static -\u003e HKDF-SHA256 -\u003e ChaCha20-Poly1305 (12-byte counter nonce, nonce-prefixed frame). Keys are RFC 7748 6.1. Swift CryptoKit must reproduce every field.",
+  "description": "Oculus v0 E2EE KAT: X25519 static-static -\u003e HKDF-SHA256 -\u003e ChaCha20-Poly1305 (12-byte nonce, nonce-prefixed frame). Production nonces are random; open_frame is a fixed all-zero-nonce KAT both sides must OPEN. Keys are RFC 7748 6.1.",
   "client_priv": "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a",
   "daemon_priv": "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb",
   "client_pub": "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a",
@@ -7,5 +7,5 @@
   "c2d_key": "e88e2590359934c4e1432965add095e298ae83c0bc4e3d16438b6ffb355fc660",
   "d2c_key": "9eae563e88eef164ac2a7b3746d02bdec579bccdf62c204122e009500a2a1416",
   "seal_plaintext": "6f63756c75732068616e647368616b6520766563746f72",
-  "seal_counter0_frame": "000000000000000000000000894477215e4305738ae448a5a9d3601fc79782436cd20c5a8169fbf5ad83afaea1a1e9c099fdd6"
+  "open_frame": "000000000000000000000000894477215e4305738ae448a5a9d3601fc79782436cd20c5a8169fbf5ad83afaea1a1e9c099fdd6"
 }

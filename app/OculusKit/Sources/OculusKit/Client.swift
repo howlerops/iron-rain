@@ -9,7 +9,10 @@ public enum OculusClientError: Error {
 /// OculusClient connects to a daemon over WebSocket, performs the encrypted
 /// handshake, and sends/receives protocol envelopes. Mirrors `daemon/transport`
 /// (client side) + `daemon/server` Dial.
-public final class OculusClient {
+///
+/// An `actor` so send/recv and the sealer/opener state are serialized: concurrent
+/// callers can't interleave a partially-initialized handshake or race the channel.
+public actor OculusClient {
     private let task: URLSessionWebSocketTask
     private var sealer: Sealer?
     private var opener: Opener?
@@ -65,7 +68,9 @@ public final class OculusClient {
         return try opener.open(try await Self.bytes(of: task.receive()))
     }
 
-    public func close() {
+    /// nonisolated so the UI can tear down the connection synchronously; `task` is an
+    /// immutable let and URLSessionWebSocketTask.cancel is thread-safe.
+    public nonisolated func close() {
         task.cancel(with: .normalClosure, reason: nil)
     }
 

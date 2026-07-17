@@ -4,7 +4,7 @@
 //
 //	key agreement:  X25519 ECDH (static-static for a paired channel)
 //	key derivation: HKDF-SHA256 -> two directional 32-byte keys (c2d, d2c)
-//	channel AEAD:   ChaCha20-Poly1305, 12-byte counter nonce, nonce prefixed to frame
+//	channel AEAD:   ChaCha20-Poly1305, 12-byte random nonce, nonce prefixed to frame
 //
 // These primitives are chosen to interop byte-for-byte with Swift CryptoKit
 // (Curve25519.KeyAgreement, HKDF<SHA256>, ChaChaPoly). Parity is locked by the
@@ -19,7 +19,6 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/binary"
 	"errors"
 	"io"
 
@@ -113,10 +112,9 @@ func hkdf32(secret, info []byte) ([]byte, error) {
 
 const nonceSize = chacha20poly1305.NonceSize // 12
 
-// Sealer encrypts an ordered stream of messages with a per-message counter nonce.
+// Sealer encrypts messages with a fresh random 12-byte nonce per message.
 type Sealer struct {
-	aead    cipher.AEAD
-	counter uint64
+	aead cipher.AEAD
 }
 
 // NewSealer creates a Sealer for a 32-byte directional key.
@@ -128,14 +126,20 @@ func NewSealer(key []byte) (*Sealer, error) {
 	return &Sealer{aead: a}, nil
 }
 
-// Seal encrypts plaintext and returns nonce||ciphertext. Each call advances the nonce.
+// Seal encrypts plaintext and returns nonce||ciphertext with a fresh random nonce.
+//
+// The channel key is static-static (stable per pairing, never rotated), so a counter
+// nonce reset to 0 on each new session would reuse (key, nonce) across sessions — a
+// catastrophic break for ChaCha20-Poly1305. A random 96-bit nonce per message avoids
+// that: collision probability stays negligible well past any realistic message volume,
+// and it needs no per-session state to survive restarts. It is also inherently safe
+// under concurrent Seal calls (no shared mutable counter).
 func (s *Sealer) Seal(plaintext []byte) ([]byte, error) {
-	nonce := make([]byte, nonceSize)
-	binary.BigEndian.PutUint64(nonce[nonceSize-8:], s.counter)
-	s.counter++
 	frame := make([]byte, nonceSize, nonceSize+len(plaintext)+s.aead.Overhead())
-	copy(frame, nonce)
-	return s.aead.Seal(frame, nonce, plaintext, nil), nil
+	if _, err := rand.Read(frame[:nonceSize]); err != nil {
+		return nil, err
+	}
+	return s.aead.Seal(frame, frame[:nonceSize], plaintext, nil), nil
 }
 
 // Opener decrypts frames produced by a Sealer sharing the same directional key.
