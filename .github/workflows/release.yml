@@ -48,3 +48,22 @@ jobs:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           files: dist/*
           generate_release_notes: true
+
+  macos-app:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen
+      - name: Build Iron Rain.app (ad-hoc; curl installer strips quarantine)
+        run: |
+          xcodegen generate --spec app/project.yml
+          xcodebuild -project app/Oculus.xcodeproj -scheme Oculus-macOS -configuration Release \
+            -derivedDataPath build/mac -destination 'platform=macOS' build \
+            CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
+          cd build/mac/Build/Products/Release
+          cp -R "Oculus-macOS.app" "Iron Rain.app"
+          ditto -c -k --keepParent "Iron Rain.app" "$GITHUB_WORKSPACE/IronRain-macos.zip"
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          files: IronRain-macos.zip

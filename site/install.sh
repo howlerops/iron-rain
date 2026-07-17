@@ -1,60 +1,67 @@
 #!/bin/sh
-# Iron Rain daemon installer.
+# Iron Rain installer.
 #   curl -fsSL https://howlerops.github.io/oculus/install.sh | sh
 #
-# Downloads a prebuilt `oculusd` binary (no Go or git needed) and installs it to
-# ~/.local/bin. Set OCULUS_BIN to change the install dir.
+# macOS: installs the daemon + the Iron Rain app, then launches the app (which starts the
+# daemon for you — no terminal). Linux/headless: installs the daemon and starts it.
+# Set OCULUS_BIN to change the daemon dir; OCULUS_NO_APP=1 to skip the GUI app.
 set -eu
 
 REPO="${OCULUS_REPO:-howlerops/oculus}"
 BIN="${OCULUS_BIN:-$HOME/.local/bin}"
+REL="https://github.com/$REPO/releases/latest/download"
 
 say() { printf '\033[33m→\033[0m %s\n' "$1"; }
+ok()  { printf '\033[32m✓\033[0m %s\n' "$1"; }
 die() { printf '\033[31mx\033[0m %s\n' "$1" >&2; exit 1; }
+daemon_up() { curl -fsS -m 1 http://127.0.0.1:6000/healthz >/dev/null 2>&1; }
 
 os="$(uname -s | tr '[:upper:]' '[:lower:]')"
 arch="$(uname -m)"
-case "$arch" in
-  x86_64|amd64) arch="amd64" ;;
-  arm64|aarch64) arch="arm64" ;;
-  *) die "unsupported architecture: $arch" ;;
-esac
+case "$arch" in x86_64|amd64) arch="amd64" ;; arm64|aarch64) arch="arm64" ;; *) die "unsupported arch: $arch" ;; esac
 case "$os" in darwin|linux) : ;; *) die "unsupported OS: $os" ;; esac
 
-asset="oculusd_${os}_${arch}.tar.gz"
-url="https://github.com/$REPO/releases/latest/download/$asset"
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 
-say "Downloading oculusd ($os/$arch)…"
-if curl -fsSL "$url" -o "$tmp/$asset" 2>/dev/null; then
-  tar -xzf "$tmp/$asset" -C "$tmp"
-  mkdir -p "$BIN"
-  install -m 0755 "$tmp/oculusd" "$BIN/oculusd"
-  printf '\033[32m✓\033[0m installed %s\n' "$BIN/oculusd"
+# --- 1. The daemon (oculusd) ---
+say "Downloading the Iron Rain daemon ($os/$arch)…"
+if curl -fsSL "$REL/oculusd_${os}_${arch}.tar.gz" -o "$tmp/o.tgz" 2>/dev/null; then
+  tar -xzf "$tmp/o.tgz" -C "$tmp"; mkdir -p "$BIN"; install -m 0755 "$tmp/oculusd" "$BIN/oculusd"
+  ok "installed $BIN/oculusd"
 else
-  # No prebuilt binary yet (or offline) → build from source if Go + git are available.
-  say "No prebuilt binary found; building from source…"
+  command -v go >/dev/null 2>&1 || die "no release binary and Go not found (https://go.dev/dl/)"
   command -v git >/dev/null 2>&1 || die "no release binary and git not found"
-  command -v go  >/dev/null 2>&1 || die "no release binary and Go not found (https://go.dev/dl/)"
+  say "building the daemon from source…"
   src="${OCULUS_SRC:-$HOME/.oculus/src}"
-  if [ -d "$src/.git" ]; then git -C "$src" pull --ff-only --quiet; else
-    mkdir -p "$(dirname "$src")"; git clone --depth 1 --quiet "https://github.com/$REPO" "$src"; fi
-  ( cd "$src/daemon" && go build -o oculusd . )
-  mkdir -p "$BIN"; install -m 0755 "$src/daemon/oculusd" "$BIN/oculusd"
-  printf '\033[32m✓\033[0m built + installed %s\n' "$BIN/oculusd"
+  if [ -d "$src/.git" ]; then git -C "$src" pull --ff-only --quiet
+  else mkdir -p "$(dirname "$src")"; git clone --depth 1 --quiet "https://github.com/$REPO" "$src"; fi
+  ( cd "$src/daemon" && go build -o oculusd . ); mkdir -p "$BIN"; install -m 0755 "$src/daemon/oculusd" "$BIN/oculusd"
+  ok "built + installed $BIN/oculusd"
 fi
 
-case ":$PATH:" in
-  *":$BIN:"*) : ;;
-  *) printf '\033[33m!\033[0m add %s to your PATH:  echo '\''export PATH="%s:$PATH"'\'' >> ~/.zshrc\n' "$BIN" "$BIN" ;;
-esac
+# --- 2. The macOS app (which auto-starts the daemon) ---
+if [ "$os" = "darwin" ] && [ "${OCULUS_NO_APP:-0}" != "1" ]; then
+  say "Downloading the Iron Rain app…"
+  if curl -fsSL "$REL/IronRain-macos.zip" -o "$tmp/app.zip" 2>/dev/null && ditto -x -k "$tmp/app.zip" "$tmp/app" 2>/dev/null; then
+    rm -rf "/Applications/Iron Rain.app"
+    cp -R "$tmp/app/Iron Rain.app" "/Applications/Iron Rain.app"
+    xattr -dr com.apple.quarantine "/Applications/Iron Rain.app" 2>/dev/null || true
+    ok "installed /Applications/Iron Rain.app"
+    open "/Applications/Iron Rain.app"
+    ok "launched Iron Rain — it starts the daemon and shows a pairing QR. Done."
+    exit 0
+  fi
+  say "app download unavailable — falling back to the daemon only."
+fi
 
-cat <<'EOF'
+# --- 3. Headless / no app: start the daemon directly ---
+if daemon_up; then
+  ok "a daemon is already running on :6000."
+else
+  secret="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  nohup "$BIN/oculusd" serve --secret "$secret" >"$HOME/.oculus/oculusd.log" 2>&1 &
+  sleep 1
+  ok "started the daemon (log: ~/.oculus/oculusd.log). Scan the pairing QR it printed there."
+fi
 
-Next:
-  oculusd serve --secret <your-secret>
-
-It auto-detects opencode, claude-code, and pi, then prints a pairing QR —
-scan it from the Iron Rain iOS app and you're connected.
-EOF
+case ":$PATH:" in *":$BIN:"*) : ;; *) printf '\033[33m!\033[0m add %s to your PATH: echo '\''export PATH="%s:$PATH"'\'' >> ~/.zshrc\n' "$BIN" "$BIN" ;; esac

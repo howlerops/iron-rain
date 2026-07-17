@@ -30,11 +30,11 @@
 
   <section id="install" class="install wrap">
     <h2>Install</h2>
-    <p class="step"><span class="num">1</span> <strong>The Mac daemon</strong> — one line, no dependencies:</p>
+    <p class="step"><span class="num">1</span> <strong>On your Mac</strong> — one line, no dependencies:</p>
     <pre class="cmd"><code>curl -fsSL https://howlerops.github.io/oculus/install.sh | sh</code></pre>
-    <p class="hint">Downloads a prebuilt <code>oculusd</code> into <code>~/.local/bin</code>. Start it with
-      <code>oculusd serve --secret &lt;your-secret&gt;</code> — it auto-detects opencode,
-      claude-code, and pi, then prints a pairing QR.</p>
+    <p class="hint">Installs the Iron Rain Mac app <em>and</em> the daemon, then launches the app — it
+      auto-starts the daemon, detects opencode/claude-code/pi, and shows a pairing QR.
+      No terminal, no manual steps.</p>
     <p class="step"><span class="num">2</span> <strong>The iOS app</strong> —
       <a href="./support.html#testflight">join the TestFlight beta</a>, then scan the QR to pair.</p>
   </section>
