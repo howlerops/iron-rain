@@ -38,29 +38,25 @@ struct SessionSidebar: View {
     static let newSessionTag = "__new__"
 
     var body: some View {
-        // Header + segmented above a plain List. NOT .listStyle(.sidebar): that style is
-        // only for a List that is the NavigationSplitView sidebar root — used on an
-        // embedded List it reserves the titlebar area and clips the header above it.
-        VStack(spacing: 0) {
-            SidebarHeader(store: store, model: model, palette: palette,
-                          onPairPhone: { showPairingQR = true },
-                          onNewSession: { selection = Self.newSessionTag })
-            Divider().overlay(palette.border)
-            #if os(macOS)
-            SidebarTabPicker(tab: $tab, palette: palette)
-                .padding(.horizontal, 12).padding(.vertical, 8)
-            Divider().overlay(palette.border)
-            #endif
-            list
-        }
-        .background(palette.background)
-        .sheet(isPresented: $showPairingQR) {
-            PairingQRView(url: model.pairingURL ?? "", palette: palette) { showPairingQR = false }
-        }
-    }
-
-    private var list: some View {
+        // The List IS the sidebar root, so macOS insets it below the titlebar and bounds
+        // its height (so it scrolls instead of overflowing). The header + segmented are the
+        // first rows of that List — a VStack sibling would render behind the titlebar.
         List(selection: $selection) {
+            Section {
+                SidebarHeader(store: store, model: model, palette: palette,
+                              onPairPhone: { showPairingQR = true },
+                              onNewSession: { selection = Self.newSessionTag })
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                #if os(macOS)
+                SidebarTabPicker(tab: $tab, palette: palette)
+                    .padding(.horizontal, 12).padding(.bottom, 6)
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                #endif
+            }
             ForEach(groups) { group in
                 Section {
                     ForEach(group.items) { item in
@@ -79,15 +75,13 @@ struct SessionSidebar: View {
                 }
             }
         }
-        .listStyle(.plain)
+        .listStyle(.sidebar)
         .scrollContentBackground(.hidden)
+        .background(palette.background)
         .refreshable { await model.discover() }
         .task { await model.discover() }
-        .overlay {
-            if groups.isEmpty {
-                Text("No sessions yet")
-                    .font(.system(size: 12)).foregroundStyle(palette.mutedForeground)
-            }
+        .sheet(isPresented: $showPairingQR) {
+            PairingQRView(url: model.pairingURL ?? "", palette: palette) { showPairingQR = false }
         }
     }
 
