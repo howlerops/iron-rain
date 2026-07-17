@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -53,6 +54,13 @@ func newAdapter(name, token string) (Provider, error) {
 	switch name {
 	case "linear":
 		return NewLinear(token), nil
+	case "jira":
+		// token = "https://site.atlassian.net|email|apitoken"
+		parts := strings.SplitN(token, "|", 3)
+		if len(parts) != 3 {
+			return nil, fmt.Errorf("jira token must be site|email|apitoken")
+		}
+		return NewJira(parts[0], parts[1], parts[2]), nil
 	default:
 		return nil, fmt.Errorf("unknown tracker: %q", name)
 	}
