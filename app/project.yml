@@ -90,6 +90,9 @@ targets:
       path: OculusWidgets/Info.plist
       properties:
         CFBundleDisplayName: Iron Rain
+        # Must match the parent app's version, or App Store validation rejects the build.
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:

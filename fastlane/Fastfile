@@ -136,6 +136,31 @@ platform :ios do
     }
   end
 
+  # Submit the (just-uploaded, or latest) build to External Testers with the Test
+  # Information Apple requires for external review.
+  def testflight_external(key, distribute_only: false)
+    email = ENV["BETA_CONTACT_EMAIL"] || "support@howlerops.com"
+    upload_to_testflight(
+      api_key: key,
+      app_identifier: APP_ID,
+      distribute_only: distribute_only,
+      distribute_external: true,
+      groups: ["External Testers"],
+      changelog: ENV["CHANGELOG"] || "New Iron Rain beta build.",
+      notify_external_testers: true,
+      beta_app_description: "Iron Rain lets you drive and approve claude-code and opencode sessions running on your Mac — from your iPhone.",
+      beta_app_feedback_email: email,
+      demo_account_required: false,
+      beta_app_review_info: {
+        contact_email: email,
+        contact_first_name: ENV["BETA_CONTACT_FIRST"] || "Jacob",
+        contact_last_name: ENV["BETA_CONTACT_LAST"] || "Beck",
+        contact_phone: ENV["BETA_CONTACT_PHONE"] || "5555555555",
+        demo_account_required: false,
+      },
+    )
+  end
+
   desc "Build the iOS app and upload it to TestFlight (external testers)."
   lane :beta do
     key = asc_key
@@ -158,22 +183,14 @@ platform :ios do
       },
     )
 
-    upload_to_testflight(
-      api_key: key,
-      app_identifier: APP_ID,
-      distribute_external: true,
-      groups: ["External Testers"],
-      changelog: ENV["CHANGELOG"] || "New Iron Rain beta build.",
-      notify_external_testers: true,
-      submit_beta_review: true,
-      beta_app_review_info: {
-        contact_email: ENV["BETA_CONTACT_EMAIL"] || "support@howlerops.com",
-        contact_first_name: ENV["BETA_CONTACT_FIRST"] || "Oculus",
-        contact_last_name: ENV["BETA_CONTACT_LAST"] || "Team",
-        contact_phone: ENV["BETA_CONTACT_PHONE"] || "0000000000",
-      },
-    )
-    UI.success("Uploaded build #{next_build} to TestFlight (External Testers).")
+    testflight_external(key)
+    UI.success("Uploaded build #{next_build} + submitted to External Testers.")
+  end
+
+  desc "Distribute the latest ALREADY-uploaded build to External Testers (no rebuild)."
+  lane :distribute do
+    testflight_external(asc_key, distribute_only: true)
+    UI.success("Submitted the latest build to External Testers.")
   end
 
   desc "Build + upload without submitting for external review (internal testing only)."

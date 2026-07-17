@@ -10,6 +10,8 @@
 <body>
 <header class="wrap">
   <div class="brand"><img class="mark" src="./icon.png" alt="Iron Rain logo" /> Iron Rain</div>
+  <input type="checkbox" id="navtoggle" class="navtoggle" aria-hidden="true" />
+  <label for="navtoggle" class="burger" aria-label="Menu"><span></span><span></span><span></span></label>
   <nav><a href="./index.html">Home</a><a href="./support.html">Support</a></nav>
 </header>
 
@@ -67,6 +69,7 @@
   <span>© <span id="y"></span> HowlerOps</span>
   <span><a href="./privacy.html">Privacy</a> · <a href="./support.html">Support</a></span>
 </footer>
-<script>document.getElementById('y').textContent = new Date().getFullYear();</script>
+<script>document.getElementById('y').textContent = new Date().getFullYear();
+document.querySelectorAll('nav a').forEach(function(a){a.addEventListener('click',function(){var t=document.getElementById('navtoggle');if(t)t.checked=false;});});</script>
 </body>
 </html>
