@@ -135,12 +135,38 @@ action → opens `NewSessionView` pre-filled with the ticket context + `worktree
 
 ---
 
-## Decisions (to confirm)
-1. **Linear auth first:** PAT (ship in a day) vs OAuth-app+PKCE (nicer, unlocks the `@IronRain`
-   agent-actor + webhooks). Recommend **PAT first, OAuth in 2.7**.
-2. **Bidirectional write-back default:** auto (move status + comment on launch/PR) vs opt-in.
-   Recommend **auto, with a per-project toggle**.
-3. **Task-1 cwd depth:** just daemon-managed + claude-code now, or also `lsof` discovered opencode.
-   Recommend **known-cwd now (1.1), close gaps (1.2) as a fast-follow**.
-4. **UI placement:** dedicated **Issues tab** vs a sidebar section. Recommend **a tab** (it's a
-   first-class surface, not per-session).
+## MAJOR FINDING — an existing Linear-integrated service (`../linear-orchestrator`)
+There's a live, deployed monorepo (`~/projects/linear-orchestrator`, internally also "oculus",
+Fly app **oculus.fly.dev**, app+worker running) that ALREADY implements most of Task 2 in TS:
+- `packages/linear`: OAuth (agent-actor scopes `read,write,app:assignable,app:mentionable`), the
+  token exchange, **webhook HMAC verification** (`Linear-Signature`), issue sync, and Linear's
+  native **AgentActivity** API (`createAgentActivity`).
+- `apps/server` (Hono): `/api/auth/linear` OAuth flow, a **public HTTPS webhook receiver** (solves
+  the daemon-has-no-public-URL problem), channels/runs/approvals, a normalized `@oculus/protocol`.
+- The OAuth app credentials (`LINEAR_CLIENT_ID/SECRET`, `LINEAR_WEBHOOK_SECRET`, `API_TOKEN`) live in
+  **Fly secrets** on the `oculus` app (retrievable via `fly ssh console -a oculus -C printenv`).
+
+→ We reuse the **existing OAuth app** (not register a new one). The open question is how much of the
+deployed service to reuse (see the fork below).
+
+## Decisions
+- ✅ **Auth:** reuse the existing Linear OAuth app (agent-actor) — values from the `oculus` Fly app.
+- ✅ **Write-back:** auto (status + comment on launch/PR), with a **per-project toggle**.
+- ✅ **Auto-projects (Task 1):** **full coverage now** — daemon-managed + claude-code (fix the lossy
+  transcript-cwd), and discovered opencode via `lsof -a -p <PID> -d cwd` (+ verify the opencode
+  session API for a path).
+- ✅ **UI:** a dedicated **Issues** surface; **on mobile it must be a separate navigation destination
+  from the session/chat view** (not crammed into the split-view detail) — likely a tab on macOS/iPad
+  and a distinct screen on iPhone.
+
+### OPEN FORK — how to wire Linear into Iron Rain given the deployed service
+- **A. Reuse oculus.fly.dev as the Linear hub:** the daemon talks to the deployed service (`API_TOKEN`)
+  for assigned issues + assignment-triggered launches; the service keeps doing OAuth + webhooks +
+  sync; the daemon runs agents locally. Fastest, webhooks work today, reuses everything — but couples
+  local-first Iron Rain to the cloud service.
+- **B. Reimplement Linear in the Go daemon** (mirror `packages/linear`) using the same OAuth app
+  creds; poll every 60s; webhooks only when `--public-url` is set. Local-first, self-contained, no
+  cloud dependency — more Go code, no webhooks by default.
+- **C. Hybrid:** daemon fetches issues + launches agents directly against Linear (local-first), but
+  reuses oculus.fly.dev purely as the **OAuth redirect + webhook receiver** (the public URL), which
+  relays assignment events to the daemon. Best of both; a little glue.
