@@ -9,6 +9,7 @@ public enum MessageType {
     public static let sessionPrompt = "session.prompt"
     public static let sessionStop = "session.stop"
     public static let sessionAttach = "session.attach"
+    public static let sessionSubscribe = "session.subscribe"
     public static let approvalRespond = "approval.respond"
     public static let discover = "discover.list"
     public static let deviceRegister = "device.register"
@@ -114,6 +115,7 @@ public struct Session: Codable, Identifiable {
     }
 }
 public struct ProtocolError: Codable { public var message: String }
+public struct SessionList: Codable { public var sessions: [Session] }
 
 // Projects — registered folders sessions can be spawned in.
 public struct Project: Codable, Identifiable, Hashable {

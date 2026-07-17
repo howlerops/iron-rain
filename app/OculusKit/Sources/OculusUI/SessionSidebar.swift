@@ -20,12 +20,34 @@ struct SessionSidebar: View {
         model.discovered.filter { $0.provider == "claude-code" }
     }
 
+    /// Hub-managed sessions grouped by their project (worktree sessions included),
+    /// sorted by group name. Sessions with no project fall under "Sessions".
+    private var sessionGroups: [(name: String, sessions: [Session])] {
+        Dictionary(grouping: model.sessions) { $0.projectID ?? "" }
+            .map { pid, ss in
+                let name = model.projects.first { $0.id == pid }?.name ?? (pid.isEmpty ? "Sessions" : pid)
+                return (name, ss)
+            }
+            .sorted { $0.0 < $1.0 }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider().overlay(palette.border)
             List(selection: $selection) {
                 Label("New session", systemImage: "plus.circle").tag(Self.newSessionTag)
+
+                ForEach(sessionGroups, id: \.name) { group in
+                    Section(group.name) {
+                        ForEach(group.sessions, id: \.id) { s in
+                            row(title: s.workspaceName ?? s.title ?? String(s.id.prefix(8)),
+                                subtitle: s.branch ?? s.provider,
+                                active: model.sessionID == s.id)
+                                .tag(s.id)
+                        }
+                    }
+                }
 
                 if !opencodeSessions.isEmpty {
                     Section("Sessions") {

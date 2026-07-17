@@ -36,6 +36,7 @@ public final class Model: ObservableObject {
 
     // Projects + worktrees.
     @Published public var projects: [Project] = []
+    @Published public var sessions: [Session] = [] // hub-managed sessions (for sidebar grouping)
     @Published public var lastDiff: String? // populated by worktreeDiff()
     /// Options applied to the NEXT session created (by the first send). Set via newSession(...).
     @Published public var newSessionProvider = "opencode"
@@ -141,6 +142,7 @@ public final class Model: ObservableObject {
             Task { await receiveLoop() }
             await discover()
             await loadProjects()
+            await loadSessions()
             if let token = OculusStore.shared.deviceToken {
                 await registerDevice(token: token)
             }
@@ -247,6 +249,25 @@ public final class Model: ObservableObject {
     public func loadProjects() async {
         guard let client else { return }
         if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.projectList, payload: Optional<Int>.none) {
+            try? await client.send(env)
+        }
+    }
+
+    public func loadSessions() async {
+        guard let client else { return }
+        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.sessionList, payload: Optional<Int>.none) {
+            try? await client.send(env)
+        }
+    }
+
+    /// Observes an existing hub-managed session (replays its transcript, then live).
+    public func openSession(_ id: String) async {
+        guard let client else { return }
+        messages.removeAll()
+        pendingApproval = nil
+        busy = false
+        lastDiff = nil
+        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.sessionSubscribe, payload: SessionRef(sessionID: id)) {
             try? await client.send(env)
         }
     }
@@ -389,6 +410,8 @@ public final class Model: ObservableObject {
                         discovered = dl.items
                     } else if let pl = try? Protocol.payload(data, as: ProjectList.self) {
                         projects = pl.projects
+                    } else if let sl = try? Protocol.payload(data, as: SessionList.self) {
+                        sessions = sl.sessions
                     } else if let wd = try? Protocol.payload(data, as: WorktreeDiff.self), wd.diff != nil {
                         lastDiff = wd.diff
                     } else if let pr = try? Protocol.payload(data, as: WorktreePRResult.self) {
@@ -397,6 +420,7 @@ public final class Model: ObservableObject {
                         sessionID = s.id
                         currentSession = s
                         refreshLiveActivity()
+                        Task { await loadSessions() } // reflect the new session in the sidebar
                     }
                 case MessageType.sessionMessage:
                     if let m = try? Protocol.payload(data, as: SessionMessage.self) {
@@ -535,6 +559,8 @@ public struct ContentView: View {
                     if sel == SessionSidebar.newSessionTag {
                         showNewSession = true
                         selection = nil // allow re-triggering
+                    } else if model.sessions.contains(where: { $0.id == sel }) {
+                        Task { await model.openSession(sel) }
                     } else if let d = model.discovered.first(where: { $0.sessionID == sel }) {
                         Task { await model.attach(d) }
                     }

@@ -33,6 +33,8 @@ public struct RootView: View {
                     if sel == SessionSidebar.newSessionTag {
                         showNewSession = true
                         selection = nil
+                    } else if model.sessions.contains(where: { $0.id == sel }) {
+                        Task { await model.openSession(sel) }
                     } else if let d = model.discovered.first(where: { $0.sessionID == sel }) {
                         Task { await model.attach(d) }
                     }
