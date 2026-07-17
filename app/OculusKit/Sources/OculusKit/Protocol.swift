@@ -12,6 +12,12 @@ public enum MessageType {
     public static let approvalRespond = "approval.respond"
     public static let discover = "discover.list"
     public static let deviceRegister = "device.register"
+    public static let projectList = "project.list"
+    public static let projectAdd = "project.add"
+    public static let projectRemove = "project.remove"
+    public static let worktreeDiff = "worktree.diff"
+    public static let worktreeRemove = "worktree.remove"
+    public static let worktreePR = "worktree.pr"
 
     public static let sessionStatus = "session.status"
     public static let sessionMessage = "session.message"
@@ -41,8 +47,20 @@ public enum Decision {
 // Payload types (Decodable ignores unknown keys, so optional/extra fields are safe).
 
 public struct SessionCreate: Codable {
-    public var provider: String; public var cwd: String?; public var prompt: String?
-    public init(provider: String, cwd: String? = nil, prompt: String? = nil) { self.provider = provider; self.cwd = cwd; self.prompt = prompt }
+    public var provider: String
+    public var cwd: String?
+    public var projectID: String?
+    public var prompt: String?
+    public var worktree: Bool?
+    public var workspaceName: String?
+    public init(provider: String, cwd: String? = nil, projectID: String? = nil, prompt: String? = nil, worktree: Bool? = nil, workspaceName: String? = nil) {
+        self.provider = provider; self.cwd = cwd; self.projectID = projectID; self.prompt = prompt; self.worktree = worktree; self.workspaceName = workspaceName
+    }
+    enum CodingKeys: String, CodingKey {
+        case provider, cwd, prompt, worktree
+        case projectID = "project_id"
+        case workspaceName = "workspace_name"
+    }
 }
 public struct SessionRef: Codable {
     public var sessionID: String
@@ -79,8 +97,68 @@ public struct ApprovalResolved: Codable {
     public var approvalID: String; public var decision: String
     enum CodingKeys: String, CodingKey { case approvalID = "approval_id"; case decision }
 }
-public struct Session: Codable { public var id: String; public var provider: String; public var status: String; public var title: String? }
+public struct Session: Codable, Identifiable {
+    public var id: String
+    public var provider: String
+    public var status: String
+    public var title: String?
+    public var projectID: String?
+    public var cwd: String?
+    public var workspaceName: String?
+    public var branch: String?
+    public var port: Int?
+    enum CodingKeys: String, CodingKey {
+        case id, provider, status, title, cwd, branch, port
+        case projectID = "project_id"
+        case workspaceName = "workspace_name"
+    }
+}
 public struct ProtocolError: Codable { public var message: String }
+
+// Projects — registered folders sessions can be spawned in.
+public struct Project: Codable, Identifiable, Hashable {
+    public var id: String
+    public var name: String
+    public var path: String
+    public var isGitRepo: Bool
+    public var defaultBranch: String?
+    enum CodingKeys: String, CodingKey {
+        case id, name, path
+        case isGitRepo = "is_git_repo"
+        case defaultBranch = "default_branch"
+    }
+}
+public struct ProjectAdd: Codable {
+    public var path: String
+    public init(path: String) { self.path = path }
+}
+public struct ProjectRef: Codable {
+    public var projectID: String
+    public init(projectID: String) { self.projectID = projectID }
+    enum CodingKeys: String, CodingKey { case projectID = "project_id" }
+}
+public struct ProjectList: Codable { public var projects: [Project] }
+
+// Worktree finish flow.
+public struct WorktreeRemove: Codable {
+    public var sessionID: String; public var force: Bool?
+    public init(sessionID: String, force: Bool? = nil) { self.sessionID = sessionID; self.force = force }
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case force }
+}
+public struct WorktreeDiff: Codable {
+    public var sessionID: String; public var diff: String?
+    public init(sessionID: String, diff: String? = nil) { self.sessionID = sessionID; self.diff = diff }
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case diff }
+}
+public struct WorktreePR: Codable {
+    public var sessionID: String; public var title: String; public var body: String?
+    public init(sessionID: String, title: String, body: String? = nil) { self.sessionID = sessionID; self.title = title; self.body = body }
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case title; case body }
+}
+public struct WorktreePRResult: Codable {
+    public var sessionID: String; public var branch: String; public var pushed: Bool; public var url: String?
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case branch; case pushed; case url }
+}
 
 public struct SessionAttach: Codable {
     public var provider: String; public var sessionID: String; public var url: String?
