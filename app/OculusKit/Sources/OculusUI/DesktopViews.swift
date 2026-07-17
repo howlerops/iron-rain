@@ -44,7 +44,7 @@ public struct RootView: View {
         #if os(macOS)
         NavigationSplitView {
             SessionSidebar(store: store, model: model, selection: $selection, tab: $selectedTab)
-                .navigationSplitViewColumnWidth(min: 240, ideal: 280)
+                .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 340)
         } detail: {
             if selectedTab == 0 {
                 ChatView(model: model)
@@ -60,7 +60,7 @@ public struct RootView: View {
         TabView(selection: $selectedTab) {
             NavigationSplitView {
                 SessionSidebar(store: store, model: model, selection: $selection, tab: $selectedTab)
-                    .navigationSplitViewColumnWidth(min: 240, ideal: 280)
+                    .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 340)
             } detail: {
                 ChatView(model: model)
             }

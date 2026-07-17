@@ -47,6 +47,7 @@ struct SessionSidebar: View {
                 Text("Issues").tag(1)
             }
             .pickerStyle(.segmented).labelsHidden()
+            .frame(maxWidth: .infinity)
             .padding(.horizontal, 10).padding(.vertical, 8)
             Divider().overlay(palette.border)
             #endif
@@ -157,9 +158,12 @@ struct SidebarHeader: View {
                 }
                 .contentShape(Rectangle())
             }
-            .menuStyle(.borderlessButton).fixedSize()
+            // Fix only the height: fixing width too makes a borderlessButton menu report
+            // a huge ideal width, which blows the split-view sidebar column out to full
+            // width. Letting width follow the proposal keeps it inside the column.
+            .menuStyle(.borderlessButton).fixedSize(horizontal: false, vertical: true)
 
-            Spacer()
+            Spacer(minLength: 0)
 
             Menu {
                 if model.pairingURL != nil {
