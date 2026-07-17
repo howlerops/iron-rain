@@ -36,10 +36,11 @@ func (c *wsConn) WriteMsg(b []byte) error {
 	defer cancel()
 	err := c.ws.Write(ctx, websocket.MessageBinary, b)
 	if err != nil && c.ctx.Err() == nil {
-		// The write stalled (or otherwise failed) while the connection itself is
-		// still live: drop the client so a filled send buffer can't block the
-		// goroutine broadcasting to it.
-		c.ws.Close(websocket.StatusPolicyViolation, "write timeout")
+		// The write stalled (or otherwise failed) while the connection itself is still
+		// live: drop the client so a filled send buffer can't block the goroutine
+		// broadcasting to it. CloseNow (not a graceful Close handshake, which would
+		// itself block on the same stalled peer) tears down the TCP connection now.
+		_ = c.ws.CloseNow()
 	}
 	return err
 }

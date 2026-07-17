@@ -10,9 +10,9 @@ import (
 	"github.com/howlerops/oculus/daemon/transport"
 )
 
-// writeTimeout bounds a single WebSocket write so a stalled peer (filled TCP send
+// defaultWriteTimeout bounds a single WebSocket write so a stalled peer (filled TCP send
 // buffer on a half-open connection) can't park the writing goroutine forever.
-const writeTimeout = 30 * time.Second
+const defaultWriteTimeout = 30 * time.Second
 
 // Conn is a transport.MsgConn over a WebSocket (one binary message per protocol message).
 //
@@ -23,8 +23,9 @@ const writeTimeout = 30 * time.Second
 // the lifetime scope: cancelling it unblocks a stalled reader by closing the
 // whole connection.
 type Conn struct {
-	ws  *websocket.Conn
-	ctx context.Context
+	ws           *websocket.Conn
+	ctx          context.Context
+	writeTimeout time.Duration // per-message write bound (field so tests can shorten it)
 }
 
 var _ transport.MsgConn = (*Conn)(nil)
@@ -32,17 +33,19 @@ var _ transport.MsgConn = (*Conn)(nil)
 // New wraps an accepted/dialed websocket.
 func New(ctx context.Context, ws *websocket.Conn) *Conn {
 	ws.SetReadLimit(8 * 1024 * 1024)
-	return &Conn{ws: ws, ctx: ctx}
+	return &Conn{ws: ws, ctx: ctx, writeTimeout: defaultWriteTimeout}
 }
 
 func (c *Conn) WriteMsg(b []byte) error {
-	ctx, cancel := context.WithTimeout(c.ctx, writeTimeout)
+	ctx, cancel := context.WithTimeout(c.ctx, c.writeTimeout)
 	defer cancel()
 	err := c.ws.Write(ctx, websocket.MessageBinary, b)
 	if err != nil && c.ctx.Err() == nil {
-		// The write stalled (or failed) while the connection is still live: drop
-		// the peer so it can't block the sender.
-		c.ws.Close(websocket.StatusPolicyViolation, "write timeout")
+		// The write stalled (or failed) while the connection is still live: drop the
+		// peer so it can't block the sender. CloseNow (not Close) tears down the TCP
+		// connection immediately — a graceful close handshake would itself block on the
+		// same stalled peer, defeating the timeout.
+		_ = c.ws.CloseNow()
 	}
 	return err
 }
