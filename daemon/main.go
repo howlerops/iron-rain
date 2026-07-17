@@ -84,6 +84,7 @@ func serve(args []string) error {
 	apnsBundle := fs.String("apns-bundle", "com.howlerops.oculus", "app bundle id / APNs topic")
 	apnsSandbox := fs.Bool("apns-sandbox", false, "use the APNs sandbox endpoint")
 	publicURL := fs.String("public-url", "", "reachable base ws/wss URL for the pairing QR (e.g. wss://x.ngrok-free.app); default derives a LAN URL from --addr")
+	name := fs.String("name", "", "human name for this desktop shown in the app (default: hostname)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -142,12 +143,19 @@ func serve(args []string) error {
 	if pushEnabled {
 		fmt.Printf("  push:           APNs enabled (bundle %s)\n", *apnsBundle)
 	}
+	desktopName := *name
+	if desktopName == "" {
+		if hn, err := os.Hostname(); err == nil {
+			desktopName = hn
+		}
+	}
 	pubURL := wsPublicURL(*publicURL, *addr)
-	printPairing(pubURL, hex.EncodeToString(kp.Public()), sec)
+	fmt.Printf("  desktop name:   %s\n", desktopName)
+	printPairing(pubURL, hex.EncodeToString(kp.Public()), sec, desktopName)
 	// Drop a local pairing file so an app on THIS machine (the macOS app) can
 	// auto-discover + connect with zero config, and show a QR (using the reachable
 	// public URL) to pair a phone. 0600, same-user only.
-	writeLocalPairing(localWSURL(*addr), pubURL, hex.EncodeToString(kp.Public()), sec)
+	writeLocalPairing(localWSURL(*addr), pubURL, hex.EncodeToString(kp.Public()), sec, desktopName)
 	return http.ListenAndServe(*addr, mux)
 }
 
@@ -163,7 +171,7 @@ func localWSURL(addr string) string {
 // writeLocalPairing writes ~/.oculus/pairing.json for the local app to read.
 // ws is the loopback URL the local app connects to; publicWS is the reachable URL
 // encoded into the QR shown to a phone.
-func writeLocalPairing(wsURL, publicWS, pub, secret string) {
+func writeLocalPairing(wsURL, publicWS, pub, secret, name string) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return
@@ -172,13 +180,16 @@ func writeLocalPairing(wsURL, publicWS, pub, secret string) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return
 	}
-	data, err := json.Marshal(map[string]string{
-		"ws": wsURL, "public": publicWS, "pub": pub, "secret": secret,
+	_ = os.WriteFile(filepath.Join(dir, "pairing.json"), pairingJSON(wsURL, publicWS, pub, secret, name), 0o600)
+}
+
+// pairingJSON is the ~/.oculus/pairing.json body the local app reads (name lets it label
+// this desktop). Pure for testing.
+func pairingJSON(wsURL, publicWS, pub, secret, name string) []byte {
+	data, _ := json.Marshal(map[string]string{
+		"ws": wsURL, "public": publicWS, "pub": pub, "secret": secret, "name": name,
 	})
-	if err != nil {
-		return
-	}
-	_ = os.WriteFile(filepath.Join(dir, "pairing.json"), data, 0o600)
+	return data
 }
 
 // wsPublicURL returns the reachable ws URL clients should dial. If publicURL is set
@@ -217,10 +228,20 @@ func lanIP() string {
 	return "127.0.0.1"
 }
 
-// printPairing prints the oculus:// pairing URL and a scannable QR to the terminal.
-func printPairing(wsURL, pubHex, secret string) {
-	pairURL := fmt.Sprintf("oculus://pair?ws=%s&pub=%s&secret=%s",
+// buildPairURL builds the oculus://pair deep link the QR encodes. name lets the app
+// label this desktop (for grouping multiple paired Macs).
+func buildPairURL(wsURL, pubHex, secret, name string) string {
+	u := fmt.Sprintf("oculus://pair?ws=%s&pub=%s&secret=%s",
 		url.QueryEscape(wsURL), pubHex, url.QueryEscape(secret))
+	if name != "" {
+		u += "&name=" + url.QueryEscape(name)
+	}
+	return u
+}
+
+// printPairing prints the oculus:// pairing URL and a scannable QR to the terminal.
+func printPairing(wsURL, pubHex, secret, name string) {
+	pairURL := buildPairURL(wsURL, pubHex, secret, name)
 	fmt.Printf("\n  pair from your phone — scan this QR (Oculus app → Scan QR):\n\n")
 	qrterminal.GenerateWithConfig(pairURL, qrterminal.Config{
 		Level: qrterminal.L, Writer: os.Stdout, HalfBlocks: true,
