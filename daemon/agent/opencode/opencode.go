@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 
@@ -62,14 +63,14 @@ func (p *Provider) Create(ctx context.Context, cwd, prompt string) (agent.Sessio
 		ID    string `json:"id"`
 		Title string `json:"title"`
 	}
-	if err := p.postJSON(ctx, "/session", map[string]any{}, &created); err != nil {
+	if err := p.postJSON(ctx, withDir("/session", cwd), map[string]any{}, &created); err != nil {
 		return nil, err
 	}
 	if created.ID == "" {
 		return nil, fmt.Errorf("opencode: create returned empty session id")
 	}
 
-	s := &session{p: p, id: created.ID, events: make(chan agent.Event, 32), done: make(chan struct{})}
+	s := &session{p: p, id: created.ID, dir: cwd, events: make(chan agent.Event, 32), done: make(chan struct{})}
 	if err := s.subscribe(); err != nil {
 		return nil, err
 	}
@@ -169,6 +170,7 @@ func (p *Provider) postJSON(ctx context.Context, path string, body, out any) err
 type session struct {
 	p      *Provider
 	id     string
+	dir    string // working directory; forwarded to opencode as ?directory= (scopes the session)
 	events chan agent.Event
 
 	ctx       context.Context
@@ -381,7 +383,7 @@ func (s *session) Prompt(_ context.Context, text string) error {
 		ctx = context.Background()
 	}
 	go func() {
-		if err := s.p.postJSON(ctx, "/session/"+s.id+"/message", body, nil); err != nil && ctx.Err() == nil {
+		if err := s.p.postJSON(ctx, withDir("/session/"+s.id+"/message", s.dir), body, nil); err != nil && ctx.Err() == nil {
 			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusError}})
 		}
 	}()
@@ -397,11 +399,20 @@ func (s *session) Respond(ctx context.Context, approvalID, decision string) erro
 	case protocol.DecisionAlways:
 		resp = "always"
 	}
-	return s.p.postJSON(ctx, fmt.Sprintf("/session/%s/permissions/%s", s.id, approvalID), map[string]string{"response": resp}, nil)
+	return s.p.postJSON(ctx, withDir(fmt.Sprintf("/session/%s/permissions/%s", s.id, approvalID), s.dir), map[string]string{"response": resp}, nil)
 }
 
 func (s *session) Stop(ctx context.Context) error {
-	return s.p.postJSON(ctx, "/session/"+s.id+"/abort", map[string]any{}, nil)
+	return s.p.postJSON(ctx, withDir("/session/"+s.id+"/abort", s.dir), map[string]any{}, nil)
+}
+
+// withDir appends opencode's ?directory= query param (which scopes a call to a project
+// folder / worktree) when dir is non-empty; empty dir → the server's default directory.
+func withDir(path, dir string) string {
+	if dir == "" {
+		return path
+	}
+	return path + "?directory=" + url.QueryEscape(dir)
 }
 
 func (s *session) Close() error {

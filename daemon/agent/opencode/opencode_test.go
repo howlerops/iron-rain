@@ -21,8 +21,10 @@ type stub struct {
 	connected chan struct{}
 	permCh    chan string
 
-	mu       sync.Mutex
-	permResp string
+	mu         sync.Mutex
+	permResp   string
+	sessionDir string // ?directory= seen on POST /session
+	messageDir string // ?directory= seen on POST /session/{id}/message
 }
 
 func newStub() *stub {
@@ -42,6 +44,9 @@ func (s *stub) lastPermissionResponse() string {
 func (s *stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == "/session":
+		s.mu.Lock()
+		s.sessionDir = r.URL.Query().Get("directory")
+		s.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": "ses_test", "title": "stub session"})
 
 	case r.Method == http.MethodGet && r.URL.Path == "/event":
@@ -69,6 +74,9 @@ func (s *stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/message"):
+		s.mu.Lock()
+		s.messageDir = r.URL.Query().Get("directory")
+		s.mu.Unlock()
 		go s.scenario()
 		w.WriteHeader(http.StatusOK)
 
@@ -155,5 +163,46 @@ func TestOpenCodeProvider_E2E(t *testing.T) {
 	}
 	if got := stub.lastPermissionResponse(); got != "once" {
 		t.Fatalf("allow must map to opencode 'once', got %q", got)
+	}
+}
+
+// TestOpenCode_SendsDirectory pins the Track-1.1 fix: the cwd passed to Create/Prompt
+// must be forwarded to opencode as the ?directory= query param on both POST /session
+// and POST /session/{id}/message, so sessions are scoped to the right folder/worktree.
+func TestOpenCode_SendsDirectory(t *testing.T) {
+	stub := newStub()
+	srv := httptest.NewServer(stub)
+	defer srv.Close()
+
+	const dir = "/repo/worktrees/feature-x"
+	sess, err := New(srv.URL).Create(context.Background(), dir, "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	// Wait until the message POST has been observed (Prompt fires async).
+	deadline := time.After(3 * time.Second)
+	for {
+		stub.mu.Lock()
+		md := stub.messageDir
+		stub.mu.Unlock()
+		if md != "" {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for the message POST")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	if stub.sessionDir != dir {
+		t.Errorf("POST /session directory = %q, want %q", stub.sessionDir, dir)
+	}
+	if stub.messageDir != dir {
+		t.Errorf("POST /message directory = %q, want %q", stub.messageDir, dir)
 	}
 }
