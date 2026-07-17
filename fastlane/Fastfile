@@ -140,9 +140,16 @@ platform :ios do
   # Information Apple requires for external review.
   def testflight_external(key, distribute_only: false)
     email = ENV["BETA_CONTACT_EMAIL"] || "support@howlerops.com"
+    opts = {}
+    if distribute_only
+      # Pin the exact build so pilot doesn't prompt (non-interactive).
+      opts[:app_version] = ENV["APP_VERSION"] || "0.0.1"
+      opts[:build_number] = (ENV["BUILD_NUMBER"] || latest_testflight_build_number(api_key: key, app_identifier: APP_ID)).to_s
+    end
     upload_to_testflight(
       api_key: key,
       app_identifier: APP_ID,
+      app_platform: "ios",
       distribute_only: distribute_only,
       distribute_external: true,
       groups: ["External Testers"],
@@ -151,13 +158,16 @@ platform :ios do
       beta_app_description: "Iron Rain lets you drive and approve claude-code and opencode sessions running on your Mac — from your iPhone.",
       beta_app_feedback_email: email,
       demo_account_required: false,
+      uses_non_exempt_encryption: false,
+      submit_beta_review: true,
       beta_app_review_info: {
-        contact_email: email,
         contact_first_name: ENV["BETA_CONTACT_FIRST"] || "Jacob",
         contact_last_name: ENV["BETA_CONTACT_LAST"] || "Beck",
-        contact_phone: ENV["BETA_CONTACT_PHONE"] || "5555555555",
+        contact_phone: ENV["BETA_CONTACT_PHONE"] || "5555550123",
+        contact_email: email,
         demo_account_required: false,
       },
+      **opts,
     )
   end
 
