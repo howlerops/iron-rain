@@ -27,14 +27,16 @@
   </ol>
 
   <h2>Setting up the Mac daemon</h2>
-  <p>Iron Rain drives coding agents that run on your Mac through a small daemon. Most of it is
-  automatic — the daemon <strong>auto-detects</strong> opencode, claude-code, and pi if they're
-  installed (and sets up the claude-code bridge for you on first run), and the Mac app
-  <strong>auto-connects</strong> to it with zero config. The one manual step today is starting the
-  daemon once:</p>
-  <p><code>cd daemon &amp;&amp; go run . serve --secret &lt;your-secret&gt;</code></p>
-  <p>It prints a pairing QR — scan it from the iOS app and you're connected. A bundled menu-bar app
-  that launches the daemon for you (no terminal) is on the roadmap.</p>
+  <p>Iron Rain drives coding agents that run on your Mac through a small daemon. Install it with one
+  line (needs <a href="https://go.dev/dl/">Go</a> + git):</p>
+  <p><code>curl -fsSL https://howlerops.github.io/oculus/install.sh | sh</code></p>
+  <p>Then start it once:</p>
+  <p><code>oculusd serve --secret &lt;your-secret&gt;</code></p>
+  <p>Most of the rest is automatic — the daemon <strong>auto-detects</strong> opencode, claude-code,
+  and pi (and sets up the claude-code bridge on first run), prints a pairing QR to scan from the iOS
+  app, and the Mac app <strong>auto-connects</strong> with zero config. A bundled menu-bar app that
+  launches the daemon for you (no terminal) is on the roadmap.</p>
+  <p class="updated">Prefer source? <code>cd daemon &amp;&amp; go run . serve --secret &lt;your-secret&gt;</code></p>
 
   <h2>Common questions</h2>
   <p><strong>Do I need an API key?</strong> No — claude-code runs on your existing Claude

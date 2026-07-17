@@ -34,6 +34,16 @@ nav a:hover{color:var(--fg)}
 .card h3{margin:0 0 8px;font-size:18px}
 .card p{margin:0;color:var(--muted);font-size:15px}
 
+.install{padding:44px 24px 8px}
+.install h2{font-size:26px;margin:0 0 16px}
+.install .step{margin:16px 0 8px}
+.install .num{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;
+  border-radius:50%;background:var(--amber);color:#1a1200;font-size:13px;font-weight:700;margin-right:8px}
+.install .hint{color:var(--muted);font-size:14px;margin:8px 0 4px}
+pre.cmd{background:var(--card);border:1px solid var(--border);border-radius:12px;
+  padding:14px 16px;overflow-x:auto;margin:8px 0}
+pre.cmd code{background:none;padding:0;color:var(--fg);font-size:14px}
+
 .how{padding:40px 24px 64px}
 .how h2{font-size:26px;margin:0 0 16px}
 .how ol{color:var(--muted);padding-left:20px}
