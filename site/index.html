@@ -30,9 +30,9 @@
 
   <section id="install" class="install wrap">
     <h2>Install</h2>
-    <p class="step"><span class="num">1</span> <strong>The Mac daemon</strong> — one line (needs <a href="https://go.dev/dl/">Go</a> + git):</p>
+    <p class="step"><span class="num">1</span> <strong>The Mac daemon</strong> — one line, no dependencies:</p>
     <pre class="cmd"><code>curl -fsSL https://howlerops.github.io/oculus/install.sh | sh</code></pre>
-    <p class="hint">Builds <code>oculusd</code> into <code>~/.local/bin</code>. Start it with
+    <p class="hint">Downloads a prebuilt <code>oculusd</code> into <code>~/.local/bin</code>. Start it with
       <code>oculusd serve --secret &lt;your-secret&gt;</code> — it auto-detects opencode,
       claude-code, and pi, then prints a pairing QR.</p>
     <p class="step"><span class="num">2</span> <strong>The iOS app</strong> —

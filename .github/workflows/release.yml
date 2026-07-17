@@ -1,0 +1,50 @@
+name: Release oculusd
+
+# Cross-compiles the daemon and publishes prebuilt binaries to a GitHub Release, so the
+# curl installer needs no Go/git. Trigger by pushing a tag (v*) or via manual dispatch.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to create + release (e.g. v0.0.1)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: daemon/go.mod
+
+      - name: Build binaries
+        working-directory: daemon
+        run: |
+          mkdir -p ../dist
+          for pair in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
+            os="${pair%/*}"; arch="${pair#*/}"
+            echo "building $os/$arch"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "-s -w" -o oculusd .
+            tar -czf "../dist/oculusd_${os}_${arch}.tar.gz" oculusd
+            rm oculusd
+          done
+          ( cd ../dist && shasum -a 256 *.tar.gz > checksums.txt )
+          ls -lh ../dist
+
+      - name: Create tag (manual dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git tag "${{ inputs.tag }}" || true
+          git push origin "${{ inputs.tag }}" || true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          files: dist/*
+          generate_release_notes: true
