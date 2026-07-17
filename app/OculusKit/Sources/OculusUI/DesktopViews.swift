@@ -10,6 +10,9 @@ public struct RootView: View {
     private var palette: OculusPalette { .current(scheme) }
     @State private var selection: String?
     @State private var showNewSession = false
+    #if os(macOS)
+    @StateObject private var launcher = DaemonLauncher()
+    #endif
 
     public init(store: DesktopStore) { self.store = store }
 
@@ -47,7 +50,12 @@ public struct RootView: View {
         .background(palette.background.ignoresSafeArea())
         .foregroundStyle(palette.foreground)
         .tint(palette.primary)
-        .task { await store.bootstrap() }
+        .task {
+            #if os(macOS)
+            await launcher.ensureRunning() // start the local daemon (no terminal) if needed
+            #endif
+            await store.bootstrap()
+        }
     }
 }
 
