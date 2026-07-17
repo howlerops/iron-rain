@@ -123,6 +123,11 @@ struct SidebarHeader: View {
 
     var body: some View {
         HStack(spacing: 10) {
+            // The brand mark is a sibling of the Menu, NOT inside its label: a resizable
+            // image inside a .fixedSize() borderlessButton menu label has no intrinsic
+            // size and blows up to fill the window on macOS.
+            Image("WolfMark").resizable().scaledToFit().frame(width: 26, height: 26)
+
             Menu {
                 ForEach(store.models, id: \.id) { m in
                     Button { store.selectedID = m.id } label: {
@@ -138,19 +143,16 @@ struct SidebarHeader: View {
                     Button(role: .destructive) { store.remove(a.id) } label: { Label("Remove desktop", systemImage: "trash") }
                 }
             } label: {
-                HStack(spacing: 10) {
-                    Image("WolfMark").resizable().scaledToFit().frame(width: 26, height: 26)
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 5) {
-                            Text(desktopName).font(.headline).lineLimit(1)
-                            Image(systemName: "chevron.up.chevron.down")
-                                .font(.caption2).foregroundStyle(palette.mutedForeground)
-                        }
-                        HStack(spacing: 5) {
-                            Circle().fill(statusColor).frame(width: 7, height: 7)
-                            Text(statusLabel).font(.caption2)
-                                .foregroundStyle(palette.mutedForeground).lineLimit(1)
-                        }
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 5) {
+                        Text(desktopName).font(.headline).lineLimit(1)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.caption2).foregroundStyle(palette.mutedForeground)
+                    }
+                    HStack(spacing: 5) {
+                        Circle().fill(statusColor).frame(width: 7, height: 7)
+                        Text(statusLabel).font(.caption2)
+                            .foregroundStyle(palette.mutedForeground).lineLimit(1)
                     }
                 }
                 .contentShape(Rectangle())
