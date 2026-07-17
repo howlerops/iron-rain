@@ -85,7 +85,7 @@ platform :ios do
       if app.get_beta_groups.any? { |g| g.name == "External Testers" }
         UI.message("External Testers group already exists.")
       else
-        Spaceship::ConnectAPI::BetaGroup.create(app_id: app.id, name: "External Testers", is_internal_group: false, public_link_enabled: true)
+        app.create_beta_group(group_name: "External Testers", public_link_enabled: true)
         UI.success("Created 'External Testers' beta group (public link enabled).")
       end
     rescue => e

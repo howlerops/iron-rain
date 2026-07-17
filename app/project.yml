@@ -43,6 +43,10 @@ targets:
         UILaunchScreen: {}
         UIApplicationSupportsIndirectInputEvents: true
         NSSupportsLiveActivities: true
+        # Uses only standard encryption (TLS + NaCl/curve25519) → exempt. Declaring this
+        # lets TestFlight skip the per-build "Missing Compliance" prompt. Verify for your
+        # jurisdiction if you add non-standard cryptography.
+        ITSAppUsesNonExemptEncryption: false
         # Allow cleartext ws:// to the daemon on the local network (direct/LAN mode).
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
