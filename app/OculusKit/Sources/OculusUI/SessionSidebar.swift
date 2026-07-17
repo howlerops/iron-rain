@@ -34,29 +34,33 @@ struct SessionSidebar: View {
     @Environment(\.colorScheme) private var scheme
     private var palette: OculusPalette { .current(scheme) }
     @State private var showPairingQR = false
+    @State private var showAddDesktop = false
+    @State private var renamingDesktop = false
+    @State private var desktopNewName = ""
 
     static let newSessionTag = "__new__"
 
     var body: some View {
         // The List IS the sidebar root, so macOS insets it below the titlebar and bounds
         // its height (so it scrolls instead of overflowing). The header + segmented are the
-        // first rows of that List — a VStack sibling would render behind the titlebar.
+        // first rows of that List. Their sheet/alert live on the List (below), NOT on the
+        // header view — presentation modifiers attached to a List row render it blank.
         List(selection: $selection) {
-            Section {
-                SidebarHeader(store: store, model: model, palette: palette,
-                              onPairPhone: { showPairingQR = true },
-                              onNewSession: { selection = Self.newSessionTag })
-                    .listRowInsets(EdgeInsets())
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
-                #if os(macOS)
-                SidebarTabPicker(tab: $tab, palette: palette)
-                    .padding(.horizontal, 12).padding(.bottom, 6)
-                    .listRowInsets(EdgeInsets())
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
-                #endif
-            }
+            SidebarHeader(store: store, model: model, palette: palette,
+                          onPairPhone: { showPairingQR = true },
+                          onNewSession: { selection = Self.newSessionTag },
+                          onAddDesktop: { showAddDesktop = true },
+                          onRename: { name in desktopNewName = name; renamingDesktop = true })
+                .listRowInsets(EdgeInsets())
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+            #if os(macOS)
+            SidebarTabPicker(tab: $tab, palette: palette)
+                .padding(.horizontal, 12).padding(.bottom, 6)
+                .listRowInsets(EdgeInsets())
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+            #endif
             ForEach(groups) { group in
                 Section {
                     ForEach(group.items) { item in
@@ -82,6 +86,14 @@ struct SessionSidebar: View {
         .task { await model.discover() }
         .sheet(isPresented: $showPairingQR) {
             PairingQRView(url: model.pairingURL ?? "", palette: palette) { showPairingQR = false }
+        }
+        .sheet(isPresented: $showAddDesktop) {
+            AddDesktopView(store: store, palette: palette) { showAddDesktop = false }
+        }
+        .alert("Rename desktop", isPresented: $renamingDesktop) {
+            TextField("Name", text: $desktopNewName)
+            Button("Save") { if let a = store.active { store.rename(a.id, to: desktopNewName) } }
+            Button("Cancel", role: .cancel) {}
         }
     }
 
@@ -310,10 +322,8 @@ struct SidebarHeader: View {
     let palette: OculusPalette
     var onPairPhone: () -> Void
     var onNewSession: () -> Void
-
-    @State private var showAdd = false
-    @State private var renaming = false
-    @State private var newName = ""
+    var onAddDesktop: () -> Void
+    var onRename: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -329,9 +339,9 @@ struct SidebarHeader: View {
                         }
                     }
                     Divider()
-                    Button { showAdd = true } label: { Label("Add desktop…", systemImage: "plus") }
+                    Button { onAddDesktop() } label: { Label("Add desktop…", systemImage: "plus") }
                     if let a = store.active {
-                        Button { newName = a.name; renaming = true } label: { Label("Rename…", systemImage: "pencil") }
+                        Button { onRename(a.name) } label: { Label("Rename…", systemImage: "pencil") }
                         Button(role: .destructive) { store.remove(a.id) } label: { Label("Remove desktop", systemImage: "trash") }
                     }
                 } label: {
@@ -377,12 +387,6 @@ struct SidebarHeader: View {
             }
         }
         .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 8)
-        .sheet(isPresented: $showAdd) { AddDesktopView(store: store, palette: palette) { showAdd = false } }
-        .alert("Rename desktop", isPresented: $renaming) {
-            TextField("Name", text: $newName)
-            Button("Save") { if let a = store.active { store.rename(a.id, to: newName) } }
-            Button("Cancel", role: .cancel) {}
-        }
     }
 
     private var desktopName: String {
