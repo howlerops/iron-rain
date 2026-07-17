@@ -325,6 +325,13 @@ public struct Envelope {
     /// True when the envelope carried a `payload` field.
     public var hasPayload: Bool { payloadJSON != nil }
 
+    /// Top-level keys of the payload object (empty if the payload isn't an object).
+    /// Lets a caller pick the right payload type without another JSON parse.
+    public var payloadKeys: Set<String> {
+        guard let dict = payloadJSON as? [String: Any] else { return [] }
+        return Set(dict.keys)
+    }
+
     /// Decodes the already-parsed payload into `T`. Only the payload subtree is
     /// touched; the envelope itself is not re-parsed.
     public func payload<T: Decodable>(as _: T.Type) throws -> T {

@@ -523,54 +523,45 @@ public final class Model: ObservableObject {
 
     // MARK: receive loop
 
-    /// Top-level keys of an envelope's `payload` object, read in a single JSON parse so an
-    /// `ok` frame can be routed to exactly one typed decode instead of being re-parsed for
-    /// every candidate payload type.
-    private func okPayloadKeys(_ data: Data) -> Set<String> {
-        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let payload = obj["payload"] as? [String: Any] else { return [] }
-        return Set(payload.keys)
-    }
-
     private func receiveLoop() async {
         guard let client else { return }
         while connected {
             do {
                 let data = try await client.recv()
-                let header = try Protocol.header(data)
-                switch header.type {
+                // Parse the envelope once; env.payload(as:) then decodes only the payload
+                // subtree instead of re-tokenizing the whole frame per candidate type.
+                let env = try Protocol.envelope(data)
+                switch env.type {
                 case MessageType.ok:
-                    // Read the payload's top-level keys in a SINGLE JSON parse, then decode
-                    // exactly the one matching type — instead of re-running Protocol.payload
-                    // (a full parse each) for every candidate type. Each key is unique to its
-                    // OK payload type, so the value guards below preserve the original behavior.
-                    let keys = okPayloadKeys(data)
-                    if keys.contains("items"), let dl = try? Protocol.payload(data, as: DiscoverList.self), !dl.items.isEmpty {
+                    // Route the OK frame to exactly one typed decode by its unique payload
+                    // key — no extra parse (payloadKeys reads the already-parsed envelope).
+                    let keys = env.payloadKeys
+                    if keys.contains("items"), let dl = try? env.payload(as: DiscoverList.self), !dl.items.isEmpty {
                         discovered = dl.items
-                    } else if keys.contains("projects"), let pl = try? Protocol.payload(data, as: ProjectList.self) {
+                    } else if keys.contains("projects"), let pl = try? env.payload(as: ProjectList.self) {
                         projects = pl.projects
-                    } else if keys.contains("sessions"), let sl = try? Protocol.payload(data, as: SessionList.self) {
+                    } else if keys.contains("sessions"), let sl = try? env.payload(as: SessionList.self) {
                         sessions = sl.sessions
-                    } else if keys.contains("connected"), let st = try? Protocol.payload(data, as: IntegrationStatus.self) {
+                    } else if keys.contains("connected"), let st = try? env.payload(as: IntegrationStatus.self) {
                         connectedTrackers = st.connected
-                    } else if keys.contains("issues"), let il = try? Protocol.payload(data, as: IssueList.self) {
+                    } else if keys.contains("issues"), let il = try? env.payload(as: IssueList.self) {
                         issues = il.issues
-                    } else if keys.contains("url"), keys.contains("provider"), let oa = try? Protocol.payload(data, as: IntegrationOAuth.self), let u = oa.url, let url = URL(string: u) {
+                    } else if keys.contains("url"), keys.contains("provider"), let oa = try? env.payload(as: IntegrationOAuth.self), let u = oa.url, let url = URL(string: u) {
                         oauthURL = url
-                    } else if keys.contains("diff"), let wd = try? Protocol.payload(data, as: WorktreeDiff.self), wd.diff != nil {
+                    } else if keys.contains("diff"), let wd = try? env.payload(as: WorktreeDiff.self), wd.diff != nil {
                         lastDiff = wd.diff
-                    } else if keys.contains("files"), let wc = try? Protocol.payload(data, as: WorktreeConflicts.self), wc.files != nil {
+                    } else if keys.contains("files"), let wc = try? env.payload(as: WorktreeConflicts.self), wc.files != nil {
                         conflicts = wc.files ?? []
-                    } else if keys.contains("pushed"), let pr = try? Protocol.payload(data, as: WorktreePRResult.self) {
+                    } else if keys.contains("pushed"), let pr = try? env.payload(as: WorktreePRResult.self) {
                         status = pr.url.map { "PR: \($0)" } ?? "Pushed \(pr.branch)"
-                    } else if keys.contains("id"), let s = try? Protocol.payload(data, as: Session.self) {
+                    } else if keys.contains("id"), let s = try? env.payload(as: Session.self) {
                         sessionID = s.id
                         currentSession = s
                         refreshLiveActivity()
                         Task { await loadSessions() } // reflect the new session in the sidebar
                     }
                 case MessageType.sessionMessage:
-                    if let m = try? Protocol.payload(data, as: SessionMessage.self) {
+                    if let m = try? env.payload(as: SessionMessage.self) {
                         let role: ChatMessage.Role = m.role == "user" ? .user : (m.role == "tool" ? .tool : .assistant)
                         let trimmed = m.text.trimmingCharacters(in: .whitespacesAndNewlines)
                         // Skip the echo of our own just-sent user turn (appended locally for instant feedback).
@@ -582,16 +573,16 @@ public final class Model: ObservableObject {
                         messages.append(ChatMessage(role: role, text: m.text))
                     }
                 case MessageType.thinking:
-                    if let t = try? Protocol.payload(data, as: Thinking.self) {
+                    if let t = try? env.payload(as: Thinking.self) {
                         appendThinkingDelta(t.text)
                         busy = true
                     }
                 case MessageType.outputDelta:
-                    if let d = try? Protocol.payload(data, as: OutputDelta.self) {
+                    if let d = try? env.payload(as: OutputDelta.self) {
                         appendAssistantDelta(d.text)
                     }
                 case MessageType.sessionStatus:
-                    if let ss = try? Protocol.payload(data, as: SessionStatus.self) {
+                    if let ss = try? env.payload(as: SessionStatus.self) {
                         status = ss.status
                         activity = ss.detail
                         switch ss.status {
@@ -609,14 +600,14 @@ public final class Model: ObservableObject {
                         refreshLiveActivity()
                     }
                 case MessageType.approvalRequest:
-                    if let ar = try? Protocol.payload(data, as: ApprovalRequest.self) {
+                    if let ar = try? env.payload(as: ApprovalRequest.self) {
                         pendingApproval = ar
                         refreshLiveActivity()
                     }
                 case MessageType.approvalResolved:
                     // Another device answered this exact approval — clear our card and
                     // mirror the decision so both transcripts match.
-                    if let r = try? Protocol.payload(data, as: ApprovalResolved.self),
+                    if let r = try? env.payload(as: ApprovalResolved.self),
                        let ap = pendingApproval, ap.approvalID == r.approvalID {
                         let verb = r.decision == Decision.deny ? "✗ Denied"
                             : (r.decision == Decision.always ? "✓ Always allow" : "✓ Allowed")
@@ -626,15 +617,15 @@ public final class Model: ObservableObject {
                         refreshLiveActivity()
                     }
                 case MessageType.issueList: // broadcast from the 60s tracker poll
-                    if let il = try? Protocol.payload(data, as: IssueList.self) {
+                    if let il = try? env.payload(as: IssueList.self) {
                         issues = il.issues
                     }
                 case MessageType.integrationStatus: // broadcast after (re)connect
-                    if let st = try? Protocol.payload(data, as: IntegrationStatus.self) {
+                    if let st = try? env.payload(as: IntegrationStatus.self) {
                         connectedTrackers = st.connected
                     }
                 case MessageType.error:
-                    if let e = try? Protocol.payload(data, as: ProtocolError.self) {
+                    if let e = try? env.payload(as: ProtocolError.self) {
                         status = "error: \(e.message)"
                         busy = false
                     }
