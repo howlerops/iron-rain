@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,7 +24,7 @@ func TestDiffAndHeadCommit(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wt.Path, "f"), []byte("changed"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	diff, err := Diff(wt.Path, base)
+	diff, err := Diff(context.Background(), wt.Path, base)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +54,7 @@ func TestDiff_ExcludesStderrWarnings(t *testing.T) {
 		t.Fatalf("add: %v %s", err, out)
 	}
 
-	diff, err := Diff(repo, base)
+	diff, err := Diff(context.Background(), repo, base)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +98,7 @@ func TestCommitAllAndPush(t *testing.T) {
 	}
 
 	// Clean worktree -> CommitAll is a no-op.
-	if committed, err := CommitAll(wt.Path, "empty"); err != nil || committed {
+	if committed, err := CommitAll(context.Background(), wt.Path, "empty"); err != nil || committed {
 		t.Fatalf("CommitAll on clean tree = %v,%v want false,nil", committed, err)
 	}
 
@@ -105,11 +106,11 @@ func TestCommitAllAndPush(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wt.Path, "new.txt"), []byte("hi"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	committed, err := CommitAll(wt.Path, "add new.txt")
+	committed, err := CommitAll(context.Background(), wt.Path, "add new.txt")
 	if err != nil || !committed {
 		t.Fatalf("CommitAll = %v,%v want true,nil", committed, err)
 	}
-	if err := Push(wt.Path, wt.Branch); err != nil {
+	if err := Push(context.Background(), wt.Path, wt.Branch); err != nil {
 		t.Fatal(err)
 	}
 	// The remote now has the branch.
@@ -157,4 +158,21 @@ func contains(s []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// TestContextCancelsGitExec proves the ctx threaded into Diff/CommitAll actually
+// governs the git subprocess: against a valid repo (where they'd normally succeed), an
+// already-cancelled context makes them fail fast — so the daemon can abort a hung git
+// when the client/session goes away instead of only relying on the internal timeout.
+func TestContextCancelsGitExec(t *testing.T) {
+	repo := t.TempDir()
+	gitInit(t, repo)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := Diff(ctx, repo, ""); err == nil {
+		t.Error("Diff with a cancelled context should error")
+	}
+	if _, err := CommitAll(ctx, repo, "x"); err == nil {
+		t.Error("CommitAll with a cancelled context should error")
+	}
 }

@@ -59,7 +59,7 @@ func LoadConfig(repoRoot string) (Config, bool, error) {
 // repo root, optionally disable shared git hooks, then run the setup command. A non-zero
 // port is exported to setup as OCULUS_PORT (allocate it via AllocPort under your own lock
 // so concurrent worktrees don't collide).
-func Bootstrap(repoRoot, worktreePath string, cfg Config, port int) (Result, error) {
+func Bootstrap(ctx context.Context, repoRoot, worktreePath string, cfg Config, port int) (Result, error) {
 	res := Result{Port: port}
 
 	for _, pat := range cfg.Copy {
@@ -86,7 +86,7 @@ func Bootstrap(repoRoot, worktreePath string, cfg Config, port int) (Result, err
 	}
 
 	if cfg.Setup != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), setupTimeout)
+		ctx, cancel := context.WithTimeout(ctx, setupTimeout)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "sh", "-c", cfg.Setup)
 		cmd.Dir = worktreePath

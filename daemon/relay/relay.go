@@ -24,11 +24,11 @@ const (
 	roleHost   = "host"
 	roleClient = "client"
 
-	// registrationTimeout bounds the first (registration) read on a freshly
-	// accepted relay socket. Without it a peer that opens the WebSocket and then
-	// sends nothing would park a goroutine and hold the socket open for the life
-	// of the connection — a cheap slowloris vector on a public relay.
-	registrationTimeout = 10 * time.Second
+	// defaultRegistrationTimeout bounds the first (registration) read on a freshly
+	// accepted relay socket. Without it a peer that opens the WebSocket and then sends
+	// nothing would park a goroutine and hold the socket open for the life of the
+	// connection — a cheap slowloris vector on a public relay.
+	defaultRegistrationTimeout = 10 * time.Second
 )
 
 type registration struct {
@@ -38,8 +38,9 @@ type registration struct {
 
 // Relay bridges hosts and clients by server_id.
 type Relay struct {
-	mu    sync.Mutex
-	hosts map[string]*hostEntry
+	mu         sync.Mutex
+	hosts      map[string]*hostEntry
+	regTimeout time.Duration // registration-phase read bound (per-instance so tests can shorten it)
 }
 
 // hostEntry is a registered host awaiting (or serving) a client. evict is closed
@@ -57,7 +58,9 @@ type pairing struct {
 }
 
 // New returns an empty Relay.
-func New() *Relay { return &Relay{hosts: map[string]*hostEntry{}} }
+func New() *Relay {
+	return &Relay{hosts: map[string]*hostEntry{}, regTimeout: defaultRegistrationTimeout}
+}
 
 // Handler is the relay's WebSocket endpoint.
 func (r *Relay) Handler() http.Handler {
@@ -71,7 +74,7 @@ func (r *Relay) Handler() http.Handler {
 
 		// Bound only the registration phase; switch to the unbounded connection
 		// context after a valid registration completes.
-		rctx, cancel := context.WithTimeout(ctx, registrationTimeout)
+		rctx, cancel := context.WithTimeout(ctx, r.regTimeout)
 		_, data, err := ws.Read(rctx)
 		cancel()
 		if err != nil {

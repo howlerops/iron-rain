@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -47,7 +48,7 @@ func TestBootstrap_CopyPortSetup(t *testing.T) {
 	if !reserved[port] {
 		t.Error("allocated port not marked reserved")
 	}
-	res, err := Bootstrap(repo, worktree, cfg, port)
+	res, err := Bootstrap(context.Background(), repo, worktree, cfg, port)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +75,7 @@ func TestBootstrap_CopyPortSetup(t *testing.T) {
 }
 
 func TestBootstrap_SetupFailurePropagates(t *testing.T) {
-	_, err := Bootstrap(t.TempDir(), t.TempDir(), Config{Setup: "exit 3"}, 0)
+	_, err := Bootstrap(context.Background(), t.TempDir(), t.TempDir(), Config{Setup: "exit 3"}, 0)
 	if err == nil {
 		t.Fatal("expected setup failure to propagate")
 	}

@@ -25,7 +25,7 @@ func HeadCommit(dir string) (string, error) {
 
 // Diff returns the changes in worktreePath relative to baseRef (a commit/branch),
 // including uncommitted work — what a reviewer wants to see before merging.
-func Diff(worktreePath, baseRef string) (string, error) {
+func Diff(ctx context.Context, worktreePath, baseRef string) (string, error) {
 	args := []string{"-C", worktreePath, "diff"}
 	if baseRef != "" {
 		args = append(args, baseRef)
@@ -33,7 +33,7 @@ func Diff(worktreePath, baseRef string) (string, error) {
 	// Keep stdout (the diff) and stderr (git warnings/advice) separate so warnings
 	// like "LF will be replaced by CRLF" don't get interleaved into the diff text.
 	var outBuf, errBuf bytes.Buffer
-	cmd := exec.Command("git", args...)
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
 	if err := cmd.Run(); err != nil {
@@ -44,23 +44,23 @@ func Diff(worktreePath, baseRef string) (string, error) {
 
 // CommitAll stages and commits everything in the worktree (no-op if clean). Returns
 // whether a commit was made.
-func CommitAll(worktreePath, message string) (bool, error) {
-	if out, err := exec.Command("git", "-C", worktreePath, "add", "-A").CombinedOutput(); err != nil {
+func CommitAll(ctx context.Context, worktreePath, message string) (bool, error) {
+	if out, err := exec.CommandContext(ctx, "git", "-C", worktreePath, "add", "-A").CombinedOutput(); err != nil {
 		return false, fmt.Errorf("git add: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	// Nothing staged? Then there's nothing to commit.
-	if exec.Command("git", "-C", worktreePath, "diff", "--cached", "--quiet").Run() == nil {
+	if exec.CommandContext(ctx, "git", "-C", worktreePath, "diff", "--cached", "--quiet").Run() == nil {
 		return false, nil
 	}
-	if out, err := exec.Command("git", "-C", worktreePath, "commit", "-m", message).CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(ctx, "git", "-C", worktreePath, "commit", "-m", message).CombinedOutput(); err != nil {
 		return false, fmt.Errorf("git commit: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	return true, nil
 }
 
 // Push pushes branch from the worktree to origin, setting upstream.
-func Push(worktreePath, branch string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), gitNetworkTimeout)
+func Push(ctx context.Context, worktreePath, branch string) error {
+	ctx, cancel := context.WithTimeout(ctx, gitNetworkTimeout)
 	defer cancel()
 	if out, err := exec.CommandContext(ctx, "git", "-C", worktreePath, "push", "-u", "origin", branch).CombinedOutput(); err != nil {
 		return fmt.Errorf("git push: %v: %s", err, strings.TrimSpace(string(out)))
@@ -76,11 +76,11 @@ func HasRemote(worktreePath string) bool {
 // CreatePR opens a GitHub PR for branch via the gh CLI, returning its URL. It requires
 // gh on PATH and an origin remote; otherwise the caller should fall back to the agent
 // harness (which has its own bash/gh) or a manual PR.
-func CreatePR(worktreePath, branch, title, body string) (string, error) {
+func CreatePR(ctx context.Context, worktreePath, branch, title, body string) (string, error) {
 	if _, err := exec.LookPath("gh"); err != nil {
 		return "", fmt.Errorf("gh not found: push %s and open the PR manually, or ask the agent to run `gh pr create`", branch)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), gitNetworkTimeout)
+	ctx, cancel := context.WithTimeout(ctx, gitNetworkTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "gh", "pr", "create", "--head", branch, "--title", title, "--body", body)
 	cmd.Dir = worktreePath // gh operates on the repo in its working directory

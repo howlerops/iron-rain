@@ -42,6 +42,9 @@ type Hub struct {
 	oauthRedirect string                   // loopback OAuth callback URL for tracker connect
 	worktreeBase  string                   // base dir for worktrees ("" = worktree.DefaultBase)
 	reservedPorts map[int]bool             // ports handed to worktree setup hooks (collision-free)
+
+	pushTimeout     time.Duration // per-Notify deadline for the approval push fan-out
+	pushConcurrency int           // cap on concurrent in-flight pushes
 }
 
 // reservePort allocates a free port in [lo,hi] not already handed to another worktree.
@@ -126,7 +129,7 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 				if len(cfg.PortRange) >= 2 {
 					port = h.reservePort(cfg.PortRange[0], cfg.PortRange[1])
 				}
-				res, berr := worktree.Bootstrap(repoRoot, wt.Path, cfg, port)
+				res, berr := worktree.Bootstrap(ctx, repoRoot, wt.Path, cfg, port)
 				if berr != nil {
 					_ = worktree.Remove(repoRoot, wt.Path, true)
 					h.releasePort(port) // don't leak the reserved port on a failed bootstrap
@@ -358,11 +361,13 @@ type AttacherFactory func(provider, url string) agent.Attacher
 // New returns an empty Hub.
 func New() *Hub {
 	return &Hub{
-		providers:    map[string]agent.Provider{},
-		sessions:     map[string]*managedSession{},
-		approvals:    map[string]*managedSession{},
-		clients:      map[*transport.Conn]bool{},
-		autoProjects: true, // on by default; disable with --auto-projects=false
+		providers:       map[string]agent.Provider{},
+		sessions:        map[string]*managedSession{},
+		approvals:       map[string]*managedSession{},
+		clients:         map[*transport.Conn]bool{},
+		autoProjects:    true, // on by default; disable with --auto-projects=false
+		pushTimeout:     defaultPushTimeout,
+		pushConcurrency: defaultPushConcurrency,
 	}
 }
 
@@ -454,8 +459,9 @@ func (h *Hub) pushApproval(ar protocol.ApprovalRequest) {
 	// Fan out on a dispatcher goroutine so the caller (the session event pump) never
 	// blocks. Each Notify gets a bounded context so a hung APNs call can't leak a
 	// goroutine forever, and a semaphore caps concurrent in-flight pushes.
+	sem := make(chan struct{}, h.pushConcurrency)
+	timeout := h.pushTimeout
 	go func() {
-		sem := make(chan struct{}, pushConcurrency)
 		var wg sync.WaitGroup
 		for _, t := range tokens {
 			sem <- struct{}{}
@@ -463,7 +469,7 @@ func (h *Hub) pushApproval(ar protocol.ApprovalRequest) {
 			go func(token string) {
 				defer wg.Done()
 				defer func() { <-sem }()
-				ctx, cancel := context.WithTimeout(context.Background(), pushTimeout)
+				ctx, cancel := context.WithTimeout(context.Background(), timeout)
 				defer cancel()
 				if err := n.Notify(ctx, token, notif); err != nil {
 					log.Printf("hub: push to %s… failed: %v", safePrefix(token), err)
@@ -477,10 +483,11 @@ func (h *Hub) pushApproval(ar protocol.ApprovalRequest) {
 }
 
 // Push fan-out bounds: cap in-flight Notify calls and give each a deadline so a hung
-// push provider can neither leak goroutines nor spawn them without limit.
+// push provider can neither leak goroutines nor spawn them without limit. Defaults for
+// the per-Hub fields (set in New; tests can shrink them per-instance).
 const (
-	pushTimeout     = 15 * time.Second
-	pushConcurrency = 8
+	defaultPushTimeout     = 15 * time.Second
+	defaultPushConcurrency = 8
 )
 
 func safePrefix(s string) string {
@@ -653,7 +660,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, "not a worktree session")
 			return
 		}
-		diff, err := worktree.Diff(m.meta.worktreePath, m.meta.baseCommit)
+		diff, err := worktree.Diff(ctx, m.meta.worktreePath, m.meta.baseCommit)
 		if err != nil {
 			h.sendErr(conn, env.ID, err.Error())
 			return
@@ -692,7 +699,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		if title == "" {
 			title = branch
 		}
-		if _, err := worktree.CommitAll(wtPath, title); err != nil {
+		if _, err := worktree.CommitAll(ctx, wtPath, title); err != nil {
 			h.sendErr(conn, env.ID, err.Error())
 			return
 		}
@@ -700,11 +707,11 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, "no 'origin' remote — ask the agent to push and open the PR")
 			return
 		}
-		if err := worktree.Push(wtPath, branch); err != nil {
+		if err := worktree.Push(ctx, wtPath, branch); err != nil {
 			h.sendErr(conn, env.ID, err.Error())
 			return
 		}
-		url, _ := worktree.CreatePR(wtPath, branch, title, req.Body) // gh optional; branch is pushed regardless
+		url, _ := worktree.CreatePR(ctx, wtPath, branch, title, req.Body) // gh optional; branch is pushed regardless
 		h.sendOK(conn, env.ID, protocol.WorktreePRResult{SessionID: req.SessionID, Branch: branch, Pushed: true, URL: url})
 
 	case protocol.TypeWorktreeConflicts:
