@@ -24,6 +24,9 @@ const (
 	TypeApprovalRespond  = "approval.respond"
 	TypeDiscover        = "discover.list"
 	TypeDeviceRegister  = "device.register"
+	TypeProjectList     = "project.list"
+	TypeProjectAdd      = "project.add"
+	TypeProjectRemove   = "project.remove"
 
 	// events (daemon -> client), no id
 	TypeSessionStatus   = "session.status"
@@ -64,9 +67,31 @@ type Envelope struct {
 // Payload types.
 
 type SessionCreate struct {
-	Provider string `json:"provider"`
-	Cwd      string `json:"cwd,omitempty"`
-	Prompt   string `json:"prompt,omitempty"`
+	Provider  string `json:"provider"`
+	Cwd       string `json:"cwd,omitempty"`
+	ProjectID string `json:"project_id,omitempty"` // resolve cwd from this registered project
+	Prompt    string `json:"prompt,omitempty"`
+}
+
+// Project is a registered folder sessions can be spawned in (mirrors project.Project).
+type Project struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Path          string `json:"path"`
+	IsGitRepo     bool   `json:"is_git_repo"`
+	DefaultBranch string `json:"default_branch,omitempty"`
+}
+
+type ProjectAdd struct {
+	Path string `json:"path"`
+}
+
+type ProjectRef struct {
+	ProjectID string `json:"project_id"`
+}
+
+type ProjectList struct {
+	Projects []Project `json:"projects"`
 }
 
 type SessionRef struct {

@@ -30,6 +30,7 @@ import (
 	"github.com/howlerops/oculus/daemon/crypto"
 	"github.com/howlerops/oculus/daemon/discovery"
 	"github.com/howlerops/oculus/daemon/hub"
+	"github.com/howlerops/oculus/daemon/project"
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/push"
 	"github.com/howlerops/oculus/daemon/server"
@@ -98,6 +99,11 @@ func serve(args []string) error {
 
 	h := hub.New()
 	h.SetDiscoverer(discovery.Scan)
+	if reg, err := project.Load(projectsPath()); err != nil {
+		fmt.Fprintf(os.Stderr, "  warning: could not load project registry: %v\n", err)
+	} else {
+		h.SetProjects(reg)
+	}
 	h.SetAttacherFactory(func(provider, url string) agent.Attacher {
 		if provider == "opencode" && url != "" {
 			return opencode.New(url)
@@ -282,6 +288,14 @@ func defaultKeyPath() string {
 		return "oculusd.key"
 	}
 	return filepath.Join(home, ".oculus", "daemon.key")
+}
+
+func projectsPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "oculus-projects.json"
+	}
+	return filepath.Join(home, ".oculus", "projects.json")
 }
 
 func loadOrCreateKey(path string) (crypto.KeyPair, error) {

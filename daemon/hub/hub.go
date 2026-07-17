@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/howlerops/oculus/daemon/agent"
+	"github.com/howlerops/oculus/daemon/project"
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/push"
 	"github.com/howlerops/oculus/daemon/transport"
@@ -29,6 +30,33 @@ type Hub struct {
 	pushTokens []string      // registered device tokens
 	attach     AttacherFactory
 	clients    map[*transport.Conn]bool // all connected clients (for global broadcasts)
+	projects   *project.Registry        // optional: registered folders sessions spawn in
+}
+
+// SetProjects attaches a project registry so clients can list/add/remove projects and
+// spawn sessions scoped to one.
+func (h *Hub) SetProjects(r *project.Registry) {
+	h.mu.Lock()
+	h.projects = r
+	h.mu.Unlock()
+}
+
+func (h *Hub) projectRegistry() *project.Registry {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.projects
+}
+
+func toProtoProject(p project.Project) protocol.Project {
+	return protocol.Project{ID: p.ID, Name: p.Name, Path: p.Path, IsGitRepo: p.IsGitRepo, DefaultBranch: p.DefaultBranch}
+}
+
+func toProtoProjects(ps []project.Project) []protocol.Project {
+	out := make([]protocol.Project, len(ps))
+	for i, p := range ps {
+		out[i] = toProtoProject(p)
+	}
+	return out
 }
 
 // AttacherFactory returns an Attacher for a discovered session (by provider + URL),
@@ -213,7 +241,23 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, "unknown provider: "+req.Provider)
 			return
 		}
-		sess, err := p.Create(ctx, req.Cwd, req.Prompt)
+		cwd := req.Cwd
+		if req.ProjectID != "" {
+			h.mu.Lock()
+			reg := h.projects
+			h.mu.Unlock()
+			if reg == nil {
+				h.sendErr(conn, env.ID, "projects not enabled")
+				return
+			}
+			proj, ok := reg.Get(req.ProjectID)
+			if !ok {
+				h.sendErr(conn, env.ID, "unknown project: "+req.ProjectID)
+				return
+			}
+			cwd = proj.Path
+		}
+		sess, err := p.Create(ctx, cwd, req.Prompt)
 		if err != nil {
 			h.sendErr(conn, env.ID, err.Error())
 			return
@@ -231,6 +275,49 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		}
 		h.mu.Unlock()
 		h.sendOK(conn, env.ID, protocol.SessionList{Sessions: list})
+
+	case protocol.TypeProjectList:
+		reg := h.projectRegistry()
+		if reg == nil {
+			h.sendErr(conn, env.ID, "projects not enabled")
+			return
+		}
+		h.sendOK(conn, env.ID, protocol.ProjectList{Projects: toProtoProjects(reg.List())})
+
+	case protocol.TypeProjectAdd:
+		var req protocol.ProjectAdd
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad project.add")
+			return
+		}
+		reg := h.projectRegistry()
+		if reg == nil {
+			h.sendErr(conn, env.ID, "projects not enabled")
+			return
+		}
+		p, err := reg.Add(req.Path)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, toProtoProject(p))
+
+	case protocol.TypeProjectRemove:
+		var req protocol.ProjectRef
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad project.remove")
+			return
+		}
+		reg := h.projectRegistry()
+		if reg == nil {
+			h.sendErr(conn, env.ID, "projects not enabled")
+			return
+		}
+		if err := reg.Remove(req.ProjectID); err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, protocol.ProjectList{Projects: toProtoProjects(reg.List())})
 
 	case protocol.TypeSessionSubscribe:
 		var req protocol.SessionRef
