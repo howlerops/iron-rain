@@ -18,6 +18,9 @@ struct Composer: View {
 
     @StateObject private var dictator = SpeechDictator()
     @FocusState private var focused: Bool
+    /// Decoded thumbnails, memoized by each attachment's base64 payload so the
+    /// image is decoded once (not on every keystroke that re-evaluates `body`).
+    @State private var thumbCache: [String: Image] = [:]
     #if os(iOS)
     @State private var photoItem: PhotosPickerItem?
     #else
@@ -59,6 +62,8 @@ struct Composer: View {
         .onChange(of: dictator.transcript) { newValue in
             if dictator.isRecording { draft = newValue }
         }
+        .onAppear { refreshThumbs() }
+        .onChange(of: model.pendingImages) { _ in refreshThumbs() }
         #if os(macOS)
         .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.image]) { result in
             if case let .success(url) = result {
@@ -86,11 +91,15 @@ struct Composer: View {
     private var attachmentChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                ForEach(Array(model.pendingImages.enumerated()), id: \.offset) { idx, img in
+                // Keyed by the attachment's own value (Hashable) rather than the array
+                // offset, so inserting/removing a chip doesn't shift every other chip's
+                // identity. Removal is by value, so a stale captured index can't delete
+                // the wrong item.
+                ForEach(model.pendingImages, id: \.self) { img in
                     HStack(spacing: 5) {
                         attachmentThumb(img)
-                        Text("Image \(idx + 1)").font(.caption2)
-                        Button { model.pendingImages.remove(at: idx) } label: {
+                        Text("Image \(imageNumber(img))").font(.caption2)
+                        Button { model.pendingImages.removeAll { $0 == img } } label: {
                             Image(systemName: "xmark.circle.fill").font(.caption2)
                         }.buttonStyle(.plain)
                     }
@@ -101,12 +110,32 @@ struct Composer: View {
         }
     }
 
+    private func imageNumber(_ img: ImageAttachment) -> Int {
+        (model.pendingImages.firstIndex(of: img) ?? 0) + 1
+    }
+
     @ViewBuilder private func attachmentThumb(_ img: ImageAttachment) -> some View {
-        if let data = Data(base64Encoded: img.data), let ui = platformImage(data) {
-            ui.resizable().scaledToFill().frame(width: 18, height: 18).clipShape(RoundedRectangle(cornerRadius: 4))
+        // Reads the memoized thumbnail; never decodes base64 / builds a UIImage
+        // inside `body` (which re-evaluates on every keystroke).
+        if let image = thumbCache[img.data] {
+            image.resizable().scaledToFill().frame(width: 18, height: 18).clipShape(RoundedRectangle(cornerRadius: 4))
         } else {
             Image(systemName: "photo").font(.caption2)
         }
+    }
+
+    /// Rebuilds `thumbCache` for the current attachments, decoding only newly
+    /// added ones and dropping thumbnails for removed attachments.
+    private func refreshThumbs() {
+        var next: [String: Image] = [:]
+        for img in model.pendingImages {
+            if let existing = thumbCache[img.data] {
+                next[img.data] = existing
+            } else if let data = Data(base64Encoded: img.data), let image = platformImage(data) {
+                next[img.data] = image
+            }
+        }
+        thumbCache = next
     }
 
     private func platformImage(_ data: Data) -> Image? {

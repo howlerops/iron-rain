@@ -82,24 +82,26 @@ final class LiveE2ETests: XCTestCase {
         var gotOK = false, gotOutput = false, gotIdle = false
         for _ in 0 ..< 30 {
             let data = try await client.recv()
-            let header = try Protocol.header(data)
-            switch header.type {
-            case MessageType.ok where header.id == "c1":
+            // Single-pass parse: dispatch on type/id, then decode payload from the
+            // already-parsed envelope instead of re-parsing the raw bytes.
+            let env = try Protocol.envelope(data)
+            switch env.type {
+            case MessageType.ok where env.id == "c1":
                 gotOK = true
             case MessageType.outputDelta:
                 gotOutput = true
             case MessageType.approvalRequest:
-                let ar = try Protocol.payload(data, as: ApprovalRequest.self)
+                let ar = try env.payload(as: ApprovalRequest.self)
                 let respond = try Protocol.encode(id: "c2", type: MessageType.approvalRespond,
                                                   payload: ApprovalRespond(approvalID: ar.approvalID, decision: Decision.allow))
                 try await client.send(respond)
             case MessageType.sessionStatus:
-                let ss = try Protocol.payload(data, as: SessionStatus.self)
+                let ss = try env.payload(as: SessionStatus.self)
                 if ss.status == SessionStatusValue.idle || ss.status == SessionStatusValue.done {
                     gotIdle = true
                 }
             case MessageType.error:
-                let e = try Protocol.payload(data, as: ProtocolError.self)
+                let e = try env.payload(as: ProtocolError.self)
                 XCTFail("daemon error: \(e.message)")
                 return
             default:

@@ -75,7 +75,7 @@ public struct ChatView: View {
                         emptyState
                     }
                     ForEach(model.messages) { msg in
-                        MessageRow(message: msg, palette: palette).id(msg.id)
+                        MessageRow(message: msg, palette: palette)
                     }
                     if model.busy && model.messages.last?.streaming != true {
                         HStack(spacing: 8) {
@@ -138,7 +138,11 @@ struct MessageRow: View {
                     .textSelection(.enabled)
             }
         case .assistant:
-            Text(LocalizedStringKey(message.text.isEmpty ? "…" : message.text))
+            // Render runtime agent output as plain text. Wrapping it in
+            // LocalizedStringKey forced Markdown/AttributedString parsing of the
+            // whole (growing) message on every streaming token, and misread text
+            // containing %, %@, or other format specifiers.
+            Text(message.text.isEmpty ? "…" : message.text)
                 .font(.system(.body, design: message.text.contains("```") ? .monospaced : .default))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)

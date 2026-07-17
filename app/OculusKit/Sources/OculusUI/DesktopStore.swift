@@ -38,6 +38,9 @@ public final class DesktopStore: ObservableObject {
 
     private let defaults = UserDefaults.standard
     private let key = "oculus.desktops"
+    // Reused across every save/load — allocating a fresh coder per call is needless setup.
+    private let encoder = JSONEncoder()
+    private let decoder = JSONDecoder()
 
     public init() {}
 
@@ -60,12 +63,14 @@ public final class DesktopStore: ObservableObject {
                 desks.append(Desktop(id: pub, name: "My Mac", wsURL: ws, secret: sec))
             }
         }
-        if let local = localPairing(), !desks.contains(where: { $0.id == local.desktop.id }) {
+        // Read the local daemon pairing once and reuse it (avoids re-reading pairing.json).
+        let local = await localPairing()
+        if let local, !desks.contains(where: { $0.id == local.desktop.id }) {
             desks.append(local.desktop)
         }
         for d in desks { ensureModel(d) }
         // macOS: refresh the reachable pairing URL on the local model (tunnels change).
-        if let local = localPairing(), let m = models.first(where: { $0.id == local.desktop.id }) {
+        if let local, let m = models.first(where: { $0.id == local.desktop.id }) {
             m.pairingPublicURL = local.publicURL
         }
         save()
@@ -74,7 +79,14 @@ public final class DesktopStore: ObservableObject {
     }
 
     public func connectAll() async {
-        for m in models where !m.connected { await m.connect() }
+        // Fan out concurrently — a single slow/unreachable desktop's handshake must not
+        // block connecting to every other paired desktop. Each Model is @MainActor, so the
+        // group children hop to the main actor individually.
+        await withTaskGroup(of: Void.self) { group in
+            for m in models where !m.connected {
+                group.addTask { await m.connect() }
+            }
+        }
     }
 
     /// Adds (or re-pairs) a desktop from a scanned/entered pairing payload and connects.
@@ -112,20 +124,22 @@ public final class DesktopStore: ObservableObject {
 
     private func loadDesktops() -> [Desktop] {
         guard let data = defaults.data(forKey: key),
-              let list = try? JSONDecoder().decode([Desktop].self, from: data) else { return [] }
+              let list = try? decoder.decode([Desktop].self, from: data) else { return [] }
         return list
     }
 
     private func save() {
         let list = models.filter { !$0.id.isEmpty }
             .map { Desktop(id: $0.id, name: $0.name, wsURL: $0.wsURL, secret: $0.secret) }
-        if let data = try? JSONEncoder().encode(list) { defaults.set(data, forKey: key) }
+        if let data = try? encoder.encode(list) { defaults.set(data, forKey: key) }
     }
 
-    private func localPairing() -> (desktop: Desktop, publicURL: String?)? {
+    private func localPairing() async -> (desktop: Desktop, publicURL: String?)? {
         #if os(macOS)
         let path = (NSHomeDirectory() as NSString).appendingPathComponent(".oculus/pairing.json")
-        guard let data = FileManager.default.contents(atPath: path),
+        // Read the bytes off the main actor — synchronous disk I/O must not block the UI.
+        let data = await Task.detached { FileManager.default.contents(atPath: path) }.value
+        guard let data,
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: String],
               let ws = obj["ws"], let pub = obj["pub"], let sec = obj["secret"] else { return nil }
         return (Desktop(id: pub, name: obj["name"] ?? "This Mac", wsURL: ws, secret: sec), obj["public"])

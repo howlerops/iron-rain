@@ -290,15 +290,50 @@ public struct DeviceRegister: Codable {
 
 /// Shared encoder/decoder for the wire format. Keys are set explicitly via each
 /// type's CodingKeys (matching the Go JSON), so no key-strategy is used.
+///
+/// The instances are cached and reused: `JSONEncoder`/`JSONDecoder` are safe for
+/// concurrent encode/decode as long as their configuration isn't mutated after
+/// setup, and reusing them avoids per-message allocation on the hot streaming path.
 public enum ProtocolCoding {
-    public static func encoder() -> JSONEncoder { JSONEncoder() }
-    public static func decoder() -> JSONDecoder { JSONDecoder() }
+    public static let sharedEncoder = JSONEncoder()
+    public static let sharedDecoder = JSONDecoder()
+    public static func encoder() -> JSONEncoder { sharedEncoder }
+    public static func decoder() -> JSONDecoder { sharedDecoder }
 }
 
 /// Envelope header (id + type) with the payload handled generically.
 public struct EnvelopeHeader: Decodable {
     public let id: String?
     public let type: String
+}
+
+/// A wire envelope parsed in a single pass. Dispatch on `type`/`id`, then decode
+/// the payload via `payload(as:)` without re-tokenizing the whole message. This
+/// avoids the double JSON parse of reading the header and then re-decoding the
+/// payload from the same raw bytes.
+public struct Envelope {
+    public let id: String?
+    public let type: String
+    private let payloadJSON: Any?
+
+    init(id: String?, type: String, payloadJSON: Any?) {
+        self.id = id
+        self.type = type
+        self.payloadJSON = payloadJSON
+    }
+
+    /// True when the envelope carried a `payload` field.
+    public var hasPayload: Bool { payloadJSON != nil }
+
+    /// Decodes the already-parsed payload into `T`. Only the payload subtree is
+    /// touched; the envelope itself is not re-parsed.
+    public func payload<T: Decodable>(as _: T.Type) throws -> T {
+        guard let obj = payloadJSON else {
+            throw NSError(domain: "OculusKit", code: 1, userInfo: [NSLocalizedDescriptionKey: "missing payload"])
+        }
+        let data = try JSONSerialization.data(withJSONObject: obj)
+        return try ProtocolCoding.decoder().decode(T.self, from: data)
+    }
 }
 
 private struct WireOut<T: Encodable>: Encodable {
@@ -330,6 +365,17 @@ public enum Protocol {
     /// Encodes an envelope with no payload.
     public static func encode(id: String?, type: String) throws -> Data {
         try ProtocolCoding.encoder().encode(WireOut<Int>(id: id, type: type, payload: nil))
+    }
+
+    /// Parses the wire envelope in a single pass. Use `env.type`/`env.id` to
+    /// dispatch and `env.payload(as:)` to decode the payload without re-parsing
+    /// the bytes — the receive loop should prefer this over `header` + `payload`.
+    public static func envelope(_ data: Data) throws -> Envelope {
+        let obj = try JSONSerialization.jsonObject(with: data)
+        guard let dict = obj as? [String: Any], let type = dict["type"] as? String else {
+            throw NSError(domain: "OculusKit", code: 2, userInfo: [NSLocalizedDescriptionKey: "invalid envelope"])
+        }
+        return Envelope(id: dict["id"] as? String, type: type, payloadJSON: dict["payload"])
     }
 
     /// Reads just the envelope header (id + type).

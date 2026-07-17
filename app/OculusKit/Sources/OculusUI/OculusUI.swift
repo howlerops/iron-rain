@@ -97,14 +97,16 @@ public final class Model: ObservableObject {
     /// saved pairing it reads the daemon's local pairing file (~/.oculus/pairing.json)
     /// so a same-machine app connects with zero config.
     public func autoConnectIfPaired() async {
-        loadLocalPairing() // macOS: refresh the reachable URL (and pair if unpaired)
+        await loadLocalPairing() // macOS: refresh the reachable URL (and pair if unpaired)
         if hasSavedPairing && !connected { await connect() }
     }
 
-    private func loadLocalPairing() {
+    private func loadLocalPairing() async {
         #if os(macOS)
         let path = (NSHomeDirectory() as NSString).appendingPathComponent(".oculus/pairing.json")
-        guard let data = FileManager.default.contents(atPath: path),
+        // Read the bytes off the main actor — synchronous disk I/O must not block the UI.
+        let data = await Task.detached { FileManager.default.contents(atPath: path) }.value
+        guard let data,
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: String],
               let ws = obj["ws"], let pub = obj["pub"], let sec = obj["secret"] else { return }
         // Always refresh the reachable URL for the pairing QR — even once we're paired,
@@ -440,32 +442,75 @@ public final class Model: ObservableObject {
 
     // MARK: streaming helpers
 
+    // Token deltas accumulate in `streamBuffer` and are folded into the last streaming
+    // `messages` element on a short timer, so the @Published array republishes a few
+    // times per second instead of once per token — avoiding O(n) list re-diffing per
+    // token (worst-case O(n²) over a long response). The streaming message still lives
+    // in `messages`, so the view renders it unchanged.
+    private var streamBuffer = ""
+    private var flushTask: Task<Void, Never>?
+    private static let flushInterval: UInt64 = 60_000_000 // 60ms
+
+    /// Folds any buffered token text into the current streaming message (one array
+    /// mutation). Safe to call at any time — a no-op when nothing is buffered.
+    private func flushStream() {
+        guard !streamBuffer.isEmpty else { return }
+        if let last = messages.last, last.streaming {
+            messages[messages.count - 1].text += streamBuffer
+        }
+        streamBuffer = ""
+    }
+
+    private func scheduleFlush() {
+        guard flushTask == nil else { return } // a flush is already pending; it'll drain the buffer
+        flushTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Model.flushInterval)
+            guard let self else { return }
+            self.flushTask = nil
+            self.flushStream()
+        }
+    }
+
+    private func cancelFlush() {
+        flushTask?.cancel()
+        flushTask = nil
+    }
+
     private func appendAssistantDelta(_ text: String) {
         // The answer starting means thinking is done — finalize any streaming thinking.
         finalizeThinking()
         if let last = messages.last, last.role == .assistant, last.streaming {
-            messages[messages.count - 1].text += text
+            // keep buffering into the existing streaming message
         } else {
-            messages.append(ChatMessage(role: .assistant, text: text, streaming: true))
+            flushStream()
+            messages.append(ChatMessage(role: .assistant, text: "", streaming: true))
         }
+        streamBuffer += text
+        scheduleFlush()
     }
 
     private func appendThinkingDelta(_ text: String) {
         if let last = messages.last, last.role == .thinking, last.streaming {
-            messages[messages.count - 1].text += text
+            // keep buffering into the existing streaming message
         } else {
-            messages.append(ChatMessage(role: .thinking, text: text, streaming: true))
+            flushStream()
+            messages.append(ChatMessage(role: .thinking, text: "", streaming: true))
         }
+        streamBuffer += text
+        scheduleFlush()
     }
 
     private func finalizeThinking() {
         if let last = messages.last, last.role == .thinking, last.streaming {
+            flushStream() // fold any buffered thinking tokens before sealing the message
             messages[messages.count - 1].streaming = false
         }
     }
 
     private func finalizeStreaming() {
         finalizeThinking()
+        flushStream() // fold any buffered assistant tokens before sealing the message
+        cancelFlush()
         if let last = messages.last, last.role == .assistant, last.streaming {
             messages[messages.count - 1].streaming = false
         }
@@ -478,6 +523,15 @@ public final class Model: ObservableObject {
 
     // MARK: receive loop
 
+    /// Top-level keys of an envelope's `payload` object, read in a single JSON parse so an
+    /// `ok` frame can be routed to exactly one typed decode instead of being re-parsed for
+    /// every candidate payload type.
+    private func okPayloadKeys(_ data: Data) -> Set<String> {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let payload = obj["payload"] as? [String: Any] else { return [] }
+        return Set(payload.keys)
+    }
+
     private func receiveLoop() async {
         guard let client else { return }
         while connected {
@@ -486,25 +540,30 @@ public final class Model: ObservableObject {
                 let header = try Protocol.header(data)
                 switch header.type {
                 case MessageType.ok:
-                    if let dl = try? Protocol.payload(data, as: DiscoverList.self), !dl.items.isEmpty {
+                    // Read the payload's top-level keys in a SINGLE JSON parse, then decode
+                    // exactly the one matching type — instead of re-running Protocol.payload
+                    // (a full parse each) for every candidate type. Each key is unique to its
+                    // OK payload type, so the value guards below preserve the original behavior.
+                    let keys = okPayloadKeys(data)
+                    if keys.contains("items"), let dl = try? Protocol.payload(data, as: DiscoverList.self), !dl.items.isEmpty {
                         discovered = dl.items
-                    } else if let pl = try? Protocol.payload(data, as: ProjectList.self) {
+                    } else if keys.contains("projects"), let pl = try? Protocol.payload(data, as: ProjectList.self) {
                         projects = pl.projects
-                    } else if let sl = try? Protocol.payload(data, as: SessionList.self) {
+                    } else if keys.contains("sessions"), let sl = try? Protocol.payload(data, as: SessionList.self) {
                         sessions = sl.sessions
-                    } else if let st = try? Protocol.payload(data, as: IntegrationStatus.self) {
+                    } else if keys.contains("connected"), let st = try? Protocol.payload(data, as: IntegrationStatus.self) {
                         connectedTrackers = st.connected
-                    } else if let il = try? Protocol.payload(data, as: IssueList.self) {
+                    } else if keys.contains("issues"), let il = try? Protocol.payload(data, as: IssueList.self) {
                         issues = il.issues
-                    } else if let oa = try? Protocol.payload(data, as: IntegrationOAuth.self), let u = oa.url, let url = URL(string: u) {
+                    } else if keys.contains("url"), keys.contains("provider"), let oa = try? Protocol.payload(data, as: IntegrationOAuth.self), let u = oa.url, let url = URL(string: u) {
                         oauthURL = url
-                    } else if let wd = try? Protocol.payload(data, as: WorktreeDiff.self), wd.diff != nil {
+                    } else if keys.contains("diff"), let wd = try? Protocol.payload(data, as: WorktreeDiff.self), wd.diff != nil {
                         lastDiff = wd.diff
-                    } else if let wc = try? Protocol.payload(data, as: WorktreeConflicts.self), wc.files != nil {
+                    } else if keys.contains("files"), let wc = try? Protocol.payload(data, as: WorktreeConflicts.self), wc.files != nil {
                         conflicts = wc.files ?? []
-                    } else if let pr = try? Protocol.payload(data, as: WorktreePRResult.self) {
+                    } else if keys.contains("pushed"), let pr = try? Protocol.payload(data, as: WorktreePRResult.self) {
                         status = pr.url.map { "PR: \($0)" } ?? "Pushed \(pr.branch)"
-                    } else if let s = try? Protocol.payload(data, as: Session.self) {
+                    } else if keys.contains("id"), let s = try? Protocol.payload(data, as: Session.self) {
                         sessionID = s.id
                         currentSession = s
                         refreshLiveActivity()

@@ -24,9 +24,13 @@ struct SessionSidebar: View {
     /// Hub-managed sessions grouped by their project (worktree sessions included),
     /// sorted by group name. Sessions with no project fall under "Sessions".
     private var sessionGroups: [(name: String, sessions: [Session])] {
-        Dictionary(grouping: model.sessions) { $0.projectID ?? "" }
+        // Build a [projectID: name] lookup once so resolving each group's name is
+        // O(1) instead of a linear scan of `model.projects` per group.
+        let projectNames = Dictionary(model.projects.map { ($0.id, $0.name) },
+                                      uniquingKeysWith: { first, _ in first })
+        return Dictionary(grouping: model.sessions) { $0.projectID ?? "" }
             .map { pid, ss in
-                let name = model.projects.first { $0.id == pid }?.name ?? (pid.isEmpty ? "Sessions" : pid)
+                let name = projectNames[pid] ?? (pid.isEmpty ? "Sessions" : pid)
                 return (name, ss)
             }
             .sorted { $0.0 < $1.0 }
@@ -52,7 +56,7 @@ struct SessionSidebar: View {
 
                 if !opencodeSessions.isEmpty {
                     Section("Sessions") {
-                        ForEach(Array(opencodeSessions.enumerated()), id: \.offset) { _, d in
+                        ForEach(opencodeSessions, id: \.sessionID) { d in
                             row(title: d.title ?? d.sessionID ?? "session", subtitle: "opencode",
                                 active: model.sessionID == d.sessionID)
                                 .tag(d.sessionID ?? "")
@@ -61,7 +65,7 @@ struct SessionSidebar: View {
                 }
                 if !claudeSessions.isEmpty {
                     Section("claude-code · view-only") {
-                        ForEach(Array(claudeSessions.enumerated()), id: \.offset) { _, d in
+                        ForEach(claudeSessions, id: \.discoveryID) { d in
                             row(title: (d.cwd as NSString?)?.lastPathComponent ?? "session",
                                 subtitle: d.cwd ?? "", active: false)
                                 .foregroundStyle(palette.mutedForeground)
@@ -179,5 +183,14 @@ struct SidebarHeader: View {
         if model.busy { return "Working…" }
         if model.connected { return "Connected" }
         return model.statusDetail ?? model.status
+    }
+}
+
+private extension Discovered {
+    /// A stable composite identity for a discovered artifact, used to key ForEach
+    /// so live host re-discovery (insert/remove/reorder) associates rows to the
+    /// right data instead of to a positional array offset.
+    var discoveryID: String {
+        [provider, kind, sessionID, cwd, path].compactMap { $0 }.joined(separator: "|")
     }
 }

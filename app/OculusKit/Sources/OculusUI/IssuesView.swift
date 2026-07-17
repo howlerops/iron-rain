@@ -96,16 +96,20 @@ public struct IssuesView: View {
     // MARK: kanban
 
     private var board: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        // Group once per render instead of re-filtering `model.issues` twice per
+        // column (count + ForEach); indexing the grouping is O(1) per column.
+        let grouped = Dictionary(grouping: model.issues, by: { $0.category })
+        return ScrollView(.horizontal, showsIndicators: false) {
             HStack(alignment: .top, spacing: 14) {
                 ForEach(columns, id: \.category) { col in
+                    let colIssues = grouped[col.category] ?? []
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
                             Text(col.name).font(.subheadline.bold())
-                            Text("\(issues(col.category).count)").font(.caption)
+                            Text("\(colIssues.count)").font(.caption)
                                 .foregroundStyle(palette.mutedForeground)
                         }
-                        ForEach(issues(col.category)) { issue in
+                        ForEach(colIssues) { issue in
                             card(issue)
                         }
                         Spacer(minLength: 0)
@@ -162,10 +166,6 @@ public struct IssuesView: View {
                     .buttonStyle(.plain).foregroundStyle(palette.primary)
             }
         }
-    }
-
-    private func issues(_ category: String) -> [Issue] {
-        model.issues.filter { $0.category == category }
     }
 }
 
