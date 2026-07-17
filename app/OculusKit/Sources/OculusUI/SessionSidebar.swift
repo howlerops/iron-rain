@@ -15,11 +15,33 @@ struct SessionSidebar: View {
 
     static let newSessionTag = "__new__"
 
+    /// Discovered opencode sessions on the host that AREN'T already hub-managed — so the
+    /// same session isn't listed twice (once by the hub as `model.sessions`, once by
+    /// discovery). Managed sessions are the richer entry (project/worktree/active state).
     private var opencodeSessions: [Discovered] {
-        model.discovered.filter { $0.provider == "opencode" && $0.kind == DiscoveredKind.session }
+        let managed = Set(model.sessions.map { $0.id })
+        return model.discovered.filter {
+            $0.provider == "opencode" && $0.kind == DiscoveredKind.session
+                && !managed.contains($0.sessionID ?? "")
+        }
     }
     private var claudeSessions: [Discovered] {
         model.discovered.filter { $0.provider == "claude-code" }
+    }
+
+    /// Discovered titles keyed by session id, so a hub-managed session that has no title
+    /// of its own can borrow the human title discovery found for it.
+    private var discoveredTitles: [String: String] {
+        Dictionary(model.discovered.compactMap { d -> (String, String)? in
+            guard let sid = d.sessionID, let t = d.title, !t.isEmpty else { return nil }
+            return (sid, t)
+        }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// The best display title for a hub-managed session: its workspace/own title, else the
+    /// title discovery found, else a readable id prefix.
+    private func title(for s: Session) -> String {
+        s.workspaceName ?? s.title ?? discoveredTitles[s.id] ?? String(s.id.prefix(12))
     }
 
     /// Hub-managed sessions grouped by their project (worktree sessions included),
@@ -57,7 +79,7 @@ struct SessionSidebar: View {
                 ForEach(sessionGroups, id: \.name) { group in
                     Section(group.name) {
                         ForEach(group.sessions, id: \.id) { s in
-                            row(title: s.workspaceName ?? s.title ?? String(s.id.prefix(8)),
+                            row(title: title(for: s),
                                 subtitle: s.branch ?? s.provider,
                                 active: model.sessionID == s.id)
                                 .tag(s.id)
@@ -66,7 +88,7 @@ struct SessionSidebar: View {
                 }
 
                 if !opencodeSessions.isEmpty {
-                    Section("Sessions") {
+                    Section("Also on this Mac") {
                         ForEach(opencodeSessions, id: \.sessionID) { d in
                             row(title: d.title ?? d.sessionID ?? "session", subtitle: "opencode",
                                 active: model.sessionID == d.sessionID)
