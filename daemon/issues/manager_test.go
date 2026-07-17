@@ -18,6 +18,17 @@ func TestManager_LoadsTokenOnStartup(t *testing.T) {
 	}
 }
 
+func TestManager_ReconnectsSavedJira(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "integrations.json")
+	_ = os.WriteFile(path, []byte(`{"jira":{"token":"https://x.atlassian.net|me@x.com|apitok"}}`), 0o600)
+
+	m := NewManager(path, nil)
+	if got := m.Connected(); len(got) != 1 || got[0] != "jira" {
+		t.Fatalf("connected = %v, want [jira]", got)
+	}
+}
+
 func TestManager_OAuthStart(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "integrations.json")

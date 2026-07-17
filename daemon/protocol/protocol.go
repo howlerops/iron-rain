@@ -7,8 +7,10 @@
 package protocol
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"sync"
 )
 
 // Message types.
@@ -324,8 +326,34 @@ type Error struct {
 	Message string `json:"message"`
 }
 
+// streamEnvelope encodes an event envelope (no id) in a single marshal pass:
+// the payload is serialized inline instead of round-tripping through a
+// json.RawMessage. It mirrors Envelope's wire shape for the id-less case.
+type streamEnvelope struct {
+	Type    string `json:"type"`
+	Payload any    `json:"payload,omitempty"`
+}
+
+// encodeBufPool reuses buffers for the streaming hot path so per-token deltas
+// don't allocate a fresh outer buffer on every message.
+var encodeBufPool = sync.Pool{
+	New: func() any { return new(bytes.Buffer) },
+}
+
+// isStreamingDelta reports whether typ is a token-by-token streaming event
+// (the daemon's hottest encode path).
+func isStreamingDelta(typ string) bool {
+	return typ == TypeOutputDelta || typ == TypeThinking
+}
+
 // Encode marshals an envelope. id may be empty (for events). payload may be nil.
 func Encode(id, typ string, payload any) ([]byte, error) {
+	// Fast path for token-by-token streaming events: they carry no id and fire
+	// per-token, so encode the envelope in one marshal pass into a pooled buffer
+	// instead of the RawMessage double-marshal below. Output is byte-identical.
+	if id == "" && payload != nil && isStreamingDelta(typ) {
+		return encodeStream(typ, payload)
+	}
 	env := Envelope{ID: id, Type: typ}
 	if payload != nil {
 		p, err := json.Marshal(payload)
@@ -335,6 +363,29 @@ func Encode(id, typ string, payload any) ([]byte, error) {
 		env.Payload = p
 	}
 	return json.Marshal(env)
+}
+
+// encodeStream serializes an id-less {"type",...,"payload":...} frame in a
+// single pass using a pooled buffer.
+func encodeStream(typ string, payload any) ([]byte, error) {
+	buf := encodeBufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer encodeBufPool.Put(buf)
+
+	enc := json.NewEncoder(buf)
+	if err := enc.Encode(streamEnvelope{Type: typ, Payload: payload}); err != nil {
+		return nil, err
+	}
+	// json.Encoder appends a trailing newline; drop it so the bytes match the
+	// json.Marshal output of the slow path exactly.
+	b := buf.Bytes()
+	if n := len(b); n > 0 && b[n-1] == '\n' {
+		b = b[:n-1]
+	}
+	// buf goes back to the pool, so return a copy the caller can retain.
+	out := make([]byte, len(b))
+	copy(out, b)
+	return out, nil
 }
 
 // Decode parses an envelope.

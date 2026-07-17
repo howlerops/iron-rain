@@ -43,9 +43,17 @@ func NewManager(path string, onUpdate func([]Issue)) *Manager {
 	if data, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(data, &m.cfg)
 	}
-	if m.cfg.Linear.Token != "" {
-		if p, err := newAdapter("linear", m.cfg.Linear.Token); err == nil {
-			m.providers["linear"] = p
+	// Reconnect every provider that has a saved token. Looping over a name->token
+	// map keeps new providers from being silently forgotten here.
+	for name, token := range map[string]string{
+		"linear": m.cfg.Linear.Token,
+		"jira":   m.cfg.Jira.Token,
+	} {
+		if token == "" {
+			continue
+		}
+		if p, err := newAdapter(name, token); err == nil {
+			m.providers[name] = p
 		}
 	}
 	return m
@@ -81,8 +89,11 @@ func (m *Manager) Connect(ctx context.Context, name, token string) error {
 	case "jira":
 		m.cfg.Jira.Token = token
 	}
-	m.save()
+	// Snapshot the config under the lock, then persist without holding it so the
+	// disk write can't block Issues()/Refresh()/the poll loop on a slow FS.
+	cfg := m.cfg
 	m.mu.Unlock()
+	m.save(cfg)
 	return m.Refresh(ctx)
 }
 
@@ -103,6 +114,14 @@ func (m *Manager) Connected() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// hasProviders reports whether any provider is connected. It avoids the slice
+// allocation + sort that Connected() does, for the hot poll-tick path.
+func (m *Manager) hasProviders() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.providers) > 0
 }
 
 // Issues returns the current merged cache.
@@ -137,18 +156,29 @@ func (m *Manager) Refresh(ctx context.Context) error {
 	}
 	m.mu.Unlock()
 
+	// Fan out: each provider is an independent network round-trip to a different
+	// host, so fetch them concurrently and merge the results.
 	var merged []Issue
 	var firstErr error
+	var wg sync.WaitGroup
+	var rmu sync.Mutex
 	for _, p := range provs {
-		got, err := p.ListAssigned(ctx)
-		if err != nil {
-			if firstErr == nil {
-				firstErr = err
+		wg.Add(1)
+		go func(p Provider) {
+			defer wg.Done()
+			got, err := p.ListAssigned(ctx)
+			rmu.Lock()
+			defer rmu.Unlock()
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				return
 			}
-			continue
-		}
-		merged = append(merged, got...)
+			merged = append(merged, got...)
+		}(p)
 	}
+	wg.Wait()
 	m.mu.Lock()
 	m.cache = merged
 	cb := m.onUpdate
@@ -169,7 +199,7 @@ func (m *Manager) StartPolling(ctx context.Context, interval time.Duration) {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				if len(m.Connected()) > 0 {
+				if m.hasProviders() {
 					_ = m.Refresh(ctx)
 				}
 			}
@@ -177,14 +207,16 @@ func (m *Manager) StartPolling(ctx context.Context, interval time.Duration) {
 	}()
 }
 
-func (m *Manager) save() {
+// save writes cfg to disk. It takes cfg by value (not m.cfg) so callers can
+// snapshot under the lock and release it before the blocking filesystem syscalls.
+func (m *Manager) save(cfg Config) {
 	if m.path == "" {
 		return
 	}
 	if dir := filepath.Dir(m.path); dir != "" {
 		_ = os.MkdirAll(dir, 0o700)
 	}
-	if data, err := json.MarshalIndent(m.cfg, "", "  "); err == nil {
+	if data, err := json.MarshalIndent(cfg, "", "  "); err == nil {
 		_ = os.WriteFile(m.path, data, 0o600)
 	}
 }

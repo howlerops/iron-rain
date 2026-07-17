@@ -144,6 +144,30 @@ func TestCombineSkipsUnreachableServer(t *testing.T) {
 	}
 }
 
+// TestCombineThreadsContextToProcCwd ensures the scan context reaches procCwd so a
+// cancelled/expired scan can abort the (potentially hanging) lsof lookup instead of the
+// old ctx-ignoring exec.Command that stalled the whole scan.
+func TestCombineThreadsContextToProcCwd(t *testing.T) {
+	orig := procCwd
+	defer func() { procCwd = orig }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled: procCwd must observe it
+
+	sawCancel := false
+	procCwd = func(c context.Context, _ int) string {
+		sawCancel = c.Err() != nil
+		return ""
+	}
+	servers := []OpenCodeServer{{URL: "http://127.0.0.1:4096", PID: 111}}
+	list := func(_ context.Context, _ string) ([]protocol.Session, error) { return nil, nil }
+
+	combine(ctx, servers, nil, list)
+	if !sawCancel {
+		t.Fatal("combine did not thread the scan context into procCwd")
+	}
+}
+
 // TestReadTranscriptCwd_BeatsLossyDecode: when the transcript records the real cwd, it's
 // used instead of the lossy dir-name decode (which mangles paths containing '-').
 func TestReadTranscriptCwd_BeatsLossyDecode(t *testing.T) {

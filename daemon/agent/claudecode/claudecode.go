@@ -91,10 +91,17 @@ func (p *Provider) start(ctx context.Context, cwd, id, mode, prompt string) (age
 		id:     id,
 		events: make(chan agent.Event, 32),
 		stdin:  stdin,
+		cmd:    cmd,
 		cancel: cancel,
 		done:   make(chan struct{}),
 	}
-	go s.readLoop(stdout)
+	// readLoop returns on stdout EOF (which the ctx-cancel kill triggers); Wait() after
+	// it returns reaps the child and releases the stdin/stdout pipe fds without racing
+	// the scanner. Without this the process lingers as a zombie and its fds/goroutine leak.
+	go func() {
+		s.readLoop(stdout)
+		_ = cmd.Wait()
+	}()
 	if prompt != "" {
 		_ = s.Prompt(ctx, prompt)
 	}
@@ -105,6 +112,7 @@ type session struct {
 	id     string
 	events chan agent.Event
 	stdin  io.WriteCloser
+	cmd    *exec.Cmd
 	cancel context.CancelFunc
 
 	writeMu   sync.Mutex
@@ -177,6 +185,14 @@ func (s *session) Stop(_ context.Context) error { return s.send(inMsg{T: "stop"}
 func (s *session) Close() error {
 	s.closeOnce.Do(func() {
 		close(s.done)
+		// Close stdin first so the sidecar sees EOF and can shut down gracefully; the
+		// ctx-cancel below is the backstop that force-kills it. Either way readLoop
+		// drains stdout to EOF and the reaping goroutine then Wait()s the child.
+		if s.stdin != nil {
+			s.writeMu.Lock()
+			_ = s.stdin.Close()
+			s.writeMu.Unlock()
+		}
 		if s.cancel != nil {
 			s.cancel()
 		}

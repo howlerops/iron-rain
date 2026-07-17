@@ -5,8 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"time"
 )
+
+// drainClose reads a response body to EOF and closes it, so net/http can return
+// the connection to the idle pool for keep-alive reuse on the next request.
+func drainClose(body io.ReadCloser) {
+	_, _ = io.Copy(io.Discard, body)
+	_ = body.Close()
+}
 
 // Linear is a Provider backed by Linear's GraphQL API. Auth is a token (OAuth access
 // token or personal API key) sent in the Authorization header.
@@ -19,7 +28,7 @@ type Linear struct {
 const linearEndpoint = "https://api.linear.app/graphql"
 
 func NewLinear(token string) *Linear {
-	return &Linear{token: token, endpoint: linearEndpoint, http: &http.Client{}}
+	return &Linear{token: token, endpoint: linearEndpoint, http: &http.Client{Timeout: 30 * time.Second}}
 }
 
 func (l *Linear) Name() string { return "linear" }
@@ -37,7 +46,13 @@ func (l *Linear) gql(ctx context.Context, query string, vars map[string]any, out
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer drainClose(resp.Body)
+	// Check the HTTP status before decoding: a non-2xx gateway/rate-limit
+	// response often has a non-JSON body, and Decode would mask it with an
+	// opaque parse error instead of the useful HTTP status.
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("linear: HTTP %s", resp.Status)
+	}
 	var env struct {
 		Data   json.RawMessage `json:"data"`
 		Errors []struct {
@@ -49,9 +64,6 @@ func (l *Linear) gql(ctx context.Context, query string, vars map[string]any, out
 	}
 	if len(env.Errors) > 0 {
 		return fmt.Errorf("linear: %s", env.Errors[0].Message)
-	}
-	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("linear: HTTP %s", resp.Status)
 	}
 	if out != nil {
 		return json.Unmarshal(env.Data, out)

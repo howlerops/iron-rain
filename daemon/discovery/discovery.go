@@ -187,8 +187,12 @@ func readTranscriptCwd(path string) string {
 }
 
 // procCwd returns a process's working directory (macOS/Linux via lsof); overridable in tests.
-var procCwd = func(pid int) string {
-	out, err := exec.Command("lsof", "-a", "-p", strconv.Itoa(pid), "-d", "cwd", "-Fn").Output()
+// It honors ctx and applies its own short deadline because lsof latency is unbounded (stuck
+// NFS mounts, dead processes) and a single hang must not stall the whole discovery scan.
+var procCwd = func(ctx context.Context, pid int) string {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "lsof", "-a", "-p", strconv.Itoa(pid), "-d", "cwd", "-Fn").Output()
 	if err != nil {
 		return ""
 	}
@@ -224,7 +228,7 @@ func combine(
 	for _, s := range servers {
 		items = append(items, protocol.Discovered{
 			Provider: "opencode", Kind: protocol.KindServer, URL: s.URL, PID: s.PID,
-			Cwd: procCwd(s.PID), // dir where `opencode serve` was launched → a project root
+			Cwd: procCwd(ctx, s.PID), // dir where `opencode serve` was launched → a project root
 		})
 		sessions, err := list(ctx, s.URL)
 		if err != nil {

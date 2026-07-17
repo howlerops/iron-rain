@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/howlerops/oculus/daemon/transport"
@@ -22,6 +23,12 @@ import (
 const (
 	roleHost   = "host"
 	roleClient = "client"
+
+	// registrationTimeout bounds the first (registration) read on a freshly
+	// accepted relay socket. Without it a peer that opens the WebSocket and then
+	// sends nothing would park a goroutine and hold the socket open for the life
+	// of the connection — a cheap slowloris vector on a public relay.
+	registrationTimeout = 10 * time.Second
 )
 
 type registration struct {
@@ -32,7 +39,16 @@ type registration struct {
 // Relay bridges hosts and clients by server_id.
 type Relay struct {
 	mu    sync.Mutex
-	hosts map[string]chan *pairing
+	hosts map[string]*hostEntry
+}
+
+// hostEntry is a registered host awaiting (or serving) a client. evict is closed
+// to unblock an idle host's select when it is superseded by a newer registration
+// for the same server_id.
+type hostEntry struct {
+	pair  chan *pairing
+	ws    *websocket.Conn
+	evict chan struct{}
 }
 
 type pairing struct {
@@ -41,7 +57,7 @@ type pairing struct {
 }
 
 // New returns an empty Relay.
-func New() *Relay { return &Relay{hosts: map[string]chan *pairing{}} }
+func New() *Relay { return &Relay{hosts: map[string]*hostEntry{}} }
 
 // Handler is the relay's WebSocket endpoint.
 func (r *Relay) Handler() http.Handler {
@@ -53,7 +69,11 @@ func (r *Relay) Handler() http.Handler {
 		ws.SetReadLimit(8 * 1024 * 1024)
 		ctx := req.Context()
 
-		_, data, err := ws.Read(ctx)
+		// Bound only the registration phase; switch to the unbounded connection
+		// context after a valid registration completes.
+		rctx, cancel := context.WithTimeout(ctx, registrationTimeout)
+		_, data, err := ws.Read(rctx)
+		cancel()
 		if err != nil {
 			ws.Close(websocket.StatusPolicyViolation, "no registration")
 			return
@@ -76,22 +96,39 @@ func (r *Relay) Handler() http.Handler {
 }
 
 func (r *Relay) serveHost(ctx context.Context, id string, hostWS *websocket.Conn) {
-	ch := make(chan *pairing, 1)
+	entry := &hostEntry{
+		pair:  make(chan *pairing, 1),
+		ws:    hostWS,
+		evict: make(chan struct{}),
+	}
 	r.mu.Lock()
-	r.hosts[id] = ch
+	old := r.hosts[id]
+	r.hosts[id] = entry
 	r.mu.Unlock()
+	if old != nil {
+		// A previous host is still registered for this id (a reconnect after a
+		// half-open connection, or an id collision). Evict it so there is always
+		// exactly one live host per server_id and the old goroutine can't strand
+		// on a channel no client can reach. Closing its ws also tears down an
+		// old bridge if it had already paired; closing evict unblocks it if it
+		// was still idle in its select.
+		old.ws.Close(websocket.StatusPolicyViolation, "replaced by newer host registration")
+		close(old.evict)
+	}
 	defer func() {
 		r.mu.Lock()
-		if r.hosts[id] == ch {
+		if r.hosts[id] == entry {
 			delete(r.hosts, id)
 		}
 		r.mu.Unlock()
 	}()
 
 	select {
-	case p := <-ch:
+	case p := <-entry.pair:
 		bridge(ctx, hostWS, p.clientWS)
 		close(p.done)
+	case <-entry.evict:
+		// Superseded by a newer registration; the evictor already closed our ws.
 	case <-ctx.Done():
 		hostWS.Close(websocket.StatusNormalClosure, "")
 	}
@@ -99,15 +136,15 @@ func (r *Relay) serveHost(ctx context.Context, id string, hostWS *websocket.Conn
 
 func (r *Relay) serveClient(ctx context.Context, id string, clientWS *websocket.Conn) {
 	r.mu.Lock()
-	ch := r.hosts[id]
+	entry := r.hosts[id]
 	r.mu.Unlock()
-	if ch == nil {
+	if entry == nil {
 		clientWS.Close(websocket.StatusPolicyViolation, "no host for server_id")
 		return
 	}
 	done := make(chan struct{})
 	select {
-	case ch <- &pairing{clientWS: clientWS, done: done}:
+	case entry.pair <- &pairing{clientWS: clientWS, done: done}:
 		<-done
 	case <-ctx.Done():
 		clientWS.Close(websocket.StatusNormalClosure, "")

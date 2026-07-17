@@ -55,6 +55,33 @@ func TestLinear_ListAssigned(t *testing.T) {
 	}
 }
 
+func TestNewLinear_HasRequestTimeout(t *testing.T) {
+	// A zero timeout lets a hung request wedge the single poll goroutine forever.
+	if l := NewLinear("tok"); l.http.Timeout == 0 {
+		t.Fatal("NewLinear http client has no timeout")
+	}
+}
+
+func TestLinear_NonJSONErrorStatus(t *testing.T) {
+	// A rate limiter / gateway returns a non-2xx with an HTML body. gql must
+	// report the HTTP status, not an opaque JSON parse error.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		io.WriteString(w, "<html>rate limited</html>")
+	}))
+	defer srv.Close()
+
+	l := NewLinear("tok")
+	l.endpoint = srv.URL
+	_, err := l.ListAssigned(context.Background())
+	if err == nil {
+		t.Fatal("expected an error on HTTP 429")
+	}
+	if !strings.Contains(err.Error(), "429") {
+		t.Fatalf("error %q does not mention HTTP status 429", err.Error())
+	}
+}
+
 func TestLinear_CommentAndTransition(t *testing.T) {
 	var seen []map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

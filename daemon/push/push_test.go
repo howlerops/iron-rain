@@ -138,6 +138,67 @@ func TestAPNs_NonOKStatusIsError(t *testing.T) {
 	}
 }
 
+// TestAPNs_JWTCachedAcrossSends verifies the provider JWT is reused within
+// jwtMaxAge (avoiding Apple's 403 TooManyProviderTokenUpdates) and re-signed
+// only once the cached token ages past the window.
+func TestAPNs_JWTCachedAcrossSends(t *testing.T) {
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+
+	var auths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auths = append(auths, r.Header.Get("authorization"))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	now := time.Unix(1_700_000_000, 0)
+	n, err := NewAPNs(APNsConfig{
+		KeyID: "K", TeamID: "T", BundleID: "b", Key: key, BaseURL: srv.URL,
+		Client: srv.Client(), Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	send := func() {
+		if err := n.Notify(context.Background(), "tok", Notification{Title: "x"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Two sends within the window must reuse the exact same signed token.
+	send()
+	now = now.Add(30 * time.Minute)
+	send()
+	if auths[0] != auths[1] {
+		t.Fatalf("expected cached JWT reused within window, got %q then %q", auths[0], auths[1])
+	}
+
+	// A send past jwtMaxAge must mint a fresh token.
+	now = now.Add(jwtMaxAge + time.Minute)
+	send()
+	if auths[2] == auths[1] {
+		t.Fatal("expected JWT to be re-signed after jwtMaxAge")
+	}
+}
+
+// TestAPNs_DefaultClientHasTimeout ensures NewAPNs installs a dedicated,
+// bounded http.Client rather than the timeout-less http.DefaultClient.
+func TestAPNs_DefaultClientHasTimeout(t *testing.T) {
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	n, err := NewAPNs(APNsConfig{KeyID: "K", TeamID: "T", BundleID: "b", Key: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := n.(*apnsNotifier).cfg.Client
+	if c == http.DefaultClient {
+		t.Fatal("push must not use http.DefaultClient")
+	}
+	if c.Timeout <= 0 {
+		t.Fatalf("expected a positive client timeout, got %v", c.Timeout)
+	}
+}
+
 func decodeSeg(t *testing.T, seg string) map[string]any {
 	t.Helper()
 	b, err := base64.RawURLEncoding.DecodeString(seg)

@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -99,6 +100,92 @@ func TestProtocolGoldenVectors(t *testing.T) {
 	for name := range cases {
 		if string(normalize(t, got[name])) != string(normalize(t, want[name])) {
 			t.Fatalf("%s vector mismatch:\n got  %s\n want %s", name, got[name], want[name])
+		}
+	}
+}
+
+// slowEncode reproduces the original RawMessage double-marshal encoding. The
+// streaming fast path in Encode must produce byte-identical output to this.
+func slowEncode(t *testing.T, id, typ string, payload any) []byte {
+	t.Helper()
+	env := Envelope{ID: id, Type: typ}
+	if payload != nil {
+		p, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		env.Payload = p
+	}
+	b, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// TestEncode_StreamingFastPathMatchesSlowPath locks the pooled single-pass
+// encoder for the delta hot path to the exact bytes of the double-marshal path.
+func TestEncode_StreamingFastPathMatchesSlowPath(t *testing.T) {
+	cases := []struct {
+		name    string
+		typ     string
+		payload any
+	}{
+		{"output_delta", TypeOutputDelta, OutputDelta{SessionID: "s1", Text: "hello"}},
+		{"thinking", TypeThinking, Thinking{SessionID: "s1", Text: "reasoning…"}},
+		// HTML-sensitive text must escape identically on both paths.
+		{"output_delta_html", TypeOutputDelta, OutputDelta{SessionID: "s2", Text: "<a> & </a>"}},
+		{"output_delta_empty", TypeOutputDelta, OutputDelta{SessionID: "s3", Text: ""}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := Encode("", c.typ, c.payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := slowEncode(t, "", c.typ, c.payload)
+			if string(got) != string(want) {
+				t.Fatalf("fast path bytes differ:\n got  %s\n want %s", got, want)
+			}
+			// Fast-path bytes must round-trip back to the original payload.
+			env, err := Decode(got)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if env.ID != "" || env.Type != c.typ {
+				t.Fatalf("decoded id/type = %q/%q", env.ID, env.Type)
+			}
+		})
+	}
+}
+
+// TestEncode_StreamingFastPathConcurrent guards the pooled buffer against
+// cross-goroutine corruption: each returned slice must be an independent copy.
+func TestEncode_StreamingFastPathConcurrent(t *testing.T) {
+	const goroutines = 16
+	const iters = 200
+	errCh := make(chan error, goroutines)
+	for g := 0; g < goroutines; g++ {
+		go func(g int) {
+			for i := 0; i < iters; i++ {
+				p := OutputDelta{SessionID: "s", Text: string(rune('a' + g))}
+				got, err := Encode("", TypeOutputDelta, p)
+				if err != nil {
+					errCh <- err
+					return
+				}
+				want := slowEncode(t, "", TypeOutputDelta, p)
+				if string(got) != string(want) {
+					errCh <- fmt.Errorf("mismatch: got %s want %s", got, want)
+					return
+				}
+			}
+			errCh <- nil
+		}(g)
+	}
+	for g := 0; g < goroutines; g++ {
+		if err := <-errCh; err != nil {
+			t.Fatal(err)
 		}
 	}
 }

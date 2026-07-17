@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/issues"
@@ -50,8 +51,19 @@ func (h *Hub) reservePort(lo, hi int) int {
 	if h.reservedPorts == nil {
 		h.reservedPorts = map[int]bool{}
 	}
-	p, _ := worktree.AllocPort(lo, hi, h.reservedPorts)
+	p, _ := worktree.AllocPort(lo, hi, h.reservedPorts) // marks p reserved in the map
 	return p
+}
+
+// releasePort returns a port previously handed out by reservePort to the free pool, so
+// worktree ports are not permanently burned when a session/worktree ends or fails.
+func (h *Hub) releasePort(p int) {
+	if p == 0 {
+		return
+	}
+	h.mu.Lock()
+	delete(h.reservedPorts, p)
+	h.mu.Unlock()
 }
 
 // SetWorktreeBase overrides where session worktrees are created (default: ~/.oculus/worktrees).
@@ -117,6 +129,7 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 				res, berr := worktree.Bootstrap(repoRoot, wt.Path, cfg, port)
 				if berr != nil {
 					_ = worktree.Remove(repoRoot, wt.Path, true)
+					h.releasePort(port) // don't leak the reserved port on a failed bootstrap
 					return nil, fmt.Errorf("worktree setup failed: %w", berr)
 				}
 				meta.port = res.Port
@@ -438,16 +451,37 @@ func (h *Hub) pushApproval(ar protocol.ApprovalRequest) {
 		Custom:   map[string]any{"approval_id": ar.ApprovalID, "session_id": ar.SessionID},
 	}
 	log.Printf("hub: pushing approval %s (tool %q) to %d device(s)", ar.ApprovalID, ar.Tool, len(tokens))
-	for _, t := range tokens {
-		go func(token string) {
-			if err := n.Notify(context.Background(), token, notif); err != nil {
-				log.Printf("hub: push to %s… failed: %v", safePrefix(token), err)
-			} else {
-				log.Printf("hub: push to %s… delivered to APNs", safePrefix(token))
-			}
-		}(t)
-	}
+	// Fan out on a dispatcher goroutine so the caller (the session event pump) never
+	// blocks. Each Notify gets a bounded context so a hung APNs call can't leak a
+	// goroutine forever, and a semaphore caps concurrent in-flight pushes.
+	go func() {
+		sem := make(chan struct{}, pushConcurrency)
+		var wg sync.WaitGroup
+		for _, t := range tokens {
+			sem <- struct{}{}
+			wg.Add(1)
+			go func(token string) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				ctx, cancel := context.WithTimeout(context.Background(), pushTimeout)
+				defer cancel()
+				if err := n.Notify(ctx, token, notif); err != nil {
+					log.Printf("hub: push to %s… failed: %v", safePrefix(token), err)
+				} else {
+					log.Printf("hub: push to %s… delivered to APNs", safePrefix(token))
+				}
+			}(t)
+		}
+		wg.Wait()
+	}()
 }
+
+// Push fan-out bounds: cap in-flight Notify calls and give each a deadline so a hung
+// push provider can neither leak goroutines nor spawn them without limit.
+const (
+	pushTimeout     = 15 * time.Second
+	pushConcurrency = 8
+)
 
 func safePrefix(s string) string {
 	if len(s) > 8 {
@@ -485,8 +519,40 @@ func (h *Hub) Serve(ctx context.Context, conn *transport.Conn) error {
 			h.sendErr(conn, "", "bad message")
 			continue
 		}
-		h.dispatch(ctx, conn, env)
+		// Long-running handlers (git/worktree/provider/tracker I/O) run off the read
+		// loop so a slow operation can't block this connection from processing further
+		// messages — e.g. an approval.respond the client sends while a worktree is still
+		// bootstrapping. They already reply asynchronously via conn.Send. Cheap, ordered
+		// operations stay inline.
+		if asyncDispatch(env.Type) {
+			go h.dispatch(ctx, conn, env)
+		} else {
+			h.dispatch(ctx, conn, env)
+		}
 	}
+}
+
+// asyncDispatch reports whether a request type performs blocking I/O and must therefore
+// be dispatched off the connection read loop.
+func asyncDispatch(typ string) bool {
+	switch typ {
+	case protocol.TypeSessionCreate, // worktree.Create + Bootstrap (setup hooks) + provider Create
+		protocol.TypeIssueLaunch,        // same startSession path as create
+		protocol.TypeWorktreeDiff,       // git diff
+		protocol.TypeWorktreeRemove,     // provider Stop/Close + git remove/prune
+		protocol.TypeWorktreePR,         // git CommitAll/Push/CreatePR
+		protocol.TypeWorktreeConflicts,  // git per-worktree ChangedFiles
+		protocol.TypeIntegrationConnect, // tracker HTTP
+		protocol.TypeIntegrationOAuth,   // tracker HTTP
+		protocol.TypeIssueStates,        // tracker HTTP
+		protocol.TypeSessionPrompt,      // provider prompt (may be network)
+		protocol.TypeApprovalRespond,    // provider Respond (may be network)
+		protocol.TypeSessionAttach,      // provider Attach
+		protocol.TypeSessionStop,        // provider Stop
+		protocol.TypeDiscover:           // host scan
+		return true
+	}
+	return false
 }
 
 // broadcast sends an event to every connected client (used for cross-device sync).
@@ -501,8 +567,12 @@ func (h *Hub) broadcast(typ string, payload any) {
 		conns = append(conns, c)
 	}
 	h.mu.Unlock()
+	// Fan the Sends out per-connection so one slow/wedged client can't apply
+	// head-of-line blocking to the others (Conn.Send is a blocking encrypted write and
+	// is goroutine-safe). Cross-device broadcasts are infrequent, so a goroutine per
+	// send is cheap here.
 	for _, c := range conns {
-		_ = c.Send(raw)
+		go func(c *transport.Conn) { _ = c.Send(raw) }(c)
 	}
 }
 
@@ -605,6 +675,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			return
 		}
 		_ = worktree.Prune(m.meta.repoRoot)
+		h.releasePort(m.meta.port) // return the worktree's reserved port to the pool
 		h.removeSession(req.SessionID)
 		h.sendOK(conn, env.ID, protocol.SessionRef{SessionID: req.SessionID})
 

@@ -24,6 +24,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -50,7 +51,7 @@ type APNsConfig struct {
 	Key      *ecdsa.PrivateKey // parsed from the .p8 (see ParseP8)
 	BaseURL  string            // default https://api.push.apple.com (sandbox/mock override)
 	Now      func() time.Time  // for tests; defaults to time.Now
-	Client   *http.Client      // defaults to http.DefaultClient (HTTP/2 to real APNs)
+	Client   *http.Client      // defaults to a dedicated client with a 10s timeout (HTTP/2 via ALPN)
 }
 
 // ParseP8 parses an Apple .p8 (PKCS#8 EC) auth key.
@@ -70,7 +71,20 @@ func ParseP8(pemBytes []byte) (*ecdsa.PrivateKey, error) {
 	return ec, nil
 }
 
-type apnsNotifier struct{ cfg APNsConfig }
+type apnsNotifier struct {
+	cfg APNsConfig
+
+	// cached provider JWT. Apple rejects tokens regenerated more than once per
+	// 20 min (403 TooManyProviderTokenUpdates), so we reuse a signed token and
+	// only re-sign once it is older than jwtMaxAge.
+	mu       sync.Mutex
+	token    string
+	issuedAt time.Time
+}
+
+// jwtMaxAge is how long a signed provider JWT is reused before re-signing.
+// Apple's acceptance window is 20-60 min; ~45 min stays safely inside it.
+const jwtMaxAge = 45 * time.Minute
 
 // NewAPNs returns a Notifier that sends via APNs.
 func NewAPNs(cfg APNsConfig) (Notifier, error) {
@@ -87,7 +101,11 @@ func NewAPNs(cfg APNsConfig) (Notifier, error) {
 		cfg.Now = time.Now
 	}
 	if cfg.Client == nil {
-		cfg.Client = http.DefaultClient
+		// Dedicated client (not http.DefaultClient) so a stuck HTTP/2 dial to
+		// api.push.apple.com can't hang a send forever, and so push doesn't
+		// share a connection pool with other DefaultClient users in-process.
+		// https default transport still negotiates HTTP/2 via ALPN.
+		cfg.Client = &http.Client{Timeout: 10 * time.Second}
 	}
 	return &apnsNotifier{cfg: cfg}, nil
 }
@@ -135,11 +153,30 @@ func (a *apnsNotifier) Notify(ctx context.Context, deviceToken string, n Notific
 	return nil
 }
 
-// providerToken builds a signed APNs provider JWT (ES256). APNs accepts a token
-// reusable for up to ~1h; a fresh one per send is simplest and well within limits.
+// providerToken returns a signed APNs provider JWT (ES256), reusing a cached
+// token until it is older than jwtMaxAge. Apple rejects tokens regenerated more
+// than once per 20 min (403 TooManyProviderTokenUpdates), so caching also avoids
+// an ECDSA sign + JSON marshalling on every send.
 func (a *apnsNotifier) providerToken() (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.token != "" && a.cfg.Now().Sub(a.issuedAt) <= jwtMaxAge {
+		return a.token, nil
+	}
+	now := a.cfg.Now()
+	tok, err := a.signToken(now)
+	if err != nil {
+		return "", err
+	}
+	a.token = tok
+	a.issuedAt = now
+	return tok, nil
+}
+
+// signToken mints a fresh signed provider JWT with iat=now.
+func (a *apnsNotifier) signToken(now time.Time) (string, error) {
 	header, _ := json.Marshal(map[string]any{"alg": "ES256", "kid": a.cfg.KeyID})
-	claims, _ := json.Marshal(map[string]any{"iss": a.cfg.TeamID, "iat": a.cfg.Now().Unix()})
+	claims, _ := json.Marshal(map[string]any{"iss": a.cfg.TeamID, "iat": now.Unix()})
 	signing := seg(header) + "." + seg(claims)
 
 	digest := sha256.Sum256([]byte(signing))

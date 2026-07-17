@@ -8,6 +8,17 @@ import (
 	"github.com/howlerops/oculus/daemon/transport"
 )
 
+// Fan-out and transcript limits. broadcast() runs on the single run() goroutine that
+// drains the provider event stream, so it must never block on a slow socket: each
+// subscriber owns a bounded outbound queue drained by its own writer goroutine, and a
+// subscriber whose queue overflows is dropped rather than allowed to stall the pump.
+// The transcript is capped so a long-lived session can't grow memory without bound.
+const (
+	outboundBuffer      = 512     // per-subscriber queued events before it is dropped
+	maxTranscriptEvents = 2048    // ring-buffer cap on retained events (by count)
+	maxTranscriptBytes  = 8 << 20 // ring-buffer cap on retained events (by total bytes)
+)
+
 // managedSession is a hub-owned agent session shared by every subscribed client.
 // A single run() goroutine reads the provider's event stream once, records it to a
 // transcript (so late joiners can be caught up), and broadcasts each event to all
@@ -18,10 +29,23 @@ type managedSession struct {
 	sess agent.Session
 	meta sessionMeta // grouping info (project/cwd/worktree) for session.list + create
 
-	mu         sync.Mutex
-	subs       map[*transport.Conn]bool
-	transcript [][]byte // encoded protocol events, replayed to new subscribers
+	mu              sync.Mutex
+	subs            map[*transport.Conn]*subscriber
+	transcript      [][]byte // encoded protocol events, replayed to new subscribers
+	transcriptBytes int      // running size of transcript (for the byte cap)
 }
+
+// subscriber owns one client's outbound queue plus the writer goroutine that drains it.
+// broadcast enqueues without blocking; the writer performs the (blocking) encrypted
+// Send. This decouples a slow/wedged socket from the session's event pump.
+type subscriber struct {
+	conn      *transport.Conn
+	ch        chan []byte
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
+func (s *subscriber) close() { s.closeOnce.Do(func() { close(s.done) }) }
 
 // sessionMeta is where a session runs, so clients can group the sidebar.
 type sessionMeta struct {
@@ -39,7 +63,7 @@ type sessionMeta struct {
 }
 
 func newManagedSession(h *Hub, sess agent.Session, meta sessionMeta) *managedSession {
-	return &managedSession{hub: h, sess: sess, meta: meta, subs: map[*transport.Conn]bool{}}
+	return &managedSession{hub: h, sess: sess, meta: meta, subs: map[*transport.Conn]*subscriber{}}
 }
 
 // info renders the session's identity + grouping metadata for the wire.
@@ -59,15 +83,45 @@ func (m *managedSession) info() protocol.Session {
 }
 
 // subscribe adds a client and replays the transcript so it sees the whole session.
-// A snapshot is taken under the lock; the replay is sent outside it. Events that
-// arrive during the (brief) replay window reach the client via broadcast instead.
+// The subscriber is registered and the transcript snapshotted together under the lock,
+// so no live event can slip between the snapshot and registration (each event lands in
+// exactly one of replay or the live queue). A dedicated writer goroutine then delivers
+// the replay followed by live events, so no client's socket blocks the event pump.
 func (m *managedSession) subscribe(conn *transport.Conn) {
 	m.mu.Lock()
-	m.subs[conn] = true
+	if _, ok := m.subs[conn]; ok {
+		m.mu.Unlock()
+		return
+	}
+	s := &subscriber{conn: conn, ch: make(chan []byte, outboundBuffer), done: make(chan struct{})}
+	m.subs[conn] = s
 	replay := append([][]byte(nil), m.transcript...)
 	m.mu.Unlock()
+	go m.writeLoop(s, replay)
+}
+
+// writeLoop delivers the transcript snapshot, then live events, until the subscriber is
+// dropped or the client disconnects. It is the only goroutine that writes to conn here.
+func (m *managedSession) writeLoop(s *subscriber, replay [][]byte) {
 	for _, raw := range replay {
-		if conn.Send(raw) != nil {
+		select {
+		case <-s.done:
+			return
+		default:
+		}
+		if s.conn.Send(raw) != nil {
+			m.drop(s)
+			return
+		}
+	}
+	for {
+		select {
+		case raw := <-s.ch:
+			if s.conn.Send(raw) != nil {
+				m.drop(s)
+				return
+			}
+		case <-s.done:
 			return
 		}
 	}
@@ -75,21 +129,54 @@ func (m *managedSession) subscribe(conn *transport.Conn) {
 
 func (m *managedSession) unsubscribe(conn *transport.Conn) {
 	m.mu.Lock()
+	s := m.subs[conn]
 	delete(m.subs, conn)
 	m.mu.Unlock()
+	if s != nil {
+		s.close()
+	}
 }
 
-// broadcast records the event and sends it to every current subscriber.
+// drop removes a subscriber whose outbound queue overflowed or whose socket errored,
+// so one wedged client never blocks the pump or other subscribers.
+func (m *managedSession) drop(s *subscriber) {
+	m.mu.Lock()
+	if m.subs[s.conn] == s {
+		delete(m.subs, s.conn)
+	}
+	m.mu.Unlock()
+	s.close()
+}
+
+// broadcast records the event and enqueues it to every current subscriber without
+// blocking: a subscriber whose bounded queue is full is dropped rather than allowed to
+// stall the run() goroutine that pumps the provider's event stream.
 func (m *managedSession) broadcast(raw []byte) {
 	m.mu.Lock()
 	m.transcript = append(m.transcript, raw)
-	conns := make([]*transport.Conn, 0, len(m.subs))
-	for c := range m.subs {
-		conns = append(conns, c)
+	m.transcriptBytes += len(raw)
+	m.trimTranscript()
+	subs := make([]*subscriber, 0, len(m.subs))
+	for _, s := range m.subs {
+		subs = append(subs, s)
 	}
 	m.mu.Unlock()
-	for _, c := range conns {
-		_ = c.Send(raw)
+	for _, s := range subs {
+		select {
+		case s.ch <- raw:
+		default:
+			m.drop(s) // slow client: drop it rather than block delivery to everyone else
+		}
+	}
+}
+
+// trimTranscript enforces the retention cap (by event count and total bytes), dropping
+// the oldest events. Caller must hold m.mu.
+func (m *managedSession) trimTranscript() {
+	for len(m.transcript) > 0 && (len(m.transcript) > maxTranscriptEvents || m.transcriptBytes > maxTranscriptBytes) {
+		m.transcriptBytes -= len(m.transcript[0])
+		m.transcript[0] = nil // release the backing bytes for GC
+		m.transcript = m.transcript[1:]
 	}
 }
 

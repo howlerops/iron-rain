@@ -77,10 +77,17 @@ func (p *Provider) Create(ctx context.Context, cwd, prompt string) (agent.Sessio
 		id:     "pi_" + randID(),
 		events: make(chan agent.Event, 32),
 		stdin:  stdin,
+		cmd:    cmd,
 		cancel: cancel,
 		done:   make(chan struct{}),
 	}
-	go s.readLoop(stdout)
+	// readLoop returns on stdout EOF (which the ctx-cancel kill triggers); Wait() after
+	// it returns reaps the child and releases the stdin/stdout pipe fds. Without this the
+	// process lingers as a zombie and its fds/CommandContext watcher goroutine leak.
+	go func() {
+		s.readLoop(stdout)
+		_ = cmd.Wait()
+	}()
 	if prompt != "" {
 		_ = s.Prompt(ctx, prompt)
 	}
@@ -91,6 +98,7 @@ type session struct {
 	id     string
 	events chan agent.Event
 	stdin  io.WriteCloser
+	cmd    *exec.Cmd
 	cancel context.CancelFunc
 
 	writeMu   sync.Mutex

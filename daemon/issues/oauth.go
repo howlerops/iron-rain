@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // Linear OAuth endpoints (docs.linear.app/oauth-2-0-authentication).
@@ -79,11 +80,12 @@ func (m *Manager) OAuthCallback(ctx context.Context, code, state, redirectURI st
 		return err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{Timeout: 30 * time.Second} // never let a stuck token exchange hang
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer drainClose(resp.Body)
 	var tok struct {
 		AccessToken string `json:"access_token"`
 	}

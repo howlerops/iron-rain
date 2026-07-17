@@ -2,13 +2,23 @@ package server
 
 import (
 	"context"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/howlerops/oculus/daemon/transport"
 )
 
+// writeTimeout bounds a single WebSocket write. A dead-but-not-reset mobile peer
+// can let its TCP send buffer fill, which would otherwise park the writing
+// goroutine forever on ws.Write; the deadline drops such a client instead.
+const writeTimeout = 30 * time.Second
+
 // wsConn adapts a WebSocket to transport.MsgConn (each WS binary message is one
 // protocol/handshake message).
+//
+// ctx is the connection's lifetime scope (from the HTTP request). It is used as
+// the parent for per-message deadlines below rather than being passed raw to
+// ws.Write, so a stalled peer can't wedge the writer indefinitely.
 type wsConn struct {
 	ws  *websocket.Conn
 	ctx context.Context
@@ -22,7 +32,16 @@ func newWSConn(ctx context.Context, ws *websocket.Conn) *wsConn {
 }
 
 func (c *wsConn) WriteMsg(b []byte) error {
-	return c.ws.Write(c.ctx, websocket.MessageBinary, b)
+	ctx, cancel := context.WithTimeout(c.ctx, writeTimeout)
+	defer cancel()
+	err := c.ws.Write(ctx, websocket.MessageBinary, b)
+	if err != nil && c.ctx.Err() == nil {
+		// The write stalled (or otherwise failed) while the connection itself is
+		// still live: drop the client so a filled send buffer can't block the
+		// goroutine broadcasting to it.
+		c.ws.Close(websocket.StatusPolicyViolation, "write timeout")
+	}
+	return err
 }
 
 func (c *wsConn) ReadMsg() ([]byte, error) {

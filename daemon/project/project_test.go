@@ -1,9 +1,11 @@
 package project
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -114,6 +116,55 @@ func TestRegistry_RemoveAndPersist(t *testing.T) {
 	got := r2.List()
 	if len(got) != 1 || got[0].Path != dirB {
 		t.Fatalf("persisted list = %+v, want only %s", got, dirB)
+	}
+}
+
+// TestGitInfoRespectsContext verifies gitInfo honors its context: an already-cancelled
+// context aborts the git subprocesses instead of hanging (regression for the ctx-less exec).
+func TestGitInfoRespectsContext(t *testing.T) {
+	repo := t.TempDir()
+	gitInit(t, repo)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	isRepo, branch := gitInfo(ctx, repo)
+	if isRepo || branch != "" {
+		t.Fatalf("cancelled ctx should abort git: isRepo=%v branch=%q", isRepo, branch)
+	}
+}
+
+// TestRegistry_ConcurrentAdd exercises many parallel Adds. It guards against lost updates
+// now that the git detection and disk write happen off the registry lock: every project
+// must survive both in memory and on disk (run with -race to catch data races).
+func TestRegistry_ConcurrentAdd(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "p.json")
+	r, _ := Load(path)
+
+	dirs := make([]string, 8)
+	for i := range dirs {
+		dirs[i] = t.TempDir()
+	}
+	var wg sync.WaitGroup
+	for _, d := range dirs {
+		wg.Add(1)
+		go func(d string) {
+			defer wg.Done()
+			if _, err := r.Add(d); err != nil {
+				t.Errorf("Add(%s): %v", d, err)
+			}
+		}(d)
+	}
+	wg.Wait()
+
+	if n := len(r.List()); n != len(dirs) {
+		t.Fatalf("in-memory list = %d, want %d", n, len(dirs))
+	}
+	r2, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(r2.List()); n != len(dirs) {
+		t.Fatalf("persisted list = %d, want %d (a concurrent save lost an update)", n, len(dirs))
 	}
 }
 

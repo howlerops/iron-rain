@@ -5,6 +5,7 @@
 package project
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Project is a registered folder.
@@ -30,9 +32,10 @@ type Project struct {
 
 // Registry is a persisted, concurrency-safe set of projects, deduped by path.
 type Registry struct {
-	mu   sync.Mutex
-	path string // persistence file ("" = in-memory only)
-	list []Project
+	mu     sync.Mutex
+	saveMu sync.Mutex // serializes disk writes so they don't hold mu during I/O
+	path   string     // persistence file ("" = in-memory only)
+	list   []Project
 }
 
 // Load reads the registry from file (a missing file yields an empty registry).
@@ -78,23 +81,31 @@ func (r *Registry) add(dir, source string) (Project, error) {
 		return Project{}, fmt.Errorf("project path %s is not a directory", abs)
 	}
 
+	// Detect git state before taking the lock: gitInfo shells out to git (two blocking
+	// subprocesses) and must not freeze the whole registry. A redundant computation by a
+	// racing duplicate Add is cheap versus serializing all registry access behind spawns.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	isRepo, branch := gitInfo(ctx, abs)
+
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	// Dedup: same path -> return the existing entry. A manual add promotes a previously
 	// auto-discovered project so the user's explicit "keep" survives.
 	for i, p := range r.list {
 		if p.Path == abs {
 			if source == "manual" && p.Source != "manual" {
 				r.list[i].Source = "manual"
+				out := r.list[i]
+				r.mu.Unlock()
 				if err := r.save(); err != nil {
 					return Project{}, err
 				}
-				return r.list[i], nil
+				return out, nil
 			}
+			r.mu.Unlock()
 			return p, nil
 		}
 	}
-	isRepo, branch := gitInfo(abs)
 	p := Project{
 		ID:            "proj_" + shortHash(abs),
 		Name:          filepath.Base(abs),
@@ -104,6 +115,7 @@ func (r *Registry) add(dir, source string) (Project, error) {
 		Source:        source,
 	}
 	r.list = append(r.list, p)
+	r.mu.Unlock()
 	if err := r.save(); err != nil {
 		return Project{}, err
 	}
@@ -134,7 +146,6 @@ func (r *Registry) Get(id string) (Project, bool) {
 // Remove deletes the project with id (no error if absent).
 func (r *Registry) Remove(id string) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	out := r.list[:0]
 	for _, p := range r.list {
 		if p.ID != id {
@@ -142,23 +153,52 @@ func (r *Registry) Remove(id string) error {
 		}
 	}
 	r.list = out
+	r.mu.Unlock()
 	return r.save()
 }
 
+// save persists the registry. It must be called WITHOUT r.mu held: it snapshots the list
+// under a brief lock and then does the JSON marshal + disk write outside the lock so
+// readers (List/Get) aren't blocked on I/O. saveMu serializes concurrent saves so the
+// atomic temp-file rename can't lose a newer snapshot to an older one.
 func (r *Registry) save() error {
 	if r.path == "" {
 		return nil
 	}
-	if dir := filepath.Dir(r.path); dir != "" {
+	r.saveMu.Lock()
+	defer r.saveMu.Unlock()
+
+	r.mu.Lock()
+	snap := make([]Project, len(r.list))
+	copy(snap, r.list)
+	path := r.path
+	r.mu.Unlock()
+
+	data, err := json.MarshalIndent(snap, "", "  ")
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	if dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
 	}
-	data, err := json.MarshalIndent(r.list, "", "  ")
+	// Write to a temp file and rename for atomicity (never a torn/partial registry).
+	tmp, err := os.CreateTemp(dir, ".projects-*.tmp")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(r.path, data, 0o600)
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op after a successful rename
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 func shortHash(s string) string {
@@ -166,12 +206,14 @@ func shortHash(s string) string {
 	return hex.EncodeToString(sum[:])[:12]
 }
 
-// gitInfo reports whether dir is inside a git work tree and its current branch.
-func gitInfo(dir string) (isRepo bool, branch string) {
-	if out, err := exec.Command("git", "-C", dir, "rev-parse", "--is-inside-work-tree").Output(); err != nil || strings.TrimSpace(string(out)) != "true" {
+// gitInfo reports whether dir is inside a git work tree and its current branch. It uses
+// exec.CommandContext so a hung git (index.lock contention, a credential/GPG prompt, a
+// network-backed work tree) is killed when ctx is cancelled or its deadline expires.
+func gitInfo(ctx context.Context, dir string) (isRepo bool, branch string) {
+	if out, err := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--is-inside-work-tree").Output(); err != nil || strings.TrimSpace(string(out)) != "true" {
 		return false, ""
 	}
-	out, err := exec.Command("git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD").Output()
 	if err != nil {
 		return true, ""
 	}

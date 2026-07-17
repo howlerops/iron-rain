@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // Jira is a Provider backed by Jira Cloud REST v3, authenticated with an API token
@@ -26,7 +27,7 @@ func NewJira(site, email, apiToken string) *Jira {
 	return &Jira{
 		base: site,
 		auth: "Basic " + base64.StdEncoding.EncodeToString([]byte(email+":"+apiToken)),
-		http: &http.Client{},
+		http: &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
@@ -51,7 +52,7 @@ func (j *Jira) do(ctx context.Context, method, path string, body any, out any) e
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer drainClose(resp.Body)
 	if resp.StatusCode/100 != 2 {
 		return fmt.Errorf("jira %s %s: HTTP %s", method, path, resp.Status)
 	}

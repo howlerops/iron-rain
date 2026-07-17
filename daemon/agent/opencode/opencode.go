@@ -14,20 +14,31 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/protocol"
 )
 
+// unaryTimeout bounds the request/response (non-SSE) calls so a hung opencode server
+// can't block a goroutine (e.g. a POST /message fired with the long-lived subscribe
+// ctx) indefinitely.
+const unaryTimeout = 30 * time.Second
+
 // Provider talks to one opencode server.
 type Provider struct {
 	baseURL string
-	http    *http.Client
+	http    *http.Client // no Timeout: for the long-lived SSE /event stream only
+	unary   *http.Client // bounded Timeout: for request/response List/postJSON/replayHistory
 }
 
 // New returns a Provider for the given opencode base URL (e.g. http://127.0.0.1:4096).
 func New(baseURL string) *Provider {
-	return &Provider{baseURL: strings.TrimRight(baseURL, "/"), http: &http.Client{}}
+	return &Provider{
+		baseURL: strings.TrimRight(baseURL, "/"),
+		http:    &http.Client{},
+		unary:   &http.Client{Timeout: unaryTimeout},
+	}
 }
 
 func (p *Provider) Name() string { return "opencode" }
@@ -38,7 +49,7 @@ func (p *Provider) List(ctx context.Context) ([]protocol.Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp, err := p.http.Do(req)
+	resp, err := p.unary.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -102,7 +113,7 @@ func (s *session) replayHistory(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	resp, err := s.p.http.Do(req)
+	resp, err := s.p.unary.Do(req)
 	if err != nil {
 		return
 	}
@@ -153,7 +164,7 @@ func (p *Provider) postJSON(ctx context.Context, path string, body, out any) err
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := p.http.Do(req)
+	resp, err := p.unary.Do(req)
 	if err != nil {
 		return err
 	}
@@ -216,14 +227,18 @@ func (s *session) readEvents(body io.ReadCloser) {
 	defer body.Close()
 	sc := bufio.NewScanner(body)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	dataPrefix := []byte("data:")
 	for sc.Scan() {
-		line := sc.Text()
-		if !strings.HasPrefix(line, "data:") {
+		// Work in bytes to avoid a string alloc + a []byte copy per streamed event.
+		// sc.Bytes() is only valid until the next Scan(), which is fine because handle()
+		// consumes it synchronously (json.Unmarshal does not retain the slice).
+		line := sc.Bytes()
+		if !bytes.HasPrefix(line, dataPrefix) {
 			continue
 		}
-		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if payload != "" {
-			s.handle([]byte(payload))
+		payload := bytes.TrimSpace(bytes.TrimPrefix(line, dataPrefix))
+		if len(payload) != 0 {
+			s.handle(payload)
 		}
 	}
 }
@@ -360,6 +375,11 @@ func (s *session) handle(raw []byte) {
 		if json.Unmarshal(e.Properties, &pr) != nil || pr.SessionID != s.id {
 			return
 		}
+		// The turn is done: no message is streaming, so the per-message role/dedup
+		// bookkeeping is no longer needed. Dropping it here bounds these maps to at most
+		// one turn's worth of message IDs instead of growing for the session's lifetime.
+		s.msgRoles = nil
+		s.emittedUser = nil
 		s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusIdle}})
 	}
 }

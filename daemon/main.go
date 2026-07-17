@@ -183,7 +183,11 @@ func serve(args []string) error {
 	// auto-discover + connect with zero config, and show a QR (using the reachable
 	// public URL) to pair a phone. 0600, same-user only.
 	writeLocalPairing(localWSURL(*addr), pubURL, hex.EncodeToString(kp.Public()), sec, desktopName)
-	return http.ListenAndServe(*addr, mux)
+	// ReadHeaderTimeout bounds header-slowloris on the plain HTTP routes
+	// (/healthz, /oauth/linear/callback) when exposed via --public-url. Leave
+	// Write/Idle timeouts unset so long-lived /ws WebSocket upgrades aren't cut off.
+	httpSrv := &http.Server{Addr: *addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	return httpSrv.ListenAndServe()
 }
 
 // localWSURL is the loopback ws URL for a same-machine app.
