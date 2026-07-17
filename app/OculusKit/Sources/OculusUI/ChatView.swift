@@ -22,7 +22,11 @@ public struct ChatView: View {
     public var body: some View {
         VStack(spacing: 0) {
             if isWorktreeSession { worktreeBanner }
-            transcript
+            if model.messages.isEmpty && model.sessionID == nil {
+                emptyState
+            } else {
+                transcript
+            }
             if let ap = model.pendingApproval {
                 ApprovalCard(approval: ap, palette: palette,
                              onAllow: { Task { await model.respond(Decision.allow) } },
@@ -71,9 +75,6 @@ public struct ChatView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
-                    if model.messages.isEmpty {
-                        emptyState
-                    }
                     ForEach(model.messages) { msg in
                         MessageRow(message: msg, palette: palette)
                     }
@@ -97,13 +98,18 @@ public struct ChatView: View {
     }
 
     private var emptyState: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Start a session").font(.title3.bold())
-            Text("Send a prompt to launch an opencode session on your Mac. Steer it, review tool calls, and approve from anywhere.")
-                .font(.subheadline).foregroundStyle(palette.mutedForeground)
+        VStack(spacing: 14) {
+            Spacer()
+            Image("WolfMark").resizable().scaledToFit().frame(width: 44, height: 44).opacity(0.9)
+            Text("Start a session").font(.system(size: 22, weight: .semibold))
+            Text("Send a prompt below and an agent gets to work on your Mac — steer it, review tool calls, and approve from anywhere.")
+                .font(.system(size: 14)).foregroundStyle(palette.mutedForeground)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 360).fixedSize(horizontal: false, vertical: true)
+            Spacer()
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.top, 40)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.horizontal, 32)
     }
 
     private var statusLabel: String {

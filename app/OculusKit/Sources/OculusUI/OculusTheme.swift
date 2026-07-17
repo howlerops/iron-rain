@@ -24,7 +24,7 @@ public struct OculusPalette {
         foreground: Color(hex: 0xE5E5E5),
         card: Color(hex: 0x1F1F1F),
         cardForeground: Color(hex: 0xF2F2F2),
-        primary: Color(hex: 0xD9A520),
+        primary: Color(hex: 0xE3B65B), // brand gold (dark) — reserved for state: selection, running, actions
         primaryForeground: Color(hex: 0x000000),
         secondary: Color(hex: 0x252525),
         muted: Color(hex: 0x333333),
@@ -41,7 +41,7 @@ public struct OculusPalette {
         foreground: Color(hex: 0x000000),
         card: Color(hex: 0xF7F7F7),
         cardForeground: Color(hex: 0x242424),
-        primary: Color(hex: 0xD9A520),
+        primary: Color(hex: 0xB8842A), // brand gold (light) — reserved for state: selection, running, actions
         primaryForeground: Color(hex: 0xFFFFFF),
         secondary: Color(hex: 0xF0F0F0),
         muted: Color(hex: 0xE6E6E6),
