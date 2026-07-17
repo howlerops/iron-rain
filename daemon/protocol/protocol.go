@@ -155,10 +155,14 @@ type ApprovalResolved struct {
 }
 
 type Session struct {
-	ID       string `json:"id"`
-	Provider string `json:"provider"`
-	Status   string `json:"status"`
-	Title    string `json:"title,omitempty"`
+	ID            string `json:"id"`
+	Provider      string `json:"provider"`
+	Status        string `json:"status"`
+	Title         string `json:"title,omitempty"`
+	ProjectID     string `json:"project_id,omitempty"`     // registered project this session runs in
+	Cwd           string `json:"cwd,omitempty"`            // working directory (project path or worktree)
+	WorkspaceName string `json:"workspace_name,omitempty"` // human name of a worktree workspace
+	Branch        string `json:"branch,omitempty"`         // git branch (for worktree sessions)
 }
 
 type SessionList struct {

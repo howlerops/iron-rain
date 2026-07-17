@@ -107,10 +107,27 @@ func TestProjectFlow(t *testing.T) {
 		t.Fatalf("project.list = %+v, want [%s]", list.Projects, added.ID)
 	}
 
-	// Create a session scoped to the project -> provider gets the project's path as cwd.
+	// Create a session scoped to the project -> provider gets the project's path as cwd,
+	// and the session response carries the project/cwd metadata for grouping.
 	send(t, conn, "s1", protocol.TypeSessionCreate, protocol.SessionCreate{Provider: "fake", ProjectID: added.ID})
-	r.waitOK(t, "s1")
+	var sess protocol.Session
+	if err := json.Unmarshal(r.waitOK(t, "s1"), &sess); err != nil {
+		t.Fatal(err)
+	}
 	if got := prov.cwd(); got != dir {
 		t.Fatalf("session cwd = %q, want project path %q", got, dir)
+	}
+	if sess.ProjectID != added.ID || sess.Cwd != dir {
+		t.Fatalf("session meta = {ProjectID:%q Cwd:%q}, want {%q %q}", sess.ProjectID, sess.Cwd, added.ID, dir)
+	}
+
+	// session.list also carries the metadata.
+	send(t, conn, "l1", protocol.TypeSessionList, struct{}{})
+	var sl protocol.SessionList
+	if err := json.Unmarshal(r.waitOK(t, "l1"), &sl); err != nil {
+		t.Fatal(err)
+	}
+	if len(sl.Sessions) != 1 || sl.Sessions[0].ProjectID != added.ID || sl.Sessions[0].Cwd != dir {
+		t.Fatalf("session.list meta = %+v, want project %s cwd %s", sl.Sessions, added.ID, dir)
 	}
 }

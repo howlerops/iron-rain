@@ -16,14 +16,36 @@ import (
 type managedSession struct {
 	hub  *Hub
 	sess agent.Session
+	meta sessionMeta // grouping info (project/cwd/worktree) for session.list + create
 
 	mu         sync.Mutex
 	subs       map[*transport.Conn]bool
 	transcript [][]byte // encoded protocol events, replayed to new subscribers
 }
 
-func newManagedSession(h *Hub, sess agent.Session) *managedSession {
-	return &managedSession{hub: h, sess: sess, subs: map[*transport.Conn]bool{}}
+// sessionMeta is where a session runs, so clients can group the sidebar.
+type sessionMeta struct {
+	projectID     string
+	cwd           string
+	workspaceName string
+	branch        string
+}
+
+func newManagedSession(h *Hub, sess agent.Session, meta sessionMeta) *managedSession {
+	return &managedSession{hub: h, sess: sess, meta: meta, subs: map[*transport.Conn]bool{}}
+}
+
+// info renders the session's identity + grouping metadata for the wire.
+func (m *managedSession) info() protocol.Session {
+	return protocol.Session{
+		ID:            m.sess.ID(),
+		Provider:      m.sess.Provider(),
+		Status:        protocol.StatusRunning,
+		ProjectID:     m.meta.projectID,
+		Cwd:           m.meta.cwd,
+		WorkspaceName: m.meta.workspaceName,
+		Branch:        m.meta.branch,
+	}
 }
 
 // subscribe adds a client and replays the transcript so it sees the whole session.

@@ -74,8 +74,8 @@ func New() *Hub {
 }
 
 // addSession creates and stores a managed (shared) session for a provider session.
-func (h *Hub) addSession(sess agent.Session) *managedSession {
-	m := newManagedSession(h, sess)
+func (h *Hub) addSession(sess agent.Session, meta sessionMeta) *managedSession {
+	m := newManagedSession(h, sess, meta)
 	h.mu.Lock()
 	h.sessions[sess.ID()] = m
 	h.mu.Unlock()
@@ -262,8 +262,8 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, err.Error())
 			return
 		}
-		m := h.addSession(sess)
-		h.sendOK(conn, env.ID, protocol.Session{ID: sess.ID(), Provider: sess.Provider(), Status: protocol.StatusRunning})
+		m := h.addSession(sess, sessionMeta{projectID: req.ProjectID, cwd: cwd})
+		h.sendOK(conn, env.ID, m.info())
 		m.subscribe(conn) // the creator observes its own session
 		go m.run()
 
@@ -271,7 +271,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.mu.Lock()
 		list := make([]protocol.Session, 0, len(h.sessions))
 		for _, m := range h.sessions {
-			list = append(list, protocol.Session{ID: m.sess.ID(), Provider: m.sess.Provider(), Status: protocol.StatusRunning})
+			list = append(list, m.info())
 		}
 		h.mu.Unlock()
 		h.sendOK(conn, env.ID, protocol.SessionList{Sessions: list})
@@ -327,7 +327,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, "no such session")
 			return
 		}
-		h.sendOK(conn, env.ID, protocol.Session{ID: m.sess.ID(), Provider: m.sess.Provider(), Status: protocol.StatusRunning})
+		h.sendOK(conn, env.ID, m.info())
 		m.subscribe(conn) // replays the transcript, then live events flow
 
 	case protocol.TypeSessionPrompt:
@@ -372,7 +372,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		// If the daemon already owns this session, just subscribe — no duplicate
 		// provider subscription. This is the crux of the single-session-broadcast model.
 		if m := h.managed(req.SessionID); m != nil {
-			h.sendOK(conn, env.ID, protocol.Session{ID: m.sess.ID(), Provider: m.sess.Provider(), Status: protocol.StatusRunning})
+			h.sendOK(conn, env.ID, m.info())
 			m.subscribe(conn)
 			return
 		}
@@ -396,8 +396,8 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, err.Error())
 			return
 		}
-		m := h.addSession(sess)
-		h.sendOK(conn, env.ID, protocol.Session{ID: sess.ID(), Provider: sess.Provider(), Status: protocol.StatusRunning})
+		m := h.addSession(sess, sessionMeta{})
+		h.sendOK(conn, env.ID, m.info())
 		m.subscribe(conn)
 		go m.run()
 
