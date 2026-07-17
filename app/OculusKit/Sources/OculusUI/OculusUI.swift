@@ -15,6 +15,13 @@ public final class Model: ObservableObject {
     @Published public var wsURL = "ws://127.0.0.1:6000/ws"
     @Published public var daemonPubHex = ""
     @Published public var secret = ""
+    /// Human name of this desktop (set when managed by a DesktopStore).
+    @Published public var name = ""
+    /// When true, a DesktopStore owns persistence — the Model won't write the legacy
+    /// single-pairing UserDefaults keys.
+    public var managed = false
+    /// Stable identity for a desktop connection (the daemon's public key).
+    public var id: String { daemonPubHex }
 
     @Published public var connected = false
     @Published public var status = "Not connected"
@@ -52,12 +59,23 @@ public final class Model: ObservableObject {
         secret = defaults.string(forKey: Keys.secret) ?? ""
     }
 
+    /// A managed connection owned by a DesktopStore (persistence handled by the store).
+    public convenience init(name: String, wsURL: String, daemonPubHex: String, secret: String) {
+        self.init()
+        self.managed = true
+        self.name = name
+        self.wsURL = wsURL
+        self.daemonPubHex = daemonPubHex
+        self.secret = secret
+    }
+
     private enum Keys { static let ws = "oculus.ws", pub = "oculus.pub", secret = "oculus.secret" }
 
     /// True once the daemon has been paired at least once (creds are saved).
     public var hasSavedPairing: Bool { !wsURL.isEmpty && !daemonPubHex.isEmpty && !secret.isEmpty }
 
     private func savePairing() {
+        guard !managed else { return } // a DesktopStore persists managed connections
         defaults.set(wsURL, forKey: Keys.ws)
         defaults.set(daemonPubHex, forKey: Keys.pub)
         defaults.set(secret, forKey: Keys.secret) // TODO: move the secret to the Keychain
@@ -546,14 +564,43 @@ public struct ContentView: View {
 }
 
 #if os(macOS)
-/// Compact menu-bar surface: live status + one-tap approve/deny.
+/// Compact menu-bar surface: live status + one-tap approve/deny for the active desktop.
 public struct MenuBarView: View {
-    @ObservedObject var model: Model
-    public init(model: Model) { self.model = model }
+    @ObservedObject var store: DesktopStore
+    public init(store: DesktopStore) { self.store = store }
 
     public var body: some View {
+        if let model = store.active {
+            MenuBarBody(model: model, store: store)
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Oculus").font(.headline)
+                Text("No desktop paired. Open the window to add one.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Divider()
+                Button("Quit Oculus") { NSApplication.shared.terminate(nil) }
+            }.padding(12).frame(width: 240)
+        }
+    }
+}
+
+struct MenuBarBody: View {
+    @ObservedObject var model: Model
+    @ObservedObject var store: DesktopStore
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Oculus").font(.headline)
+            HStack {
+                Text("Oculus").font(.headline)
+                Spacer()
+                if store.models.count > 1 {
+                    Menu(model.name.isEmpty ? "Desktop" : model.name) {
+                        ForEach(store.models, id: \.id) { m in
+                            Button(m.name.isEmpty ? "Desktop" : m.name) { store.selectedID = m.id }
+                        }
+                    }.fixedSize()
+                }
+            }
             Text(model.status).font(.caption).foregroundStyle(.secondary)
 
             if let ap = model.pendingApproval {

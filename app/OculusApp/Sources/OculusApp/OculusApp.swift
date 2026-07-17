@@ -5,18 +5,18 @@ import OculusUI
 /// `app/Oculus.xcodeproj` (xcodegen); both share `OculusUI` and own the `Model`.
 @main
 struct OculusApp: App {
-    @StateObject private var model = Model()
+    @StateObject private var store = DesktopStore()
 
     var body: some Scene {
         WindowGroup("Oculus") {
-            ContentView(model: model)
+            RootView(store: store)
                 .frame(minWidth: 520, minHeight: 420)
         }
 
         MenuBarExtra {
-            MenuBarView(model: model)
+            MenuBarView(store: store)
         } label: {
-            Image(systemName: model.menuBarSymbol)
+            Image(systemName: store.active?.menuBarSymbol ?? "bolt.horizontal.circle")
         }
         .menuBarExtraStyle(.window)
     }

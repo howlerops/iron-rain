@@ -7,14 +7,14 @@ import OculusUI
 /// surface lives in `OculusUI` (built on the vector-locked `OculusKit` client).
 @main
 struct OculusMain: App {
-    @StateObject private var model = Model()
+    @StateObject private var store = DesktopStore()
     #if os(iOS)
     @UIApplicationDelegateAdaptor(PushDelegate.self) private var pushDelegate
     #endif
 
     var body: some Scene {
         WindowGroup {
-            ContentView(model: model)
+            RootView(store: store)
                 #if os(macOS)
                 .frame(minWidth: 520, minHeight: 420)
                 #endif
@@ -22,9 +22,9 @@ struct OculusMain: App {
 
         #if os(macOS)
         MenuBarExtra {
-            MenuBarView(model: model)
+            MenuBarView(store: store)
         } label: {
-            Image(systemName: model.menuBarSymbol)
+            Image(systemName: store.active?.menuBarSymbol ?? "bolt.horizontal.circle")
         }
         .menuBarExtraStyle(.window)
         #endif
