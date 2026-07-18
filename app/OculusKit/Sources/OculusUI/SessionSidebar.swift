@@ -37,61 +37,62 @@ struct SessionSidebar: View {
     @State private var showAddDesktop = false
     @State private var renamingDesktop = false
     @State private var desktopNewName = ""
+    @State private var searchText = ""
 
     static let newSessionTag = "__new__"
 
     var body: some View {
-        // The sidebar is a ScrollView whose FIRST content is the header, followed by the
-        // session sections. In the macOS NavigationSplitView sidebar column, a header placed
-        // as a VStack sibling above the scroll — or via safeAreaInset — renders with zero
-        // height / behind the titlebar; as scroll content it renders correctly (the session
-        // rows prove content lands below the titlebar). It scrolls with the list.
-        ScrollView {
-            VStack(alignment: .leading, spacing: 1) {
+        // The sidebar is a native `List` with `.listStyle(.sidebar)` — NOT a ScrollView.
+        // In a NavigationSplitView column a List is height-constrained to the window by
+        // AppKit (it insets the titlebar and scrolls internally), so it never overflows
+        // past the top/bottom the way a ScrollView + VStack does. The desktop switcher +
+        // mode picker ride as the first Section (real rows, so they lay out on the first
+        // pass instead of collapsing to zero height). Selection is native (List(selection:)
+        // + .tag), tinted gold. Presentation modifiers live on the List, never on a row.
+        List(selection: $selection) {
+            Section {
                 SidebarHeader(store: store, model: model, palette: palette,
                               onPairPhone: { showPairingQR = true },
                               onNewSession: { selection = Self.newSessionTag },
                               onAddDesktop: { showAddDesktop = true },
                               onRename: { name in desktopNewName = name; renamingDesktop = true })
-                Divider().overlay(palette.border)
+                    .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 4, trailing: 8))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
                 #if os(macOS)
                 Picker("", selection: $tab) {
                     Text("Sessions").tag(0)
                     Text("Issues").tag(1)
                 }
                 .pickerStyle(.segmented).labelsHidden()
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 10).padding(.vertical, 8)
-                Divider().overlay(palette.border)
+                .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 6, trailing: 8))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
                 #endif
-
-                ForEach(groups) { group in
-                    sectionHeader(group.name, running: group.hasRunning)
-                        .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4)
+            }
+            ForEach(filteredGroups) { group in
+                Section {
                     ForEach(group.items) { item in
-                        Button {
-                            selection = item.id
-                        } label: {
-                            SessionRow(item: item, active: model.sessionID == item.id,
-                                       showProvider: group.showProvider, showProject: group.showProject,
-                                       palette: palette)
-                                .padding(.horizontal, 10).padding(.vertical, 5)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(
-                                    model.sessionID == item.id
-                                        ? palette.primary.opacity(scheme == .dark ? 0.16 : 0.10)
-                                        : Color.clear
-                                )
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
+                        SessionRow(item: item, active: model.sessionID == item.id,
+                                   showProvider: group.showProvider, showProject: group.showProject,
+                                   palette: palette)
+                            .tag(item.id)
+                            .listRowBackground(
+                                model.sessionID == item.id
+                                    ? palette.primary.opacity(scheme == .dark ? 0.16 : 0.10)
+                                    : Color.clear
+                            )
                     }
+                } header: {
+                    sectionHeader(group.name, running: group.hasRunning)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading) // establish content width on first
-            .padding(.bottom, 8)                              // paint so the header doesn't collapse
         }
-        .background(palette.background)
+        .listStyle(.sidebar)
+        .tint(palette.primary)
+        #if os(macOS)
+        .searchable(text: $searchText, placement: .sidebar, prompt: "Search sessions")
+        #endif
         .task { await model.discover() }
         .sheet(isPresented: $showPairingQR) {
             PairingQRView(url: model.pairingURL ?? "", palette: palette) { showPairingQR = false }
@@ -103,6 +104,20 @@ struct SessionSidebar: View {
             TextField("Name", text: $desktopNewName)
             Button("Save") { if let a = store.active { store.rename(a.id, to: desktopNewName) } }
             Button("Cancel", role: .cancel) {}
+        }
+    }
+
+    /// `groups`, narrowed to rows whose title matches the search field. Empty sections are
+    /// dropped so search collapses the list to just the hits.
+    private var filteredGroups: [SessionGroup] {
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return groups }
+        return groups.compactMap { g in
+            let hits = g.items.filter { $0.title.localizedCaseInsensitiveContains(q) }
+            guard !hits.isEmpty else { return nil }
+            return SessionGroup(name: g.name, items: hits,
+                                showProvider: g.showProvider, showProject: g.showProject,
+                                hasRunning: hits.contains { $0.isRunning })
         }
     }
 
@@ -288,39 +303,6 @@ private struct SessionRow: View {
     }
 }
 
-/// A neutral segmented control (Sessions / Issues). Deliberately NOT gold — gold is
-/// reserved for selection/running/actions, so the tab switch stays quiet.
-private struct SidebarTabPicker: View {
-    @Binding var tab: Int
-    let palette: OculusPalette
-
-    var body: some View {
-        HStack(spacing: 2) {
-            segment("Sessions", 0)
-            segment("Issues", 1)
-        }
-        .padding(2)
-        .background(Color.primary.opacity(0.06))
-        .clipShape(RoundedRectangle(cornerRadius: 7))
-    }
-
-    private func segment(_ title: String, _ index: Int) -> some View {
-        Button { tab = index } label: {
-            Text(title)
-                .font(.system(size: 12, weight: .semibold))
-                .frame(maxWidth: .infinity).padding(.vertical, 4)
-                .foregroundStyle(tab == index ? palette.foreground : palette.mutedForeground)
-                .background {
-                    if tab == index {
-                        RoundedRectangle(cornerRadius: 5)
-                            .fill(palette.background)
-                            .shadow(color: .black.opacity(0.12), radius: 1, y: 0.5)
-                    }
-                }
-        }
-        .buttonStyle(.plain)
-    }
-}
 
 /// Unified sidebar header: a compact device switcher (wolf glyph + name + menu), an
 /// overflow menu, and a new-session action. The connection reason shows only when the

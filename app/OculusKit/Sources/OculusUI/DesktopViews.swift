@@ -1,8 +1,5 @@
 import SwiftUI
 import OculusKit
-#if canImport(AppKit)
-import AppKit
-#endif
 
 /// The multi-desktop root: connect to every paired Mac at once, switch between them,
 /// and drive the selected one's sessions. Replaces the single-connection ContentView as
@@ -36,28 +33,8 @@ public struct RootView: View {
             await launcher.ensureRunning() // start the local daemon (no terminal) if needed
             #endif
             await store.bootstrap()
-            #if os(macOS)
-            // The NavigationSplitView sidebar's header renders zero-height on the first
-            // layout pass (column geometry isn't established yet) and only corrects on a
-            // later pass — e.g. a click that swaps the detail, or a window resize. Nudge the
-            // window size by 1pt once, after it's on screen, to force that first real layout.
-            try? await Task.sleep(nanoseconds: 200_000_000)
-            nudgeWindowLayout()
-            #endif
         }
     }
-
-    #if os(macOS)
-    private func nudgeWindowLayout() {
-        guard let window = NSApp.windows.first(where: { $0.isVisible && $0.styleMask.contains(.titled) })
-        else { return }
-        let frame = window.frame
-        var grown = frame
-        grown.size.height += 1
-        window.setFrame(grown, display: false)
-        window.setFrame(frame, display: true)
-    }
-    #endif
 
     /// The Sessions/Issues surface. macOS uses ONE NavigationSplitView (the mode switch
     /// lives in the sidebar, the detail swaps) — a TabView wrapping a split view with
