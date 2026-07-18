@@ -47,7 +47,7 @@ struct SessionSidebar: View {
         // height / behind the titlebar; as scroll content it renders correctly (the session
         // rows prove content lands below the titlebar). It scrolls with the list.
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 1) {
                 SidebarHeader(store: store, model: model, palette: palette,
                               onPairPhone: { showPairingQR = true },
                               onNewSession: { selection = Self.newSessionTag },
