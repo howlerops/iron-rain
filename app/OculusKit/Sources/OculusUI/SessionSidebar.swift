@@ -72,7 +72,13 @@ struct SessionSidebar: View {
         }
         .listStyle(.sidebar)
         .tint(palette.primary)
+        // A `.navigationTitle` (not merely a toolbar) is what makes the sidebar column
+        // reserve the titlebar strip and inset its content below it — the detail pane
+        // insets correctly for exactly this reason. The desktop switcher hangs off the
+        // title as a `.toolbarTitleMenu` (the Xcode scheme-menu pattern).
+        .navigationTitle(desktopName)
         #if os(macOS)
+        .toolbarTitleMenu { desktopSwitcherMenu }
         .safeAreaInset(edge: .top, spacing: 0) { modeFilterBar }
         .searchable(text: $searchText, placement: .sidebar, prompt: "Search sessions")
         #endif
@@ -91,34 +97,27 @@ struct SessionSidebar: View {
         }
     }
 
-    /// Titlebar toolbar: the desktop switcher (leading, like Xcode's scheme menu), plus the
-    /// overflow menu and new-session action (trailing). Its presence is what makes the
-    /// sidebar reserve the titlebar strip so its content insets correctly.
-    @ToolbarContentBuilder private var sidebarToolbar: some ToolbarContent {
-        ToolbarItem(placement: .navigation) {
-            Menu {
-                ForEach(store.models, id: \.id) { m in
-                    Button { store.selectedID = m.id } label: {
-                        Label(m.name.isEmpty ? "Desktop" : m.name,
-                              systemImage: m.id == store.selectedID ? "checkmark"
-                                : (m.connected ? "circle.fill" : "circle"))
-                    }
-                }
-                Divider()
-                Button { showAddDesktop = true } label: { Label("Add desktop…", systemImage: "plus") }
-                if let a = store.active {
-                    Button { desktopNewName = a.name; renamingDesktop = true } label: { Label("Rename…", systemImage: "pencil") }
-                    Button(role: .destructive) { store.remove(a.id) } label: { Label("Remove desktop", systemImage: "trash") }
-                }
-            } label: {
-                HStack(spacing: 5) {
-                    Image("WolfMark").resizable().scaledToFit().frame(width: 16, height: 16)
-                    Text(desktopName).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(palette.mutedForeground)
-                }
+    /// The desktop switcher — the list of paired Macs plus add/rename/remove. Hangs off the
+    /// navigation title via `.toolbarTitleMenu`, so the title (the active desktop's name)
+    /// gains a dropdown chevron, the way Xcode's scheme menu works.
+    @ViewBuilder private var desktopSwitcherMenu: some View {
+        ForEach(store.models, id: \.id) { m in
+            Button { store.selectedID = m.id } label: {
+                Label(m.name.isEmpty ? "Desktop" : m.name,
+                      systemImage: m.id == store.selectedID ? "checkmark"
+                        : (m.connected ? "circle.fill" : "circle"))
             }
         }
+        Divider()
+        Button { showAddDesktop = true } label: { Label("Add desktop…", systemImage: "plus") }
+        if let a = store.active {
+            Button { desktopNewName = a.name; renamingDesktop = true } label: { Label("Rename…", systemImage: "pencil") }
+            Button(role: .destructive) { store.remove(a.id) } label: { Label("Remove desktop", systemImage: "trash") }
+        }
+    }
+
+    /// Trailing titlebar actions: the overflow menu and the new-session button.
+    @ToolbarContentBuilder private var sidebarToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
             Menu {
                 if model.pairingURL != nil {
