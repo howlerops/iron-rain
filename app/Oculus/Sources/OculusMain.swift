@@ -19,6 +19,13 @@ struct OculusMain: App {
                 .frame(minWidth: 520, minHeight: 420)
                 #endif
         }
+        #if os(macOS)
+        .defaultSize(width: 1180, height: 760)
+        // The window was sizing content to the NavigationSplitView's ideal height (~1884pt)
+        // and centering it when the window is smaller — overflowing the sidebar. contentMinSize
+        // pins only the minimum to the content's min and lets content FILL the window instead.
+        .windowResizability(.contentMinSize)
+        #endif
 
         #if os(macOS)
         MenuBarExtra {
