@@ -26,7 +26,12 @@ public struct RootView: View {
                 mainSurface(model)
             }
         }
-        .background(palette.background.ignoresSafeArea())
+        // NOTE: previously `.background(palette.background.ignoresSafeArea())`. That extended
+        // the surface past the window's safe area, which let the sidebar column's scroll
+        // container grow taller than the visible window (content overflowed above the
+        // viewport instead of being capped and scrolling). Plain background keeps the surface
+        // bounded to the window.
+        .background(palette.background)
         .foregroundStyle(palette.foreground)
         .tint(palette.primary)
         .task {
