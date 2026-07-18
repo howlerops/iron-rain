@@ -44,14 +44,10 @@ public struct RootView: View {
     @ViewBuilder private func mainSurface(_ model: Model) -> some View {
         #if os(macOS)
         NavigationSplitView {
-            SessionSidebar(store: store, model: model, selection: $selection, tab: $selectedTab, searchText: $searchText)
+            SessionSidebar(store: store, model: model, selection: $selection, searchText: $searchText)
                 .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 340)
         } detail: {
-            if selectedTab == 0 {
-                ChatView(model: model)
-            } else {
-                IssuesView(model: model, palette: palette, embedded: true) { selectedTab = 0 }
-            }
+            detailPane(model)
         }
         // Per Apple's NavigationSplitView guidance, `.searchable` goes on the split view,
         // not the sidebar — the system positions the field and it doesn't fight the
@@ -64,7 +60,7 @@ public struct RootView: View {
         #else
         TabView(selection: $selectedTab) {
             NavigationSplitView {
-                SessionSidebar(store: store, model: model, selection: $selection, tab: $selectedTab, searchText: $searchText)
+                SessionSidebar(store: store, model: model, selection: $selection, searchText: $searchText)
                     .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 340)
             } detail: {
                 ChatView(model: model)
@@ -80,6 +76,31 @@ public struct RootView: View {
             IssuesView(model: model, palette: palette) { selectedTab = 0 }
                 .tabItem { Label("Issues", systemImage: "checklist") }
                 .tag(1)
+        }
+        #endif
+    }
+
+    /// The detail column plus the Sessions/Issues mode switch, which lives in the detail
+    /// toolbar (a segmented control centered in the wide detail titlebar) rather than the
+    /// narrow, layout-fragile sidebar top. It swaps the detail between the chat and issues.
+    @ViewBuilder private func detailPane(_ model: Model) -> some View {
+        Group {
+            if selectedTab == 0 {
+                ChatView(model: model)
+            } else {
+                IssuesView(model: model, palette: palette, embedded: true) { selectedTab = 0 }
+            }
+        }
+        #if os(macOS)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                Picker("View", selection: $selectedTab) {
+                    Text("Sessions").tag(0)
+                    Text("Issues").tag(1)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 180)
+            }
         }
         #endif
     }

@@ -30,7 +30,6 @@ struct SessionSidebar: View {
     @ObservedObject var store: DesktopStore
     @ObservedObject var model: Model
     @Binding var selection: String?
-    @Binding var tab: Int
     @Environment(\.colorScheme) private var scheme
     private var palette: OculusPalette { .current(scheme) }
     @State private var showPairingQR = false
@@ -68,40 +67,31 @@ struct SessionSidebar: View {
         }
     }
 
-    /// The sidebar body — modeled on Apple's macOS 26 NavigationSplitView sample: a plain
-    /// `List` that the system insets and styles, with NO wrapping VStack, safeAreaInset, or
-    /// on-List `.searchable` (search lives on the split view). The Sessions/Issues switch is
-    /// the first Section (list content, so the system insets it with everything else); the
-    /// switcher + actions are titlebar chrome. iOS omits the mode Section (it uses the bottom
-    /// TabView).
+    /// The sidebar body — a plain session `List`, modeled on Apple's macOS 26
+    /// NavigationSplitView sample: the system insets and styles it. No wrapping VStack,
+    /// safeAreaInset, or on-List `.searchable` (search is on the split view; the
+    /// Sessions/Issues switch is on the detail toolbar). A tiny clear spacer row is the
+    /// inset technique from Apple's "extend scrolling under a sidebar" guide, so the first
+    /// real row clears the macOS 26 glass titlebar edge instead of being clipped by it.
     private var sessionsList: some View {
         List(selection: $selection) {
-            #if os(macOS)
-            Section {
-                Picker("", selection: $tab) {
-                    Text("Sessions").tag(0)
-                    Text("Issues").tag(1)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .listRowInsets(EdgeInsets(top: 6, leading: 8, bottom: 8, trailing: 8))
+            Color.clear
+                .frame(height: 1)
+                .listRowInsets(EdgeInsets())
                 .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
-                if !model.connected {
-                    HStack(spacing: 5) {
-                        Circle().fill(Color.red).frame(width: 6, height: 6)
-                        Text(model.statusDetail ?? model.status)
-                            .font(.system(size: 11))
-                            .foregroundStyle(palette.mutedForeground)
-                            .lineLimit(1)
-                        Spacer()
-                    }
-                    .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 6, trailing: 8))
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
+            if !model.connected {
+                HStack(spacing: 5) {
+                    Circle().fill(Color.red).frame(width: 6, height: 6)
+                    Text(model.statusDetail ?? model.status)
+                        .font(.system(size: 11))
+                        .foregroundStyle(palette.mutedForeground)
+                        .lineLimit(1)
+                    Spacer()
                 }
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
             }
-            #endif
             ForEach(filteredGroups) { group in
                 Section {
                     ForEach(group.items) { item in
