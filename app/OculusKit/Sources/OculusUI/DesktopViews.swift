@@ -11,6 +11,7 @@ public struct RootView: View {
     @State private var selection: String?
     @State private var showNewSession = false
     @State private var selectedTab = 0
+    @State private var searchText = ""
     #if os(macOS)
     @StateObject private var launcher = DaemonLauncher()
     #endif
@@ -43,7 +44,7 @@ public struct RootView: View {
     @ViewBuilder private func mainSurface(_ model: Model) -> some View {
         #if os(macOS)
         NavigationSplitView {
-            SessionSidebar(store: store, model: model, selection: $selection, tab: $selectedTab)
+            SessionSidebar(store: store, model: model, selection: $selection, tab: $selectedTab, searchText: $searchText)
                 .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 340)
         } detail: {
             if selectedTab == 0 {
@@ -52,6 +53,10 @@ public struct RootView: View {
                 IssuesView(model: model, palette: palette, embedded: true) { selectedTab = 0 }
             }
         }
+        // Per Apple's NavigationSplitView guidance, `.searchable` goes on the split view,
+        // not the sidebar — the system positions the field and it doesn't fight the
+        // sidebar's own chrome for the top band.
+        .searchable(text: $searchText, placement: .sidebar, prompt: "Search sessions")
         .onChange(of: selection) { handleSelection($0, model) }
         .sheet(isPresented: $showNewSession) {
             NewSessionView(model: model, palette: palette) { showNewSession = false }
@@ -59,11 +64,12 @@ public struct RootView: View {
         #else
         TabView(selection: $selectedTab) {
             NavigationSplitView {
-                SessionSidebar(store: store, model: model, selection: $selection, tab: $selectedTab)
+                SessionSidebar(store: store, model: model, selection: $selection, tab: $selectedTab, searchText: $searchText)
                     .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 340)
             } detail: {
                 ChatView(model: model)
             }
+            .searchable(text: $searchText, prompt: "Search sessions")
             .onChange(of: selection) { handleSelection($0, model) }
             .sheet(isPresented: $showNewSession) {
                 NewSessionView(model: model, palette: palette) { showNewSession = false }

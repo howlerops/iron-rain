@@ -37,12 +37,14 @@ struct SessionSidebar: View {
     @State private var showAddDesktop = false
     @State private var renamingDesktop = false
     @State private var desktopNewName = ""
-    @State private var searchText = ""
+    /// Driven by `.searchable` on the NavigationSplitView (RootView), per Apple's guidance;
+    /// it filters `filteredGroups` here.
+    @Binding var searchText: String
 
     static let newSessionTag = "__new__"
 
     var body: some View {
-        sidebarContent
+        sessionsList
             .tint(palette.primary)
         // The desktop switcher hangs off the title as a `.toolbarTitleMenu` (the
         // Xcode scheme-menu pattern). `.navigationTitle` is also what makes the
@@ -66,28 +68,40 @@ struct SessionSidebar: View {
         }
     }
 
-    /// macOS: an explicit column layout — a pinned header stacked over the session list, with
-    /// a hairline between. This is deterministic: the header is a normal VStack child so it
-    /// CANNOT collapse to zero the way `.safeAreaInset` did, and the List simply fills the
-    /// remaining height and scrolls. iOS keeps the pure list (its mode switch is the bottom
-    /// TabView, and it has no sidebar search).
-    @ViewBuilder private var sidebarContent: some View {
-        #if os(macOS)
-        VStack(spacing: 0) {
-            sidebarHeader
-            Divider()
-            sessionsList
-        }
-        #else
-        sessionsList
-        #endif
-    }
-
-    /// A PURE session List — the mode toggle, search and status chrome live in the pinned
-    /// `sidebarHeader` (safeAreaInset), not here. Keeping the List free of chrome is what
-    /// lets its navigationTitle-driven titlebar inset survive; it is the only scroll region.
+    /// The sidebar body — modeled on Apple's macOS 26 NavigationSplitView sample: a plain
+    /// `List` that the system insets and styles, with NO wrapping VStack, safeAreaInset, or
+    /// on-List `.searchable` (search lives on the split view). The Sessions/Issues switch is
+    /// the first Section (list content, so the system insets it with everything else); the
+    /// switcher + actions are titlebar chrome. iOS omits the mode Section (it uses the bottom
+    /// TabView).
     private var sessionsList: some View {
         List(selection: $selection) {
+            #if os(macOS)
+            Section {
+                Picker("", selection: $tab) {
+                    Text("Sessions").tag(0)
+                    Text("Issues").tag(1)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .listRowInsets(EdgeInsets(top: 6, leading: 8, bottom: 8, trailing: 8))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+                if !model.connected {
+                    HStack(spacing: 5) {
+                        Circle().fill(Color.red).frame(width: 6, height: 6)
+                        Text(model.statusDetail ?? model.status)
+                            .font(.system(size: 11))
+                            .foregroundStyle(palette.mutedForeground)
+                            .lineLimit(1)
+                        Spacer()
+                    }
+                    .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 6, trailing: 8))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                }
+            }
+            #endif
             ForEach(filteredGroups) { group in
                 Section {
                     ForEach(group.items) { item in
@@ -108,57 +122,6 @@ struct SessionSidebar: View {
         }
         .listStyle(.sidebar)
     }
-
-    #if os(macOS)
-    /// The pinned sidebar chrome: the Sessions/Issues toggle, a search field (replacing
-    /// `.searchable`, driving the same `filteredGroups` filter), and a connection-down
-    /// indicator. It sits in a `.safeAreaInset(.top)`, below the navigationTitle inset, so it
-    /// pins under the titlebar and never scrolls. The explicit padding + `.frame(maxWidth:)`
-    /// + `.background(.bar)` give it a definite height so the inset can't collapse to zero.
-    private var sidebarHeader: some View {
-        VStack(spacing: 8) {
-            Picker("", selection: $tab) {
-                Text("Sessions").tag(0)
-                Text("Issues").tag(1)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(maxWidth: .infinity)
-
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 12))
-                    .foregroundStyle(palette.mutedForeground)
-                TextField("Search sessions", text: $searchText)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 12))
-                if !searchText.isEmpty {
-                    Button { searchText = "" } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(palette.mutedForeground)
-                    }
-                    .buttonStyle(.borderless)
-                }
-            }
-            .padding(.horizontal, 7).padding(.vertical, 5)
-            .background(RoundedRectangle(cornerRadius: 7).fill(palette.mutedForeground.opacity(0.12)))
-
-            if !model.connected {
-                HStack(spacing: 5) {
-                    Circle().fill(Color.red).frame(width: 6, height: 6)
-                    Text(model.statusDetail ?? model.status)
-                        .font(.system(size: 11))
-                        .foregroundStyle(palette.mutedForeground)
-                        .lineLimit(1)
-                    Spacer()
-                }
-            }
-        }
-        .padding(.horizontal, 10).padding(.top, 8).padding(.bottom, 8)
-        .frame(maxWidth: .infinity)
-        .background(.bar)
-    }
-    #endif
 
     /// The desktop switcher — the list of paired Macs plus add/rename/remove. Hangs off the
     /// navigation title via `.toolbarTitleMenu`, so the title (the active desktop's name)
