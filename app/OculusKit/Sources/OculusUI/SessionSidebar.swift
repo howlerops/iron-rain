@@ -42,34 +42,16 @@ struct SessionSidebar: View {
     static let newSessionTag = "__new__"
 
     var body: some View {
-        // The sidebar is a native `List` with `.listStyle(.sidebar)` — NOT a ScrollView.
-        // In a NavigationSplitView column a List is height-constrained to the window by
-        // AppKit (it insets the titlebar and scrolls internally), so it never overflows
-        // past the top/bottom the way a ScrollView + VStack does. The desktop switcher +
-        // mode picker ride as the first Section (real rows, so they lay out on the first
-        // pass instead of collapsing to zero height). Selection is native (List(selection:)
-        // + .tag), tinted gold. Presentation modifiers live on the List, never on a row.
+        // A native `List` with `.listStyle(.sidebar)` — NOT a ScrollView. In a
+        // NavigationSplitView column a List is height-constrained to the window by AppKit
+        // and scrolls internally. CRITICAL: the sidebar only reserves the titlebar strip
+        // (so its content insets below the traffic lights instead of sliding under them)
+        // once it has a `.toolbar`. Without one, the whole list floats up under the
+        // titlebar and everything above the first data row overflows out of view — which
+        // is exactly the bug we chased. So the desktop switcher + actions live in the
+        // toolbar (titlebar), and the Sessions/Issues switch is a pinned `.safeAreaInset`
+        // bar just below it. Selection is native (List(selection:) + .tag), tinted gold.
         List(selection: $selection) {
-            Section {
-                SidebarHeader(store: store, model: model, palette: palette,
-                              onPairPhone: { showPairingQR = true },
-                              onNewSession: { selection = Self.newSessionTag },
-                              onAddDesktop: { showAddDesktop = true },
-                              onRename: { name in desktopNewName = name; renamingDesktop = true })
-                    .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 4, trailing: 8))
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
-                #if os(macOS)
-                Picker("", selection: $tab) {
-                    Text("Sessions").tag(0)
-                    Text("Issues").tag(1)
-                }
-                .pickerStyle(.segmented).labelsHidden()
-                .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 6, trailing: 8))
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
-                #endif
-            }
             ForEach(filteredGroups) { group in
                 Section {
                     ForEach(group.items) { item in
@@ -91,8 +73,10 @@ struct SessionSidebar: View {
         .listStyle(.sidebar)
         .tint(palette.primary)
         #if os(macOS)
+        .safeAreaInset(edge: .top, spacing: 0) { modeFilterBar }
         .searchable(text: $searchText, placement: .sidebar, prompt: "Search sessions")
         #endif
+        .toolbar { sidebarToolbar }
         .task { await model.discover() }
         .sheet(isPresented: $showPairingQR) {
             PairingQRView(url: model.pairingURL ?? "", palette: palette) { showPairingQR = false }
@@ -105,6 +89,80 @@ struct SessionSidebar: View {
             Button("Save") { if let a = store.active { store.rename(a.id, to: desktopNewName) } }
             Button("Cancel", role: .cancel) {}
         }
+    }
+
+    /// Titlebar toolbar: the desktop switcher (leading, like Xcode's scheme menu), plus the
+    /// overflow menu and new-session action (trailing). Its presence is what makes the
+    /// sidebar reserve the titlebar strip so its content insets correctly.
+    @ToolbarContentBuilder private var sidebarToolbar: some ToolbarContent {
+        ToolbarItem(placement: .navigation) {
+            Menu {
+                ForEach(store.models, id: \.id) { m in
+                    Button { store.selectedID = m.id } label: {
+                        Label(m.name.isEmpty ? "Desktop" : m.name,
+                              systemImage: m.id == store.selectedID ? "checkmark"
+                                : (m.connected ? "circle.fill" : "circle"))
+                    }
+                }
+                Divider()
+                Button { showAddDesktop = true } label: { Label("Add desktop…", systemImage: "plus") }
+                if let a = store.active {
+                    Button { desktopNewName = a.name; renamingDesktop = true } label: { Label("Rename…", systemImage: "pencil") }
+                    Button(role: .destructive) { store.remove(a.id) } label: { Label("Remove desktop", systemImage: "trash") }
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Image("WolfMark").resizable().scaledToFit().frame(width: 16, height: 16)
+                    Text(desktopName).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(palette.mutedForeground)
+                }
+            }
+        }
+        ToolbarItemGroup(placement: .primaryAction) {
+            Menu {
+                if model.pairingURL != nil {
+                    Button { showPairingQR = true } label: { Label("Pair a phone…", systemImage: "qrcode") }
+                }
+                Button { Task { await model.discover() } } label: { Label("Refresh sessions", systemImage: "arrow.clockwise") }
+                Button(role: .destructive) { model.disconnect() } label: { Label("Disconnect", systemImage: "bolt.horizontal.circle") }
+            } label: {
+                Image(systemName: "ellipsis")
+            }
+            Button { selection = Self.newSessionTag } label: {
+                Image(systemName: "square.and.pencil")
+            }
+        }
+    }
+
+    #if os(macOS)
+    /// A pinned bar directly under the titlebar: the Sessions/Issues switch, and a
+    /// connection-down indicator when the daemon link drops. Being a safeAreaInset it never
+    /// scrolls with the list or overflows.
+    private var modeFilterBar: some View {
+        VStack(spacing: 6) {
+            Picker("", selection: $tab) {
+                Text("Sessions").tag(0)
+                Text("Issues").tag(1)
+            }
+            .pickerStyle(.segmented).labelsHidden()
+            if !model.connected {
+                HStack(spacing: 5) {
+                    Circle().fill(Color.red).frame(width: 6, height: 6)
+                    Text(model.statusDetail ?? model.status)
+                        .font(.system(size: 11)).foregroundStyle(palette.mutedForeground).lineLimit(1)
+                    Spacer()
+                }
+            }
+        }
+        .padding(.horizontal, 10).padding(.top, 8).padding(.bottom, 8)
+        .background(.bar)
+    }
+    #endif
+
+    private var desktopName: String {
+        let n = store.active?.name ?? model.name
+        return n.isEmpty ? "Desktop" : n
     }
 
     /// `groups`, narrowed to rows whose title matches the search field. Empty sections are
@@ -303,88 +361,6 @@ private struct SessionRow: View {
     }
 }
 
-
-/// Unified sidebar header: a compact device switcher (wolf glyph + name + menu), an
-/// overflow menu, and a new-session action. The connection reason shows only when the
-/// connection is down, so a healthy header stays clean.
-struct SidebarHeader: View {
-    @ObservedObject var store: DesktopStore
-    @ObservedObject var model: Model
-    let palette: OculusPalette
-    var onPairPhone: () -> Void
-    var onNewSession: () -> Void
-    var onAddDesktop: () -> Void
-    var onRename: (String) -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 8) {
-                Image("WolfMark").resizable().scaledToFit().frame(width: 18, height: 18)
-
-                Menu {
-                    ForEach(store.models, id: \.id) { m in
-                        Button { store.selectedID = m.id } label: {
-                            Label(m.name.isEmpty ? "Desktop" : m.name,
-                                  systemImage: m.id == store.selectedID ? "checkmark"
-                                    : (m.connected ? "circle.fill" : "circle"))
-                        }
-                    }
-                    Divider()
-                    Button { onAddDesktop() } label: { Label("Add desktop…", systemImage: "plus") }
-                    if let a = store.active {
-                        Button { onRename(a.name) } label: { Label("Rename…", systemImage: "pencil") }
-                        Button(role: .destructive) { store.remove(a.id) } label: { Label("Remove desktop", systemImage: "trash") }
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Text(desktopName).font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(palette.foreground).lineLimit(1)
-                        Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(palette.mutedForeground)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .menuStyle(.borderlessButton).fixedSize(horizontal: false, vertical: true)
-
-                Spacer(minLength: 0)
-
-                Menu {
-                    if model.pairingURL != nil {
-                        Button { onPairPhone() } label: { Label("Pair a phone…", systemImage: "qrcode") }
-                    }
-                    Button { Task { await model.discover() } } label: { Label("Refresh sessions", systemImage: "arrow.clockwise") }
-                    Button(role: .destructive) { model.disconnect() } label: { Label("Disconnect", systemImage: "bolt.horizontal.circle") }
-                } label: {
-                    Image(systemName: "ellipsis").font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(palette.mutedForeground)
-                        .frame(width: 22, height: 22)
-                }
-                .menuStyle(.borderlessButton).fixedSize()
-
-                Button { onNewSession() } label: {
-                    Image(systemName: "square.and.pencil").font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(palette.primary)
-                        .frame(width: 22, height: 22)
-                }
-                .buttonStyle(.plain)
-            }
-
-            if !model.connected {
-                HStack(spacing: 5) {
-                    Circle().fill(Color.red).frame(width: 6, height: 6)
-                    Text(model.statusDetail ?? model.status)
-                        .font(.system(size: 11)).foregroundStyle(palette.mutedForeground).lineLimit(1)
-                }
-            }
-        }
-        .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 8)
-    }
-
-    private var desktopName: String {
-        let n = store.active?.name ?? model.name
-        return n.isEmpty ? "Desktop" : n
-    }
-}
 
 private extension Discovered {
     /// A stable composite identity for a discovered artifact, used to key ForEach
