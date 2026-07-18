@@ -26,12 +26,13 @@ public struct RootView: View {
                 mainSurface(model)
             }
         }
-        // NOTE: previously `.background(palette.background.ignoresSafeArea())`. That extended
-        // the surface past the window's safe area, which let the sidebar column's scroll
-        // container grow taller than the visible window (content overflowed above the
-        // viewport instead of being capped and scrolling). Plain background keeps the surface
-        // bounded to the window.
-        .background(palette.background)
+        // CRITICAL: force the surface to FILL the window instead of sizing to the split
+        // view's ideal height. The view-tree dump showed the NavigationSplitView laying out
+        // at 1884pt tall in a 720pt window (centered, so ~556pt hung off the top) — that was
+        // the "sidebar overflows above the viewport, can't scroll" bug all along. This frame
+        // clamps it to the window; the sidebar List then caps and scrolls normally.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(palette.background.ignoresSafeArea())
         .foregroundStyle(palette.foreground)
         .tint(palette.primary)
         .task {
