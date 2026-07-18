@@ -52,6 +52,32 @@ struct SessionSidebar: View {
         // toolbar (titlebar), and the Sessions/Issues switch is a pinned `.safeAreaInset`
         // bar just below it. Selection is native (List(selection:) + .tag), tinted gold.
         List(selection: $selection) {
+            #if os(macOS)
+            // The Sessions/Issues switch rides as the first list row. `.safeAreaInset(.top)`
+            // collapses to zero height in this column, so a real row is what renders
+            // reliably now that navigationTitle gives the list its titlebar inset.
+            Section {
+                Picker("", selection: $tab) {
+                    Text("Sessions").tag(0)
+                    Text("Issues").tag(1)
+                }
+                .pickerStyle(.segmented).labelsHidden()
+                .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 8, trailing: 8))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+                if !model.connected {
+                    HStack(spacing: 5) {
+                        Circle().fill(Color.red).frame(width: 6, height: 6)
+                        Text(model.statusDetail ?? model.status)
+                            .font(.system(size: 11)).foregroundStyle(palette.mutedForeground).lineLimit(1)
+                        Spacer()
+                    }
+                    .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 6, trailing: 8))
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+                }
+            }
+            #endif
             ForEach(filteredGroups) { group in
                 Section {
                     ForEach(group.items) { item in
@@ -79,7 +105,6 @@ struct SessionSidebar: View {
         .navigationTitle(desktopName)
         #if os(macOS)
         .toolbarTitleMenu { desktopSwitcherMenu }
-        .safeAreaInset(edge: .top, spacing: 0) { modeFilterBar }
         .searchable(text: $searchText, placement: .sidebar, prompt: "Search sessions")
         #endif
         .toolbar { sidebarToolbar }
@@ -133,31 +158,6 @@ struct SessionSidebar: View {
             }
         }
     }
-
-    #if os(macOS)
-    /// A pinned bar directly under the titlebar: the Sessions/Issues switch, and a
-    /// connection-down indicator when the daemon link drops. Being a safeAreaInset it never
-    /// scrolls with the list or overflows.
-    private var modeFilterBar: some View {
-        VStack(spacing: 6) {
-            Picker("", selection: $tab) {
-                Text("Sessions").tag(0)
-                Text("Issues").tag(1)
-            }
-            .pickerStyle(.segmented).labelsHidden()
-            if !model.connected {
-                HStack(spacing: 5) {
-                    Circle().fill(Color.red).frame(width: 6, height: 6)
-                    Text(model.statusDetail ?? model.status)
-                        .font(.system(size: 11)).foregroundStyle(palette.mutedForeground).lineLimit(1)
-                    Spacer()
-                }
-            }
-        }
-        .padding(.horizontal, 10).padding(.top, 8).padding(.bottom, 8)
-        .background(.bar)
-    }
-    #endif
 
     private var desktopName: String {
         let n = store.active?.name ?? model.name
