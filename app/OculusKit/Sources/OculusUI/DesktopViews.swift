@@ -60,12 +60,13 @@ public struct RootView: View {
                     .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 340)
             } detail: {
                 detailPane(model)
-                    // TEMP DEBUG: show what height the GeometryReader is actually PROPOSED.
-                    .overlay(alignment: .top) {
-                        Text("proxy = \(Int(proxy.size.width)) x \(Int(proxy.size.height))")
-                            .font(.system(size: 12, weight: .bold, design: .monospaced))
-                            .padding(6).background(Color.green).foregroundStyle(Color.black)
-                    }
+                    // Clamp the detail column to the window height. The split view sizes to its
+                    // tallest column's ideal; ChatView's flexible (maxHeight:.infinity) empty
+                    // state measured as a runaway ~1884pt ideal and inflated the whole split
+                    // view (and thus the sidebar), while the fixed-height IssuesView did not.
+                    // Pinning the detail to proxy.size.height decouples the two so no detail
+                    // content can ever blow up the sidebar.
+                    .frame(height: proxy.size.height)
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
             .onChange(of: selection) { handleSelection($0, model) }
