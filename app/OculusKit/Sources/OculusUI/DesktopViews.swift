@@ -49,15 +49,23 @@ public struct RootView: View {
     /// close/reopen. iOS keeps a bottom TabView, which is the right idiom there.
     @ViewBuilder private func mainSurface(_ model: Model) -> some View {
         #if os(macOS)
-        NavigationSplitView {
-            SessionSidebar(store: store, model: model, selection: $selection, searchText: $searchText)
-                .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 340)
-        } detail: {
-            detailPane(model)
-        }
-        .onChange(of: selection) { handleSelection($0, model) }
-        .sheet(isPresented: $showNewSession) {
-            NewSessionView(model: model, palette: palette) { showNewSession = false }
+        // NavigationSplitView on macOS 26 ignores the height proposal and reports its own
+        // ideal (~1884pt), which the window host then centers — so the sidebar's content
+        // hangs above the viewport and can't scroll. A GeometryReader gives us the real
+        // proposed height (the 720pt window), and an explicit .frame() PINS the split view
+        // to it, overriding its runaway ideal.
+        GeometryReader { proxy in
+            NavigationSplitView {
+                SessionSidebar(store: store, model: model, selection: $selection, searchText: $searchText)
+                    .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 340)
+            } detail: {
+                detailPane(model)
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .onChange(of: selection) { handleSelection($0, model) }
+            .sheet(isPresented: $showNewSession) {
+                NewSessionView(model: model, palette: palette) { showNewSession = false }
+            }
         }
         #else
         TabView(selection: $selectedTab) {
