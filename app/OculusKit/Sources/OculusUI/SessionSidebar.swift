@@ -88,7 +88,8 @@ struct SessionSidebar: View {
                     }
                 }
             }
-            .padding(.bottom, 8)
+            .frame(maxWidth: .infinity, alignment: .leading) // establish content width on first
+            .padding(.bottom, 8)                              // paint so the header doesn't collapse
         }
         .background(palette.background)
         .task { await model.discover() }
