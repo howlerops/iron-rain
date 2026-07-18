@@ -42,42 +42,41 @@ struct SessionSidebar: View {
     static let newSessionTag = "__new__"
 
     var body: some View {
-        // A native `List` with `.listStyle(.sidebar)` — NOT a ScrollView. In a
-        // NavigationSplitView column a List is height-constrained to the window by AppKit
-        // and scrolls internally. CRITICAL: the sidebar only reserves the titlebar strip
-        // (so its content insets below the traffic lights instead of sliding under them)
-        // once it has a `.toolbar`. Without one, the whole list floats up under the
-        // titlebar and everything above the first data row overflows out of view — which
-        // is exactly the bug we chased. So the desktop switcher + actions live in the
-        // toolbar (titlebar), and the Sessions/Issues switch is a pinned `.safeAreaInset`
-        // bar just below it. Selection is native (List(selection:) + .tag), tinted gold.
+        sessionsList
+            .tint(palette.primary)
+        // The desktop switcher hangs off the title as a `.toolbarTitleMenu` (the
+        // Xcode scheme-menu pattern).
+        .navigationTitle(desktopName)
+        #if os(macOS)
+        .toolbarTitleMenu { desktopSwitcherMenu }
+        // ONE pinned, non-scrolling header inside the already-inset (navigationTitle)
+        // top region. It must have a DEFINITE height — padding + frame(maxWidth) +
+        // .background(.bar) — or safeAreaInset, which insets by exactly the content
+        // size, collapses to ~0pt and the header vanishes (the earlier symptom).
+        // Search lives here as a plain field; NO .searchable(.sidebar), which would
+        // fight this header for the same pinned band.
+        .safeAreaInset(edge: .top, spacing: 0) { sidebarHeader }
+        #endif
+        .toolbar { sidebarToolbar }
+        .task { await model.discover() }
+        .sheet(isPresented: $showPairingQR) {
+            PairingQRView(url: model.pairingURL ?? "", palette: palette) { showPairingQR = false }
+        }
+        .sheet(isPresented: $showAddDesktop) {
+            AddDesktopView(store: store, palette: palette) { showAddDesktop = false }
+        }
+        .alert("Rename desktop", isPresented: $renamingDesktop) {
+            TextField("Name", text: $desktopNewName)
+            Button("Save") { if let a = store.active { store.rename(a.id, to: desktopNewName) } }
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+
+    /// A PURE session List — the mode toggle, search and status chrome live in the pinned
+    /// `sidebarHeader` (safeAreaInset), not here. Keeping the List free of chrome is what
+    /// lets its navigationTitle-driven titlebar inset survive; it is the only scroll region.
+    private var sessionsList: some View {
         List(selection: $selection) {
-            #if os(macOS)
-            // The Sessions/Issues switch rides as the first list row. `.safeAreaInset(.top)`
-            // collapses to zero height in this column, so a real row is what renders
-            // reliably now that navigationTitle gives the list its titlebar inset.
-            Section {
-                Picker("", selection: $tab) {
-                    Text("Sessions").tag(0)
-                    Text("Issues").tag(1)
-                }
-                .pickerStyle(.segmented).labelsHidden()
-                .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 8, trailing: 8))
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
-                if !model.connected {
-                    HStack(spacing: 5) {
-                        Circle().fill(Color.red).frame(width: 6, height: 6)
-                        Text(model.statusDetail ?? model.status)
-                            .font(.system(size: 11)).foregroundStyle(palette.mutedForeground).lineLimit(1)
-                        Spacer()
-                    }
-                    .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 6, trailing: 8))
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
-                }
-            }
-            #endif
             ForEach(filteredGroups) { group in
                 Section {
                     ForEach(group.items) { item in
@@ -97,30 +96,59 @@ struct SessionSidebar: View {
             }
         }
         .listStyle(.sidebar)
-        .tint(palette.primary)
-        // A `.navigationTitle` (not merely a toolbar) is what makes the sidebar column
-        // reserve the titlebar strip and inset its content below it — the detail pane
-        // insets correctly for exactly this reason. The desktop switcher hangs off the
-        // title as a `.toolbarTitleMenu` (the Xcode scheme-menu pattern).
-        .navigationTitle(desktopName)
-        #if os(macOS)
-        .toolbarTitleMenu { desktopSwitcherMenu }
-        .searchable(text: $searchText, placement: .sidebar, prompt: "Search sessions")
-        #endif
-        .toolbar { sidebarToolbar }
-        .task { await model.discover() }
-        .sheet(isPresented: $showPairingQR) {
-            PairingQRView(url: model.pairingURL ?? "", palette: palette) { showPairingQR = false }
-        }
-        .sheet(isPresented: $showAddDesktop) {
-            AddDesktopView(store: store, palette: palette) { showAddDesktop = false }
-        }
-        .alert("Rename desktop", isPresented: $renamingDesktop) {
-            TextField("Name", text: $desktopNewName)
-            Button("Save") { if let a = store.active { store.rename(a.id, to: desktopNewName) } }
-            Button("Cancel", role: .cancel) {}
-        }
     }
+
+    #if os(macOS)
+    /// The pinned sidebar chrome: the Sessions/Issues toggle, a search field (replacing
+    /// `.searchable`, driving the same `filteredGroups` filter), and a connection-down
+    /// indicator. It sits in a `.safeAreaInset(.top)`, below the navigationTitle inset, so it
+    /// pins under the titlebar and never scrolls. The explicit padding + `.frame(maxWidth:)`
+    /// + `.background(.bar)` give it a definite height so the inset can't collapse to zero.
+    private var sidebarHeader: some View {
+        VStack(spacing: 8) {
+            Picker("", selection: $tab) {
+                Text("Sessions").tag(0)
+                Text("Issues").tag(1)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: .infinity)
+
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 12))
+                    .foregroundStyle(palette.mutedForeground)
+                TextField("Search sessions", text: $searchText)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                if !searchText.isEmpty {
+                    Button { searchText = "" } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(palette.mutedForeground)
+                    }
+                    .buttonStyle(.borderless)
+                }
+            }
+            .padding(.horizontal, 7).padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: 7).fill(palette.mutedForeground.opacity(0.12)))
+
+            if !model.connected {
+                HStack(spacing: 5) {
+                    Circle().fill(Color.red).frame(width: 6, height: 6)
+                    Text(model.statusDetail ?? model.status)
+                        .font(.system(size: 11))
+                        .foregroundStyle(palette.mutedForeground)
+                        .lineLimit(1)
+                    Spacer()
+                }
+            }
+        }
+        .padding(.horizontal, 10).padding(.top, 8).padding(.bottom, 8)
+        .frame(maxWidth: .infinity)
+        .background(.bar)
+        .overlay(alignment: .bottom) { Divider() }
+    }
+    #endif
 
     /// The desktop switcher — the list of paired Macs plus add/rename/remove. Hangs off the
     /// navigation title via `.toolbarTitleMenu`, so the title (the active desktop's name)
