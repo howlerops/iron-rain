@@ -36,7 +36,12 @@ public struct ChatView: View {
             }
             Composer(model: model, draft: $draft, palette: palette)
         }
-        .background(palette.background.ignoresSafeArea())
+        // NOTE: was `.background(palette.background.ignoresSafeArea())`. In a NavigationSplitView
+        // detail column on macOS 26, the ignoresSafeArea inflated ChatView's ideal height, which
+        // drove the whole split view to ~1884pt and overflowed the sidebar — but ONLY on the
+        // Sessions tab (IssuesView has no ignoresSafeArea and rendered at the correct ~715pt).
+        // Plain background keeps the detail bounded to the window.
+        .background(palette.background)
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: model.pendingApproval)
         .navigationTitle(model.sessionID == nil ? "New session" : statusLabel)
         #if os(iOS)
