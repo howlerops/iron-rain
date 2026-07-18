@@ -49,10 +49,6 @@ public struct RootView: View {
         } detail: {
             detailPane(model)
         }
-        // Per Apple's NavigationSplitView guidance, `.searchable` goes on the split view,
-        // not the sidebar — the system positions the field and it doesn't fight the
-        // sidebar's own chrome for the top band.
-        .searchable(text: $searchText, placement: .sidebar, prompt: "Search sessions")
         .onChange(of: selection) { handleSelection($0, model) }
         .sheet(isPresented: $showNewSession) {
             NewSessionView(model: model, palette: palette) { showNewSession = false }
@@ -65,7 +61,6 @@ public struct RootView: View {
             } detail: {
                 ChatView(model: model)
             }
-            .searchable(text: $searchText, prompt: "Search sessions")
             .onChange(of: selection) { handleSelection($0, model) }
             .sheet(isPresented: $showNewSession) {
                 NewSessionView(model: model, palette: palette) { showNewSession = false }

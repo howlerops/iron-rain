@@ -51,6 +51,13 @@ struct SessionSidebar: View {
         .navigationTitle(desktopName)
         #if os(macOS)
         .toolbarTitleMenu { desktopSwitcherMenu }
+        // `.searchable(.sidebar)` belongs on the sidebar (NOT the split view): for a
+        // selection-based List it's what makes the column reserve the titlebar top inset,
+        // so content stops sliding up under the glass titlebar. Now that the sidebar has
+        // no other top chrome, nothing competes with it.
+        .searchable(text: $searchText, placement: .sidebar, prompt: "Search sessions")
+        #else
+        .searchable(text: $searchText, prompt: "Search sessions")
         #endif
         .toolbar { sidebarToolbar }
         .task { await model.discover() }
