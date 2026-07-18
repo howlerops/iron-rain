@@ -42,20 +42,14 @@ struct SessionSidebar: View {
     static let newSessionTag = "__new__"
 
     var body: some View {
-        sessionsList
+        sidebarContent
             .tint(palette.primary)
         // The desktop switcher hangs off the title as a `.toolbarTitleMenu` (the
-        // Xcode scheme-menu pattern).
+        // Xcode scheme-menu pattern). `.navigationTitle` is also what makes the
+        // NavigationSplitView reserve the titlebar top inset for this column.
         .navigationTitle(desktopName)
         #if os(macOS)
         .toolbarTitleMenu { desktopSwitcherMenu }
-        // ONE pinned, non-scrolling header inside the already-inset (navigationTitle)
-        // top region. It must have a DEFINITE height — padding + frame(maxWidth) +
-        // .background(.bar) — or safeAreaInset, which insets by exactly the content
-        // size, collapses to ~0pt and the header vanishes (the earlier symptom).
-        // Search lives here as a plain field; NO .searchable(.sidebar), which would
-        // fight this header for the same pinned band.
-        .safeAreaInset(edge: .top, spacing: 0) { sidebarHeader }
         #endif
         .toolbar { sidebarToolbar }
         .task { await model.discover() }
@@ -70,6 +64,23 @@ struct SessionSidebar: View {
             Button("Save") { if let a = store.active { store.rename(a.id, to: desktopNewName) } }
             Button("Cancel", role: .cancel) {}
         }
+    }
+
+    /// macOS: an explicit column layout — a pinned header stacked over the session list, with
+    /// a hairline between. This is deterministic: the header is a normal VStack child so it
+    /// CANNOT collapse to zero the way `.safeAreaInset` did, and the List simply fills the
+    /// remaining height and scrolls. iOS keeps the pure list (its mode switch is the bottom
+    /// TabView, and it has no sidebar search).
+    @ViewBuilder private var sidebarContent: some View {
+        #if os(macOS)
+        VStack(spacing: 0) {
+            sidebarHeader
+            Divider()
+            sessionsList
+        }
+        #else
+        sessionsList
+        #endif
     }
 
     /// A PURE session List — the mode toggle, search and status chrome live in the pinned
@@ -146,7 +157,6 @@ struct SessionSidebar: View {
         .padding(.horizontal, 10).padding(.top, 8).padding(.bottom, 8)
         .frame(maxWidth: .infinity)
         .background(.bar)
-        .overlay(alignment: .bottom) { Divider() }
     }
     #endif
 
