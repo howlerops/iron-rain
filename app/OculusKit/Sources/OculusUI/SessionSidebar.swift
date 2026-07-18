@@ -41,50 +41,57 @@ struct SessionSidebar: View {
     static let newSessionTag = "__new__"
 
     var body: some View {
-        // Exactly the structure that rendered correctly at 8436d12: header + segmented in a
-        // VStack above a List with the DEFAULT list style. Every broken variant since added
-        // one of: .listStyle(.sidebar), .scrollContentBackground(.hidden), a toolbar-based
-        // header, or the header as a List row — each broke the sidebar's titlebar/height.
-        VStack(spacing: 0) {
-            SidebarHeader(store: store, model: model, palette: palette,
-                          onPairPhone: { showPairingQR = true },
-                          onNewSession: { selection = Self.newSessionTag },
-                          onAddDesktop: { showAddDesktop = true },
-                          onRename: { name in desktopNewName = name; renamingDesktop = true })
-            Divider().overlay(palette.border)
-            #if os(macOS)
-            Picker("", selection: $tab) {
-                Text("Sessions").tag(0)
-                Text("Issues").tag(1)
-            }
-            .pickerStyle(.segmented).labelsHidden()
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, 10).padding(.vertical, 8)
-            Divider().overlay(palette.border)
-            #endif
-            List(selection: $selection) {
+        // The sidebar is a ScrollView whose FIRST content is the header, followed by the
+        // session sections. In the macOS NavigationSplitView sidebar column, a header placed
+        // as a VStack sibling above the scroll — or via safeAreaInset — renders with zero
+        // height / behind the titlebar; as scroll content it renders correctly (the session
+        // rows prove content lands below the titlebar). It scrolls with the list.
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 1) {
+                SidebarHeader(store: store, model: model, palette: palette,
+                              onPairPhone: { showPairingQR = true },
+                              onNewSession: { selection = Self.newSessionTag },
+                              onAddDesktop: { showAddDesktop = true },
+                              onRename: { name in desktopNewName = name; renamingDesktop = true })
+                Divider().overlay(palette.border)
+                #if os(macOS)
+                Picker("", selection: $tab) {
+                    Text("Sessions").tag(0)
+                    Text("Issues").tag(1)
+                }
+                .pickerStyle(.segmented).labelsHidden()
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 10).padding(.vertical, 8)
+                Divider().overlay(palette.border)
+                #endif
+
                 ForEach(groups) { group in
-                    Section {
-                        ForEach(group.items) { item in
+                    sectionHeader(group.name, running: group.hasRunning)
+                        .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4)
+                    ForEach(group.items) { item in
+                        Button {
+                            selection = item.id
+                        } label: {
                             SessionRow(item: item, active: model.sessionID == item.id,
                                        showProvider: group.showProvider, showProject: group.showProject,
                                        palette: palette)
-                                .tag(item.id)
-                                .listRowBackground(
+                                .padding(.horizontal, 10).padding(.vertical, 5)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(
                                     model.sessionID == item.id
                                         ? palette.primary.opacity(scheme == .dark ? 0.16 : 0.10)
                                         : Color.clear
                                 )
+                                .contentShape(Rectangle())
                         }
-                    } header: {
-                        sectionHeader(group.name, running: group.hasRunning)
+                        .buttonStyle(.plain)
                     }
                 }
             }
-            .refreshable { await model.discover() }
-            .task { await model.discover() }
+            .padding(.bottom, 8)
         }
         .background(palette.background)
+        .task { await model.discover() }
         .sheet(isPresented: $showPairingQR) {
             PairingQRView(url: model.pairingURL ?? "", palette: palette) { showPairingQR = false }
         }
