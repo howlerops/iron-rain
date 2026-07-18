@@ -37,6 +37,7 @@ struct SessionSidebar: View {
     @State private var showAddDesktop = false
     @State private var renamingDesktop = false
     @State private var desktopNewName = ""
+    @State private var didSettle = false // forces one re-layout after first paint (header renders 0-height otherwise)
 
     static let newSessionTag = "__new__"
 
@@ -92,7 +93,14 @@ struct SessionSidebar: View {
             .padding(.bottom, 8)                              // paint so the header doesn't collapse
         }
         .background(palette.background)
-        .task { await model.discover() }
+        .id(didSettle) // re-create once after first paint so the header lays out with real width
+        .task {
+            if !didSettle {
+                try? await Task.sleep(nanoseconds: 50_000_000) // let the window settle its geometry
+                didSettle = true
+            }
+            await model.discover()
+        }
         .sheet(isPresented: $showPairingQR) {
             PairingQRView(url: model.pairingURL ?? "", palette: palette) { showPairingQR = false }
         }
