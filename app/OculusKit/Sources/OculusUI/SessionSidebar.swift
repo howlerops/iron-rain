@@ -233,10 +233,10 @@ struct SessionSidebar: View {
             Button(role: .destructive) {
                 Task { await model.stopSession(item.id) }
             } label: {
-                Label(item.isRunning ? "Stop session" : "End session", systemImage: "stop.circle")
+                Label("Delete session", systemImage: "trash")
             }
         } else {
-            Label("View-only · owned by a terminal", systemImage: "eye")
+            Label("Started in a terminal · click to resume", systemImage: "terminal")
                 .foregroundStyle(palette.mutedForeground)
         }
     }
@@ -284,8 +284,13 @@ struct SessionSidebar: View {
                                               isRunning: false, viewOnly: false, managed: false, updatedAt: date(d.updatedAt)))
         }
         for d in model.discovered where d.provider == "claude-code" {
+            // Use the real session id (not the composite discoveryID) so selecting the row
+            // matches in handleSelection and attaches (resumes) the session; skip any already
+            // resumed into a managed session to avoid showing it twice.
+            let sid = d.sessionID ?? d.discoveryID
+            guard !managedIDs.contains(sid) else { continue }
             let name = (d.cwd as NSString?)?.lastPathComponent ?? "session"
-            add("View-only", SidebarSession(id: d.discoveryID, title: name, provider: "claude-code",
+            add("View-only", SidebarSession(id: sid, title: name, provider: "claude-code",
                                             projectName: "View-only", branch: nil, isRunning: false,
                                             viewOnly: true, managed: false, updatedAt: date(d.updatedAt)))
         }
@@ -378,26 +383,26 @@ private struct SessionRow: View {
             if let b = item.branch, !b.isEmpty {
                 chip(icon: "arrow.triangle.branch", text: b, tint: palette.mutedForeground)
             }
-            // A solid chip to distinguish lifecycle at a glance: running (gold, live), or
-            // view-only (terminal-owned — can't be stopped from here). Managed idle sessions
-            // carry no chip; they're the plain default.
+            // A solid chip to distinguish lifecycle at a glance: running (gold, live), or a
+            // terminal glyph for sessions started outside the app (discovered — clicking
+            // resumes them). Managed idle sessions carry no chip; they're the plain default.
             if item.isRunning {
                 chip(icon: "circle.fill", text: "Live", tint: palette.primary, filled: true)
             } else if !item.managed {
-                chip(icon: "eye", text: "View", tint: palette.mutedForeground)
+                chip(icon: "terminal", text: nil, tint: palette.mutedForeground)
             }
         }
         .padding(.vertical, 3)
         .contentShape(Rectangle())
     }
 
-    private func chip(icon: String, text: String, tint: Color, filled: Bool = false) -> some View {
+    private func chip(icon: String, text: String?, tint: Color, filled: Bool = false) -> some View {
         HStack(spacing: 3) {
             Image(systemName: icon).font(.system(size: filled ? 6 : 9))
-            Text(text).font(.system(size: 10, weight: .semibold)).lineLimit(1)
+            if let text { Text(text).font(.system(size: 10, weight: .semibold)).lineLimit(1) }
         }
         .foregroundStyle(filled ? tint : palette.mutedForeground)
-        .padding(.horizontal, 6).padding(.vertical, 2)
+        .padding(.horizontal, text == nil ? 5 : 6).padding(.vertical, 2)
         .background(Capsule().fill(tint.opacity(filled ? 0.16 : 0.12)))
     }
 

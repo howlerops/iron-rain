@@ -246,18 +246,21 @@ public final class Model: ObservableObject {
         }
     }
 
-    /// Stops a daemon-managed session: halts its running agent, which ends the session and
-    /// drops it from `sessions`. No-op for discovered/view-only sessions (not owned here).
-    /// If the stopped session is the one on screen, clears the conversation.
+    /// Deletes a daemon-managed session: halts its agent (which ends the session server-side)
+    /// and removes it from the list immediately (optimistic — the next session.list confirms).
+    /// No-op for discovered sessions (not owned here). Clears the conversation if it's on screen.
     public func stopSession(_ id: String) async {
         guard let client else { return }
+        // Optimistic removal so the row disappears at once instead of lingering until the
+        // server broadcasts the updated session list.
+        sessions.removeAll { $0.id == id }
+        if sessionID == id { newSession() }
         do {
             let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.sessionStop,
                                           payload: SessionRef(sessionID: id))
             try await client.send(env)
-            if sessionID == id { newSession() }
         } catch {
-            status = "Stop failed: \(error)"
+            status = "Delete failed: \(error)"
         }
     }
 
@@ -406,8 +409,11 @@ public final class Model: ObservableObject {
         }
     }
 
+    /// Opens a session discovered on the host: opencode continues it live; claude-code
+    /// resumes it (the daemon's registered provider Attaches via `--resume`, loading history).
+    /// The daemon replies "provider cannot attach" for providers without resume support.
     public func attach(_ d: Discovered) async {
-        guard let client, d.provider == "opencode", let sid = d.sessionID else { return }
+        guard let client, let sid = d.sessionID else { return }
         messages.removeAll()
         sessionID = nil
         busy = false
