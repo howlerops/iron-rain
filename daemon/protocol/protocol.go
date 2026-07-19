@@ -21,6 +21,7 @@ const (
 	TypeSessionCreate      = "session.create"
 	TypeSessionPrompt      = "session.prompt"
 	TypeSessionStop        = "session.stop"
+	TypeSessionRename      = "session.rename"
 	TypeSessionAttach      = "session.attach"
 	TypeSessionSubscribe   = "session.subscribe" // observe an already-owned session (no dup subscription)
 	TypeApprovalRespond    = "approval.respond"
@@ -220,6 +221,12 @@ type SessionRef struct {
 	SessionID string `json:"session_id"`
 }
 
+// SessionRename sets a user label on a managed session (empty clears it).
+type SessionRename struct {
+	SessionID string `json:"session_id"`
+	Name      string `json:"name"`
+}
+
 // --- Built-in editor file access (fs.*) ---
 
 // FSTreeReq lists one directory. Empty Path returns the available roots (project roots +
@@ -364,6 +371,7 @@ type Session struct {
 	Provider      string `json:"provider"`
 	Status        string `json:"status"`
 	Title         string `json:"title,omitempty"`
+	Name          string `json:"name,omitempty"`           // user-set label (takes precedence over Title)
 	ProjectID     string `json:"project_id,omitempty"`     // registered project this session runs in
 	Cwd           string `json:"cwd,omitempty"`            // working directory (project path or worktree)
 	WorkspaceName string `json:"workspace_name,omitempty"` // human name of a worktree workspace

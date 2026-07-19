@@ -970,6 +970,27 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		}
 		h.sendOK(conn, env.ID, nil)
 
+	case protocol.TypeSessionRename:
+		var req protocol.SessionRename
+		_ = env.Unmarshal(&req)
+		m := h.managed(req.SessionID)
+		if m == nil {
+			h.sendErr(conn, env.ID, "unknown session")
+			return
+		}
+		m.mu.Lock()
+		m.meta.label = strings.TrimSpace(req.Name)
+		m.mu.Unlock()
+		h.sendOK(conn, env.ID, m.info())
+		// Broadcast the updated list so every client reflects the new name.
+		h.mu.Lock()
+		list := make([]protocol.Session, 0, len(h.sessions))
+		for _, mm := range h.sessions {
+			list = append(list, mm.info())
+		}
+		h.mu.Unlock()
+		h.broadcast(protocol.TypeSessionList, protocol.SessionList{Sessions: list})
+
 	case protocol.TypeFSTree:
 		var req protocol.FSTreeReq
 		_ = env.Unmarshal(&req)

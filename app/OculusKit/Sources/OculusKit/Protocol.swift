@@ -8,6 +8,7 @@ public enum MessageType {
     public static let sessionCreate = "session.create"
     public static let sessionPrompt = "session.prompt"
     public static let sessionStop = "session.stop"
+    public static let sessionRename = "session.rename"
     public static let sessionAttach = "session.attach"
     public static let sessionSubscribe = "session.subscribe"
     public static let approvalRespond = "approval.respond"
@@ -85,6 +86,12 @@ public struct SessionRef: Codable {
     public var sessionID: String
     public init(sessionID: String) { self.sessionID = sessionID }
     enum CodingKeys: String, CodingKey { case sessionID = "session_id" }
+}
+
+public struct SessionRename: Codable {
+    public var sessionID: String; public var name: String
+    public init(sessionID: String, name: String) { self.sessionID = sessionID; self.name = name }
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case name }
 }
 
 // MARK: - Built-in editor file access (fs.*)
@@ -200,6 +207,7 @@ public struct Session: Codable, Identifiable {
     public var provider: String
     public var status: String
     public var title: String?
+    public var name: String?   // user-set label (takes precedence over title)
     public var projectID: String?
     public var cwd: String?
     public var workspaceName: String?
@@ -209,7 +217,7 @@ public struct Session: Codable, Identifiable {
     public var issueID: String?
     public var updatedAt: Int? // unix seconds of last activity
     enum CodingKeys: String, CodingKey {
-        case id, provider, status, title, cwd, branch, port
+        case id, provider, status, title, name, cwd, branch, port
         case projectID = "project_id"
         case workspaceName = "workspace_name"
         case issueKey = "issue_key"

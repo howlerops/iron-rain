@@ -51,6 +51,7 @@ func (s *subscriber) close() { s.closeOnce.Do(func() { close(s.done) }) }
 
 // sessionMeta is where a session runs, so clients can group the sidebar.
 type sessionMeta struct {
+	label         string // user-set session name (session.rename); overrides the derived title
 	projectID     string
 	cwd           string
 	workspaceName string
@@ -72,11 +73,13 @@ func newManagedSession(h *Hub, sess agent.Session, meta sessionMeta) *managedSes
 func (m *managedSession) info() protocol.Session {
 	m.mu.Lock()
 	updated := m.lastActivity.Unix()
+	label := m.meta.label
 	m.mu.Unlock()
 	return protocol.Session{
 		ID:            m.sess.ID(),
 		Provider:      m.sess.Provider(),
 		Status:        protocol.StatusRunning,
+		Name:          label,
 		ProjectID:     m.meta.projectID,
 		Cwd:           m.meta.cwd,
 		WorkspaceName: m.meta.workspaceName,

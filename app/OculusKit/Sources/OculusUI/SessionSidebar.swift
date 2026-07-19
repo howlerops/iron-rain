@@ -79,6 +79,8 @@ struct SessionSidebar: View {
     var onTakeOver: (() -> Void)? = nil
     @AppStorage("oculus.appearance") private var appearance: Appearance = .system
     @State private var filter: SessionFilter = .all
+    @State private var renamingSessionID: String?
+    @State private var renameText = ""
 
     static let newSessionTag = "__new__"
 
@@ -115,6 +117,17 @@ struct SessionSidebar: View {
             TextField("Name", text: $desktopNewName)
             Button("Save") { if let a = store.active { store.rename(a.id, to: desktopNewName) } }
             Button("Cancel", role: .cancel) {}
+        }
+        .alert("Rename session", isPresented: Binding(get: { renamingSessionID != nil },
+                                                      set: { if !$0 { renamingSessionID = nil } })) {
+            TextField("Session name", text: $renameText)
+            Button("Save") {
+                if let id = renamingSessionID { Task { await model.renameSession(id, to: renameText) } }
+                renamingSessionID = nil
+            }
+            Button("Cancel", role: .cancel) { renamingSessionID = nil }
+        } message: {
+            Text("Give this session a name. Leave blank to reset to its default title.")
         }
     }
 
@@ -287,9 +300,13 @@ struct SessionSidebar: View {
     /// disabled hint so it's clear why there's nothing to manage.
     @ViewBuilder private func rowMenu(_ item: SidebarSession) -> some View {
         if item.managed {
+            Button { renameText = item.title; renamingSessionID = item.id } label: {
+                Label("Rename…", systemImage: "pencil")
+            }
             if let onReview {
                 Button { onReview(item.id) } label: { Label("Review changes", systemImage: "plus.forwardslash.minus") }
             }
+            Divider()
             Button(role: .destructive) {
                 Task { await model.stopSession(item.id) }
             } label: {
@@ -330,7 +347,7 @@ struct SessionSidebar: View {
         }
 
         for s in model.sessions {
-            let title = s.workspaceName ?? clean(s.title) ?? clean(discoveredTitles[s.id]) ?? "ses \(s.id.prefix(6))"
+            let title = clean(s.name) ?? s.workspaceName ?? clean(s.title) ?? clean(discoveredTitles[s.id]) ?? "ses \(s.id.prefix(6))"
             let key = s.projectID.flatMap { projectNames[$0] } ?? ((s.projectID?.isEmpty ?? true) ? "On this Mac" : s.projectID!)
             add(key, SidebarSession(id: s.id, title: title, provider: s.provider, projectName: key,
                                     branch: s.branch, isRunning: s.status == SessionStatusValue.running,

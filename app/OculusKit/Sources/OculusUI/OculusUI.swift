@@ -269,6 +269,22 @@ public final class Model: ObservableObject {
         }
     }
 
+    /// Renames a managed session (empty clears the label → back to the derived title). Updates
+    /// locally at once; the daemon broadcasts the change to every client.
+    public func renameSession(_ id: String, to name: String) async {
+        guard let client else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let i = sessions.firstIndex(where: { $0.id == id }) { sessions[i].name = trimmed.isEmpty ? nil : trimmed }
+        if sessionID == id { currentSession?.name = trimmed.isEmpty ? nil : trimmed }
+        do {
+            let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.sessionRename,
+                                          payload: SessionRename(sessionID: id, name: trimmed))
+            try await client.send(env)
+        } catch {
+            status = "Rename failed: \(error.localizedDescription)"
+        }
+    }
+
     /// Adds an image to be sent with the next prompt (converted to base64).
     public func attachImage(mime: String, data: Data) {
         pendingImages.append(ImageAttachment(mime: mime, data: data.base64EncodedString()))
