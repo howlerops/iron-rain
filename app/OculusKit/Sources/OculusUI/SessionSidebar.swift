@@ -44,21 +44,6 @@ struct SessionSidebar: View {
 
     var body: some View {
         sessionsList
-        #if os(macOS)
-        // TEMP DEBUG: show the sidebar List's measured height + safe-area insets so we can
-        // see whether the scroll container is taller than the window (the overflow).
-        .overlay(alignment: .topLeading) {
-            GeometryReader { geo in
-                Text("H=\(Int(geo.size.height)) sT=\(Int(geo.safeAreaInsets.top)) sB=\(Int(geo.safeAreaInsets.bottom)) win=\(Int(NSApp.windows.first(where: { $0.isVisible })?.frame.height ?? 0))")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .padding(4)
-                    .background(Color.yellow)
-                    .foregroundStyle(Color.black)
-                    .allowsHitTesting(false)
-            }
-            .allowsHitTesting(false)
-        }
-        #endif
             .tint(palette.primary)
         // The desktop switcher hangs off the title as a `.toolbarTitleMenu` (the
         // Xcode scheme-menu pattern). `.navigationTitle` is also what makes the
@@ -169,37 +154,8 @@ struct SessionSidebar: View {
             Button { selection = Self.newSessionTag } label: {
                 Image(systemName: "square.and.pencil")
             }
-            #if os(macOS)
-            // TEMP DEBUG: dump the AppKit view tree with frames to the Xcode console.
-            Button { Self.dumpViewTree() } label: { Image(systemName: "ladybug") }
-            #endif
         }
     }
-
-    #if os(macOS)
-    /// TEMP DEBUG: walk the key window's NSView tree and print each view's class + frame,
-    /// flagging any scroll/clip view taller than the window so we can see the overflow.
-    static func dumpViewTree() {
-        guard let win = NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil }),
-              let root = win.contentView else { print("DUMP: no window"); return }
-        let winH = win.frame.height
-        print("=== VIEW TREE (window height=\(Int(winH))) ===")
-        func walk(_ v: NSView, _ depth: Int) {
-            let cls = String(describing: type(of: v))
-            // Only print the structurally interesting views to keep it readable.
-            let interesting = cls.contains("Scroll") || cls.contains("Clip") || cls.contains("Split")
-                || cls.contains("Table") || cls.contains("Hosting") || cls.contains("Sidebar") || depth < 4
-            if interesting {
-                let f = v.frame
-                let flag = f.height > winH + 2 ? "  <<< TALLER THAN WINDOW" : ""
-                print("\(String(repeating: "· ", count: depth))\(cls) \(Int(f.origin.x)),\(Int(f.origin.y)) \(Int(f.width))x\(Int(f.height))\(flag)")
-            }
-            for sub in v.subviews { walk(sub, depth + 1) }
-        }
-        walk(root, 0)
-        print("=== END ===")
-    }
-    #endif
 
     private var desktopName: String {
         let n = store.active?.name ?? model.name
