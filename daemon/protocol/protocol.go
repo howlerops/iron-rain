@@ -61,6 +61,7 @@ const (
 	TypeLSPHover       = "lsp.hover"       // type/doc info at a position
 	TypeLSPDefinition  = "lsp.definition"  // go-to-definition at a position
 	TypeLSPComplete    = "lsp.complete"    // completion items at a position (autocomplete)
+	TypeLSPFormat      = "lsp.format"      // format the whole document
 	TypeLSPDiagnostics = "lsp.diagnostics" // event: diagnostics published for a file
 	TypeLSPServerInfo  = "lsp.serverinfo"  // is a language server installed for this file?
 	TypeLSPInstall     = "lsp.install"     // install the language server for this file
@@ -306,10 +307,12 @@ type SessionRename struct {
 
 // --- Built-in editor file access (fs.*) ---
 
-// FSTreeReq lists one directory. Empty Path returns the available roots (project roots +
-// active session working dirs) so the client can choose where to browse.
+// FSTreeReq lists one directory. Empty Path returns the available roots. With SessionID set,
+// the roots are scoped to that session's workspace folder(s) (a per-session file tree); empty
+// SessionID returns all roots (project roots + active session working dirs) for browsing.
 type FSTreeReq struct {
-	Path string `json:"path,omitempty"`
+	Path      string `json:"path,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // FSNode is one directory entry (or a root).
@@ -427,6 +430,18 @@ type LSPCompletionItem struct {
 // LSPCompletion is the result of a completion request.
 type LSPCompletion struct {
 	Items []LSPCompletionItem `json:"items"`
+}
+
+// LSPFormatReq requests formatting of a document; Content is the current buffer.
+type LSPFormatReq struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+// LSPFormatResult carries the formatted text (Changed=false → already formatted).
+type LSPFormatResult struct {
+	Text    string `json:"text"`
+	Changed bool   `json:"changed"`
 }
 
 // FSWriteReq saves a file if BaseSha still matches the on-disk sha.

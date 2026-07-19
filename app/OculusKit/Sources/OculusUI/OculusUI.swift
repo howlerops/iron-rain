@@ -592,9 +592,10 @@ public final class Model: ObservableObject {
         }
     }
 
-    /// Lists a directory (nil/empty path → the available roots).
-    public func fsTree(_ path: String?) async throws -> FSTree {
-        try await request(MessageType.fsTree, payload: FSTreeReq(path: path)).payload(as: FSTree.self)
+    /// Lists a directory (nil/empty path → the available roots). With sessionID, the roots are
+    /// scoped to that session's workspace folder(s) — a per-session file tree.
+    public func fsTree(_ path: String?, sessionID: String? = nil) async throws -> FSTree {
+        try await request(MessageType.fsTree, payload: FSTreeReq(path: path, sessionID: sessionID)).payload(as: FSTree.self)
     }
 
     /// Reads a text file (content + sha for conflict detection).
@@ -654,6 +655,14 @@ public final class Model: ObservableObject {
     public func lspComplete(_ path: String, line: Int, character: Int) async -> [LSPCompletionItem] {
         (try? await request(MessageType.lspComplete, payload: LSPPosReq(path: path, line: line, character: character))
             .payload(as: LSPCompletion.self).items) ?? []
+    }
+
+    /// Formats the whole document via the language server; returns the formatted text (or nil
+    /// if unchanged / no formatter).
+    public func lspFormat(_ path: String, content: String) async -> String? {
+        guard let r = try? await request(MessageType.lspFormat, payload: LSPFormatReq(path: path, content: content))
+            .payload(as: LSPFormatResult.self), r.changed else { return nil }
+        return r.text
     }
 
     /// Whether a language server is installed for a file (and whether we can install one).

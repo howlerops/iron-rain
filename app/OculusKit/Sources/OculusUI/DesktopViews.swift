@@ -125,8 +125,11 @@ public struct RootView: View {
             case 1:
                 IssuesView(model: model, palette: palette, embedded: true) { selectedTab = 0 }
             case 2:
-                CodeSurface(model: model, reviewSessionID: reviewSessionID)
-                    .id(reviewSessionID ?? "browse") // re-review when the target changes
+                // Scope the file tree to the active session's workspace (per-session code view);
+                // fall back to browsing all roots when no session is open.
+                let codeSession = reviewSessionID ?? model.currentSession?.id
+                CodeSurface(model: model, sessionID: codeSession, reviewSessionID: reviewSessionID)
+                    .id((codeSession ?? "browse") + (reviewSessionID != nil ? ":review" : "")) // reload on session/target change
             default:
                 ChatView(model: model)
             }

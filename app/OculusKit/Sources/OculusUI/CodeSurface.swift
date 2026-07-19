@@ -26,6 +26,8 @@ struct EditorTarget: Equatable { let line: Int; let char: Int }
     @Published var scrollTarget: EditorTarget?  // editor moves the caret here, then clears it
     @Published var serverSuggestion: LSPServerInfo?  // non-nil → offer to install a language server
     @Published var installing = false
+    @Published var formatOnSave = false
+    @Published var formatting = false
     private var dismissedLangs: Set<String> = []
 
     private var loadedSha = ""
@@ -50,8 +52,9 @@ struct EditorTarget: Equatable { let line: Int; let char: Int }
         Self.imageExts.contains((path as NSString).pathExtension.lowercased())
     }
 
-    func loadRoots() async {
-        do { roots = (try await model.fsTree(nil)).roots ?? [] }
+    /// Loads the file-tree roots. With sessionID, scoped to that session's workspace folder(s).
+    func loadRoots(sessionID: String? = nil) async {
+        do { roots = (try await model.fsTree(nil, sessionID: sessionID)).roots ?? [] }
         catch { status = "\(error.localizedDescription)" }
     }
 
@@ -156,6 +159,19 @@ struct EditorTarget: Equatable { let line: Int; let char: Int }
         return await model.lspComplete(p, line: line, character: char)
     }
 
+    /// Formats the whole buffer via the language server (syncs the server first).
+    func format() async {
+        guard let p = lspOpenPath, !readOnly else { return }
+        formatting = true
+        defer { formatting = false }
+        await model.lspChange(p, content: content) // ensure the server sees the current text
+        if let formatted = await model.lspFormat(p, content: content) {
+            content = formatted
+            markEdited()
+            status = "Formatted"
+        }
+    }
+
     /// Installs the suggested language server, then re-opens the file so it takes effect.
     func installServer() async {
         guard let p = openPath, serverSuggestion != nil else { return }
@@ -196,6 +212,10 @@ struct EditorTarget: Equatable { let line: Int; let char: Int }
     /// Saves the buffer if the on-disk sha still matches (conflict otherwise).
     func save() async {
         guard let path = openPath, dirty, !readOnly else { return }
+        if formatOnSave, lspOpenPath == path {
+            await model.lspChange(path, content: content)
+            if let formatted = await model.lspFormat(path, content: content) { content = formatted }
+        }
         saving = true
         defer { saving = false }
         do {
@@ -269,11 +289,14 @@ struct CodeSurface: View {
     @Environment(\.colorScheme) private var scheme
     private var palette: OculusPalette { .current(scheme) }
     private var theme: CodeTheme { .current(scheme) }
+    /// The session whose workspace folder(s) scope the file tree (nil → browse all roots).
+    let sessionID: String?
     /// When set, open in review mode for this session's changes.
     let reviewSessionID: String?
 
-    init(model: Model, reviewSessionID: String? = nil) {
+    init(model: Model, sessionID: String? = nil, reviewSessionID: String? = nil) {
         self.model = model
+        self.sessionID = sessionID
         self.reviewSessionID = reviewSessionID
         _code = StateObject(wrappedValue: CodeModel(model: model))
     }
@@ -288,7 +311,7 @@ struct CodeSurface: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .task {
-            await code.loadRoots()
+            await code.loadRoots(sessionID: sessionID)
             if let sid = reviewSessionID { await code.review(sessionID: sid) }
         }
     }
@@ -348,6 +371,18 @@ struct CodeSurface: View {
                     }
                     .font(.system(size: 12)).help("Jump to definition (caret)")
                     .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
+                    Button { Task { await code.format() } } label: {
+                        if code.formatting { ProgressView().controlSize(.small) }
+                        else { Image(systemName: "text.alignleft") }
+                    }
+                    .font(.system(size: 12)).help("Format document (⌥⇧F)")
+                    .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
+                    .keyboardShortcut("f", modifiers: [.option, .shift])
+                    Menu {
+                        Toggle("Format on save", isOn: $code.formatOnSave)
+                    } label: { Image(systemName: "ellipsis.circle") }
+                        .menuStyle(.borderlessButton).fixedSize()
+                        .font(.system(size: 12)).foregroundStyle(palette.mutedForeground)
                 }
                 if code.conflict {
                     Button("Reload") { Task { await code.reload() } }.font(.system(size: 12))

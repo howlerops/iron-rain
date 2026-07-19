@@ -132,7 +132,25 @@ struct HoverCard: View {
 final class HoverTextView: NSTextView {
     var onHoverMove: ((NSPoint) -> Void)?
     var onHoverExit: (() -> Void)?
+    var currentLineColor: NSColor = .clear
     private var hoverTracking: NSTrackingArea?
+
+    /// Fills the caret's line with a subtle highlight (VSCode's current-line highlight).
+    override func drawBackground(in rect: NSRect) {
+        super.drawBackground(in: rect) // default background fill first
+        guard currentLineColor != .clear, selectedRange().length == 0,
+              let lm = layoutManager, let tc = textContainer else { return }
+        let ns = string as NSString
+        let caret = min(selectedRange().location, ns.length)
+        let lineRange = ns.lineRange(for: NSRange(location: caret, length: 0))
+        let glyphRange = lm.glyphRange(forCharacterRange: lineRange, actualCharacterRange: nil)
+        var r = lm.boundingRect(forGlyphRange: glyphRange, in: tc)
+        r.origin.x = 0
+        r.size.width = bounds.width
+        r = r.offsetBy(dx: 0, dy: textContainerInset.height)
+        currentLineColor.setFill()
+        r.fill()
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -152,6 +170,80 @@ final class HoverTextView: NSTextView {
     override func mouseExited(with event: NSEvent) {
         super.mouseExited(with: event)
         onHoverExit?()
+    }
+}
+
+/// A line-number gutter drawn alongside the editor, kept in sync on edit + scroll. Numbers
+/// appear only on the first fragment of each source line (wrapped continuations are blank).
+final class LineNumberRulerView: NSRulerView {
+    private weak var tv: NSTextView?
+    private let theme: CodeTheme
+    private let numberFont = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .regular)
+
+    init(textView: NSTextView, theme: CodeTheme) {
+        self.tv = textView
+        self.theme = theme
+        super.init(scrollView: textView.enclosingScrollView, orientation: .verticalRuler)
+        clientView = textView
+        ruleThickness = 46
+        NotificationCenter.default.addObserver(self, selector: #selector(redraw),
+                                               name: NSText.didChangeNotification, object: textView)
+        if let cv = textView.enclosingScrollView?.contentView {
+            cv.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(self, selector: #selector(redraw),
+                                                   name: NSView.boundsDidChangeNotification, object: cv)
+        }
+    }
+    required init(coder: NSCoder) { fatalError("init(coder:) unavailable") }
+    deinit { NotificationCenter.default.removeObserver(self) }
+    @objc private func redraw() { needsDisplay = true }
+
+    override func drawHashMarksAndLabels(in rect: NSRect) {
+        guard let tv, let lm = tv.layoutManager, let tc = tv.textContainer else { return }
+        NSColor(theme.background).setFill(); bounds.fill()
+        NSColor(theme.comment).withAlphaComponent(0.18).setFill()
+        NSRect(x: bounds.maxX - 0.5, y: 0, width: 0.5, height: bounds.height).fill()
+
+        let ns = tv.string as NSString
+        let insetY = tv.textContainerInset.height
+        let relativeY = convert(NSPoint.zero, from: tv).y
+        let attrs: [NSAttributedString.Key: Any] = [.font: numberFont, .foregroundColor: NSColor(theme.comment)]
+
+        func drawNumber(_ n: Int, at frag: NSRect) {
+            let label = "\(n)" as NSString
+            let size = label.size(withAttributes: attrs)
+            let y = frag.minY + insetY + relativeY + (frag.height - size.height) / 2
+            label.draw(at: NSPoint(x: ruleThickness - size.width - 6, y: y), withAttributes: attrs)
+        }
+
+        let visibleGlyphs = lm.glyphRange(forBoundingRect: tv.visibleRect, in: tc)
+        let firstChar = ns.length == 0 ? 0 : lm.characterIndexForGlyph(at: visibleGlyphs.location)
+        var line0 = newlineCount(ns, before: firstChar) // 0-based source line of the first visible char
+        var first = true
+        var glyphIndex = visibleGlyphs.location
+        while glyphIndex < NSMaxRange(visibleGlyphs) {
+            var eff = NSRange()
+            let frag = lm.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: &eff)
+            let charIndex = lm.characterIndexForGlyph(at: eff.location)
+            let atLineStart = charIndex == 0 || ns.character(at: charIndex - 1) == 10
+            if atLineStart {
+                if !first { line0 += 1 }
+                drawNumber(line0 + 1, at: frag)
+            }
+            first = false
+            glyphIndex = NSMaxRange(eff)
+        }
+        // Trailing empty line (doc empty or ends with a newline).
+        let extra = lm.extraLineFragmentRect
+        if extra.height > 0 {
+            drawNumber(newlineCount(ns, before: ns.length) + 1, at: extra)
+        }
+    }
+
+    private func newlineCount(_ ns: NSString, before idx: Int) -> Int {
+        var n = 0, i = 0
+        while i < idx { if ns.character(at: i) == 10 { n += 1 }; i += 1 }
+        return n
     }
 }
 
@@ -194,10 +286,20 @@ private struct CodeTextView: NSViewRepresentable {
         tv.font = Self.font
         tv.backgroundColor = NSColor(theme.background)
         tv.textContainerInset = NSSize(width: 8, height: 8)
+        tv.usesFindBar = true                 // ⌘F opens the native find/replace bar
+        tv.isIncrementalSearchingEnabled = true
+        tv.currentLineColor = NSColor(theme.plain).withAlphaComponent(0.06)
         tv.string = text
         tv.onHoverMove = { [weak tv] p in if let tv { context.coordinator.hoverMoved(tv, to: p) } }
         tv.onHoverExit = { context.coordinator.hoverExited() }
         scroll.documentView = tv
+
+        // Line-number gutter.
+        let ruler = LineNumberRulerView(textView: tv, theme: theme)
+        scroll.verticalRulerView = ruler
+        scroll.hasVerticalRuler = true
+        scroll.rulersVisible = true
+
         context.coordinator.highlight(tv)
         return scroll
     }
@@ -237,6 +339,7 @@ private struct CodeTextView: NSViewRepresentable {
 
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let tv = notification.object as? NSTextView else { return }
+            tv.needsDisplay = true // repaint the current-line highlight
             let (line, char) = lineChar(forOffset: tv.selectedRange().location, in: tv.string as NSString)
             parent.onCaret(line, char)
         }

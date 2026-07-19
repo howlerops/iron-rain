@@ -49,6 +49,7 @@ public enum MessageType {
     public static let lspHover = "lsp.hover"
     public static let lspDefinition = "lsp.definition"
     public static let lspComplete = "lsp.complete"
+    public static let lspFormat = "lsp.format"
     public static let lspDiagnostics = "lsp.diagnostics"
     public static let lspServerInfo = "lsp.serverinfo"
     public static let lspInstall = "lsp.install"
@@ -117,7 +118,9 @@ public struct SessionRename: Codable {
 
 public struct FSTreeReq: Codable {
     public var path: String?
-    public init(path: String?) { self.path = path }
+    public var sessionID: String?
+    public init(path: String?, sessionID: String? = nil) { self.path = path; self.sessionID = sessionID }
+    enum CodingKeys: String, CodingKey { case path; case sessionID = "session_id" }
 }
 public struct FSNode: Codable, Identifiable, Hashable {
     public var name: String
@@ -232,6 +235,15 @@ public struct LSPCompletionItem: Codable, Identifiable, Hashable {
 }
 public struct LSPCompletion: Codable {
     public var items: [LSPCompletionItem]
+}
+public struct LSPFormatReq: Codable {
+    public var path: String
+    public var content: String
+    public init(path: String, content: String) { self.path = path; self.content = content }
+}
+public struct LSPFormatResult: Codable {
+    public var text: String
+    public var changed: Bool
 }
 public struct FSWriteResult: Codable {
     public var path: String

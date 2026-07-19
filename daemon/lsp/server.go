@@ -264,6 +264,9 @@ func initializeParams(root string) map[string]interface{} {
 						"snippetSupport": false,
 					},
 				},
+				"formatting": map[string]interface{}{
+					"dynamicRegistration": false,
+				},
 			},
 		},
 	}

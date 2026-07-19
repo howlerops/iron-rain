@@ -666,6 +666,7 @@ func asyncDispatch(typ string) bool {
 		protocol.TypeLSPHover,           // language server: hover
 		protocol.TypeLSPDefinition,      // language server: definition
 		protocol.TypeLSPComplete,        // language server: completion
+		protocol.TypeLSPFormat,          // language server: format document
 		protocol.TypeLSPServerInfo,      // language server: install status
 		protocol.TypeLSPInstall,         // language server: install (runs a package manager)
 		protocol.TypeDiscover:           // host scan
@@ -1168,8 +1169,16 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		_ = env.Unmarshal(&req)
 		guard := h.fsGuard()
 		if req.Path == "" {
-			roots := make([]protocol.FSNode, 0)
-			for _, r := range guard.Roots() {
+			// Per-session file tree: scope the roots to the session's workspace folder(s).
+			// Empty session → all roots (browse mode).
+			var paths []string
+			if req.SessionID != "" {
+				paths = h.sessionRoots(req.SessionID)
+			} else {
+				paths = guard.Roots()
+			}
+			roots := make([]protocol.FSNode, 0, len(paths))
+			for _, r := range paths {
 				roots = append(roots, protocol.FSNode{Name: filepath.Base(r), Path: r, Dir: true})
 			}
 			h.sendOK(conn, env.ID, protocol.FSTree{Roots: roots})
@@ -1273,6 +1282,16 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		}
 		h.sendOK(conn, env.ID, protocol.LSPCompletion{Items: out})
 
+	case protocol.TypeLSPFormat:
+		var req protocol.LSPFormatReq
+		_ = env.Unmarshal(&req)
+		text, changed, err := h.lsp.Format(ctx, req.Path, req.Content)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, protocol.LSPFormatResult{Text: text, Changed: changed})
+
 	case protocol.TypeLSPServerInfo:
 		var req protocol.LSPDocReq
 		_ = env.Unmarshal(&req)
@@ -1351,6 +1370,19 @@ func commonAncestor(paths []string) string {
 
 // fsGuard builds a file-access guard scoped to the registered project roots plus every active
 // session's working dir and repo root — the only places the built-in editor may touch.
+// sessionRoots returns the workspace folder(s) for a session — its working directory (the
+// worktree or project dir the agent edits). Empty if the session is unknown. Used to scope
+// the built-in editor's file tree to the active session.
+func (h *Hub) sessionRoots(sessionID string) []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	m := h.sessions[sessionID]
+	if m == nil || m.meta.cwd == "" {
+		return nil
+	}
+	return []string{m.meta.cwd}
+}
+
 func (h *Hub) fsGuard() *fsaccess.Guard {
 	var roots []string
 	// Read h.projects and the session set under the same lock that guards them (List() has
