@@ -47,11 +47,20 @@ const (
 	TypeIssueImage         = "issue.image"         // proxy an auth-gated attachment image
 
 	// Built-in editor file access — all paths validated against project roots + session cwds.
-	TypeFSTree  = "fs.tree"  // list a directory (or the available roots when path is empty)
-	TypeFSRead  = "fs.read"  // read a text file (content + sha for conflict detection)
-	TypeFSWrite = "fs.write" // save a file if its base sha still matches on disk
-	TypeFSDiff  = "fs.diff"  // unified git diff for a path or session (review)
-	TypeFSWatch = "fs.watch" // subscribe to change events for open files
+	TypeFSTree      = "fs.tree"      // list a directory (or the available roots when path is empty)
+	TypeFSRead      = "fs.read"      // read a text file (content + sha for conflict detection)
+	TypeFSReadBytes = "fs.readbytes" // read a file's raw bytes (images shown inline)
+	TypeFSWrite     = "fs.write"     // save a file if its base sha still matches on disk
+	TypeFSDiff      = "fs.diff"      // unified git diff for a path or session (review)
+	TypeFSWatch     = "fs.watch"     // subscribe to change events for open files
+
+	// LSP (built-in editor: diagnostics/linting/types/definition)
+	TypeLSPOpen        = "lsp.open"        // open a document in its language server
+	TypeLSPChange      = "lsp.change"      // document edited (full-sync)
+	TypeLSPClose       = "lsp.close"       // close a document
+	TypeLSPHover       = "lsp.hover"       // type/doc info at a position
+	TypeLSPDefinition  = "lsp.definition"  // go-to-definition at a position
+	TypeLSPDiagnostics = "lsp.diagnostics" // event: diagnostics published for a file
 
 	// events (daemon -> client), no id
 	TypeSessionStatus    = "session.status"
@@ -330,6 +339,62 @@ type FSFile struct {
 	Size      int64  `json:"size,omitempty"`
 	Binary    bool   `json:"binary,omitempty"`
 	Truncated bool   `json:"truncated,omitempty"`
+}
+
+// FSReadBytesReq reads a file's raw bytes (an image to show inline).
+type FSReadBytesReq struct {
+	Path string `json:"path"`
+}
+
+// FSBytes is a file's raw bytes (base64) + MIME type.
+type FSBytes struct {
+	Path string `json:"path"`
+	Mime string `json:"mime"`
+	Data string `json:"data"` // base64 (StdEncoding)
+}
+
+// LSPDocReq addresses a document (open/change/close). Content is set for open/change.
+type LSPDocReq struct {
+	Path     string `json:"path"`
+	Content  string `json:"content,omitempty"`
+	Language string `json:"language,omitempty"` // optional hint; daemon infers from path
+}
+
+// LSPPosReq addresses a 0-based position in a document (hover/definition).
+type LSPPosReq struct {
+	Path      string `json:"path"`
+	Line      int    `json:"line"`
+	Character int    `json:"character"`
+}
+
+// LSPHover is hover text (type info / docs) for a position; empty if none.
+type LSPHover struct {
+	Contents string `json:"contents"`
+}
+
+// LSPDefinition is a go-to-definition target (0-based position). Found=false if none.
+type LSPDefinition struct {
+	Path      string `json:"path"`
+	Line      int    `json:"line"`
+	Character int    `json:"character"`
+	Found     bool   `json:"found"`
+}
+
+// LSPDiagnostic mirrors one LSP diagnostic (0-based positions).
+type LSPDiagnostic struct {
+	StartLine int    `json:"start_line"`
+	StartChar int    `json:"start_char"`
+	EndLine   int    `json:"end_line"`
+	EndChar   int    `json:"end_char"`
+	Severity  int    `json:"severity"` // 1=error 2=warning 3=info 4=hint
+	Message   string `json:"message"`
+	Source    string `json:"source,omitempty"`
+}
+
+// LSPDiagnostics is a broadcast event: the current diagnostics for one file.
+type LSPDiagnostics struct {
+	Path        string          `json:"path"`
+	Diagnostics []LSPDiagnostic `json:"diagnostics"`
 }
 
 // FSWriteReq saves a file if BaseSha still matches the on-disk sha.

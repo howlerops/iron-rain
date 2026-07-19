@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -21,6 +22,9 @@ import (
 // maxReadBytes caps how much of a file the editor loads. Larger files come back truncated
 // (read-only in the UI); the cap also bounds memory per request.
 const maxReadBytes = 2 << 20 // 2 MiB
+
+// maxBytesRead caps a raw-bytes read (images shown inline in the editor).
+const maxBytesRead = 16 << 20 // 16 MiB
 
 // skipDirs are never listed — build/vendor noise that would swamp the tree.
 var skipDirs = map[string]bool{
@@ -236,6 +240,62 @@ func (g *Guard) Write(path, content, baseSha string) (out File, conflict bool, e
 		mtime = info.ModTime().Unix()
 	}
 	return File{Content: content, Sha: shaHex([]byte(content)), ModTime: mtime, Size: int64(len(content))}, false, nil
+}
+
+// ReadBytes returns a file's raw bytes (capped at maxBytesRead) plus a best-effort MIME
+// type, for rendering images inline in the editor. Scoped through the same guard as text
+// reads; a directory or oversized file is an error.
+func (g *Guard) ReadBytes(path string) (mime string, data []byte, err error) {
+	abs, err := g.Resolve(path)
+	if err != nil {
+		return "", nil, err
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", nil, err
+	}
+	if info.IsDir() {
+		return "", nil, errors.New("is a directory")
+	}
+	if info.Size() > maxBytesRead {
+		return "", nil, fmt.Errorf("file too large (%d bytes)", info.Size())
+	}
+	b, err := os.ReadFile(abs)
+	if err != nil {
+		return "", nil, err
+	}
+	mime = mimeByExt(filepath.Ext(abs))
+	if mime == "" {
+		mime = http.DetectContentType(b)
+	}
+	return mime, b, nil
+}
+
+// mimeByExt maps common image extensions to a MIME type (http.DetectContentType misses a
+// few, e.g. svg, and we prefer the explicit mapping for correctness).
+func mimeByExt(ext string) string {
+	switch strings.ToLower(ext) {
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	case ".bmp":
+		return "image/bmp"
+	case ".tif", ".tiff":
+		return "image/tiff"
+	case ".ico":
+		return "image/x-icon"
+	case ".heic":
+		return "image/heic"
+	case ".svg":
+		return "image/svg+xml"
+	default:
+		return ""
+	}
 }
 
 func shaHex(b []byte) string {

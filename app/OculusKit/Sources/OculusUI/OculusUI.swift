@@ -34,6 +34,8 @@ public final class Model: ObservableObject {
     @Published public var busy = false // agent is producing output
     @Published public var activity: String? // current step, e.g. "running bash"
     @Published public var pairingPublicURL: String? // reachable URL for the phone-pairing QR
+    /// Live LSP diagnostics keyed by file path (editor underlines + the problems list).
+    @Published public var diagnostics: [String: [LSPDiagnostic]] = [:]
 
     // Projects + worktrees.
     @Published public var projects: [Project] = []
@@ -612,6 +614,42 @@ public final class Model: ObservableObject {
             .payload(as: FSDiff.self).diff
     }
 
+    /// Reads a file's raw bytes (an image to show inline in the editor).
+    public func fsReadBytes(_ path: String) async throws -> FSBytes {
+        try await request(MessageType.fsReadBytes, payload: FSReadBytesReq(path: path)).payload(as: FSBytes.self)
+    }
+
+    // MARK: - LSP (editor diagnostics/types/definition)
+
+    /// Opens a document in its language server (diagnostics then arrive via lsp.diagnostics).
+    public func lspOpen(_ path: String, content: String) async {
+        _ = try? await request(MessageType.lspOpen, payload: LSPDocReq(path: path, content: content))
+    }
+
+    /// Notifies the language server the document changed (full-sync).
+    public func lspChange(_ path: String, content: String) async {
+        _ = try? await request(MessageType.lspChange, payload: LSPDocReq(path: path, content: content))
+    }
+
+    /// Closes the document in its language server + clears its diagnostics.
+    public func lspClose(_ path: String) async {
+        diagnostics[path] = nil
+        _ = try? await request(MessageType.lspClose, payload: LSPDocReq(path: path))
+    }
+
+    /// Hover (type info / docs) at a 0-based position; empty string if none.
+    public func lspHover(_ path: String, line: Int, character: Int) async -> String {
+        (try? await request(MessageType.lspHover, payload: LSPPosReq(path: path, line: line, character: character))
+            .payload(as: LSPHover.self).contents) ?? ""
+    }
+
+    /// Go-to-definition at a 0-based position; nil if none.
+    public func lspDefinition(_ path: String, line: Int, character: Int) async -> LSPDefinition? {
+        guard let d = try? await request(MessageType.lspDefinition, payload: LSPPosReq(path: path, line: line, character: character))
+            .payload(as: LSPDefinition.self), d.found else { return nil }
+        return d
+    }
+
     // MARK: issue detail / edit / comments / images
 
     /// Fetches a ticket's full body + comments.
@@ -908,6 +946,10 @@ public final class Model: ObservableObject {
                 case MessageType.integrationStatus: // broadcast after (re)connect
                     if let st = try? env.payload(as: IntegrationStatus.self) {
                         connectedTrackers = st.connected
+                    }
+                case MessageType.lspDiagnostics: // language server published diagnostics for a file
+                    if let d = try? env.payload(as: LSPDiagnostics.self) {
+                        diagnostics[d.path] = d.diagnostics
                     }
                 case MessageType.error:
                     if let e = try? env.payload(as: ProtocolError.self) {

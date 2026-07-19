@@ -105,6 +105,7 @@ func serve(args []string) error {
 	}
 
 	h := hub.New()
+	defer h.Shutdown() // stop language servers on exit
 	h.SetDiscoverer(discovery.Scan)
 	if reg, err := project.Load(projectsPath()); err != nil {
 		fmt.Fprintf(os.Stderr, "  warning: could not load project registry: %v\n", err)

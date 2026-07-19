@@ -36,10 +36,19 @@ public enum MessageType {
     // Built-in editor file access.
     public static let fsTree = "fs.tree"
     public static let fsRead = "fs.read"
+    public static let fsReadBytes = "fs.readbytes"
     public static let fsWrite = "fs.write"
     public static let fsDiff = "fs.diff"
     public static let fsWatch = "fs.watch"
     public static let fsChange = "fs.change"
+
+    // Built-in editor LSP (diagnostics/linting/types/definition).
+    public static let lspOpen = "lsp.open"
+    public static let lspChange = "lsp.change"
+    public static let lspClose = "lsp.close"
+    public static let lspHover = "lsp.hover"
+    public static let lspDefinition = "lsp.definition"
+    public static let lspDiagnostics = "lsp.diagnostics"
 
     public static let sessionStatus = "session.status"
     public static let sessionMessage = "session.message"
@@ -132,6 +141,15 @@ public struct FSFile: Codable {
     public var binary: Bool?
     public var truncated: Bool?
 }
+public struct FSReadBytesReq: Codable {
+    public var path: String
+    public init(path: String) { self.path = path }
+}
+public struct FSBytes: Codable {
+    public var path: String
+    public var mime: String
+    public var data: String // base64
+}
 public struct FSWriteReq: Codable {
     public var path: String
     public var content: String
@@ -139,6 +157,53 @@ public struct FSWriteReq: Codable {
     public init(path: String, content: String, baseSha: String) {
         self.path = path; self.content = content; self.baseSha = baseSha
     }
+}
+
+// MARK: - LSP (editor diagnostics/linting/types/definition)
+
+public struct LSPDocReq: Codable {
+    public var path: String
+    public var content: String?
+    public var language: String?
+    public init(path: String, content: String? = nil, language: String? = nil) {
+        self.path = path; self.content = content; self.language = language
+    }
+}
+public struct LSPPosReq: Codable {
+    public var path: String
+    public var line: Int
+    public var character: Int
+    public init(path: String, line: Int, character: Int) {
+        self.path = path; self.line = line; self.character = character
+    }
+}
+public struct LSPHover: Codable {
+    public var contents: String
+}
+public struct LSPDefinition: Codable {
+    public var path: String
+    public var line: Int
+    public var character: Int
+    public var found: Bool
+}
+public struct LSPDiagnostic: Codable, Identifiable, Hashable {
+    public var id: String { "\(startLine):\(startChar)-\(endLine):\(endChar):\(message)" }
+    public var startLine: Int
+    public var startChar: Int
+    public var endLine: Int
+    public var endChar: Int
+    public var severity: Int // 1=error 2=warning 3=info 4=hint
+    public var message: String
+    public var source: String?
+    enum CodingKeys: String, CodingKey {
+        case severity, message, source
+        case startLine = "start_line"; case startChar = "start_char"
+        case endLine = "end_line"; case endChar = "end_char"
+    }
+}
+public struct LSPDiagnostics: Codable {
+    public var path: String
+    public var diagnostics: [LSPDiagnostic]
 }
 public struct FSWriteResult: Codable {
     public var path: String

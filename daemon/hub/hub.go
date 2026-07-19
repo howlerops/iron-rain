@@ -18,6 +18,7 @@ import (
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/fsaccess"
 	"github.com/howlerops/oculus/daemon/issues"
+	"github.com/howlerops/oculus/daemon/lsp"
 	"github.com/howlerops/oculus/daemon/project"
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/push"
@@ -48,6 +49,7 @@ type Hub struct {
 	worktreeBase  string                   // base dir for worktrees ("" = worktree.DefaultBase)
 	reservedPorts map[int]bool             // ports handed to worktree setup hooks (collision-free)
 	db            *store.Store             // optional: durable local state (session names + records)
+	lsp           *lsp.Manager             // language servers for the built-in editor (diagnostics/types)
 
 	pushTimeout     time.Duration // per-Notify deadline for the approval push fan-out
 	pushConcurrency int           // cap on concurrent in-flight pushes
@@ -414,7 +416,7 @@ type AttacherFactory func(provider, url string) agent.Attacher
 
 // New returns an empty Hub.
 func New() *Hub {
-	return &Hub{
+	h := &Hub{
 		providers:       map[string]agent.Provider{},
 		sessions:        map[string]*managedSession{},
 		approvals:       map[string]*managedSession{},
@@ -423,6 +425,30 @@ func New() *Hub {
 		pushTimeout:     defaultPushTimeout,
 		pushConcurrency: defaultPushConcurrency,
 	}
+	// Language servers push diagnostics asynchronously; fan them out to every client.
+	h.lsp = lsp.NewManager(func(path string, diags []lsp.Diagnostic) {
+		h.broadcast(protocol.TypeLSPDiagnostics, protocol.LSPDiagnostics{Path: path, Diagnostics: toProtoDiags(diags)})
+	})
+	return h
+}
+
+// Shutdown stops background subsystems (language servers). Call on daemon exit.
+func (h *Hub) Shutdown() {
+	if h.lsp != nil {
+		h.lsp.Shutdown()
+	}
+}
+
+func toProtoDiags(diags []lsp.Diagnostic) []protocol.LSPDiagnostic {
+	out := make([]protocol.LSPDiagnostic, len(diags))
+	for i, d := range diags {
+		out[i] = protocol.LSPDiagnostic{
+			StartLine: d.StartLine, StartChar: d.StartChar,
+			EndLine: d.EndLine, EndChar: d.EndChar,
+			Severity: d.Severity, Message: d.Message, Source: d.Source,
+		}
+	}
+	return out
 }
 
 // addSession creates and stores a managed (shared) session for a provider session.
@@ -631,8 +657,14 @@ func asyncDispatch(typ string) bool {
 		protocol.TypeSessionStop,        // provider Stop
 		protocol.TypeFSTree,             // disk: dir listing
 		protocol.TypeFSRead,             // disk: file read
+		protocol.TypeFSReadBytes,        // disk: raw bytes (images)
 		protocol.TypeFSWrite,            // disk: file write
 		protocol.TypeFSDiff,             // git diff
+		protocol.TypeLSPOpen,            // language server: didOpen
+		protocol.TypeLSPChange,          // language server: didChange
+		protocol.TypeLSPClose,           // language server: didClose
+		protocol.TypeLSPHover,           // language server: hover
+		protocol.TypeLSPDefinition,      // language server: definition
 		protocol.TypeDiscover:           // host scan
 		return true
 	}
@@ -1162,6 +1194,66 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.FSFile{
 			Path: req.Path, Content: f.Content, Sha: f.Sha, ModTime: f.ModTime,
 			Size: f.Size, Binary: f.Binary, Truncated: f.Truncated,
+		})
+
+	case protocol.TypeFSReadBytes:
+		var req protocol.FSReadBytesReq
+		_ = env.Unmarshal(&req)
+		mime, data, err := h.fsGuard().ReadBytes(req.Path)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, protocol.FSBytes{
+			Path: req.Path, Mime: mime, Data: base64.StdEncoding.EncodeToString(data),
+		})
+
+	case protocol.TypeLSPOpen:
+		var req protocol.LSPDocReq
+		_ = env.Unmarshal(&req)
+		// Only open a language server for a file inside an allowed root.
+		if _, err := h.fsGuard().Resolve(req.Path); err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		if err := h.lsp.Open(ctx, req.Path, req.Content); err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, nil)
+
+	case protocol.TypeLSPChange:
+		var req protocol.LSPDocReq
+		_ = env.Unmarshal(&req)
+		_ = h.lsp.Change(ctx, req.Path, req.Content)
+		h.sendOK(conn, env.ID, nil)
+
+	case protocol.TypeLSPClose:
+		var req protocol.LSPDocReq
+		_ = env.Unmarshal(&req)
+		h.lsp.Close(req.Path)
+		h.sendOK(conn, env.ID, nil)
+
+	case protocol.TypeLSPHover:
+		var req protocol.LSPPosReq
+		_ = env.Unmarshal(&req)
+		txt, err := h.lsp.Hover(ctx, req.Path, req.Line, req.Character)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, protocol.LSPHover{Contents: txt})
+
+	case protocol.TypeLSPDefinition:
+		var req protocol.LSPPosReq
+		_ = env.Unmarshal(&req)
+		loc, err := h.lsp.Definition(ctx, req.Path, req.Line, req.Character)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, protocol.LSPDefinition{
+			Path: loc.Path, Line: loc.StartLine, Character: loc.StartChar, Found: loc.Path != "",
 		})
 
 	case protocol.TypeFSWrite:
