@@ -36,6 +36,8 @@ public final class Model: ObservableObject {
     @Published public var pairingPublicURL: String? // reachable URL for the phone-pairing QR
     /// Live LSP diagnostics keyed by file path (editor underlines + the problems list).
     @Published public var diagnostics: [String: [LSPDiagnostic]] = [:]
+    /// The active session's live to-do list (from the agent).
+    @Published public var todos: [Todo] = []
 
     // Projects + worktrees.
     @Published public var projects: [Project] = []
@@ -389,6 +391,7 @@ public final class Model: ObservableObject {
         pendingApproval = nil
         busy = false
         lastDiff = nil
+        todos = []
     }
 
     /// Starts a fresh session with explicit options (provider, one or more project folders,
@@ -492,6 +495,7 @@ public final class Model: ObservableObject {
     public func openSession(_ id: String) async {
         guard let client else { return }
         messages.removeAll()
+        todos = []
         pendingApproval = nil
         busy = false
         lastDiff = nil
@@ -999,6 +1003,16 @@ public final class Model: ObservableObject {
                 case MessageType.lspDiagnostics: // language server published diagnostics for a file
                     if let d = try? env.payload(as: LSPDiagnostics.self) {
                         diagnostics[d.path] = d.diagnostics
+                    }
+                case MessageType.sessionUsage: // per-turn token/cost usage; accumulate onto the session
+                    if let u = try? env.payload(as: SessionUsage.self), u.sessionID == sessionID {
+                        currentSession?.inputTokens = (currentSession?.inputTokens ?? 0) + u.inputTokens
+                        currentSession?.outputTokens = (currentSession?.outputTokens ?? 0) + u.outputTokens
+                        currentSession?.costUSD = (currentSession?.costUSD ?? 0) + u.costUSD
+                    }
+                case MessageType.sessionTodos: // the agent's live to-do list (replaces the prior list)
+                    if let t = try? env.payload(as: SessionTodos.self), t.sessionID == sessionID {
+                        todos = t.todos
                     }
                 case MessageType.error:
                     if let e = try? env.payload(as: ProtocolError.self) {

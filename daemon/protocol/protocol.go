@@ -78,6 +78,8 @@ const (
 	TypeApprovalRequest  = "approval.request"
 	TypeApprovalResolved = "approval.resolved" // broadcast: this approval was answered
 	TypeFSChange         = "fs.change"         // a watched file changed on disk
+	TypeSessionUsage     = "session.usage"     // token/cost usage for a session (event)
+	TypeSessionTodos     = "session.todos"     // the agent's live to-do list (event)
 
 	// responses
 	TypeOK    = "ok"
@@ -624,6 +626,31 @@ type Session struct {
 	IssueKey      string `json:"issue_key,omitempty"`      // the ticket this session works (e.g. ENG-42)
 	IssueID       string `json:"issue_id,omitempty"`
 	UpdatedAt     int64  `json:"updated_at,omitempty"`     // unix seconds of last activity (0 = unknown)
+	// Cumulative token/cost usage for the session (surfaced as a meter; 0 = unknown).
+	InputTokens  int     `json:"input_tokens,omitempty"`
+	OutputTokens int     `json:"output_tokens,omitempty"`
+	CostUSD      float64 `json:"cost_usd,omitempty"`
+}
+
+// SessionUsage is a usage update for one session (event). InputTokens/OutputTokens/CostUSD are
+// the delta for the just-completed turn; the hub accumulates them onto the Session.
+type SessionUsage struct {
+	SessionID    string  `json:"session_id"`
+	InputTokens  int     `json:"input_tokens"`
+	OutputTokens int     `json:"output_tokens"`
+	CostUSD      float64 `json:"cost_usd"`
+}
+
+// Todo is one item in the agent's live to-do list.
+type Todo struct {
+	Content string `json:"content"`
+	Status  string `json:"status"` // pending | in_progress | completed
+}
+
+// SessionTodos is the agent's current to-do list for a session (event; replaces the prior list).
+type SessionTodos struct {
+	SessionID string `json:"session_id"`
+	Todos     []Todo `json:"todos"`
 }
 
 type SessionList struct {

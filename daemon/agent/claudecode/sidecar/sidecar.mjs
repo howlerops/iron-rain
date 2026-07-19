@@ -134,9 +134,38 @@ try {
         }
         break;
       }
-      case "result":
+      case "assistant": {
+        const blocks = message.message?.content;
+        if (Array.isArray(blocks)) {
+          let latestTodoBlock = null;
+          for (const block of blocks) {
+            if (block && typeof block === "object" && block.name === "TodoWrite") {
+              latestTodoBlock = block;
+            }
+          }
+          if (latestTodoBlock) {
+            const todos = Array.isArray(latestTodoBlock.input?.todos) ? latestTodoBlock.input.todos : [];
+            send({
+              t: "todos",
+              todos: todos.map((td) => ({
+                content: String(td?.content ?? td?.activeForm ?? ""),
+                status: String(td?.status ?? "pending"),
+              })),
+            });
+          }
+        }
+        break;
+      }
+      case "result": {
+        const inputTokens = Number(message.usage?.input_tokens ?? 0);
+        const outputTokens = Number(message.usage?.output_tokens ?? 0);
+        const costUsd = Number(message.total_cost_usd ?? 0);
+        if (inputTokens > 0 || outputTokens > 0 || costUsd > 0) {
+          send({ t: "usage", input_tokens: inputTokens, output_tokens: outputTokens, cost_usd: costUsd });
+        }
         send({ t: "idle" });
         break;
+      }
     }
   }
 } catch (e) {

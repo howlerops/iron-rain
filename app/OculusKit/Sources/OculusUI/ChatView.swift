@@ -22,6 +22,7 @@ public struct ChatView: View {
     public var body: some View {
         VStack(spacing: 0) {
             if isWorktreeSession { worktreeBanner }
+            if !model.todos.isEmpty { TodoBar(todos: model.todos, palette: palette) }
             if model.messages.isEmpty && model.sessionID == nil {
                 emptyState
             } else {
@@ -48,6 +49,9 @@ public struct ChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar {
+            if let s = model.currentSession, (s.costUSD ?? 0) > 0 || (s.inputTokens ?? 0) > 0 {
+                ToolbarItem(placement: .automatic) { UsageChip(session: s, palette: palette) }
+            }
             if isWorktreeSession {
                 ToolbarItem(placement: .primaryAction) {
                     Button { showWorktreePanel = true } label: {
@@ -259,5 +263,78 @@ struct ApprovalCard: View {
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(palette.primary.opacity(0.4)))
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .padding(.horizontal, 12).padding(.bottom, 6)
+    }
+}
+
+/// The agent's live to-do list — a collapsible checklist with progress, above the transcript.
+struct TodoBar: View {
+    let todos: [Todo]
+    let palette: OculusPalette
+    @State private var expanded = false
+
+    private var done: Int { todos.filter { $0.status == "completed" }.count }
+    private var current: Todo? { todos.first { $0.status == "in_progress" } }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Button { withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() } } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "checklist").font(.caption).foregroundStyle(palette.primary)
+                    Text(current?.content ?? "To-dos").font(.caption).lineLimit(1)
+                        .foregroundStyle(current != nil ? palette.foreground : palette.mutedForeground)
+                    Spacer()
+                    Text("\(done)/\(todos.count)").font(.caption2.monospacedDigit()).foregroundStyle(palette.mutedForeground)
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption2).foregroundStyle(palette.mutedForeground)
+                }
+                .padding(.horizontal, 14).padding(.vertical, 7).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if expanded {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(todos) { td in
+                        HStack(alignment: .top, spacing: 7) {
+                            Image(systemName: icon(td.status)).font(.caption2).foregroundStyle(color(td.status)).frame(width: 14)
+                            Text(td.content).font(.caption)
+                                .foregroundStyle(td.status == "completed" ? palette.mutedForeground : palette.foreground)
+                                .strikethrough(td.status == "completed")
+                            Spacer()
+                        }
+                    }
+                }
+                .padding(.horizontal, 14).padding(.bottom, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .background(palette.card.opacity(0.4))
+        .overlay(alignment: .bottom) { Divider().overlay(palette.border) }
+    }
+
+    private func icon(_ s: String) -> String {
+        s == "completed" ? "checkmark.circle.fill" : (s == "in_progress" ? "arrow.triangle.2.circlepath" : "circle")
+    }
+    private func color(_ s: String) -> Color {
+        s == "completed" ? Color(hex: 0x2EA043) : (s == "in_progress" ? palette.primary : palette.mutedForeground)
+    }
+}
+
+/// A compact cost/token meter for the active session (toolbar).
+struct UsageChip: View {
+    let session: Session
+    let palette: OculusPalette
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "gauge.with.dots.needle.33percent").font(.caption2)
+            Text(String(format: "$%.3f", session.costUSD ?? 0)).font(.caption2.monospacedDigit())
+            if let tok = tokenText { Text("· \(tok)").font(.caption2.monospacedDigit()).foregroundStyle(palette.mutedForeground) }
+        }
+        .foregroundStyle(palette.mutedForeground)
+        .help("\(session.inputTokens ?? 0) in / \(session.outputTokens ?? 0) out tokens · $\(String(format: "%.4f", session.costUSD ?? 0))")
+    }
+
+    private var tokenText: String? {
+        let t = (session.inputTokens ?? 0) + (session.outputTokens ?? 0)
+        guard t > 0 else { return nil }
+        return t >= 1000 ? String(format: "%.1fk", Double(t) / 1000) : "\(t)"
     }
 }

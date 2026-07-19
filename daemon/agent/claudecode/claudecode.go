@@ -139,12 +139,21 @@ type imgAtt struct {
 	Data string `json:"data"`
 }
 type outMsg struct {
-	T       string `json:"t"`
-	ID      string `json:"id,omitempty"`
-	Text    string `json:"text,omitempty"`
-	Tool    string `json:"tool,omitempty"`
-	Detail  string `json:"detail,omitempty"`
-	Message string `json:"message,omitempty"`
+	T            string        `json:"t"`
+	ID           string        `json:"id,omitempty"`
+	Text         string        `json:"text,omitempty"`
+	Tool         string        `json:"tool,omitempty"`
+	Detail       string        `json:"detail,omitempty"`
+	Message      string        `json:"message,omitempty"`
+	InputTokens  int           `json:"input_tokens,omitempty"`
+	OutputTokens int           `json:"output_tokens,omitempty"`
+	CostUSD      float64       `json:"cost_usd,omitempty"`
+	Todos        []sidecarTodo `json:"todos,omitempty"`
+}
+
+type sidecarTodo struct {
+	Content string `json:"content"`
+	Status  string `json:"status"`
 }
 
 func (s *session) send(m inMsg) error {
@@ -242,6 +251,15 @@ func (s *session) readLoop(stdout io.ReadCloser) {
 			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusIdle}})
 		case "error":
 			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusError, Detail: m.Message}})
+		case "usage":
+			s.emit(agent.Event{Type: protocol.TypeSessionUsage, Payload: protocol.SessionUsage{
+				SessionID: s.id, InputTokens: m.InputTokens, OutputTokens: m.OutputTokens, CostUSD: m.CostUSD}})
+		case "todos":
+			todos := make([]protocol.Todo, len(m.Todos))
+			for i, td := range m.Todos {
+				todos[i] = protocol.Todo{Content: td.Content, Status: td.Status}
+			}
+			s.emit(agent.Event{Type: protocol.TypeSessionTodos, Payload: protocol.SessionTodos{SessionID: s.id, Todos: todos}})
 		}
 	}
 	if !idle {

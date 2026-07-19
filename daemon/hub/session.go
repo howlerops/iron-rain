@@ -35,6 +35,8 @@ type managedSession struct {
 	transcript      [][]byte  // encoded protocol events, replayed to new subscribers
 	transcriptBytes int       // running size of transcript (for the byte cap)
 	lastActivity    time.Time // last event time; surfaced as Session.UpdatedAt for sorting/relative time
+	inTok, outTok   int       // cumulative token usage across the session
+	costUSD         float64   // cumulative cost (USD)
 }
 
 // subscriber owns one client's outbound queue plus the writer goroutine that drains it.
@@ -82,6 +84,7 @@ func (m *managedSession) info() protocol.Session {
 	m.mu.Lock()
 	updated := m.lastActivity.Unix()
 	label := m.meta.label
+	inTok, outTok, cost := m.inTok, m.outTok, m.costUSD
 	m.mu.Unlock()
 	return protocol.Session{
 		ID:            m.sess.ID(),
@@ -96,6 +99,9 @@ func (m *managedSession) info() protocol.Session {
 		IssueKey:      m.meta.issueKey,
 		IssueID:       m.meta.issueID,
 		UpdatedAt:     updated,
+		InputTokens:   inTok,
+		OutputTokens:  outTok,
+		CostUSD:       cost,
 	}
 }
 
@@ -206,6 +212,15 @@ func (m *managedSession) run() {
 			if ar, ok := ev.Payload.(protocol.ApprovalRequest); ok {
 				m.hub.recordApproval(ar.ApprovalID, m)
 				m.hub.pushApproval(ar)
+			}
+		}
+		if ev.Type == protocol.TypeSessionUsage {
+			if u, ok := ev.Payload.(protocol.SessionUsage); ok {
+				m.mu.Lock()
+				m.inTok += u.InputTokens
+				m.outTok += u.OutputTokens
+				m.costUSD += u.CostUSD
+				m.mu.Unlock()
 			}
 		}
 		raw, err := ev.Encode()

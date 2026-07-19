@@ -58,6 +58,8 @@ public enum MessageType {
     public static let lspServerInfo = "lsp.serverinfo"
     public static let lspInstall = "lsp.install"
 
+    public static let sessionUsage = "session.usage"
+    public static let sessionTodos = "session.todos"
     public static let sessionStatus = "session.status"
     public static let sessionMessage = "session.message"
     public static let thinking = "thinking.delta"
@@ -387,6 +389,9 @@ public struct Session: Codable, Identifiable {
     public var issueKey: String?
     public var issueID: String?
     public var updatedAt: Int? // unix seconds of last activity
+    public var inputTokens: Int?
+    public var outputTokens: Int?
+    public var costUSD: Double?
     enum CodingKeys: String, CodingKey {
         case id, provider, status, title, name, cwd, branch, port
         case projectID = "project_id"
@@ -394,10 +399,37 @@ public struct Session: Codable, Identifiable {
         case issueKey = "issue_key"
         case issueID = "issue_id"
         case updatedAt = "updated_at"
+        case inputTokens = "input_tokens"
+        case outputTokens = "output_tokens"
+        case costUSD = "cost_usd"
     }
 }
 public struct ProtocolError: Codable { public var message: String }
 public struct SessionList: Codable { public var sessions: [Session] }
+
+// Usage + to-dos (agent observability events).
+public struct SessionUsage: Codable {
+    public var sessionID: String
+    public var inputTokens: Int
+    public var outputTokens: Int
+    public var costUSD: Double
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+        case inputTokens = "input_tokens"
+        case outputTokens = "output_tokens"
+        case costUSD = "cost_usd"
+    }
+}
+public struct Todo: Codable, Identifiable, Hashable {
+    public var id: String { "\(status):\(content)" }
+    public var content: String
+    public var status: String // pending | in_progress | completed
+}
+public struct SessionTodos: Codable {
+    public var sessionID: String
+    public var todos: [Todo]
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case todos }
+}
 
 // Projects — registered folders sessions can be spawned in.
 public struct Project: Codable, Identifiable, Hashable {
