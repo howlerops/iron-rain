@@ -351,6 +351,9 @@ public struct IssueComment: Codable, Identifiable, Hashable {
     public var author: String?
     public var body: String
     public var createdAt: String?
+    public init(id: String, author: String? = nil, body: String, createdAt: String? = nil) {
+        self.id = id; self.author = author; self.body = body; self.createdAt = createdAt
+    }
     enum CodingKeys: String, CodingKey { case id, author, body; case createdAt = "created_at" }
 }
 

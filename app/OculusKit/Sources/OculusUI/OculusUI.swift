@@ -60,6 +60,11 @@ public final class Model: ObservableObject {
     private var pendingRequests: [String: CheckedContinuation<Envelope, Error>] = [:]
     /// Decoded tracker images keyed by URL (fetched through the daemon; auth-gated).
     private var imageCache: [String: Data] = [:]
+    /// Fires if a prompt gets no response within the window (dead/orphaned session).
+    private var watchdogTask: Task<Void, Never>?
+    /// While true, skip replayed transcript messages that duplicate ones already shown
+    /// (set briefly around a live re-attach so reviving a session doesn't double the chat).
+    private var dedupReplay = false
     private var reconnectWanted = false
     private var reconnecting = false
     #if os(iOS)
@@ -162,6 +167,9 @@ public final class Model: ObservableObject {
             await loadSessions()
             await loadIntegrationStatus()
             await loadIssues()
+            // If a session was open when the socket dropped (e.g. the daemon restarted and
+            // forgot its in-memory sessions), re-attach it so its transcript + prompts resume.
+            await reopenCurrentSession()
             if let token = OculusStore.shared.deviceToken {
                 await registerDevice(token: token)
             }
@@ -231,12 +239,10 @@ public final class Model: ObservableObject {
         messages.append(ChatMessage(role: .user, text: shown))
         busy = true
         pendingImages = []
-        do {
-            if let sid = sessionID {
-                let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.sessionPrompt,
-                                              payload: SessionPrompt(sessionID: sid, text: trimmed, images: imgs.isEmpty ? nil : imgs))
-                try await client.send(env)
-            } else {
+        if let sid = sessionID {
+            await deliverPrompt(sessionID: sid, text: trimmed, images: imgs, allowReattach: true)
+        } else {
+            do {
                 let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.sessionCreate,
                                               payload: SessionCreate(provider: newSessionProvider,
                                                                      projectID: pendingProjectID,
@@ -246,11 +252,90 @@ public final class Model: ObservableObject {
                                                                      worktree: pendingWorktree ? true : nil,
                                                                      workspaceName: pendingWorkspaceName))
                 try await client.send(env)
+                armWatchdog()
+            } catch {
+                status = "Send failed: \(error.localizedDescription)"
+                busy = false
             }
+        }
+    }
+
+    /// Sends a prompt to an existing session and awaits the daemon's ack. If the daemon no
+    /// longer knows the session (e.g. it restarted and forgot its in-memory sessions), the
+    /// underlying opencode/claude session still lives server-side, so we transparently
+    /// re-attach it and retry once — instead of the chat hanging on "working…" forever.
+    private func deliverPrompt(sessionID sid: String, text: String, images: [ImageAttachment], allowReattach: Bool) async {
+        do {
+            _ = try await request(MessageType.sessionPrompt,
+                                  payload: SessionPrompt(sessionID: sid, text: text, images: images.isEmpty ? nil : images))
+            armWatchdog()
         } catch {
-            status = "Send failed: \(error)"
+            let msg = error.localizedDescription.lowercased()
+            if allowReattach, msg.contains("no such session") || msg.contains("no session"),
+               let revived = await reattachCurrentSync() {
+                await deliverPrompt(sessionID: revived, text: text, images: images, allowReattach: false)
+                return
+            }
+            status = "Send failed: \(error.localizedDescription)"
             busy = false
         }
+    }
+
+    /// Re-establishes the daemon's managed session for the currently open session, keeping the
+    /// on-screen transcript (used mid-send when the daemon forgot the session). Returns the
+    /// revived session id, or nil. Replayed history is de-duplicated briefly so the chat
+    /// doesn't double up.
+    private func reattachCurrentSync() async -> String? {
+        guard let s = currentSession else { return nil }
+        dedupReplay = true
+        Task { try? await Task.sleep(nanoseconds: 5_000_000_000); dedupReplay = false }
+        do {
+            let env = try await request(MessageType.sessionAttach,
+                payload: SessionAttach(provider: s.provider, sessionID: s.id, url: nil, cwd: s.cwd))
+            if let revived = try? env.payload(as: Session.self) {
+                sessionID = revived.id; currentSession = revived; return revived.id
+            }
+            return s.id
+        } catch {
+            return nil
+        }
+    }
+
+    /// Re-opens the currently active session after a reconnect (the daemon may have restarted
+    /// and dropped its in-memory sessions). Clears the local transcript and lets the attach
+    /// replay rebuild it. No-op if nothing is open.
+    private func reopenCurrentSession() async {
+        guard let client, let s = currentSession else { return }
+        messages.removeAll()
+        busy = false
+        pendingApproval = nil
+        cancelWatchdog()
+        do {
+            let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.sessionAttach,
+                                          payload: SessionAttach(provider: s.provider, sessionID: s.id, url: nil, cwd: s.cwd))
+            try await client.send(env)
+        } catch { /* best-effort; the user can resend to trigger a mid-send re-attach */ }
+    }
+
+    /// Arms the no-response watchdog: if the agent produces nothing within the window while
+    /// we're still "busy", clear the spinner and prompt a retry. Any live event cancels it.
+    private func armWatchdog() {
+        cancelWatchdog()
+        watchdogTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 25_000_000_000) // 25s
+            guard !Task.isCancelled else { return }
+            self?.watchdogFired()
+        }
+    }
+
+    private func cancelWatchdog() { watchdogTask?.cancel(); watchdogTask = nil }
+
+    private func watchdogFired() {
+        guard busy else { return }
+        busy = false
+        activity = nil
+        finalizeStreaming()
+        status = "No response from the agent — send again to retry."
     }
 
     /// Deletes a daemon-managed session: halts its agent (which ends the session server-side)
@@ -752,6 +837,7 @@ public final class Model: ObservableObject {
                     }
                 case MessageType.sessionMessage:
                     if let m = try? env.payload(as: SessionMessage.self) {
+                        cancelWatchdog()
                         let role: ChatMessage.Role = m.role == "user" ? .user : (m.role == "tool" ? .tool : .assistant)
                         let trimmed = m.text.trimmingCharacters(in: .whitespacesAndNewlines)
                         // Skip the echo of our own just-sent user turn (appended locally for instant feedback).
@@ -759,20 +845,28 @@ public final class Model: ObservableObject {
                            last.text.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed {
                             break
                         }
+                        // Just after a live re-attach, the provider replays history; skip messages
+                        // that duplicate ones already on screen so the transcript doesn't double.
+                        if dedupReplay, messages.contains(where: { $0.role == role && $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed }) {
+                            break
+                        }
                         finalizeStreaming()
                         messages.append(ChatMessage(role: role, text: m.text))
                     }
                 case MessageType.thinking:
                     if let t = try? env.payload(as: Thinking.self) {
+                        cancelWatchdog()
                         appendThinkingDelta(t.text)
                         busy = true
                     }
                 case MessageType.outputDelta:
                     if let d = try? env.payload(as: OutputDelta.self) {
+                        cancelWatchdog()
                         appendAssistantDelta(d.text)
                     }
                 case MessageType.sessionStatus:
                     if let ss = try? env.payload(as: SessionStatus.self) {
+                        cancelWatchdog()
                         status = ss.status
                         activity = ss.detail
                         switch ss.status {
@@ -791,6 +885,7 @@ public final class Model: ObservableObject {
                     }
                 case MessageType.approvalRequest:
                     if let ar = try? env.payload(as: ApprovalRequest.self) {
+                        cancelWatchdog()
                         pendingApproval = ar
                         refreshLiveActivity()
                     }
@@ -826,6 +921,7 @@ public final class Model: ObservableObject {
                 connected = false
                 status = "Disconnected"
                 busy = false
+                cancelWatchdog()
                 refreshLiveActivity(ended: true)
             }
         }

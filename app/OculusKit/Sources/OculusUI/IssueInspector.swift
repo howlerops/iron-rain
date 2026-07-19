@@ -315,9 +315,14 @@ struct IssueInspectorPanel: View {
         let body = newComment.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty else { return }
         postingComment = true; defer { postingComment = false }
-        if let c = try? await model.addComment(current, body: body) {
-            comments.append(c)
-            newComment = ""
+        guard (try? await model.addComment(current, body: body)) != nil else { return }
+        newComment = ""
+        // Re-fetch so the new comment shows with its real id/author/timestamp (the add
+        // mutation returns only success). Falls back to an optimistic append on failure.
+        if let d = try? await model.issueDetail(issue) {
+            comments = d.comments
+        } else {
+            comments.append(IssueComment(id: UUID().uuidString, author: "You", body: body, createdAt: nil))
         }
     }
 
