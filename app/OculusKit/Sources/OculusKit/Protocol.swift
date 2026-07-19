@@ -27,6 +27,14 @@ public enum MessageType {
     public static let issueStates = "issue.states"
     public static let issueLaunch = "issue.launch"
 
+    // Built-in editor file access.
+    public static let fsTree = "fs.tree"
+    public static let fsRead = "fs.read"
+    public static let fsWrite = "fs.write"
+    public static let fsDiff = "fs.diff"
+    public static let fsWatch = "fs.watch"
+    public static let fsChange = "fs.change"
+
     public static let sessionStatus = "session.status"
     public static let sessionMessage = "session.message"
     public static let thinking = "thinking.delta"
@@ -75,6 +83,67 @@ public struct SessionRef: Codable {
     public var sessionID: String
     public init(sessionID: String) { self.sessionID = sessionID }
     enum CodingKeys: String, CodingKey { case sessionID = "session_id" }
+}
+
+// MARK: - Built-in editor file access (fs.*)
+// Requests are encode-only (snake_case comes from the encoder's convertToSnakeCase);
+// responses use single-word JSON keys so they decode by property name with no CodingKeys.
+
+public struct FSTreeReq: Codable {
+    public var path: String?
+    public init(path: String?) { self.path = path }
+}
+public struct FSNode: Codable, Identifiable, Hashable {
+    public var name: String
+    public var path: String
+    public var dir: Bool
+    public var size: Int?
+    public var id: String { path }
+}
+public struct FSTree: Codable {
+    public var path: String?
+    public var entries: [FSNode]?
+    public var roots: [FSNode]?
+}
+public struct FSReadReq: Codable {
+    public var path: String
+    public init(path: String) { self.path = path }
+}
+public struct FSFile: Codable {
+    public var path: String
+    public var content: String?
+    public var sha: String
+    public var mtime: Int?
+    public var size: Int?
+    public var binary: Bool?
+    public var truncated: Bool?
+}
+public struct FSWriteReq: Codable {
+    public var path: String
+    public var content: String
+    public var baseSha: String
+    public init(path: String, content: String, baseSha: String) {
+        self.path = path; self.content = content; self.baseSha = baseSha
+    }
+}
+public struct FSWriteResult: Codable {
+    public var path: String
+    public var sha: String?
+    public var mtime: Int?
+    public var conflict: Bool?
+}
+public struct FSDiffReq: Codable {
+    public var sessionID: String?
+    public var path: String?
+    public init(sessionID: String? = nil, path: String? = nil) { self.sessionID = sessionID; self.path = path }
+}
+public struct FSDiff: Codable {
+    public var path: String?
+    public var diff: String
+}
+public struct FSChange: Codable {
+    public var path: String
+    public var sha: String?
 }
 public struct ImageAttachment: Codable, Hashable, Identifiable {
     public let id: UUID // client-only stable identity for SwiftUI; never on the wire

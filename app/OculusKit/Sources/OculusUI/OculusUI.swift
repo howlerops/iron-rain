@@ -55,6 +55,8 @@ public final class Model: ObservableObject {
     private var client: OculusClient?
     private let clientPrivate = OculusCrypto.generatePrivateKey()
     private let defaults = UserDefaults.standard
+    /// In-flight request/reply calls (fs.*), keyed by envelope id, resolved in receiveLoop.
+    private var pendingRequests: [String: CheckedContinuation<Envelope, Error>] = [:]
     private var reconnectWanted = false
     private var reconnecting = false
     #if os(iOS)
@@ -427,6 +429,55 @@ public final class Model: ObservableObject {
         }
     }
 
+    // MARK: - Built-in editor file access (request/reply)
+
+    /// Sends a request and awaits its correlated OK/error reply by envelope id. Unlike prompts
+    /// (fire-and-forget events), fs.* calls need a response, so receiveLoop resolves the
+    /// matching continuation.
+    private func request(_ type: String, payload: some Encodable) async throws -> Envelope {
+        guard let client else {
+            throw NSError(domain: "Oculus", code: -1, userInfo: [NSLocalizedDescriptionKey: "not connected"])
+        }
+        let id = UUID().uuidString
+        let env = try Protocol.encode(id: id, type: type, payload: payload)
+        return try await withCheckedThrowingContinuation { cont in
+            pendingRequests[id] = cont
+            Task {
+                do { try await client.send(env) }
+                catch { if let c = pendingRequests.removeValue(forKey: id) { c.resume(throwing: error) } }
+            }
+        }
+    }
+
+    /// Lists a directory (nil/empty path → the available roots).
+    public func fsTree(_ path: String?) async throws -> FSTree {
+        try await request(MessageType.fsTree, payload: FSTreeReq(path: path)).payload(as: FSTree.self)
+    }
+
+    /// Reads a text file (content + sha for conflict detection).
+    public func fsRead(_ path: String) async throws -> FSFile {
+        try await request(MessageType.fsRead, payload: FSReadReq(path: path)).payload(as: FSFile.self)
+    }
+
+    /// Saves a file if `baseSha` still matches on disk; result.conflict signals a stale write.
+    public func fsWrite(_ path: String, content: String, baseSha: String) async throws -> FSWriteResult {
+        try await request(MessageType.fsWrite, payload: FSWriteReq(path: path, content: content, baseSha: baseSha))
+            .payload(as: FSWriteResult.self)
+    }
+
+    /// Unified diff for a session's changes or an in-root path (review).
+    public func fsDiff(sessionID: String? = nil, path: String? = nil) async throws -> String {
+        try await request(MessageType.fsDiff, payload: FSDiffReq(sessionID: sessionID, path: path))
+            .payload(as: FSDiff.self).diff
+    }
+
+    /// Fails every in-flight fs request (called when the socket drops).
+    private func failPendingRequests(_ error: Error) {
+        let inflight = pendingRequests
+        pendingRequests.removeAll()
+        for (_, cont) in inflight { cont.resume(throwing: error) }
+    }
+
     public func respond(_ decision: String) async {
         guard let client, let ap = pendingApproval else { return }
         let verb: String
@@ -552,6 +603,17 @@ public final class Model: ObservableObject {
                 // Parse the envelope once; env.payload(as:) then decodes only the payload
                 // subtree instead of re-tokenizing the whole frame per candidate type.
                 let env = try Protocol.envelope(data)
+                // Correlated request/reply (fs.*): resolve the waiting continuation by id and
+                // skip the broadcast switch. Events carry an empty id, so they fall through.
+                if let id = env.id, !id.isEmpty, let cont = pendingRequests.removeValue(forKey: id) {
+                    if env.type == MessageType.error {
+                        let msg = (try? env.payload(as: [String: String].self))?["message"] ?? "request failed"
+                        cont.resume(throwing: NSError(domain: "Oculus", code: -2, userInfo: [NSLocalizedDescriptionKey: msg]))
+                    } else {
+                        cont.resume(returning: env)
+                    }
+                    continue
+                }
                 switch env.type {
                 case MessageType.ok:
                     // Route the OK frame to exactly one typed decode by its unique payload
@@ -660,7 +722,9 @@ public final class Model: ObservableObject {
                 refreshLiveActivity(ended: true)
             }
         }
-        // Connection dropped — auto-reconnect if the user didn't disconnect.
+        // Connection dropped — fail any in-flight fs requests and auto-reconnect (unless the
+        // user disconnected).
+        failPendingRequests(NSError(domain: "Oculus", code: -3, userInfo: [NSLocalizedDescriptionKey: "disconnected"]))
         scheduleReconnect()
     }
 
