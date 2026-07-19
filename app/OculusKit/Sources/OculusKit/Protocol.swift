@@ -27,6 +27,11 @@ public enum MessageType {
     public static let issueList = "issue.list"
     public static let issueStates = "issue.states"
     public static let issueLaunch = "issue.launch"
+    public static let issueDetail = "issue.detail"
+    public static let issueUpdate = "issue.update"
+    public static let issueComment = "issue.comment"
+    public static let issueCommentEdit = "issue.comment.edit"
+    public static let issueImage = "issue.image"
 
     // Built-in editor file access.
     public static let fsTree = "fs.tree"
@@ -337,6 +342,65 @@ public struct IssueLaunch: Codable {
         case projectID = "project_id"
         case agentProvider = "agent_provider"
     }
+}
+
+// MARK: - Issue detail / edit / comments / images
+
+public struct IssueComment: Codable, Identifiable, Hashable {
+    public var id: String
+    public var author: String?
+    public var body: String
+    public var createdAt: String?
+    enum CodingKeys: String, CodingKey { case id, author, body; case createdAt = "created_at" }
+}
+
+public struct IssueDetailReq: Codable {
+    public var provider: String; public var issueID: String
+    public init(provider: String, issueID: String) { self.provider = provider; self.issueID = issueID }
+    enum CodingKeys: String, CodingKey { case provider; case issueID = "issue_id" }
+}
+
+public struct IssueDetail: Codable {
+    public var issue: Issue
+    public var comments: [IssueComment]
+}
+
+/// Partial edit — only non-nil fields are applied server-side.
+public struct IssueUpdate: Codable {
+    public var provider: String; public var issueID: String
+    public var title: String?; public var description: String?
+    public var stateID: String?; public var priority: Int?
+    public init(provider: String, issueID: String, title: String? = nil, description: String? = nil, stateID: String? = nil, priority: Int? = nil) {
+        self.provider = provider; self.issueID = issueID
+        self.title = title; self.description = description; self.stateID = stateID; self.priority = priority
+    }
+    enum CodingKeys: String, CodingKey {
+        case provider, title, description, priority
+        case issueID = "issue_id"; case stateID = "state_id"
+    }
+}
+
+public struct IssueCommentAdd: Codable {
+    public var provider: String; public var issueID: String; public var body: String
+    public init(provider: String, issueID: String, body: String) { self.provider = provider; self.issueID = issueID; self.body = body }
+    enum CodingKeys: String, CodingKey { case provider, body; case issueID = "issue_id" }
+}
+
+public struct IssueCommentEdit: Codable {
+    public var provider: String; public var commentID: String; public var body: String
+    public init(provider: String, commentID: String, body: String) { self.provider = provider; self.commentID = commentID; self.body = body }
+    enum CodingKeys: String, CodingKey { case provider, body; case commentID = "comment_id" }
+}
+
+public struct IssueImageReq: Codable {
+    public var provider: String; public var url: String
+    public init(provider: String, url: String) { self.provider = provider; self.url = url }
+    enum CodingKeys: String, CodingKey { case provider, url }
+}
+
+public struct IssueImage: Codable {
+    public var mime: String
+    public var data: String // base64
 }
 
 public struct SessionAttach: Codable {

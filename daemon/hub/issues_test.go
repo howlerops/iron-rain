@@ -42,6 +42,17 @@ func (f *fakeIssueProvider) Transition(context.Context, string, string) error {
 	f.mu.Unlock()
 	return nil
 }
+func (f *fakeIssueProvider) Detail(context.Context, string) (issues.Issue, []issues.Comment, error) {
+	return issues.Issue{ID: "i1", Key: "ENG-1", Title: "Fix the bug", Provider: "linear"},
+		[]issues.Comment{{ID: "c1", Author: "jacob", Body: "hi"}}, nil
+}
+func (f *fakeIssueProvider) Update(_ context.Context, _ string, _ issues.UpdateFields) (issues.Issue, error) {
+	return issues.Issue{ID: "i1", Key: "ENG-1", Title: "Fix the bug", Provider: "linear"}, nil
+}
+func (f *fakeIssueProvider) EditComment(context.Context, string, string) error { return nil }
+func (f *fakeIssueProvider) FetchImage(context.Context, string) (string, []byte, error) {
+	return "image/png", []byte{0x89, 0x50}, nil
+}
 
 // TestIssueLaunch: list assigned issues, then launch an agent on one — it runs in a
 // worktree on the issue's branch, links the ticket, and writes back (transition + comment).

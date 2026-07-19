@@ -40,6 +40,11 @@ const (
 	TypeIssueList          = "issue.list"          // assigned issues (request + broadcast)
 	TypeIssueStates        = "issue.states"        // workflow states (kanban columns) for a team
 	TypeIssueLaunch        = "issue.launch"        // launch an agent on an issue (worktree)
+	TypeIssueDetail        = "issue.detail"        // full issue + comments
+	TypeIssueUpdate        = "issue.update"        // edit issue fields (partial)
+	TypeIssueComment       = "issue.comment"       // add a comment
+	TypeIssueCommentEdit   = "issue.comment.edit"  // edit an existing comment
+	TypeIssueImage         = "issue.image"         // proxy an auth-gated attachment image
 
 	// Built-in editor file access — all paths validated against project roots + session cwds.
 	TypeFSTree  = "fs.tree"  // list a directory (or the available roots when path is empty)
@@ -207,6 +212,63 @@ type IssueStatesReq struct {
 
 type IssueStateList struct {
 	States []IssueState `json:"states"`
+}
+
+// IssueComment is a single comment on an issue.
+type IssueComment struct {
+	ID        string `json:"id"`
+	Author    string `json:"author,omitempty"`
+	Body      string `json:"body"`
+	CreatedAt string `json:"created_at,omitempty"`
+}
+
+// IssueDetailReq requests one issue plus its comments.
+type IssueDetailReq struct {
+	Provider string `json:"provider"`
+	IssueID  string `json:"issue_id"`
+}
+
+// IssueDetail is the full issue view: the issue and its comments.
+type IssueDetail struct {
+	Issue    Issue          `json:"issue"`
+	Comments []IssueComment `json:"comments"`
+}
+
+// IssueUpdate is a partial edit of an issue; only non-nil fields are applied. The
+// reply is the updated Issue.
+type IssueUpdate struct {
+	Provider    string  `json:"provider"`
+	IssueID     string  `json:"issue_id"`
+	Title       *string `json:"title,omitempty"`
+	Description *string `json:"description,omitempty"`
+	StateID     *string `json:"state_id,omitempty"`
+	Priority    *int    `json:"priority,omitempty"`
+}
+
+// IssueCommentAdd adds a comment to an issue. The reply is the created IssueComment.
+type IssueCommentAdd struct {
+	Provider string `json:"provider"`
+	IssueID  string `json:"issue_id"`
+	Body     string `json:"body"`
+}
+
+// IssueCommentEdit replaces the body of an existing comment. The reply is nil.
+type IssueCommentEdit struct {
+	Provider  string `json:"provider"`
+	CommentID string `json:"comment_id"`
+	Body      string `json:"body"`
+}
+
+// IssueImageReq proxies an auth-gated attachment through the daemon.
+type IssueImageReq struct {
+	Provider string `json:"provider"`
+	URL      string `json:"url"`
+}
+
+// IssueImage is a proxied image: MIME type and base64-encoded bytes.
+type IssueImage struct {
+	Mime string `json:"mime"`
+	Data string `json:"data"` // base64 (StdEncoding), no data: prefix
 }
 
 type IssueLaunch struct {

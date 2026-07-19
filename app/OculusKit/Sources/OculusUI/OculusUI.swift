@@ -58,6 +58,8 @@ public final class Model: ObservableObject {
     private let defaults = UserDefaults.standard
     /// In-flight request/reply calls (fs.*), keyed by envelope id, resolved in receiveLoop.
     private var pendingRequests: [String: CheckedContinuation<Envelope, Error>] = [:]
+    /// Decoded tracker images keyed by URL (fetched through the daemon; auth-gated).
+    private var imageCache: [String: Data] = [:]
     private var reconnectWanted = false
     private var reconnecting = false
     #if os(iOS)
@@ -523,6 +525,57 @@ public final class Model: ObservableObject {
     public func fsDiff(sessionID: String? = nil, path: String? = nil) async throws -> String {
         try await request(MessageType.fsDiff, payload: FSDiffReq(sessionID: sessionID, path: path))
             .payload(as: FSDiff.self).diff
+    }
+
+    // MARK: issue detail / edit / comments / images
+
+    /// Fetches a ticket's full body + comments.
+    public func issueDetail(_ issue: Issue) async throws -> IssueDetail {
+        try await request(MessageType.issueDetail, payload: IssueDetailReq(provider: issue.provider, issueID: issue.id))
+            .payload(as: IssueDetail.self)
+    }
+
+    /// Fetches a team's workflow states (for the status picker). Empty if no team id.
+    public func issueStates(_ issue: Issue) async throws -> [IssueState] {
+        guard let team = issue.teamID, !team.isEmpty else { return [] }
+        return try await request(MessageType.issueStates, payload: IssueStatesReq(provider: issue.provider, teamID: team))
+            .payload(as: IssueStateList.self).states
+    }
+
+    /// Applies a partial edit (only the non-nil fields) and returns the refreshed issue.
+    /// Updates the board cache in place so the change is reflected without a full reload.
+    @discardableResult
+    public func updateIssue(_ issue: Issue, title: String? = nil, description: String? = nil,
+                            stateID: String? = nil, priority: Int? = nil) async throws -> Issue {
+        let updated = try await request(MessageType.issueUpdate,
+            payload: IssueUpdate(provider: issue.provider, issueID: issue.id,
+                                 title: title, description: description, stateID: stateID, priority: priority))
+            .payload(as: Issue.self)
+        if let i = issues.firstIndex(where: { $0.id == updated.id }) { issues[i] = updated }
+        return updated
+    }
+
+    /// Posts a new comment and returns it.
+    public func addComment(_ issue: Issue, body: String) async throws -> IssueComment {
+        try await request(MessageType.issueComment, payload: IssueCommentAdd(provider: issue.provider, issueID: issue.id, body: body))
+            .payload(as: IssueComment.self)
+    }
+
+    /// Edits an existing comment.
+    public func editComment(provider: String, commentID: String, body: String) async throws {
+        _ = try await request(MessageType.issueCommentEdit, payload: IssueCommentEdit(provider: provider, commentID: commentID, body: body))
+    }
+
+    /// Fetches an auth-gated tracker image through the daemon, cached by URL.
+    public func issueImage(provider: String, url: String) async throws -> Data {
+        if let cached = imageCache[url] { return cached }
+        let img = try await request(MessageType.issueImage, payload: IssueImageReq(provider: provider, url: url))
+            .payload(as: IssueImage.self)
+        guard let data = Data(base64Encoded: img.data) else {
+            throw NSError(domain: "Oculus", code: -4, userInfo: [NSLocalizedDescriptionKey: "bad image data"])
+        }
+        imageCache[url] = data
+        return data
     }
 
     /// Fails every in-flight fs request (called when the socket drops).

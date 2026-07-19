@@ -147,6 +147,51 @@ func (m *Manager) States(ctx context.Context, provider, teamID string) ([]State,
 	return p.WorkflowStates(ctx, teamID)
 }
 
+// Detail returns a single issue plus its comments from the named provider.
+func (m *Manager) Detail(ctx context.Context, provider, issueID string) (Issue, []Comment, error) {
+	p := m.Provider(provider)
+	if p == nil {
+		return Issue{}, nil, fmt.Errorf("%s not connected", provider)
+	}
+	return p.Detail(ctx, issueID)
+}
+
+// Update applies partial edits to an issue and returns the updated issue.
+func (m *Manager) Update(ctx context.Context, provider, issueID string, f UpdateFields) (Issue, error) {
+	p := m.Provider(provider)
+	if p == nil {
+		return Issue{}, fmt.Errorf("%s not connected", provider)
+	}
+	return p.Update(ctx, issueID, f)
+}
+
+// AddComment posts a new comment on an issue (wraps the provider's Comment method).
+func (m *Manager) AddComment(ctx context.Context, provider, issueID, body string) error {
+	p := m.Provider(provider)
+	if p == nil {
+		return fmt.Errorf("%s not connected", provider)
+	}
+	return p.Comment(ctx, issueID, body)
+}
+
+// EditComment replaces the body of an existing comment.
+func (m *Manager) EditComment(ctx context.Context, provider, commentID, body string) error {
+	p := m.Provider(provider)
+	if p == nil {
+		return fmt.Errorf("%s not connected", provider)
+	}
+	return p.EditComment(ctx, commentID, body)
+}
+
+// FetchImage proxies an auth-gated attachment through the named provider.
+func (m *Manager) FetchImage(ctx context.Context, provider, url string) (string, []byte, error) {
+	p := m.Provider(provider)
+	if p == nil {
+		return "", nil, fmt.Errorf("%s not connected", provider)
+	}
+	return p.FetchImage(ctx, url)
+}
+
 // Refresh pulls assigned issues from every provider, merges, caches, and notifies.
 func (m *Manager) Refresh(ctx context.Context) error {
 	m.mu.Lock()

@@ -26,18 +26,46 @@ public struct IssuesView: View {
 
     public var body: some View {
         content
+            .overlay(alignment: .trailing) {
+                if let issue = selectedIssue { inspectorOverlay(issue) }
+            }
+            .animation(.spring(response: 0.34, dampingFraction: 0.92), value: selectedIssue?.id)
             .sheet(item: $launching) { issue in
                 LaunchIssueSheet(model: model, issue: issue, palette: palette) { launched in
                     launching = nil
                     if launched { onLaunched() }
                 }
             }
-            .sheet(item: $selectedIssue) { issue in
-                IssueDetailSheet(issue: issue, palette: palette,
-                                 onStart: { selectedIssue = nil; launching = issue },
-                                 onClose: { selectedIssue = nil })
-            }
             .task { await model.loadIntegrationStatus(); await model.loadIssues() }
+    }
+
+    /// The right-slide inspector: a dimmed tap-to-dismiss backdrop + the panel sliding in
+    /// from the trailing edge, so the board stays visible behind it.
+    @ViewBuilder private func inspectorOverlay(_ issue: Issue) -> some View {
+        ZStack(alignment: .trailing) {
+            Color.black.opacity(0.28)
+                .ignoresSafeArea()
+                .onTapGesture { selectedIssue = nil }
+                .transition(.opacity)
+            IssueInspectorPanel(model: model, issue: issue, palette: palette,
+                                onStart: { let i = issue; selectedIssue = nil; launching = i },
+                                onClose: { selectedIssue = nil })
+                .frame(width: inspectorWidth)
+                .frame(maxHeight: .infinity)
+                .transition(.move(edge: .trailing))
+                #if os(macOS)
+                .shadow(color: .black.opacity(0.28), radius: 22, x: -8, y: 0)
+                #endif
+        }
+        .zIndex(20)
+    }
+
+    private var inspectorWidth: CGFloat {
+        #if os(macOS)
+        return 470
+        #else
+        return min(UIScreen.main.bounds.width * 0.94, 470)
+        #endif
     }
 
     /// Embedded (macOS detail) uses an inline header + no NavigationStack/toolbar so it
@@ -220,82 +248,6 @@ public struct IssuesView: View {
             .contentShape(Rectangle())
             .onTapGesture { selectedIssue = issue }
         }
-    }
-}
-
-/// A floating detail sheet for a ticket: full title/body + status/priority/assignee and the
-/// primary actions (start an agent, open in Linear).
-struct IssueDetailSheet: View {
-    let issue: Issue
-    let palette: OculusPalette
-    let onStart: () -> Void
-    let onClose: () -> Void
-    @Environment(\.openURL) private var openURL
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                Text(issue.key).font(.system(.caption, design: .monospaced).bold())
-                    .foregroundStyle(palette.primary)
-                if let p = issue.priority, p > 0 {
-                    Text(priorityLabel(p)).font(.caption2.bold())
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Capsule().fill(priorityColor(p).opacity(0.18)))
-                        .foregroundStyle(priorityColor(p))
-                }
-                Spacer()
-                Button { onClose() } label: { Image(systemName: "xmark.circle.fill") }
-                    .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
-            }
-            .padding(.horizontal, 18).padding(.top, 16).padding(.bottom, 10)
-
-            Divider().overlay(palette.border)
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(issue.title).font(.title3.bold()).textSelection(.enabled)
-                    HStack(spacing: 10) {
-                        chip(issue.status, systemImage: "circle.fill")
-                        if let a = issue.assignee, !a.isEmpty { chip(a, systemImage: "person") }
-                    }
-                    if let body = issue.body, !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Divider().overlay(palette.border)
-                        Text(body).font(.callout).foregroundStyle(palette.foreground.opacity(0.9))
-                            .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-                .padding(18)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            Divider().overlay(palette.border)
-            HStack(spacing: 10) {
-                if let u = issue.url, let url = URL(string: u) {
-                    Button { openURL(url) } label: { Label("Open in Linear", systemImage: "arrow.up.right.square") }
-                        .buttonStyle(.bordered)
-                }
-                Spacer()
-                Button { onStart() } label: { Label("Start agent", systemImage: "play.circle.fill") }
-                    .buttonStyle(.borderedProminent).tint(palette.primary)
-            }
-            .padding(.horizontal, 18).padding(.vertical, 12)
-        }
-        .frame(width: 460, height: 520)
-        .background(palette.background)
-    }
-
-    private func chip(_ text: String, systemImage: String) -> some View {
-        Label(text, systemImage: systemImage)
-            .font(.caption).foregroundStyle(palette.mutedForeground)
-            .padding(.horizontal, 8).padding(.vertical, 3)
-            .background(Capsule().fill(palette.muted.opacity(0.4)))
-    }
-
-    private func priorityLabel(_ p: Int) -> String {
-        switch p { case 1: return "Urgent"; case 2: return "High"; case 3: return "Medium"; default: return "Low" }
-    }
-    private func priorityColor(_ p: Int) -> Color {
-        p == 1 ? .red : (p == 2 ? .orange : palette.mutedForeground)
     }
 }
 

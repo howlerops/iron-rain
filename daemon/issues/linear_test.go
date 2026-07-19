@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	neturl "net/url"
 	"strings"
 	"testing"
 )
@@ -80,6 +81,78 @@ func TestLinear_NonJSONErrorStatus(t *testing.T) {
 	if !strings.Contains(err.Error(), "429") {
 		t.Fatalf("error %q does not mention HTTP status 429", err.Error())
 	}
+}
+
+func TestBuildUpdateInput_OnlyNonNil(t *testing.T) {
+	title := "New title"
+	prio := 3
+	in := buildUpdateInput(UpdateFields{Title: &title, Priority: &prio})
+	if len(in) != 2 {
+		t.Fatalf("expected 2 fields, got %d: %+v", len(in), in)
+	}
+	if in["title"] != "New title" || in["priority"] != 3 {
+		t.Fatalf("wrong values: %+v", in)
+	}
+	if _, ok := in["description"]; ok {
+		t.Errorf("description should be absent when nil")
+	}
+	if _, ok := in["stateId"]; ok {
+		t.Errorf("stateId should be absent when nil")
+	}
+	// Empty fields -> empty input (no accidental clobbering).
+	if got := buildUpdateInput(UpdateFields{}); len(got) != 0 {
+		t.Fatalf("empty UpdateFields should build empty input, got %+v", got)
+	}
+}
+
+func TestLinear_FetchImage_SSRFGuard(t *testing.T) {
+	l := NewLinear("tok")
+	// A non-Linear host must be rejected before any network call is made.
+	if _, _, err := l.FetchImage(context.Background(), "http://evil.com/x.png"); err == nil {
+		t.Fatal("expected FetchImage to reject a non-linear host")
+	}
+	if _, _, err := l.FetchImage(context.Background(), "http://uploads.linear.app.evil.com/x.png"); err == nil {
+		t.Fatal("expected FetchImage to reject a look-alike host")
+	}
+}
+
+func TestLinear_FetchImage_AllowsLinearHost(t *testing.T) {
+	// Point the client's transport at a stub but keep a *.linear.app URL so the
+	// SSRF guard passes; verify auth header, size cap, and MIME sniff fallback.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "tok" {
+			t.Errorf("missing auth header on image fetch")
+		}
+		w.Header().Set("Content-Type", "image/png")
+		io.WriteString(w, "PNGDATA")
+	}))
+	defer srv.Close()
+
+	l := NewLinear("tok")
+	// Rewrite requests to uploads.linear.app onto the test server.
+	l.http = &http.Client{Transport: rewriteTransport{target: srv.URL}}
+
+	mime, data, err := l.FetchImage(context.Background(), "https://uploads.linear.app/abc/pic.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mime != "image/png" || string(data) != "PNGDATA" {
+		t.Fatalf("mime=%q data=%q", mime, string(data))
+	}
+}
+
+// rewriteTransport sends every request to target regardless of the request URL's
+// host, so tests can exercise the *.linear.app SSRF-allowed path without DNS.
+type rewriteTransport struct{ target string }
+
+func (rt rewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	u, err := neturl.Parse(rt.target)
+	if err != nil {
+		return nil, err
+	}
+	req.URL.Scheme = u.Scheme
+	req.URL.Host = u.Host
+	return http.DefaultTransport.RoundTrip(req)
 }
 
 func TestLinear_CommentAndTransition(t *testing.T) {

@@ -157,6 +157,53 @@ func (j *Jira) Transition(ctx context.Context, issueKey, transitionID string) er
 	return j.do(ctx, http.MethodPost, "/rest/api/3/issue/"+issueKey+"/transitions", body, nil)
 }
 
+// Detail fetches one issue (best-effort, no comments). The richer inspector is
+// Linear-focused; Jira gets a minimal read so the interface is satisfied.
+func (j *Jira) Detail(ctx context.Context, issueKey string) (Issue, []Comment, error) {
+	var data struct {
+		ID     string `json:"id"`
+		Key    string `json:"key"`
+		Fields struct {
+			Summary     string `json:"summary"`
+			Description string `json:"description"`
+			Updated     string `json:"updated"`
+			Status      struct {
+				Name           string `json:"name"`
+				StatusCategory struct {
+					Key string `json:"key"`
+				} `json:"statusCategory"`
+			} `json:"status"`
+			Project struct {
+				ID, Key string
+			} `json:"project"`
+		} `json:"fields"`
+	}
+	if err := j.do(ctx, http.MethodGet, "/rest/api/3/issue/"+issueKey+"?fields=summary,description,status,project,updated", nil, &data); err != nil {
+		return Issue{}, nil, err
+	}
+	return Issue{
+		ID: data.Key, Key: data.Key, Title: data.Fields.Summary, Body: data.Fields.Description,
+		Status: data.Fields.Status.Name, Category: jiraCategory(data.Fields.Status.StatusCategory.Key),
+		Provider: "jira", TeamID: data.Fields.Project.Key,
+		BranchName: branchNameFor(data.Key, data.Fields.Summary),
+		URL:        j.base + "/browse/" + data.Key, UpdatedAt: data.Fields.Updated,
+	}, nil, nil
+}
+
+// Update, EditComment, and FetchImage are not implemented for Jira yet; the daemon's
+// rich inspector targets Linear. They keep the Provider interface satisfied.
+func (j *Jira) Update(ctx context.Context, issueKey string, f UpdateFields) (Issue, error) {
+	return Issue{}, fmt.Errorf("not supported for jira yet")
+}
+
+func (j *Jira) EditComment(ctx context.Context, commentID, body string) error {
+	return fmt.Errorf("not supported for jira yet")
+}
+
+func (j *Jira) FetchImage(ctx context.Context, url string) (string, []byte, error) {
+	return "", nil, fmt.Errorf("not supported for jira yet")
+}
+
 // branchNameFor synthesizes a git branch name for a Jira issue (Linear provides its own).
 func branchNameFor(key, summary string) string {
 	k, s := branchSlug(key), branchSlug(summary)

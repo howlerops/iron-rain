@@ -6,6 +6,7 @@ package hub
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -385,6 +386,14 @@ func toProtoIssues(in []issues.Issue) []protocol.Issue {
 	return out
 }
 
+func toProtoComments(in []issues.Comment) []protocol.IssueComment {
+	out := make([]protocol.IssueComment, len(in))
+	for i, c := range in {
+		out[i] = protocol.IssueComment{ID: c.ID, Author: c.Author, Body: c.Body, CreatedAt: c.CreatedAt}
+	}
+	return out
+}
+
 func toProtoProject(p project.Project) protocol.Project {
 	return protocol.Project{ID: p.ID, Name: p.Name, Path: p.Path, IsGitRepo: p.IsGitRepo, DefaultBranch: p.DefaultBranch, Source: p.Source}
 }
@@ -602,6 +611,11 @@ func asyncDispatch(typ string) bool {
 		protocol.TypeIntegrationConnect, // tracker HTTP
 		protocol.TypeIntegrationOAuth,   // tracker HTTP
 		protocol.TypeIssueStates,        // tracker HTTP
+		protocol.TypeIssueDetail,        // tracker HTTP
+		protocol.TypeIssueUpdate,        // tracker HTTP
+		protocol.TypeIssueComment,       // tracker HTTP
+		protocol.TypeIssueCommentEdit,   // tracker HTTP
+		protocol.TypeIssueImage,         // tracker HTTP (image fetch)
 		protocol.TypeSessionPrompt,      // provider prompt (may be network)
 		protocol.TypeApprovalRespond,    // provider Respond (may be network)
 		protocol.TypeSessionAttach,      // provider Attach
@@ -870,6 +884,95 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 
 	case protocol.TypeIssueLaunch:
 		h.handleIssueLaunch(ctx, conn, env)
+
+	case protocol.TypeIssueDetail:
+		var req protocol.IssueDetailReq
+		_ = env.Unmarshal(&req)
+		m := h.issuesMgr()
+		if m == nil {
+			h.sendErr(conn, env.ID, "integrations not enabled")
+			return
+		}
+		issue, comments, err := m.Detail(ctx, req.Provider, req.IssueID)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, protocol.IssueDetail{
+			Issue:    toProtoIssue(issue),
+			Comments: toProtoComments(comments),
+		})
+
+	case protocol.TypeIssueUpdate:
+		var req protocol.IssueUpdate
+		_ = env.Unmarshal(&req)
+		m := h.issuesMgr()
+		if m == nil {
+			h.sendErr(conn, env.ID, "integrations not enabled")
+			return
+		}
+		updated, err := m.Update(ctx, req.Provider, req.IssueID, issues.UpdateFields{
+			Title:       req.Title,
+			Description: req.Description,
+			StateID:     req.StateID,
+			Priority:    req.Priority,
+		})
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, toProtoIssue(updated))
+		// Refresh the merged cache off the reply path so every device's board
+		// reflects the edit (fire-and-forget; the reply already went out).
+		go func() { _ = m.Refresh(context.Background()) }()
+
+	case protocol.TypeIssueComment:
+		var req protocol.IssueCommentAdd
+		_ = env.Unmarshal(&req)
+		m := h.issuesMgr()
+		if m == nil {
+			h.sendErr(conn, env.ID, "integrations not enabled")
+			return
+		}
+		if err := m.AddComment(ctx, req.Provider, req.IssueID, req.Body); err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		// The provider's add-comment mutation returns only success, so synthesize the
+		// created comment from the request body (the client already has it optimistically).
+		h.sendOK(conn, env.ID, protocol.IssueComment{Body: req.Body})
+
+	case protocol.TypeIssueCommentEdit:
+		var req protocol.IssueCommentEdit
+		_ = env.Unmarshal(&req)
+		m := h.issuesMgr()
+		if m == nil {
+			h.sendErr(conn, env.ID, "integrations not enabled")
+			return
+		}
+		if err := m.EditComment(ctx, req.Provider, req.CommentID, req.Body); err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, nil)
+
+	case protocol.TypeIssueImage:
+		var req protocol.IssueImageReq
+		_ = env.Unmarshal(&req)
+		m := h.issuesMgr()
+		if m == nil {
+			h.sendErr(conn, env.ID, "integrations not enabled")
+			return
+		}
+		mime, data, err := m.FetchImage(ctx, req.Provider, req.URL)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, protocol.IssueImage{
+			Mime: mime,
+			Data: base64.StdEncoding.EncodeToString(data),
+		})
 
 	case protocol.TypeSessionSubscribe:
 		var req protocol.SessionRef

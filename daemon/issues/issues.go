@@ -30,6 +30,23 @@ type State struct {
 	Position float64 `json:"position"`
 }
 
+// Comment is a single comment on an issue. (Distinct from the Provider.Comment
+// method, which adds a comment — Go permits a type and a method to share a name.)
+type Comment struct {
+	ID        string `json:"id"`
+	Author    string `json:"author,omitempty"`
+	Body      string `json:"body"`
+	CreatedAt string `json:"created_at,omitempty"`
+}
+
+// UpdateFields is a partial issue edit: only non-nil fields are applied.
+type UpdateFields struct {
+	Title       *string
+	Description *string
+	StateID     *string
+	Priority    *int
+}
+
 // Provider is one tracker backend.
 type Provider interface {
 	Name() string
@@ -37,6 +54,15 @@ type Provider interface {
 	WorkflowStates(ctx context.Context, teamID string) ([]State, error)
 	Comment(ctx context.Context, issueID, body string) error
 	Transition(ctx context.Context, issueID, toStateID string) error
+
+	// Detail fetches a single issue plus its comments.
+	Detail(ctx context.Context, issueID string) (Issue, []Comment, error)
+	// Update applies the non-nil fields of f and returns the updated issue.
+	Update(ctx context.Context, issueID string, f UpdateFields) (Issue, error)
+	// EditComment replaces the body of an existing comment.
+	EditComment(ctx context.Context, commentID, body string) error
+	// FetchImage GETs an auth-gated attachment, returning its MIME type and bytes.
+	FetchImage(ctx context.Context, url string) (mime string, data []byte, err error)
 }
 
 // categoryFor normalizes a provider status type into our four buckets.
