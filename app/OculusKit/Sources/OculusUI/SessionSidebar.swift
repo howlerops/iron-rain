@@ -171,7 +171,6 @@ struct SessionSidebar: View {
     /// start fresh, or take over a session already running in a terminal.
     private var emptyState: some View {
         VStack(spacing: 14) {
-            Image("WolfMark").resizable().scaledToFit().frame(width: 40, height: 40).opacity(0.9)
             VStack(spacing: 4) {
                 Text("No sessions yet").font(.system(size: 15, weight: .semibold))
                 Text("Start an agent on one of your projects, or take over a session already running in a terminal.")
