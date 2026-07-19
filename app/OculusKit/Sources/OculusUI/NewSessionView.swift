@@ -19,6 +19,13 @@ struct NewSessionView: View {
     @State private var terminalSearch = ""
     @State private var scanning = false
     @State private var scanned = false
+    @State private var mode: Mode = .new
+
+    private enum Mode: String, CaseIterable, Identifiable {
+        case new = "Start new"
+        case takeOver = "Take over"
+        var id: String { rawValue }
+    }
     #if os(iOS)
     @State private var addPath = ""
     #endif
@@ -35,6 +42,13 @@ struct NewSessionView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Picker("Mode", selection: $mode) {
+                    ForEach(Mode.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+
+                if mode == .new {
                 Section("Agent") {
                     Picker("Provider", selection: $provider) {
                         ForEach(Self.providers, id: \.self) { Text($0).tag($0) }
@@ -87,7 +101,9 @@ struct NewSessionView: View {
                          : "Pick a git project to enable worktrees.")
                         .font(.caption)
                 }
+                } // end: mode == .new
 
+                if mode == .takeOver {
                 Section {
                     HStack(spacing: 6) {
                         Image(systemName: "magnifyingglass").foregroundStyle(palette.mutedForeground)
@@ -121,25 +137,28 @@ struct NewSessionView: View {
                     }
                 } header: {
                     HStack {
-                        Text("Resume a terminal session")
+                        Text("Running in a terminal")
                         Spacer()
                         Button { Task { await scan() } } label: { Label("Scan", systemImage: "arrow.clockwise").font(.caption) }
                             .buttonStyle(.plain)
                     }
                 } footer: {
-                    Text("Find an opencode or claude-code session already running in a terminal and continue it here.")
+                    Text("Take over a session running in a terminal. opencode attaches to the live session (shared control with the terminal); claude-code resumes it. It then appears in your sidebar as a managed session.")
                         .font(.caption)
                 }
+                } // end: mode == .takeOver
             }
-            .navigationTitle("New session")
+            .navigationTitle(mode == .new ? "New session" : "Take over a session")
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Start") {
-                        model.newSession(provider: provider,
-                                         projectIDs: selectedProjects.isEmpty ? nil : Array(selectedProjects),
-                                         worktree: useWorktree && canWorktree,
-                                         workspaceName: workspaceName.isEmpty ? nil : workspaceName)
-                        onStart()
+                if mode == .new {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Start") {
+                            model.newSession(provider: provider,
+                                             projectIDs: selectedProjects.isEmpty ? nil : Array(selectedProjects),
+                                             worktree: useWorktree && canWorktree,
+                                             workspaceName: workspaceName.isEmpty ? nil : workspaceName)
+                            onStart()
+                        }
                     }
                 }
                 ToolbarItem(placement: .cancellationAction) {
