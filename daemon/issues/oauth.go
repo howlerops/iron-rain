@@ -18,9 +18,13 @@ const (
 	linearTokenURL     = "https://api.linear.app/oauth/token"
 )
 
-// linearScopes grant read + write (issue updates + comments); app:assignable/mentionable
-// make Iron Rain an assignable Linear agent identity.
-var linearScopes = []string{"read", "write", "app:assignable", "app:mentionable"}
+// linearScopes grant read + write (issue updates + comments) as the authorizing USER.
+// NOTE: the app:assignable/app:mentionable scopes + actor=application (agent identity) are
+// mutually exclusive with the broad `write` scope — mixing them yields Linear's "scopes
+// requested are not valid for this actor mode" error. User-actor read+write is the reliable
+// path for a personal connection; app-actor would require the Linear OAuth app to be
+// configured as an application with assignable/mentionable enabled.
+var linearScopes = []string{"read", "write"}
 
 // OAuthRedirectURI is the daemon's loopback callback; register it on the Linear OAuth app.
 func OAuthRedirectURI(addrPort string) string {
@@ -53,7 +57,8 @@ func (m *Manager) OAuthStart(provider, redirectURI string) (string, error) {
 	q.Set("response_type", "code")
 	q.Set("scope", strings.Join(linearScopes, ","))
 	q.Set("state", state)
-	q.Set("actor", "application") // act as the app (agent), not the user
+	// actor defaults to "user" — act on behalf of the authorizing user. (actor=application
+	// requires app-only scopes and rejects the `write` scope; see linearScopes note.)
 	return linearAuthorizeURL + "?" + q.Encode(), nil
 }
 
