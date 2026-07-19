@@ -24,6 +24,9 @@ struct EditorTarget: Equatable { let line: Int; let char: Int }
     @Published var imageData: Data?         // non-nil → the open file is an image
     @Published var imageMime: String?
     @Published var scrollTarget: EditorTarget?  // editor moves the caret here, then clears it
+    @Published var serverSuggestion: LSPServerInfo?  // non-nil → offer to install a language server
+    @Published var installing = false
+    private var dismissedLangs: Set<String> = []
 
     private var loadedSha = ""
     private var reloadTask: Task<Void, Never>?
@@ -67,6 +70,7 @@ struct EditorTarget: Equatable { let line: Int; let char: Int }
         diffText = nil
         imageData = nil
         imageMime = nil
+        serverSuggestion = nil
 
         // Images render inline rather than as text.
         if isImage(nodePath) {
@@ -98,11 +102,18 @@ struct EditorTarget: Equatable { let line: Int; let char: Int }
             conflict = false
             status = (f.truncated ?? false) ? "Large file — read-only preview" : nil
             startReloadPoll()
-            // Hand the document to its language server for diagnostics/types (no-op if none).
+            // Hand the document to its language server for diagnostics/types (no-op if none),
+            // and — if the file's language has no server installed — offer to install one.
             if !readOnly {
                 let p = f.path, c = content
                 lspOpenPath = p
                 Task { await model.lspOpen(p, content: c) }
+                Task { [weak self] in
+                    guard let info = await self?.model.lspServerInfo(p) else { return }
+                    guard let self, self.openPath == p, !info.language.isEmpty, !info.installed,
+                          !self.dismissedLangs.contains(info.language) else { return }
+                    self.serverSuggestion = info
+                }
             }
         } catch {
             status = "Open failed: \(error.localizedDescription)"
@@ -137,6 +148,34 @@ struct EditorTarget: Equatable { let line: Int; let char: Int }
     func hover(line: Int, char: Int) async -> String {
         guard let p = lspOpenPath else { return "" }
         return await model.lspHover(p, line: line, character: char)
+    }
+
+    /// Autocomplete suggestions at a position (for the completion popup).
+    func complete(line: Int, char: Int) async -> [LSPCompletionItem] {
+        guard let p = lspOpenPath else { return [] }
+        return await model.lspComplete(p, line: line, character: char)
+    }
+
+    /// Installs the suggested language server, then re-opens the file so it takes effect.
+    func installServer() async {
+        guard let p = openPath, serverSuggestion != nil else { return }
+        installing = true
+        defer { installing = false }
+        let result = await model.lspInstall(p)
+        if result?.installed == true {
+            serverSuggestion = nil
+            status = "Language server installed"
+            lspOpenPath = p
+            await model.lspOpen(p, content: content) // start it now
+        } else {
+            status = result?.message ?? "Install failed"
+        }
+    }
+
+    /// Dismisses the install suggestion and stops offering it for this language this session.
+    func dismissSuggestion() {
+        if let lang = serverSuggestion?.language { dismissedLangs.insert(lang) }
+        serverSuggestion = nil
     }
 
     /// Jumps to the definition of the symbol at the caret (opens the target file if needed).
@@ -258,6 +297,12 @@ struct CodeSurface: View {
         VStack(spacing: 0) {
             editorToolbar
             Divider().overlay(palette.border)
+            if let info = code.serverSuggestion {
+                ServerInstallBanner(info: info, installing: code.installing, palette: palette,
+                                    onInstall: { Task { await code.installServer() } },
+                                    onDismiss: { code.dismissSuggestion() })
+                Divider().overlay(palette.border)
+            }
             if let diff = code.diffText {
                 DiffView(diff: diff, palette: palette, theme: theme)
             } else if let data = code.imageData {
@@ -269,7 +314,8 @@ struct CodeSurface: View {
                            scrollTarget: code.scrollTarget,
                            onCaret: { line, char in code.caretMoved(line: line, char: char) },
                            onConsumedScroll: { code.consumeScrollTarget() },
-                           hoverProvider: { line, char in await code.hover(line: line, char: char) })
+                           hoverProvider: { line, char in await code.hover(line: line, char: char) },
+                           completionProvider: { line, char in await code.complete(line: line, char: char) })
                 if !code.fileDiagnostics.isEmpty {
                     Divider().overlay(palette.border)
                     DiagnosticsBar(diagnostics: code.fileDiagnostics, palette: palette)
@@ -497,6 +543,41 @@ struct DiagnosticsBar: View {
     private func color(_ sev: Int) -> Color {
         switch sev { case 1: return Color(hex: 0xF85149); case 2: return Color(hex: 0xD9A520)
         default: return palette.mutedForeground }
+    }
+}
+
+/// A VSCode-style banner offering to install the language server for the open file's language.
+struct ServerInstallBanner: View {
+    let info: LSPServerInfo
+    let installing: Bool
+    let palette: OculusPalette
+    let onInstall: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "wand.and.stars").font(.system(size: 12)).foregroundStyle(palette.primary)
+            if info.installable {
+                Text("Install **\(info.installLabel)** for \(info.language.capitalized) language support (autocomplete, diagnostics, types)?")
+                    .font(.system(size: 12)).foregroundStyle(palette.foreground)
+            } else {
+                Text("\(info.language.capitalized) language support needs **\(info.installLabel)**.")
+                    .font(.system(size: 12)).foregroundStyle(palette.foreground)
+            }
+            Spacer()
+            if info.installable {
+                Button(action: onInstall) {
+                    if installing { ProgressView().controlSize(.small) } else { Text("Install") }
+                }
+                .buttonStyle(.borderedProminent).tint(palette.primary).controlSize(.small)
+                .disabled(installing)
+            }
+            Button(action: onDismiss) { Image(systemName: "xmark") }
+                .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
+                .disabled(installing)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(palette.primary.opacity(0.08))
     }
 }
 

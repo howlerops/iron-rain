@@ -22,6 +22,8 @@ struct CodeTheme {
     let number: Color
     let type: Color
     let background: Color
+    /// Rainbow bracket colors, cycled by nesting depth (VSCode's default palette).
+    let bracketColors: [Color]
 
     func color(_ t: CodeToken) -> Color {
         switch t {
@@ -34,6 +36,11 @@ struct CodeTheme {
         }
     }
 
+    /// Bracket color for a given nesting depth (cycles through bracketColors).
+    func bracketColor(_ depth: Int) -> Color {
+        bracketColors.isEmpty ? plain : bracketColors[((depth % bracketColors.count) + bracketColors.count) % bracketColors.count]
+    }
+
     static func current(_ scheme: ColorScheme) -> CodeTheme {
         scheme == .dark ? .dark : .light
     }
@@ -41,11 +48,13 @@ struct CodeTheme {
     static let dark = CodeTheme(
         plain: Color(hex: 0xABB2BF), keyword: Color(hex: 0xC678DD), string: Color(hex: 0x98C379),
         comment: Color(hex: 0x5C6370), number: Color(hex: 0xD19A66), type: Color(hex: 0xE5C07B),
-        background: Color(hex: 0x1C1C1C))
+        background: Color(hex: 0x1C1C1C),
+        bracketColors: [Color(hex: 0xFFD700), Color(hex: 0xDA70D6), Color(hex: 0x179FFF)])
     static let light = CodeTheme(
         plain: Color(hex: 0x24292E), keyword: Color(hex: 0xD73A49), string: Color(hex: 0x22863A),
         comment: Color(hex: 0x6A737D), number: Color(hex: 0x005CC5), type: Color(hex: 0x6F42C1),
-        background: Color(hex: 0xFBFBFB))
+        background: Color(hex: 0xFBFBFB),
+        bracketColors: [Color(hex: 0xB8860B), Color(hex: 0x9400D3), Color(hex: 0x0066CC)])
 }
 
 /// A source language, inferred from a file extension. Drives the keyword set.

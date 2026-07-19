@@ -48,7 +48,10 @@ public enum MessageType {
     public static let lspClose = "lsp.close"
     public static let lspHover = "lsp.hover"
     public static let lspDefinition = "lsp.definition"
+    public static let lspComplete = "lsp.complete"
     public static let lspDiagnostics = "lsp.diagnostics"
+    public static let lspServerInfo = "lsp.serverinfo"
+    public static let lspInstall = "lsp.install"
 
     public static let sessionStatus = "session.status"
     public static let sessionMessage = "session.message"
@@ -204,6 +207,31 @@ public struct LSPDiagnostic: Codable, Identifiable, Hashable {
 public struct LSPDiagnostics: Codable {
     public var path: String
     public var diagnostics: [LSPDiagnostic]
+}
+public struct LSPServerInfo: Codable {
+    public var language: String
+    public var installed: Bool
+    public var installable: Bool
+    public var installLabel: String
+    enum CodingKeys: String, CodingKey {
+        case language, installed, installable
+        case installLabel = "install_label"
+    }
+}
+public struct LSPInstallResult: Codable {
+    public var ok: Bool
+    public var installed: Bool
+    public var message: String?
+}
+public struct LSPCompletionItem: Codable, Identifiable, Hashable {
+    public var id: String { "\(label)\u{1}\(insert)\u{1}\(detail ?? "")" }
+    public var label: String
+    public var insert: String
+    public var detail: String?
+    public var kind: Int?
+}
+public struct LSPCompletion: Codable {
+    public var items: [LSPCompletionItem]
 }
 public struct FSWriteResult: Codable {
     public var path: String

@@ -60,7 +60,10 @@ const (
 	TypeLSPClose       = "lsp.close"       // close a document
 	TypeLSPHover       = "lsp.hover"       // type/doc info at a position
 	TypeLSPDefinition  = "lsp.definition"  // go-to-definition at a position
+	TypeLSPComplete    = "lsp.complete"    // completion items at a position (autocomplete)
 	TypeLSPDiagnostics = "lsp.diagnostics" // event: diagnostics published for a file
+	TypeLSPServerInfo  = "lsp.serverinfo"  // is a language server installed for this file?
+	TypeLSPInstall     = "lsp.install"     // install the language server for this file
 
 	// events (daemon -> client), no id
 	TypeSessionStatus    = "session.status"
@@ -395,6 +398,35 @@ type LSPDiagnostic struct {
 type LSPDiagnostics struct {
 	Path        string          `json:"path"`
 	Diagnostics []LSPDiagnostic `json:"diagnostics"`
+}
+
+// LSPServerInfo reports whether a language server is available for a file, and whether we can
+// install one (a scripted recipe whose prerequisite tool is present).
+type LSPServerInfo struct {
+	Language     string `json:"language"`      // "" if the file type is unsupported
+	Installed    bool   `json:"installed"`
+	Installable  bool   `json:"installable"`
+	InstallLabel string `json:"install_label"` // e.g. "gopls" or "Xcode / Swift toolchain"
+}
+
+// LSPInstallResult reports the outcome of an install attempt.
+type LSPInstallResult struct {
+	OK        bool   `json:"ok"`
+	Installed bool   `json:"installed"`
+	Message   string `json:"message,omitempty"`
+}
+
+// LSPCompletionItem is one autocomplete suggestion.
+type LSPCompletionItem struct {
+	Label  string `json:"label"`         // shown in the list
+	Insert string `json:"insert"`        // text to insert (may differ from Label)
+	Detail string `json:"detail,omitempty"` // type/signature
+	Kind   int    `json:"kind,omitempty"`   // LSP CompletionItemKind (1..25)
+}
+
+// LSPCompletion is the result of a completion request.
+type LSPCompletion struct {
+	Items []LSPCompletionItem `json:"items"`
 }
 
 // FSWriteReq saves a file if BaseSha still matches the on-disk sha.

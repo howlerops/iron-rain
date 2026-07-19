@@ -650,6 +650,22 @@ public final class Model: ObservableObject {
         return d
     }
 
+    /// Autocomplete suggestions at a 0-based position.
+    public func lspComplete(_ path: String, line: Int, character: Int) async -> [LSPCompletionItem] {
+        (try? await request(MessageType.lspComplete, payload: LSPPosReq(path: path, line: line, character: character))
+            .payload(as: LSPCompletion.self).items) ?? []
+    }
+
+    /// Whether a language server is installed for a file (and whether we can install one).
+    public func lspServerInfo(_ path: String) async -> LSPServerInfo? {
+        try? await request(MessageType.lspServerInfo, payload: LSPDocReq(path: path)).payload(as: LSPServerInfo.self)
+    }
+
+    /// Installs the language server for a file (runs a package manager; may take minutes).
+    public func lspInstall(_ path: String) async -> LSPInstallResult? {
+        try? await request(MessageType.lspInstall, payload: LSPDocReq(path: path)).payload(as: LSPInstallResult.self)
+    }
+
     // MARK: issue detail / edit / comments / images
 
     /// Fetches a ticket's full body + comments.

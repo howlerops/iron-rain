@@ -665,6 +665,9 @@ func asyncDispatch(typ string) bool {
 		protocol.TypeLSPClose,           // language server: didClose
 		protocol.TypeLSPHover,           // language server: hover
 		protocol.TypeLSPDefinition,      // language server: definition
+		protocol.TypeLSPComplete,        // language server: completion
+		protocol.TypeLSPServerInfo,      // language server: install status
+		protocol.TypeLSPInstall,         // language server: install (runs a package manager)
 		protocol.TypeDiscover:           // host scan
 		return true
 	}
@@ -1255,6 +1258,45 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.LSPDefinition{
 			Path: loc.Path, Line: loc.StartLine, Character: loc.StartChar, Found: loc.Path != "",
 		})
+
+	case protocol.TypeLSPComplete:
+		var req protocol.LSPPosReq
+		_ = env.Unmarshal(&req)
+		items, err := h.lsp.Completion(ctx, req.Path, req.Line, req.Character)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		out := make([]protocol.LSPCompletionItem, len(items))
+		for i, it := range items {
+			out[i] = protocol.LSPCompletionItem{Label: it.Label, Insert: it.Insert, Detail: it.Detail, Kind: it.Kind}
+		}
+		h.sendOK(conn, env.ID, protocol.LSPCompletion{Items: out})
+
+	case protocol.TypeLSPServerInfo:
+		var req protocol.LSPDocReq
+		_ = env.Unmarshal(&req)
+		info := lsp.InfoForPath(req.Path)
+		h.sendOK(conn, env.ID, protocol.LSPServerInfo{
+			Language: info.Language, Installed: info.Installed,
+			Installable: info.Installable, InstallLabel: info.InstallLabel,
+		})
+
+	case protocol.TypeLSPInstall:
+		var req protocol.LSPDocReq
+		_ = env.Unmarshal(&req)
+		// Runs a package manager (go install / npm -g / rustup / brew); may take minutes.
+		// It's on the network-dispatch path, so it doesn't block the receive loop.
+		msg, err := lsp.Install(ctx, req.Path)
+		installed := lsp.InfoForPath(req.Path).Installed
+		if err != nil {
+			h.sendOK(conn, env.ID, protocol.LSPInstallResult{OK: false, Installed: installed, Message: err.Error()})
+			return
+		}
+		if msg == "" {
+			msg = "Installed."
+		}
+		h.sendOK(conn, env.ID, protocol.LSPInstallResult{OK: true, Installed: installed, Message: msg})
 
 	case protocol.TypeFSWrite:
 		var req protocol.FSWriteReq

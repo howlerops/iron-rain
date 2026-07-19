@@ -259,9 +259,63 @@ func initializeParams(root string) map[string]interface{} {
 				"definition": map[string]interface{}{
 					"linkSupport": true,
 				},
+				"completion": map[string]interface{}{
+					"completionItem": map[string]interface{}{
+						"snippetSupport": false,
+					},
+				},
 			},
 		},
 	}
+}
+
+// completionItems parses a textDocument/completion result — either a CompletionItem[] or a
+// CompletionList {items:[...]} — into a capped, plain list. insertText/textEdit.newText is
+// preferred as the inserted text, falling back to the label.
+func completionItems(raw json.RawMessage) []CompletionItem {
+	if isJSONNull(raw) {
+		return nil
+	}
+	type rawItem struct {
+		Label      string          `json:"label"`
+		InsertText string          `json:"insertText"`
+		TextEdit   json.RawMessage `json:"textEdit"`
+		Detail     string          `json:"detail"`
+		Kind       int             `json:"kind"`
+	}
+	var items []rawItem
+	var wrap struct {
+		Items []rawItem `json:"items"`
+	}
+	if json.Unmarshal(raw, &wrap) == nil && wrap.Items != nil {
+		items = wrap.Items
+	} else {
+		_ = json.Unmarshal(raw, &items)
+	}
+	const maxItems = 200
+	out := make([]CompletionItem, 0, len(items))
+	for _, it := range items {
+		if it.Label == "" {
+			continue
+		}
+		insert := it.InsertText
+		if len(it.TextEdit) > 0 {
+			var te struct {
+				NewText string `json:"newText"`
+			}
+			if json.Unmarshal(it.TextEdit, &te) == nil && te.NewText != "" {
+				insert = te.NewText
+			}
+		}
+		if insert == "" {
+			insert = it.Label
+		}
+		out = append(out, CompletionItem{Label: it.Label, Insert: insert, Detail: it.Detail, Kind: it.Kind})
+		if len(out) >= maxItems {
+			break
+		}
+	}
+	return out
 }
 
 // hoverText extracts plain text from a textDocument/hover result. The result is

@@ -21,13 +21,39 @@ struct CodeEditor: View {
     var onCaret: (Int, Int) -> Void = { _, _ in }
     var onConsumedScroll: () -> Void = {}
     var hoverProvider: (Int, Int) async -> String = { _, _ in "" }
+    var completionProvider: (Int, Int) async -> [LSPCompletionItem] = { _, _ in [] }
 
     var body: some View {
         CodeTextView(text: $text, language: language, theme: theme, palette: palette, editable: editable,
                      diagnostics: diagnostics, scrollTarget: scrollTarget,
-                     onCaret: onCaret, onConsumedScroll: onConsumedScroll, hoverProvider: hoverProvider)
+                     onCaret: onCaret, onConsumedScroll: onConsumedScroll,
+                     hoverProvider: hoverProvider, completionProvider: completionProvider)
             .background(theme.background)
     }
+}
+
+/// Rainbow bracket ranges: each () [] {} character tagged with its nesting depth, skipping
+/// brackets inside string/comment tokens (so `"("` in a string isn't colored). `tokens` is the
+/// already-computed syntax token list; scanning is single-pass with a moving skip-interval index.
+private func bracketRanges(_ ns: NSString, tokens: [(NSRange, CodeToken)]) -> [(NSRange, Int)] {
+    let skip = tokens.filter { $0.1 == .string || $0.1 == .comment }
+        .map { $0.0 }.sorted { $0.location < $1.location }
+    var out: [(NSRange, Int)] = []
+    var depth = 0
+    var si = 0
+    for i in 0..<ns.length {
+        while si < skip.count && NSMaxRange(skip[si]) <= i { si += 1 }
+        if si < skip.count && NSLocationInRange(i, skip[si]) { continue }
+        switch ns.character(at: i) {
+        case 40, 91, 123: // ( [ {
+            out.append((NSRange(location: i, length: 1), depth)); depth += 1
+        case 41, 93, 125: // ) ] }
+            depth = max(depth - 1, 0); out.append((NSRange(location: i, length: 1), depth))
+        default:
+            break
+        }
+    }
+    return out
 }
 
 // MARK: - LSP position <-> NSString offset (0-based line/char, UTF-16, matching LSP + NSString)
@@ -140,6 +166,7 @@ private struct CodeTextView: NSViewRepresentable {
     var onCaret: (Int, Int) -> Void
     var onConsumedScroll: () -> Void
     var hoverProvider: (Int, Int) async -> String
+    var completionProvider: (Int, Int) async -> [LSPCompletionItem]
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -205,12 +232,49 @@ private struct CodeTextView: NSViewRepresentable {
             parent.text = tv.string
             hideHover()
             highlight(tv)
+            scheduleCompletion(tv)
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let tv = notification.object as? NSTextView else { return }
             let (line, char) = lineChar(forOffset: tv.selectedRange().location, in: tv.string as NSString)
             parent.onCaret(line, char)
+        }
+
+        // MARK: autocomplete (native NSTextView completion list, fed by the language server)
+
+        private var completionTask: Task<Void, Never>?
+        private var pendingCompletions: [LSPCompletionItem] = []
+
+        /// After a keystroke, if the char before the caret is an identifier char or ".", fetch
+        /// completions and trigger the native completion list. Debounced.
+        func scheduleCompletion(_ tv: NSTextView) {
+            let ns = tv.string as NSString
+            let caret = tv.selectedRange().location
+            guard caret > 0, caret <= ns.length else { pendingCompletions = []; return }
+            let prev = ns.character(at: caret - 1)
+            let isIdent = (prev >= 48 && prev <= 57) || (prev >= 65 && prev <= 90) || (prev >= 97 && prev <= 122) || prev == 95 || prev == 46
+            guard isIdent else { completionTask?.cancel(); return }
+            let (line, col) = lineChar(forOffset: caret, in: ns)
+            completionTask?.cancel()
+            completionTask = Task { @MainActor [weak self, weak tv] in
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                guard let self, let tv, !Task.isCancelled else { return }
+                let items = await self.parent.completionProvider(line, col)
+                guard !Task.isCancelled, !items.isEmpty, tv.selectedRange().location == caret else { return }
+                self.pendingCompletions = items
+                tv.complete(nil) // shows the native completion list; delegate supplies items
+            }
+        }
+
+        // NSTextView asks its delegate for the completion strings; we return the LSP inserts and
+        // let AppKit handle the list UI, keyboard navigation, and replacing the partial word.
+        func textView(_ textView: NSTextView, completions words: [String],
+                      forPartialWordRange charRange: NSRange, indexOfSelectedItem index: UnsafeMutablePointer<Int>?) -> [String] {
+            guard !pendingCompletions.isEmpty else { return words }
+            index?.pointee = 0
+            var seen = Set<String>()
+            return pendingCompletions.map { $0.insert }.filter { seen.insert($0).inserted }
         }
 
         // MARK: hover
@@ -289,10 +353,14 @@ private struct CodeTextView: NSViewRepresentable {
             ts.addAttribute(.foregroundColor, value: NSColor(parent.theme.plain), range: full)
             ts.removeAttribute(.underlineStyle, range: full)
             ts.removeAttribute(.underlineColor, range: full)
-            for (r, kind) in SyntaxHighlighter.tokens(str, language: parent.language) where kind != .plain {
+            let tokens = SyntaxHighlighter.tokens(str, language: parent.language)
+            for (r, kind) in tokens where kind != .plain {
                 if NSMaxRange(r) <= full.length {
                     ts.addAttribute(.foregroundColor, value: NSColor(parent.theme.color(kind)), range: r)
                 }
+            }
+            for (r, depth) in bracketRanges(ns, tokens: tokens) where NSMaxRange(r) <= full.length {
+                ts.addAttribute(.foregroundColor, value: NSColor(parent.theme.bracketColor(depth)), range: r)
             }
             for (r, sev) in diagnosticRanges(parent.diagnostics, in: ns) where NSMaxRange(r) <= full.length {
                 ts.addAttribute(.underlineStyle,
@@ -318,7 +386,8 @@ private struct CodeTextView: UIViewRepresentable {
     var scrollTarget: EditorTarget?
     var onCaret: (Int, Int) -> Void
     var onConsumedScroll: () -> Void
-    var hoverProvider: (Int, Int) async -> String // unused on iOS (no mouse hover)
+    var hoverProvider: (Int, Int) async -> String            // unused on iOS (no mouse hover)
+    var completionProvider: (Int, Int) async -> [LSPCompletionItem] // unused on iOS for now
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -382,10 +451,14 @@ private struct CodeTextView: UIViewRepresentable {
             let attr = NSMutableAttributedString(string: str)
             attr.addAttribute(.font, value: CodeTextView.font, range: full)
             attr.addAttribute(.foregroundColor, value: UIColor(parent.theme.plain), range: full)
-            for (r, kind) in SyntaxHighlighter.tokens(str, language: parent.language) where kind != .plain {
+            let tokens = SyntaxHighlighter.tokens(str, language: parent.language)
+            for (r, kind) in tokens where kind != .plain {
                 if NSMaxRange(r) <= full.length {
                     attr.addAttribute(.foregroundColor, value: UIColor(parent.theme.color(kind)), range: r)
                 }
+            }
+            for (r, depth) in bracketRanges(ns, tokens: tokens) where NSMaxRange(r) <= full.length {
+                attr.addAttribute(.foregroundColor, value: UIColor(parent.theme.bracketColor(depth)), range: r)
             }
             for (r, sev) in diagnosticRanges(parent.diagnostics, in: ns) where NSMaxRange(r) <= full.length {
                 attr.addAttribute(.underlineStyle,

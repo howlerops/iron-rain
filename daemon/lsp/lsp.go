@@ -214,6 +214,33 @@ func (m *Manager) Definition(ctx context.Context, path string, line, char int) (
 	return loc, nil
 }
 
+// CompletionItem is one autocomplete suggestion.
+type CompletionItem struct {
+	Label  string
+	Insert string
+	Detail string
+	Kind   int
+}
+
+// Completion returns autocomplete suggestions at a 0-based position (nil if none / no server).
+func (m *Manager) Completion(ctx context.Context, path string, line, char int) ([]CompletionItem, error) {
+	d, ok := m.lookupDoc(path)
+	if !ok {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+
+	res, err := d.srv.call(ctx, "textDocument/completion", positionParams{
+		TextDocument: textDocumentIdentifier{URI: d.uri},
+		Position:     position{Line: line, Character: char},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return completionItems(res), nil
+}
+
 // Shutdown stops all language servers (LSP shutdown + exit, then kill).
 func (m *Manager) Shutdown() {
 	m.mu.Lock()
