@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -103,9 +104,11 @@ func (p *Provider) Create(ctx context.Context, cwd, prompt string) (agent.Sessio
 // Attach connects to an existing session (discovered on the host): it subscribes to
 // live events and replays the session's message history so the app shows the
 // conversation and can continue it.
-func (p *Provider) Attach(ctx context.Context, sessionID, _ string) (agent.Session, error) {
-	// cwd is ignored: the opencode server already owns the session's directory.
-	s := &session{p: p, id: sessionID, events: make(chan agent.Event, 64), done: make(chan struct{})}
+func (p *Provider) Attach(ctx context.Context, sessionID, cwd string) (agent.Session, error) {
+	// cwd scopes the /event subscription + message writes to the session's directory
+	// (opencode partitions both by ?directory=). Empty cwd falls back to the server's
+	// default directory — correct only for sessions that live there.
+	s := &session{p: p, id: sessionID, dir: cwd, events: make(chan agent.Event, 64), done: make(chan struct{})}
 	if err := s.subscribe(); err != nil {
 		return nil, err
 	}
@@ -116,7 +119,7 @@ func (p *Provider) Attach(ctx context.Context, sessionID, _ string) (agent.Sessi
 // replayHistory fetches the session's messages and emits them as SessionMessage
 // events (oldest first) so the client can render the existing conversation.
 func (s *session) replayHistory(ctx context.Context) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.p.baseURL+"/session/"+s.id+"/message", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.p.baseURL+withDir("/session/"+s.id+"/message", s.dir), nil)
 	if err != nil {
 		return
 	}
@@ -209,7 +212,13 @@ func (s *session) subscribe() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.ctx = ctx
 	s.cancel = cancel
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.p.baseURL+"/event", nil)
+	// opencode partitions its /event SSE stream by ?directory=, exactly like POST
+	// /session and POST /message. A session created/scoped to a project folder or
+	// worktree emits its events ONLY on /event?directory=<that dir>; subscribing to a
+	// bare /event (the server's default directory) would silently miss every event for
+	// this session, so scope the subscription to the same directory we write to.
+	eventPath := s.p.baseURL + withDir("/event", s.dir)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, eventPath, nil)
 	if err != nil {
 		cancel()
 		return err
@@ -435,6 +444,7 @@ func (s *session) sendParts(parts []map[string]any) error {
 	}
 	go func() {
 		if err := s.p.postJSON(ctx, withDir("/session/"+s.id+"/message", s.dir), body, nil); err != nil && ctx.Err() == nil {
+			log.Printf("opencode: POST message sid=%s failed: %v", s.id, err)
 			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusError}})
 		}
 	}()

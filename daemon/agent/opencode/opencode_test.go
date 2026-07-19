@@ -27,6 +27,7 @@ type stub struct {
 	permResp    string
 	sessionDir  string // ?directory= seen on POST /session
 	messageDir  string // ?directory= seen on POST /session/{id}/message
+	eventDir    string // ?directory= seen on GET /event (SSE subscription)
 	messageBody string // raw body of the last POST /message
 }
 
@@ -53,6 +54,9 @@ func (s *stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": "ses_test", "title": "stub session"})
 
 	case r.Method == http.MethodGet && r.URL.Path == "/event":
+		s.mu.Lock()
+		s.eventDir = r.URL.Query().Get("directory")
+		s.mu.Unlock()
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		fl, _ := w.(http.Flusher)
@@ -209,6 +213,46 @@ func TestOpenCode_SendsDirectory(t *testing.T) {
 	}
 	if stub.messageDir != dir {
 		t.Errorf("POST /message directory = %q, want %q", stub.messageDir, dir)
+	}
+}
+
+// TestOpenCode_EventStreamScopedToDirectory pins the fix for a session in a project
+// folder / worktree hanging with no output: opencode partitions its /event SSE stream
+// by ?directory=, so the subscription MUST carry the session's directory or it silently
+// receives none of that session's events (agent runs, app spins forever). Verified live:
+// /event with no directory sees only heartbeats; /event?directory=<dir> sees the deltas.
+func TestOpenCode_EventStreamScopedToDirectory(t *testing.T) {
+	stub := newStub()
+	srv := httptest.NewServer(stub)
+	defer srv.Close()
+
+	const dir = "/Users/jacob/projects/ero-v2"
+	sess, err := New(srv.URL).Create(context.Background(), dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	// subscribe() runs during Create; wait until the /event GET has been observed.
+	deadline := time.After(3 * time.Second)
+	for {
+		stub.mu.Lock()
+		ed := stub.eventDir
+		stub.mu.Unlock()
+		if ed != "" {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for the /event subscription")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	if stub.eventDir != dir {
+		t.Errorf("GET /event directory = %q, want %q", stub.eventDir, dir)
 	}
 }
 
