@@ -926,7 +926,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, "provider cannot attach: "+req.Provider)
 			return
 		}
-		sess, err := att.Attach(ctx, req.SessionID)
+		sess, err := att.Attach(ctx, req.SessionID, req.Cwd)
 		if err != nil {
 			h.sendErr(conn, env.ID, err.Error())
 			return

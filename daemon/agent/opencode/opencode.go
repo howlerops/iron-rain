@@ -103,7 +103,8 @@ func (p *Provider) Create(ctx context.Context, cwd, prompt string) (agent.Sessio
 // Attach connects to an existing session (discovered on the host): it subscribes to
 // live events and replays the session's message history so the app shows the
 // conversation and can continue it.
-func (p *Provider) Attach(ctx context.Context, sessionID string) (agent.Session, error) {
+func (p *Provider) Attach(ctx context.Context, sessionID, _ string) (agent.Session, error) {
+	// cwd is ignored: the opencode server already owns the session's directory.
 	s := &session{p: p, id: sessionID, events: make(chan agent.Event, 64), done: make(chan struct{})}
 	if err := s.subscribe(); err != nil {
 		return nil, err

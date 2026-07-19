@@ -438,7 +438,7 @@ public final class Model: ObservableObject {
         pendingApproval = nil
         do {
             let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.sessionAttach,
-                                          payload: SessionAttach(provider: d.provider, sessionID: sid, url: d.url))
+                                          payload: SessionAttach(provider: d.provider, sessionID: sid, url: d.url, cwd: d.cwd))
             try await client.send(env)
         } catch {
             status = "Attach failed: \(error)"

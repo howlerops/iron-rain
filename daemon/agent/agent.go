@@ -47,7 +47,10 @@ type Provider interface {
 // Attacher is an optional Provider capability: attach to an existing session that
 // was discovered on the host, replaying its history and then streaming it live.
 type Attacher interface {
-	Attach(ctx context.Context, sessionID string) (Session, error)
+	// Attach resumes/observes an existing session. cwd is the session's original working
+	// directory (used by providers like claude-code that resume as a fresh process; opencode
+	// ignores it because the server already knows the session's directory).
+	Attach(ctx context.Context, sessionID, cwd string) (Session, error)
 }
 
 // ImagePrompter is an optional Session capability: send a prompt with attached images

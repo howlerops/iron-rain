@@ -105,7 +105,14 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 
 // --- run the session ---
 const options = { permissionMode: "default", includePartialMessages: true, canUseTool };
-if (mode === "attach" && sessionLabel) options.resume = sessionLabel;
+if (mode === "attach" && sessionLabel) {
+  // Take-over = resume the session's full history but FORK it into a fresh id. Claude Code
+  // has no live multi-client attach for plain sessions, and two writers on one session id
+  // interleave/corrupt the transcript (docs: sessions.md). Forking gives the app a clean,
+  // owned continuation and leaves any copy still live in a terminal untouched.
+  options.resume = sessionLabel;
+  options.forkSession = true;
+}
 
 send({ t: "session", id: sessionLabel });
 

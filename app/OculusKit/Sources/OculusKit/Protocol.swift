@@ -332,9 +332,11 @@ public struct IssueLaunch: Codable {
 }
 
 public struct SessionAttach: Codable {
-    public var provider: String; public var sessionID: String; public var url: String?
-    public init(provider: String, sessionID: String, url: String?) { self.provider = provider; self.sessionID = sessionID; self.url = url }
-    enum CodingKeys: String, CodingKey { case provider; case sessionID = "session_id"; case url }
+    public var provider: String; public var sessionID: String; public var url: String?; public var cwd: String?
+    public init(provider: String, sessionID: String, url: String?, cwd: String? = nil) {
+        self.provider = provider; self.sessionID = sessionID; self.url = url; self.cwd = cwd
+    }
+    enum CodingKeys: String, CodingKey { case provider; case sessionID = "session_id"; case url; case cwd }
 }
 public struct SessionMessage: Codable {
     public var sessionID: String; public var role: String; public var text: String

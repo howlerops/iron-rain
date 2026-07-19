@@ -57,9 +57,11 @@ func (p *Provider) Create(ctx context.Context, cwd, prompt string) (agent.Sessio
 	return p.start(ctx, cwd, "cc_"+randID(), "create", prompt)
 }
 
-// Attach resumes an existing claude-code session by id (the sidecar uses --resume).
-func (p *Provider) Attach(ctx context.Context, sessionID string) (agent.Session, error) {
-	return p.start(ctx, "", sessionID, "attach", "")
+// Attach resumes an existing claude-code session by id, running in its original cwd so the
+// resumed session's tool calls (edits, bash) target the right project (the SDK's resume runs
+// as a fresh process in the given directory, not the session's recorded one).
+func (p *Provider) Attach(ctx context.Context, sessionID, cwd string) (agent.Session, error) {
+	return p.start(ctx, cwd, sessionID, "attach", "")
 }
 
 func (p *Provider) start(ctx context.Context, cwd, id, mode, prompt string) (agent.Session, error) {

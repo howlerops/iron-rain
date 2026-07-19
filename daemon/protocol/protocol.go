@@ -299,6 +299,7 @@ type SessionAttach struct {
 	Provider  string `json:"provider"`
 	SessionID string `json:"session_id"`
 	URL       string `json:"url,omitempty"` // opencode server URL the session lives on
+	Cwd       string `json:"cwd,omitempty"` // original working dir (claude-code resume runs here)
 }
 
 // SessionMessage is a full (historical/replayed) conversation turn.
