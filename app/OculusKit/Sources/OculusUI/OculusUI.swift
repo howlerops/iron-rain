@@ -665,6 +665,30 @@ public final class Model: ObservableObject {
         return r.text
     }
 
+    /// All references to the symbol at a 0-based position.
+    public func lspReferences(_ path: String, line: Int, character: Int) async -> [LSPLocation] {
+        (try? await request(MessageType.lspReferences, payload: LSPPosReq(path: path, line: line, character: character))
+            .payload(as: LSPLocations.self).locations) ?? []
+    }
+
+    /// Document symbols (outline) for a file.
+    public func lspSymbols(_ path: String) async -> [LSPSymbol] {
+        (try? await request(MessageType.lspSymbols, payload: LSPDocReq(path: path))
+            .payload(as: LSPSymbols.self).symbols) ?? []
+    }
+
+    /// Renames the symbol at a position across files; returns the paths that were rewritten.
+    public func lspRename(_ path: String, line: Int, character: Int, newName: String) async -> [String] {
+        (try? await request(MessageType.lspRename, payload: LSPRenameReq(path: path, line: line, character: character, newName: newName))
+            .payload(as: LSPRenameResult.self).files) ?? []
+    }
+
+    /// Multi-file text search across a session's workspace (or all roots).
+    public func fsSearch(_ query: String, sessionID: String? = nil, regex: Bool = false) async -> [FSSearchHit] {
+        (try? await request(MessageType.fsSearch, payload: FSSearchReq(query: query, sessionID: sessionID, regex: regex))
+            .payload(as: FSSearchResult.self).results) ?? []
+    }
+
     /// Whether a language server is installed for a file (and whether we can install one).
     public func lspServerInfo(_ path: String) async -> LSPServerInfo? {
         try? await request(MessageType.lspServerInfo, payload: LSPDocReq(path: path)).payload(as: LSPServerInfo.self)

@@ -53,6 +53,7 @@ const (
 	TypeFSWrite     = "fs.write"     // save a file if its base sha still matches on disk
 	TypeFSDiff      = "fs.diff"      // unified git diff for a path or session (review)
 	TypeFSWatch     = "fs.watch"     // subscribe to change events for open files
+	TypeFSSearch    = "fs.search"    // multi-file text search across the workspace
 
 	// LSP (built-in editor: diagnostics/linting/types/definition)
 	TypeLSPOpen        = "lsp.open"        // open a document in its language server
@@ -61,6 +62,9 @@ const (
 	TypeLSPHover       = "lsp.hover"       // type/doc info at a position
 	TypeLSPDefinition  = "lsp.definition"  // go-to-definition at a position
 	TypeLSPComplete    = "lsp.complete"    // completion items at a position (autocomplete)
+	TypeLSPReferences  = "lsp.references"  // find all references to a symbol
+	TypeLSPRename      = "lsp.rename"      // rename a symbol across files
+	TypeLSPSymbols     = "lsp.symbols"     // document symbols (outline)
 	TypeLSPFormat      = "lsp.format"      // format the whole document
 	TypeLSPDiagnostics = "lsp.diagnostics" // event: diagnostics published for a file
 	TypeLSPServerInfo  = "lsp.serverinfo"  // is a language server installed for this file?
@@ -442,6 +446,69 @@ type LSPFormatReq struct {
 type LSPFormatResult struct {
 	Text    string `json:"text"`
 	Changed bool   `json:"changed"`
+}
+
+// LSPLocation is a source location (0-based position).
+type LSPLocation struct {
+	Path      string `json:"path"`
+	Line      int    `json:"line"`
+	Character int    `json:"character"`
+}
+
+// LSPLocations is a list of locations (find-references result).
+type LSPLocations struct {
+	Locations []LSPLocation `json:"locations"`
+}
+
+// LSPRenameReq renames the symbol at a 0-based position to NewName across files.
+type LSPRenameReq struct {
+	Path      string `json:"path"`
+	Line      int    `json:"line"`
+	Character int    `json:"character"`
+	NewName   string `json:"new_name"`
+}
+
+// LSPRenameResult reports which files were rewritten by a rename.
+type LSPRenameResult struct {
+	Files []string `json:"files"`
+	Count int      `json:"count"`
+}
+
+// LSPSymbol is one document-symbol (outline node), possibly nested.
+type LSPSymbol struct {
+	Name      string      `json:"name"`
+	Kind      int         `json:"kind"` // LSP SymbolKind (1..26)
+	Detail    string      `json:"detail,omitempty"`
+	Line      int         `json:"line"`
+	Character int         `json:"character"`
+	Children  []LSPSymbol `json:"children,omitempty"`
+}
+
+// LSPSymbols is the document-symbol (outline) result for a file.
+type LSPSymbols struct {
+	Symbols []LSPSymbol `json:"symbols"`
+}
+
+// --- Multi-file search ---
+
+// FSSearchReq searches for Query across a session's workspace (SessionID) or all roots.
+type FSSearchReq struct {
+	Query     string `json:"query"`
+	SessionID string `json:"session_id,omitempty"`
+	Regex     bool   `json:"regex,omitempty"`
+}
+
+// FSSearchHit is one match (1-based line/column).
+type FSSearchHit struct {
+	Path string `json:"path"`
+	Line int    `json:"line"`
+	Col  int    `json:"col"`
+	Text string `json:"text"`
+}
+
+// FSSearchResult is the capped list of matches.
+type FSSearchResult struct {
+	Results []FSSearchHit `json:"results"`
 }
 
 // FSWriteReq saves a file if BaseSha still matches the on-disk sha.

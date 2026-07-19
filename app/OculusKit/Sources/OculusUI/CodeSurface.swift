@@ -7,6 +7,21 @@ import OculusKit
 /// A caret target (0-based line/char) the editor should scroll to and select.
 struct EditorTarget: Equatable { let line: Int; let char: Int }
 
+/// One open editor tab — the full buffered state of a file so switching tabs keeps edits.
+struct OpenTab: Identifiable, Equatable {
+    let id: String  // == path
+    var path: String
+    var name: String
+    var content: String
+    var loadedSha: String
+    var language: CodeLanguage
+    var readOnly: Bool
+    var dirty: Bool
+    var imageData: Data?
+    var imageMime: String?
+    var lspOpen: Bool
+}
+
 @MainActor final class CodeModel: ObservableObject {
     let model: Model
 
@@ -28,6 +43,19 @@ struct EditorTarget: Equatable { let line: Int; let char: Int }
     @Published var installing = false
     @Published var formatOnSave = false
     @Published var formatting = false
+    // References / rename / symbols / search.
+    @Published var references: [LSPLocation] = []
+    @Published var showReferences = false
+    @Published var renaming = false
+    @Published var symbols: [LSPSymbol] = []
+    @Published var searchQuery = ""
+    @Published var searchResults: [FSSearchHit] = []
+    @Published var searchRegex = false
+    @Published var searching = false
+    // Open tabs (multiple files).
+    @Published var tabs: [OpenTab] = []
+    @Published var activeTabID: String?
+    var scopeSessionID: String?  // set by the view, for workspace-scoped search
     private var dismissedLangs: Set<String> = []
 
     private var loadedSha = ""
@@ -67,9 +95,12 @@ struct EditorTarget: Equatable { let line: Int; let char: Int }
     func open(_ node: FSNode) async { await openFile(path: node.path, name: node.name) }
 
     func openFile(path nodePath: String, name nodeName: String) async {
+        // Already open in a tab → just activate it (no reload, keeps unsaved edits).
+        if tabs.contains(where: { $0.id == nodePath }) { activateTab(nodePath); return }
+        persistActiveTab()  // stash the outgoing buffer into its tab
+
         reloadTask?.cancel()
         lspChangeTask?.cancel()
-        closeLSP()          // release the previously-open document
         diffText = nil
         imageData = nil
         imageMime = nil
@@ -86,7 +117,9 @@ struct EditorTarget: Equatable { let line: Int; let char: Int }
                 readOnly = true
                 dirty = false
                 conflict = false
+                lspOpenPath = nil
                 status = imageData == nil ? "Could not decode image" : nil
+                registerActiveTab()
             } catch {
                 status = "Open failed: \(error.localizedDescription)"
             }
@@ -107,10 +140,12 @@ struct EditorTarget: Equatable { let line: Int; let char: Int }
             startReloadPoll()
             // Hand the document to its language server for diagnostics/types (no-op if none),
             // and — if the file's language has no server installed — offer to install one.
+            symbols = []
+            lspOpenPath = nil
             if !readOnly {
                 let p = f.path, c = content
                 lspOpenPath = p
-                Task { await model.lspOpen(p, content: c) }
+                Task { await model.lspOpen(p, content: c); await self.loadSymbols() }
                 Task { [weak self] in
                     guard let info = await self?.model.lspServerInfo(p) else { return }
                     guard let self, self.openPath == p, !info.language.isEmpty, !info.installed,
@@ -118,9 +153,77 @@ struct EditorTarget: Equatable { let line: Int; let char: Int }
                     self.serverSuggestion = info
                 }
             }
+            registerActiveTab()
         } catch {
             status = "Open failed: \(error.localizedDescription)"
         }
+    }
+
+    // MARK: tabs (multiple open files)
+
+    private func snapshotLive() -> OpenTab? {
+        guard let p = openPath else { return nil }
+        return OpenTab(id: p, path: p, name: fileName, content: content, loadedSha: loadedSha,
+                       language: language, readOnly: readOnly, dirty: dirty,
+                       imageData: imageData, imageMime: imageMime, lspOpen: lspOpenPath == p)
+    }
+
+    /// Save the active buffer's live state back into its tab (before switching away).
+    private func persistActiveTab() {
+        guard let snap = snapshotLive() else { return }
+        if let i = tabs.firstIndex(where: { $0.id == snap.id }) { tabs[i] = snap } // else: not a tab yet
+    }
+
+    /// Register (or refresh) the current live buffer as the active tab.
+    private func registerActiveTab() {
+        guard let snap = snapshotLive() else { return }
+        if let i = tabs.firstIndex(where: { $0.id == snap.id }) { tabs[i] = snap } else { tabs.append(snap) }
+        activeTabID = snap.id
+    }
+
+    /// Switch to an already-open tab, hydrating the editor from its buffered state.
+    func activateTab(_ id: String) {
+        guard id != activeTabID, let tab = tabs.first(where: { $0.id == id }) else { return }
+        persistActiveTab()
+        reloadTask?.cancel()
+        lspChangeTask?.cancel()
+        diffText = nil
+        serverSuggestion = nil
+        openPath = tab.path
+        fileName = tab.name
+        content = tab.content
+        loadedSha = tab.loadedSha
+        language = tab.language
+        readOnly = tab.readOnly
+        dirty = tab.dirty
+        imageData = tab.imageData
+        imageMime = tab.imageMime
+        lspOpenPath = tab.lspOpen ? tab.path : nil
+        conflict = false
+        activeTabID = tab.id
+        symbols = []
+        if !readOnly { startReloadPoll(); Task { await loadSymbols() } }
+    }
+
+    /// Close a tab (releases its language-server doc); switches to a neighbor if it was active.
+    func closeTab(_ id: String) {
+        if let t = tabs.first(where: { $0.id == id }) { Task { await model.lspClose(t.path) } }
+        let wasActive = activeTabID == id
+        tabs.removeAll { $0.id == id }
+        guard wasActive else { return }
+        if let next = tabs.last {
+            activeTabID = nil // force activateTab to hydrate
+            activateTab(next.id)
+        } else {
+            clearEditor()
+        }
+    }
+
+    private func clearEditor() {
+        reloadTask?.cancel()
+        openPath = nil; fileName = ""; content = ""; loadedSha = ""; dirty = false
+        readOnly = false; conflict = false; imageData = nil; imageMime = nil
+        lspOpenPath = nil; activeTabID = nil; symbols = []; showReferences = false
     }
 
     func markEdited() {
@@ -209,6 +312,50 @@ struct EditorTarget: Equatable { let line: Int; let char: Int }
     /// The editor consumed a scroll target (moved the caret) — clear it.
     func consumeScrollTarget() { scrollTarget = nil }
 
+    // MARK: references / rename / symbols / search
+
+    /// Opens a file at a location and scrolls to it (shared by definition/references/search).
+    func openAt(path: String, line: Int, character: Int = 0) async {
+        if path != openPath {
+            await openFile(path: path, name: (path as NSString).lastPathComponent)
+        }
+        scrollTarget = EditorTarget(line: line, char: character)
+    }
+
+    /// Finds all references to the symbol at the caret (shown in the bottom panel).
+    func findReferences() async {
+        guard let p = lspOpenPath else { return }
+        references = await model.lspReferences(p, line: caretLine, character: caretChar)
+        showReferences = !references.isEmpty
+        if references.isEmpty { status = "No references found" }
+    }
+
+    /// Renames the symbol at the caret across the workspace, then reloads the buffer.
+    func rename(to newName: String) async {
+        guard let p = lspOpenPath, !newName.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        renaming = true
+        defer { renaming = false }
+        let files = await model.lspRename(p, line: caretLine, character: caretChar, newName: newName)
+        if files.isEmpty { status = "Rename failed or nothing to rename"; return }
+        await reload() // pick up the change in the current buffer
+        status = "Renamed across \(files.count) file\(files.count == 1 ? "" : "s")"
+    }
+
+    /// Loads the document outline (symbols) for the open file.
+    func loadSymbols() async {
+        guard let p = lspOpenPath else { symbols = []; return }
+        symbols = await model.lspSymbols(p)
+    }
+
+    /// Runs a workspace text search scoped to this session.
+    func runSearch() async {
+        let q = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { searchResults = []; return }
+        searching = true
+        defer { searching = false }
+        searchResults = await model.fsSearch(q, sessionID: scopeSessionID, regex: searchRegex)
+    }
+
     /// Saves the buffer if the on-disk sha still matches (conflict otherwise).
     func save() async {
         guard let path = openPath, dirty, !readOnly else { return }
@@ -294,6 +441,12 @@ struct CodeSurface: View {
     /// When set, open in review mode for this session's changes.
     let reviewSessionID: String?
 
+    @State private var sidebarMode: SidebarMode = .files
+    @State private var renameText = ""
+    @State private var showRename = false
+
+    enum SidebarMode: Hashable { case files, search, outline }
+
     init(model: Model, sessionID: String? = nil, reviewSessionID: String? = nil) {
         self.model = model
         self.sessionID = sessionID
@@ -303,21 +456,45 @@ struct CodeSurface: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            FileTreeView(code: code)
-                .frame(width: 240)
-                .background(palette.background)
+            VStack(spacing: 0) {
+                Picker("", selection: $sidebarMode) {
+                    Image(systemName: "folder").tag(SidebarMode.files)
+                    Image(systemName: "magnifyingglass").tag(SidebarMode.search)
+                    Image(systemName: "list.bullet.indent").tag(SidebarMode.outline)
+                }
+                .pickerStyle(.segmented).labelsHidden()
+                .padding(.horizontal, 8).padding(.vertical, 6)
+                Divider().overlay(palette.border)
+                switch sidebarMode {
+                case .files: FileTreeView(code: code)
+                case .search: SearchPanel(code: code, palette: palette)
+                case .outline: OutlinePanel(code: code, palette: palette)
+                }
+            }
+            .frame(width: 250)
+            .background(palette.background)
             Divider().overlay(palette.border)
             editorPane
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .task {
+            code.scopeSessionID = sessionID
             await code.loadRoots(sessionID: sessionID)
             if let sid = reviewSessionID { await code.review(sessionID: sid) }
         }
+        .alert("Rename symbol", isPresented: $showRename) {
+            TextField("New name", text: $renameText)
+            Button("Rename") { let n = renameText; Task { await code.rename(to: n) } }
+            Button("Cancel", role: .cancel) {}
+        } message: { Text("Renames every reference across the workspace.") }
     }
 
     @ViewBuilder private var editorPane: some View {
         VStack(spacing: 0) {
+            if !code.tabs.isEmpty {
+                EditorTabBar(code: code, palette: palette)
+                Divider().overlay(palette.border)
+            }
             editorToolbar
             Divider().overlay(palette.border)
             if let info = code.serverSuggestion {
@@ -342,6 +519,10 @@ struct CodeSurface: View {
                 if !code.fileDiagnostics.isEmpty {
                     Divider().overlay(palette.border)
                     DiagnosticsBar(diagnostics: code.fileDiagnostics, palette: palette)
+                }
+                if code.showReferences {
+                    Divider().overlay(palette.border)
+                    ReferencesPanel(code: code, palette: palette)
                 }
             } else {
                 emptyState
@@ -370,6 +551,16 @@ struct CodeSurface: View {
                         Image(systemName: "arrow.uturn.forward.square")
                     }
                     .font(.system(size: 12)).help("Jump to definition (caret)")
+                    .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
+                    Button { Task { await code.findReferences() } } label: {
+                        Image(systemName: "text.magnifyingglass")
+                    }
+                    .font(.system(size: 12)).help("Find references (caret)")
+                    .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
+                    Button { renameText = ""; showRename = true } label: {
+                        Image(systemName: "pencil.and.outline")
+                    }
+                    .font(.system(size: 12)).help("Rename symbol (caret)")
                     .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
                     Button { Task { await code.format() } } label: {
                         if code.formatting { ProgressView().controlSize(.small) }
@@ -613,6 +804,203 @@ struct ServerInstallBanner: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .background(palette.primary.opacity(0.08))
+    }
+}
+
+/// A horizontal bar of open-file tabs above the editor (VSCode-style).
+struct EditorTabBar: View {
+    @ObservedObject var code: CodeModel
+    let palette: OculusPalette
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 0) {
+                ForEach(code.tabs) { tab in
+                    let isActive = tab.id == code.activeTabID
+                    // The active tab's dirty state is live; others use their stored snapshot.
+                    let dirty = isActive ? code.dirty : tab.dirty
+                    HStack(spacing: 6) {
+                        Text(tab.name).font(.system(size: 12, weight: isActive ? .semibold : .regular))
+                            .foregroundStyle(isActive ? palette.foreground : palette.mutedForeground)
+                            .lineLimit(1)
+                        Button { code.closeTab(tab.id) } label: {
+                            Image(systemName: dirty ? "circle.fill" : "xmark")
+                                .font(.system(size: dirty ? 7 : 9))
+                        }
+                        .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 7)
+                    .background(isActive ? palette.background : palette.card.opacity(0.4))
+                    .overlay(alignment: .bottom) {
+                        if isActive { Rectangle().fill(palette.primary).frame(height: 2) }
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture { code.activateTab(tab.id) }
+                    Divider().frame(height: 18).overlay(palette.border)
+                }
+            }
+        }
+        .background(palette.card.opacity(0.25))
+    }
+}
+
+/// Workspace text-search panel (left sidebar).
+struct SearchPanel: View {
+    @ObservedObject var code: CodeModel
+    let palette: OculusPalette
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
+                TextField("Search workspace…", text: $code.searchQuery)
+                    .textFieldStyle(.plain).font(.system(size: 12))
+                    .onSubmit { Task { await code.runSearch() } }
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    #endif
+                Button { code.searchRegex.toggle(); Task { await code.runSearch() } } label: {
+                    Text(".*").font(.system(size: 11, weight: .bold))
+                }
+                .buttonStyle(.plain).help("Regular expression")
+                .foregroundStyle(code.searchRegex ? palette.primary : palette.mutedForeground)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 7)
+            Divider().overlay(palette.border)
+            if code.searching {
+                ProgressView().controlSize(.small).frame(maxWidth: .infinity).padding(.top, 12)
+                Spacer()
+            } else if code.searchResults.isEmpty {
+                Text(code.searchQuery.isEmpty ? "Type to search files" : "No results")
+                    .font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(code.searchResults) { hit in
+                    Button {
+                        Task { await code.openAt(path: hit.path, line: max(hit.line - 1, 0), character: max(hit.col - 1, 0)) }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 1) {
+                            HStack(spacing: 4) {
+                                Text((hit.path as NSString).lastPathComponent)
+                                    .font(.system(size: 11, weight: .medium)).foregroundStyle(palette.primary)
+                                Text(":\(hit.line)").font(.system(size: 10)).foregroundStyle(palette.mutedForeground)
+                            }
+                            Text(hit.text).font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(palette.foreground).lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .listStyle(.plain)
+            }
+        }
+    }
+}
+
+/// Document-symbol outline panel (left sidebar).
+struct OutlinePanel: View {
+    @ObservedObject var code: CodeModel
+    let palette: OculusPalette
+
+    var body: some View {
+        if code.symbols.isEmpty {
+            VStack(spacing: 8) {
+                Text(code.openPath == nil ? "Open a file" : "No symbols")
+                    .font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
+                if code.openPath != nil {
+                    Button("Reload") { Task { await code.loadSymbols() } }.font(.system(size: 11))
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            List {
+                ForEach(code.symbols) { sym in SymbolRow(code: code, sym: sym, depth: 0, palette: palette) }
+            }
+            .listStyle(.plain)
+        }
+    }
+}
+
+struct SymbolRow: View {
+    @ObservedObject var code: CodeModel
+    let sym: LSPSymbol
+    let depth: Int
+    let palette: OculusPalette
+
+    var body: some View {
+        Button {
+            Task { await code.openAt(path: code.openPath ?? "", line: sym.line, character: sym.character) }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: symbolIcon(sym.kind)).font(.system(size: 10)).foregroundStyle(palette.primary).frame(width: 13)
+                Text(sym.name).font(.system(size: 12)).lineLimit(1)
+                if let d = sym.detail, !d.isEmpty {
+                    Text(d).font(.system(size: 10)).foregroundStyle(palette.mutedForeground).lineLimit(1)
+                }
+                Spacer()
+            }
+            .padding(.leading, CGFloat(depth) * 12).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        if let children = sym.children {
+            ForEach(children) { child in SymbolRow(code: code, sym: child, depth: depth + 1, palette: palette) }
+        }
+    }
+}
+
+/// LSP SymbolKind → an SF Symbol letter tile.
+func symbolIcon(_ kind: Int) -> String {
+    switch kind {
+    case 5: return "c.square"        // class
+    case 23: return "s.square"       // struct
+    case 11: return "i.square"       // interface
+    case 10: return "e.square"       // enum
+    case 6, 9, 12: return "f.square" // method / constructor / function
+    case 7, 8: return "p.square"     // property / field
+    case 13, 14: return "v.square"   // variable / constant
+    case 2, 3, 4: return "m.square"  // module / namespace / package
+    default: return "circle"
+    }
+}
+
+/// Find-references results (bottom panel of the editor).
+struct ReferencesPanel: View {
+    @ObservedObject var code: CodeModel
+    let palette: OculusPalette
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("References (\(code.references.count))")
+                    .font(.system(size: 11, weight: .semibold)).foregroundStyle(palette.mutedForeground)
+                Spacer()
+                Button { code.showReferences = false } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.plain).font(.system(size: 10)).foregroundStyle(palette.mutedForeground)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(code.references) { ref in
+                        Button {
+                            Task { await code.openAt(path: ref.path, line: ref.line, character: ref.character) }
+                        } label: {
+                            HStack(spacing: 6) {
+                                Text((ref.path as NSString).lastPathComponent)
+                                    .font(.system(size: 11, weight: .medium)).foregroundStyle(palette.primary)
+                                Text(":\(ref.line + 1):\(ref.character + 1)")
+                                    .font(.system(size: 10, design: .monospaced)).foregroundStyle(palette.mutedForeground)
+                                Spacer()
+                            }
+                            .padding(.horizontal, 12).padding(.vertical, 3).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .frame(maxHeight: 160)
+        }
+        .background(palette.background)
     }
 }
 

@@ -267,6 +267,17 @@ func initializeParams(root string) map[string]interface{} {
 				"formatting": map[string]interface{}{
 					"dynamicRegistration": false,
 				},
+				"references": map[string]interface{}{
+					"dynamicRegistration": false,
+				},
+				"rename": map[string]interface{}{
+					"dynamicRegistration": false,
+					"prepareSupport":      false,
+				},
+				"documentSymbol": map[string]interface{}{
+					"dynamicRegistration":               false,
+					"hierarchicalDocumentSymbolSupport": true,
+				},
 			},
 		},
 	}

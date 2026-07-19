@@ -41,6 +41,7 @@ public enum MessageType {
     public static let fsDiff = "fs.diff"
     public static let fsWatch = "fs.watch"
     public static let fsChange = "fs.change"
+    public static let fsSearch = "fs.search"
 
     // Built-in editor LSP (diagnostics/linting/types/definition).
     public static let lspOpen = "lsp.open"
@@ -49,6 +50,9 @@ public enum MessageType {
     public static let lspHover = "lsp.hover"
     public static let lspDefinition = "lsp.definition"
     public static let lspComplete = "lsp.complete"
+    public static let lspReferences = "lsp.references"
+    public static let lspRename = "lsp.rename"
+    public static let lspSymbols = "lsp.symbols"
     public static let lspFormat = "lsp.format"
     public static let lspDiagnostics = "lsp.diagnostics"
     public static let lspServerInfo = "lsp.serverinfo"
@@ -244,6 +248,63 @@ public struct LSPFormatReq: Codable {
 public struct LSPFormatResult: Codable {
     public var text: String
     public var changed: Bool
+}
+public struct LSPLocation: Codable, Identifiable, Hashable {
+    public var id: String { "\(path):\(line):\(character)" }
+    public var path: String
+    public var line: Int
+    public var character: Int
+}
+public struct LSPLocations: Codable {
+    public var locations: [LSPLocation]
+}
+public struct LSPRenameReq: Codable {
+    public var path: String
+    public var line: Int
+    public var character: Int
+    public var newName: String
+    public init(path: String, line: Int, character: Int, newName: String) {
+        self.path = path; self.line = line; self.character = character; self.newName = newName
+    }
+    enum CodingKeys: String, CodingKey { case path, line, character; case newName = "new_name" }
+}
+public struct LSPRenameResult: Codable {
+    public var files: [String]
+    public var count: Int
+}
+public struct LSPSymbol: Codable, Identifiable, Hashable {
+    public var id: String { "\(name):\(kind):\(line):\(character)" }
+    public var name: String
+    public var kind: Int
+    public var detail: String?
+    public var line: Int
+    public var character: Int
+    public var children: [LSPSymbol]?
+}
+public struct LSPSymbols: Codable {
+    public var symbols: [LSPSymbol]
+}
+
+// MARK: - Multi-file search
+
+public struct FSSearchReq: Codable {
+    public var query: String
+    public var sessionID: String?
+    public var regex: Bool?
+    public init(query: String, sessionID: String? = nil, regex: Bool? = nil) {
+        self.query = query; self.sessionID = sessionID; self.regex = regex
+    }
+    enum CodingKeys: String, CodingKey { case query, regex; case sessionID = "session_id" }
+}
+public struct FSSearchHit: Codable, Identifiable, Hashable {
+    public var id: String { "\(path):\(line):\(col)" }
+    public var path: String
+    public var line: Int
+    public var col: Int
+    public var text: String
+}
+public struct FSSearchResult: Codable {
+    public var results: [FSSearchHit]
 }
 public struct FSWriteResult: Codable {
     public var path: String

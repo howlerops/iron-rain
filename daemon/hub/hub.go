@@ -10,7 +10,9 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -660,6 +662,10 @@ func asyncDispatch(typ string) bool {
 		protocol.TypeFSReadBytes,        // disk: raw bytes (images)
 		protocol.TypeFSWrite,            // disk: file write
 		protocol.TypeFSDiff,             // git diff
+		protocol.TypeFSSearch,           // disk: multi-file search
+		protocol.TypeLSPReferences,      // language server: references
+		protocol.TypeLSPRename,          // language server: rename
+		protocol.TypeLSPSymbols,         // language server: document symbols
 		protocol.TypeLSPOpen,            // language server: didOpen
 		protocol.TypeLSPChange,          // language server: didChange
 		protocol.TypeLSPClose,           // language server: didClose
@@ -1292,6 +1298,60 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		}
 		h.sendOK(conn, env.ID, protocol.LSPFormatResult{Text: text, Changed: changed})
 
+	case protocol.TypeLSPReferences:
+		var req protocol.LSPPosReq
+		_ = env.Unmarshal(&req)
+		locs, err := h.lsp.References(ctx, req.Path, req.Line, req.Character)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		out := make([]protocol.LSPLocation, len(locs))
+		for i, l := range locs {
+			out[i] = protocol.LSPLocation{Path: l.Path, Line: l.StartLine, Character: l.StartChar}
+		}
+		h.sendOK(conn, env.ID, protocol.LSPLocations{Locations: out})
+
+	case protocol.TypeLSPSymbols:
+		var req protocol.LSPDocReq
+		_ = env.Unmarshal(&req)
+		syms, err := h.lsp.DocumentSymbols(ctx, req.Path)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, protocol.LSPSymbols{Symbols: toProtoSymbols(syms)})
+
+	case protocol.TypeLSPRename:
+		var req protocol.LSPRenameReq
+		_ = env.Unmarshal(&req)
+		files, err := h.applyRename(ctx, req)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, protocol.LSPRenameResult{Files: files, Count: len(files)})
+
+	case protocol.TypeFSSearch:
+		var req protocol.FSSearchReq
+		_ = env.Unmarshal(&req)
+		var roots []string
+		if req.SessionID != "" {
+			roots = h.sessionRoots(req.SessionID)
+		} else {
+			roots = h.fsGuard().Roots()
+		}
+		hits, err := fsaccess.Search(req.Query, roots, req.Regex, 500)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		out := make([]protocol.FSSearchHit, len(hits))
+		for i, hh := range hits {
+			out[i] = protocol.FSSearchHit{Path: hh.Path, Line: hh.Line, Col: hh.Col, Text: hh.Text}
+		}
+		h.sendOK(conn, env.ID, protocol.FSSearchResult{Results: out})
+
 	case protocol.TypeLSPServerInfo:
 		var req protocol.LSPDocReq
 		_ = env.Unmarshal(&req)
@@ -1404,6 +1464,44 @@ func (h *Hub) fsGuard() *fsaccess.Guard {
 		}
 	}
 	return fsaccess.New(roots)
+}
+
+func toProtoSymbols(syms []lsp.Symbol) []protocol.LSPSymbol {
+	out := make([]protocol.LSPSymbol, len(syms))
+	for i, s := range syms {
+		out[i] = protocol.LSPSymbol{
+			Name: s.Name, Kind: s.Kind, Detail: s.Detail,
+			Line: s.Line, Character: s.Char, Children: toProtoSymbols(s.Children),
+		}
+	}
+	return out
+}
+
+// applyRename renames a symbol across files via the language server, writing each changed file
+// (validated against the fs sandbox) and broadcasting fs.change so open buffers reload.
+func (h *Hub) applyRename(ctx context.Context, req protocol.LSPRenameReq) ([]string, error) {
+	if strings.TrimSpace(req.NewName) == "" {
+		return nil, fmt.Errorf("empty new name")
+	}
+	contents, err := h.lsp.RenameApply(ctx, req.Path, req.Line, req.Character, req.NewName)
+	if err != nil {
+		return nil, err
+	}
+	guard := h.fsGuard()
+	var files []string
+	for p, content := range contents {
+		abs, err := guard.Resolve(p) // refuse anything outside allowed roots
+		if err != nil {
+			continue
+		}
+		if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
+			continue
+		}
+		files = append(files, abs)
+		h.broadcast(protocol.TypeFSChange, protocol.FSChange{Path: abs}) // open buffers reload
+	}
+	sort.Strings(files)
+	return files, nil
 }
 
 // fsDiff returns the unified diff for a session's worktree, or `git diff` at a path's repo.
