@@ -73,6 +73,8 @@ struct SessionSidebar: View {
     /// Driven by `.searchable` on the NavigationSplitView (RootView), per Apple's guidance;
     /// it filters `filteredGroups` here.
     @Binding var searchText: String
+    /// Opens the Code detail in review mode for a session's changes (macOS).
+    var onReview: ((String) -> Void)? = nil
     @AppStorage("oculus.appearance") private var appearance: Appearance = .system
     @State private var filter: SessionFilter = .all
 
@@ -253,6 +255,9 @@ struct SessionSidebar: View {
     /// disabled hint so it's clear why there's nothing to manage.
     @ViewBuilder private func rowMenu(_ item: SidebarSession) -> some View {
         if item.managed {
+            if let onReview {
+                Button { onReview(item.id) } label: { Label("Review changes", systemImage: "plus.forwardslash.minus") }
+            }
             Button(role: .destructive) {
                 Task { await model.stopSession(item.id) }
             } label: {

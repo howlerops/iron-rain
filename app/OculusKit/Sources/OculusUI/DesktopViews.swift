@@ -12,6 +12,7 @@ public struct RootView: View {
     @State private var showNewSession = false
     @State private var selectedTab = 0
     @State private var searchText = ""
+    @State private var reviewSessionID: String?
     @AppStorage("oculus.appearance") private var appearance: Appearance = .system
     #if os(macOS)
     @StateObject private var launcher = DaemonLauncher()
@@ -72,7 +73,8 @@ public struct RootView: View {
         // to it, overriding its runaway ideal.
         GeometryReader { proxy in
             NavigationSplitView {
-                SessionSidebar(store: store, model: model, selection: $selection, searchText: $searchText)
+                SessionSidebar(store: store, model: model, selection: $selection, searchText: $searchText,
+                               onReview: { sid in reviewSessionID = sid; selectedTab = 2 })
                     .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 340)
             } detail: {
                 detailPane(model)
@@ -117,10 +119,14 @@ public struct RootView: View {
     /// narrow, layout-fragile sidebar top. It swaps the detail between the chat and issues.
     @ViewBuilder private func detailPane(_ model: Model) -> some View {
         Group {
-            if selectedTab == 0 {
-                ChatView(model: model)
-            } else {
+            switch selectedTab {
+            case 1:
                 IssuesView(model: model, palette: palette, embedded: true) { selectedTab = 0 }
+            case 2:
+                CodeSurface(model: model, reviewSessionID: reviewSessionID)
+                    .id(reviewSessionID ?? "browse") // re-review when the target changes
+            default:
+                ChatView(model: model)
             }
         }
         #if os(macOS)
@@ -129,6 +135,7 @@ public struct RootView: View {
                 Picker("View", selection: $selectedTab) {
                     Text("Sessions").tag(0)
                     Text("Issues").tag(1)
+                    Text("Code").tag(2)
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 180)
