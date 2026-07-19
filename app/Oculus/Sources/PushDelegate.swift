@@ -67,8 +67,12 @@ final class PushDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCen
         case "DENY": decision = "deny"   // matches OculusKit Decision.deny
         default: decision = nil
         }
-        if let decision {
-            Task { @MainActor in OculusStore.shared.pendingDecision = decision }
+        // Any tap (approval or "agent finished"/"error") that carries a session id opens
+        // that session on the next connect — tap the notification, land in the session.
+        let sid = response.notification.request.content.userInfo["session_id"] as? String
+        Task { @MainActor in
+            if let decision { OculusStore.shared.pendingDecision = decision }
+            if let sid, decision == nil { OculusStore.shared.handoffSessionID = sid }
         }
         completionHandler()
     }

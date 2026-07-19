@@ -185,6 +185,11 @@ public final class Model: ObservableObject {
                 OculusStore.shared.pendingDecision = nil
                 await respond(decision)
             }
+            // Tapped a notification (agent finished / error / approval) → open that session.
+            if let sid = OculusStore.shared.handoffSessionID {
+                OculusStore.shared.handoffSessionID = nil
+                await openSession(sid)
+            }
         } catch OculusClientError.handshakeRejected(let msg) {
             status = "Connect failed"
             statusDetail = msg.isEmpty ? "Pairing rejected" : "Pairing rejected: \(msg)"

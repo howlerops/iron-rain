@@ -37,6 +37,7 @@ type managedSession struct {
 	lastActivity    time.Time // last event time; surfaced as Session.UpdatedAt for sorting/relative time
 	inTok, outTok   int       // cumulative token usage across the session
 	costUSD         float64   // cumulative cost (USD)
+	wasRunning      bool      // saw activity since the last idle (gates the "finished" push)
 }
 
 // subscriber owns one client's outbound queue plus the writer goroutine that drains it.
@@ -69,6 +70,35 @@ type sessionMeta struct {
 
 func newManagedSession(h *Hub, sess agent.Session, meta sessionMeta) *managedSession {
 	return &managedSession{hub: h, sess: sess, meta: meta, subs: map[*transport.Conn]*subscriber{}, lastActivity: time.Now()}
+}
+
+// onStatus fires "walk away" push notifications on turn boundaries: an agent that produced
+// work then went idle → "finished"; a status error → "error". Gated by wasRunning so a bare
+// idle (no activity) doesn't notify, which rate-limits to once per active turn.
+func (m *managedSession) onStatus(ss protocol.SessionStatus) {
+	m.mu.Lock()
+	label := m.meta.label
+	if label == "" {
+		label = m.meta.workspaceName
+	}
+	switch ss.Status {
+	case protocol.StatusRunning:
+		m.wasRunning = true
+		m.mu.Unlock()
+	case protocol.StatusIdle, protocol.StatusDone:
+		finished := m.wasRunning
+		m.wasRunning = false
+		m.mu.Unlock()
+		if finished {
+			m.hub.pushAgentFinished(m.sess.ID(), label)
+		}
+	case protocol.StatusError:
+		m.wasRunning = false
+		m.mu.Unlock()
+		m.hub.pushAgentError(m.sess.ID(), label, ss.Detail)
+	default:
+		m.mu.Unlock()
+	}
 }
 
 // lastActive is the unix time of the session's last event — the liveness clock the DB TTL
@@ -221,6 +251,16 @@ func (m *managedSession) run() {
 				m.outTok += u.OutputTokens
 				m.costUSD += u.CostUSD
 				m.mu.Unlock()
+			}
+		}
+		if ev.Type == protocol.TypeOutputDelta || ev.Type == protocol.TypeThinking {
+			m.mu.Lock()
+			m.wasRunning = true
+			m.mu.Unlock()
+		}
+		if ev.Type == protocol.TypeSessionStatus {
+			if ss, ok := ev.Payload.(protocol.SessionStatus); ok {
+				m.onStatus(ss)
 			}
 		}
 		raw, err := ev.Encode()

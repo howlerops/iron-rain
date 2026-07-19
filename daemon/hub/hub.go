@@ -537,6 +537,45 @@ func (h *Hub) RegisterDevice(token string) {
 
 // pushApproval delivers an approval to every registered device (best-effort, async).
 func (h *Hub) pushApproval(ar protocol.ApprovalRequest) {
+	h.pushNotify(push.Notification{
+		Title:    "Approve " + ar.Tool,
+		Body:     "Tap to review in Oculus",
+		Category: "APPROVAL",
+		ThreadID: ar.SessionID,
+		Custom:   map[string]any{"approval_id": ar.ApprovalID, "session_id": ar.SessionID},
+	})
+}
+
+// pushAgentFinished notifies that an agent turn completed while you're away.
+func (h *Hub) pushAgentFinished(sessionID, label string) {
+	title := "Agent finished"
+	if label != "" {
+		title = label + " finished"
+	}
+	h.pushNotify(push.Notification{
+		Title: title, Body: "The agent is done — tap to review", Category: "AGENT_FINISHED",
+		ThreadID: sessionID, Custom: map[string]any{"session_id": sessionID},
+	})
+}
+
+// pushAgentError notifies that a session hit an error.
+func (h *Hub) pushAgentError(sessionID, label, detail string) {
+	body := detail
+	if body == "" {
+		body = "The agent hit an error — tap to review"
+	}
+	title := "Agent error"
+	if label != "" {
+		title = label + " error"
+	}
+	h.pushNotify(push.Notification{
+		Title: title, Body: body, Category: "AGENT_ERROR",
+		ThreadID: sessionID, Custom: map[string]any{"session_id": sessionID},
+	})
+}
+
+// pushNotify fans a notification out to every registered device without blocking the caller.
+func (h *Hub) pushNotify(notif push.Notification) {
 	h.mu.Lock()
 	n := h.notifier
 	tokens := append([]string(nil), h.pushTokens...)
@@ -544,14 +583,7 @@ func (h *Hub) pushApproval(ar protocol.ApprovalRequest) {
 	if n == nil || len(tokens) == 0 {
 		return
 	}
-	notif := push.Notification{
-		Title:    "Approve " + ar.Tool,
-		Body:     "Tap to review in Oculus",
-		Category: "APPROVAL",
-		ThreadID: ar.SessionID,
-		Custom:   map[string]any{"approval_id": ar.ApprovalID, "session_id": ar.SessionID},
-	}
-	log.Printf("hub: pushing approval %s (tool %q) to %d device(s)", ar.ApprovalID, ar.Tool, len(tokens))
+	log.Printf("hub: pushing %s to %d device(s)", notif.Category, len(tokens))
 	// Fan out on a dispatcher goroutine so the caller (the session event pump) never
 	// blocks. Each Notify gets a bounded context so a hung APNs call can't leak a
 	// goroutine forever, and a semaphore caps concurrent in-flight pushes.
