@@ -246,6 +246,21 @@ public final class Model: ObservableObject {
         }
     }
 
+    /// Stops a daemon-managed session: halts its running agent, which ends the session and
+    /// drops it from `sessions`. No-op for discovered/view-only sessions (not owned here).
+    /// If the stopped session is the one on screen, clears the conversation.
+    public func stopSession(_ id: String) async {
+        guard let client else { return }
+        do {
+            let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.sessionStop,
+                                          payload: SessionRef(sessionID: id))
+            try await client.send(env)
+            if sessionID == id { newSession() }
+        } catch {
+            status = "Stop failed: \(error)"
+        }
+    }
+
     /// Adds an image to be sent with the next prompt (converted to base64).
     public func attachImage(mime: String, data: Data) {
         pendingImages.append(ImageAttachment(mime: mime, data: data.base64EncodedString()))

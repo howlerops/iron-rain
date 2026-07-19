@@ -11,6 +11,9 @@ private struct SidebarSession: Identifiable {
     let branch: String?
     let isRunning: Bool
     let viewOnly: Bool
+    /// True when this session is owned by our daemon (started from the app) — it can be
+    /// stopped/managed. False for sessions discovered from a terminal (view-only lifecycle).
+    let managed: Bool
     let updatedAt: Date?
 }
 
@@ -21,6 +24,37 @@ private struct SessionGroup: Identifiable {
     let showProject: Bool  // the "Recent" group spans projects, so show each row's project
     let hasRunning: Bool
     var id: String { name }
+}
+
+/// Sidebar list filter — All, only running, only daemon-managed, or only view-only
+/// (terminal-owned). Lets you hide the view-only clutter or focus on live work.
+private enum SessionFilter: String, CaseIterable, Identifiable {
+    case all, running, managed, viewOnly
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .all: return "All sessions"
+        case .running: return "Running"
+        case .managed: return "Managed"
+        case .viewOnly: return "View-only"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .all: return "square.stack"
+        case .running: return "bolt.fill"
+        case .managed: return "person.crop.circle.badge.checkmark"
+        case .viewOnly: return "eye"
+        }
+    }
+    func matches(_ s: SidebarSession) -> Bool {
+        switch self {
+        case .all: return true
+        case .running: return s.isRunning
+        case .managed: return s.managed
+        case .viewOnly: return !s.managed
+        }
+    }
 }
 
 /// The session sidebar: a device switcher + status, a Sessions/Issues switch, and the
@@ -40,6 +74,7 @@ struct SessionSidebar: View {
     /// it filters `filteredGroups` here.
     @Binding var searchText: String
     @AppStorage("oculus.appearance") private var appearance: Appearance = .system
+    @State private var filter: SessionFilter = .all
 
     static let newSessionTag = "__new__"
 
@@ -105,6 +140,7 @@ struct SessionSidebar: View {
                                     ? palette.primary.opacity(scheme == .dark ? 0.16 : 0.10)
                                     : Color.clear
                             )
+                            .contextMenu { rowMenu(item) }
                     }
                 } header: {
                     sectionHeader(group.name, running: group.hasRunning)
@@ -137,6 +173,16 @@ struct SessionSidebar: View {
     @ToolbarContentBuilder private var sidebarToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
             Menu {
+                Picker(selection: $filter) {
+                    ForEach(SessionFilter.allCases) { f in
+                        Label(f.label, systemImage: f.symbol).tag(f)
+                    }
+                } label: { Text("Filter") }
+                .pickerStyle(.inline)
+            } label: {
+                Image(systemName: filter == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
+            }
+            Menu {
                 if model.pairingURL != nil {
                     Button { showPairingQR = true } label: { Label("Pair a phone…", systemImage: "qrcode") }
                 }
@@ -163,17 +209,35 @@ struct SessionSidebar: View {
         return n.isEmpty ? "Desktop" : n
     }
 
-    /// `groups`, narrowed to rows whose title matches the search field. Empty sections are
-    /// dropped so search collapses the list to just the hits.
+    /// `groups`, narrowed by the search field and the active filter. Empty sections are
+    /// dropped so the list collapses to just the hits.
     private var filteredGroups: [SessionGroup] {
         let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !q.isEmpty else { return groups }
+        guard !q.isEmpty || filter != .all else { return groups }
         return groups.compactMap { g in
-            let hits = g.items.filter { $0.title.localizedCaseInsensitiveContains(q) }
+            let hits = g.items.filter { item in
+                (q.isEmpty || item.title.localizedCaseInsensitiveContains(q)) && filter.matches(item)
+            }
             guard !hits.isEmpty else { return nil }
             return SessionGroup(name: g.name, items: hits,
                                 showProvider: g.showProvider, showProject: g.showProject,
                                 hasRunning: hits.contains { $0.isRunning })
+        }
+    }
+
+    /// Right-click actions for a row. Managed (daemon-owned) sessions can be stopped, which
+    /// ends the agent and removes them. Terminal-owned sessions are view-only — surfaced as a
+    /// disabled hint so it's clear why there's nothing to manage.
+    @ViewBuilder private func rowMenu(_ item: SidebarSession) -> some View {
+        if item.managed {
+            Button(role: .destructive) {
+                Task { await model.stopSession(item.id) }
+            } label: {
+                Label(item.isRunning ? "Stop session" : "End session", systemImage: "stop.circle")
+            }
+        } else {
+            Label("View-only · owned by a terminal", systemImage: "eye")
+                .foregroundStyle(palette.mutedForeground)
         }
     }
 
@@ -211,19 +275,19 @@ struct SessionSidebar: View {
             let key = s.projectID.flatMap { projectNames[$0] } ?? ((s.projectID?.isEmpty ?? true) ? "On this Mac" : s.projectID!)
             add(key, SidebarSession(id: s.id, title: title, provider: s.provider, projectName: key,
                                     branch: s.branch, isRunning: s.status == SessionStatusValue.running,
-                                    viewOnly: false, updatedAt: date(s.updatedAt)))
+                                    viewOnly: false, managed: true, updatedAt: date(s.updatedAt)))
         }
         for d in model.discovered where d.provider == "opencode" && d.kind == DiscoveredKind.session {
             guard let sid = d.sessionID, !managedIDs.contains(sid) else { continue }
             add("On this Mac", SidebarSession(id: sid, title: clean(d.title) ?? "ses \(sid.prefix(6))",
                                               provider: "opencode", projectName: "On this Mac", branch: nil,
-                                              isRunning: false, viewOnly: false, updatedAt: date(d.updatedAt)))
+                                              isRunning: false, viewOnly: false, managed: false, updatedAt: date(d.updatedAt)))
         }
         for d in model.discovered where d.provider == "claude-code" {
             let name = (d.cwd as NSString?)?.lastPathComponent ?? "session"
             add("View-only", SidebarSession(id: d.discoveryID, title: name, provider: "claude-code",
                                             projectName: "View-only", branch: nil, isRunning: false,
-                                            viewOnly: true, updatedAt: date(d.updatedAt)))
+                                            viewOnly: true, managed: false, updatedAt: date(d.updatedAt)))
         }
 
         // Pull recently-active sessions (active within the window, or running) out of their
@@ -312,31 +376,37 @@ private struct SessionRow: View {
             }
             Spacer(minLength: 6)
             if let b = item.branch, !b.isEmpty {
-                HStack(spacing: 3) {
-                    Image(systemName: "arrow.triangle.branch").font(.system(size: 9))
-                    Text(b).font(.system(size: 10, weight: .medium)).lineLimit(1)
-                }
-                .foregroundStyle(palette.mutedForeground)
-                .padding(.horizontal, 6).padding(.vertical, 2)
-                .background(Capsule().fill(palette.mutedForeground.opacity(0.12)))
+                chip(icon: "arrow.triangle.branch", text: b, tint: palette.mutedForeground)
             }
+            // A solid chip to distinguish lifecycle at a glance: running (gold, live), or
+            // view-only (terminal-owned — can't be stopped from here). Managed idle sessions
+            // carry no chip; they're the plain default.
             if item.isRunning {
-                Circle().fill(palette.primary).frame(width: 6, height: 6)
-                    .overlay(Circle().stroke(palette.primary.opacity(0.25), lineWidth: 3))
-                    .padding(.trailing, 2)
+                chip(icon: "circle.fill", text: "Live", tint: palette.primary, filled: true)
+            } else if !item.managed {
+                chip(icon: "eye", text: "View", tint: palette.mutedForeground)
             }
         }
         .padding(.vertical, 3)
         .contentShape(Rectangle())
     }
 
-    /// Provider (only when its group mixes providers, or view-only) joined with a compact
-    /// relative time. Nil → the row is a single clean line of just the title.
+    private func chip(icon: String, text: String, tint: Color, filled: Bool = false) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: icon).font(.system(size: filled ? 6 : 9))
+            Text(text).font(.system(size: 10, weight: .semibold)).lineLimit(1)
+        }
+        .foregroundStyle(filled ? tint : palette.mutedForeground)
+        .padding(.horizontal, 6).padding(.vertical, 2)
+        .background(Capsule().fill(tint.opacity(filled ? 0.16 : 0.12)))
+    }
+
+    /// Provider (only when its group mixes providers) joined with a compact relative time.
+    /// The view-only/managed distinction is carried by the trailing chip, not this line.
     private var secondary: String? {
         var parts: [String] = []
         if showProject { parts.append(item.projectName) } // Recent section spans projects
-        if item.viewOnly { parts.append("\(item.provider) · view-only") }
-        else if showProvider { parts.append(item.provider) }
+        if showProvider || item.viewOnly { parts.append(item.provider) }
         if let t = item.updatedAt { parts.append(Self.relative(t)) }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
