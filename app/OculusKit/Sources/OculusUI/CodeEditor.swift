@@ -8,39 +8,62 @@ import UIKit
 
 /// A native code editor: a platform text view (NSTextView / UITextView) with a monospaced font,
 /// live syntax highlighting from `SyntaxHighlighter`, and language-server diagnostics drawn as
-/// colored underlines. Editable or read-only. Dependency-free — the highlighting backend can be
-/// swapped for tree-sitter behind `SyntaxHighlighter`.
+/// colored underlines. Reports the caret position (for hover/type info) and can scroll to a
+/// target (go-to-definition). Dependency-free — the highlighting backend can be swapped for
+/// tree-sitter behind `SyntaxHighlighter`.
 struct CodeEditor: View {
     @Binding var text: String
     let language: CodeLanguage
     let theme: CodeTheme
     var editable: Bool
     var diagnostics: [LSPDiagnostic] = []
+    var scrollTarget: EditorTarget? = nil
+    var onCaret: (Int, Int) -> Void = { _, _ in }
+    var onConsumedScroll: () -> Void = {}
 
     var body: some View {
-        CodeTextView(text: $text, language: language, theme: theme, editable: editable, diagnostics: diagnostics)
+        CodeTextView(text: $text, language: language, theme: theme, editable: editable,
+                     diagnostics: diagnostics, scrollTarget: scrollTarget,
+                     onCaret: onCaret, onConsumedScroll: onConsumedScroll)
             .background(theme.background)
     }
 }
 
-/// Maps LSP (line, character) diagnostics — 0-based, UTF-16 offsets — to NSRanges in the text.
-/// NSString is UTF-16, so LSP character offsets line up directly.
-private func diagnosticRanges(_ diags: [LSPDiagnostic], in ns: NSString) -> [(NSRange, Int)] {
-    guard !diags.isEmpty else { return [] }
+// MARK: - LSP position <-> NSString offset (0-based line/char, UTF-16, matching LSP + NSString)
+
+private func lineStarts(_ ns: NSString) -> [Int] {
     var starts = [0]
     ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length),
                            options: [.byLines, .substringNotRequired]) { _, _, enclosing, _ in
         starts.append(enclosing.location + enclosing.length)
     }
-    func offset(_ line: Int, _ char: Int) -> Int {
-        guard line >= 0, line < starts.count else { return ns.length }
-        return min(starts[line] + max(char, 0), ns.length)
+    return starts
+}
+
+private func offsetFor(line: Int, char: Int, in ns: NSString, starts: [Int]) -> Int {
+    guard line >= 0, line < starts.count else { return ns.length }
+    return min(starts[line] + max(char, 0), ns.length)
+}
+
+private func lineChar(forOffset off: Int, in ns: NSString) -> (Int, Int) {
+    let starts = lineStarts(ns)
+    var lo = 0, hi = starts.count - 1, line = 0
+    while lo <= hi { // binary search for the greatest start <= off
+        let mid = (lo + hi) / 2
+        if starts[mid] <= off { line = mid; lo = mid + 1 } else { hi = mid - 1 }
     }
+    return (line, off - starts[line])
+}
+
+/// Maps LSP diagnostics to NSRanges + severities.
+private func diagnosticRanges(_ diags: [LSPDiagnostic], in ns: NSString) -> [(NSRange, Int)] {
+    guard !diags.isEmpty else { return [] }
+    let starts = lineStarts(ns)
     var out: [(NSRange, Int)] = []
     for d in diags {
-        let s = offset(d.startLine, d.startChar)
-        var e = offset(d.endLine, d.endChar)
-        if e <= s { e = min(s + 1, ns.length) } // ensure a zero-width diagnostic still underlines
+        let s = offsetFor(line: d.startLine, char: d.startChar, in: ns, starts: starts)
+        var e = offsetFor(line: d.endLine, char: d.endChar, in: ns, starts: starts)
+        if e <= s { e = min(s + 1, ns.length) }
         if s < ns.length { out.append((NSRange(location: s, length: e - s), d.severity)) }
     }
     return out
@@ -53,6 +76,9 @@ private struct CodeTextView: NSViewRepresentable {
     let theme: CodeTheme
     var editable: Bool
     var diagnostics: [LSPDiagnostic]
+    var scrollTarget: EditorTarget?
+    var onCaret: (Int, Int) -> Void
+    var onConsumedScroll: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -86,18 +112,38 @@ private struct CodeTextView: NSViewRepresentable {
         }
         context.coordinator.parent = self
         context.coordinator.highlight(tv)
+        context.coordinator.applyScrollTarget(tv)
     }
 
     static let font = NSFont.monospacedSystemFont(ofSize: 12.5, weight: .regular)
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: CodeTextView
+        private var lastTarget: EditorTarget?
         init(_ p: CodeTextView) { parent = p }
 
         func textDidChange(_ notification: Notification) {
             guard let tv = notification.object as? NSTextView else { return }
             parent.text = tv.string
             highlight(tv)
+        }
+
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let tv = notification.object as? NSTextView else { return }
+            let (line, char) = lineChar(forOffset: tv.selectedRange().location, in: tv.string as NSString)
+            parent.onCaret(line, char)
+        }
+
+        func applyScrollTarget(_ tv: NSTextView) {
+            guard let t = parent.scrollTarget, t != lastTarget else { return }
+            lastTarget = t
+            let ns = tv.string as NSString
+            let off = offsetFor(line: t.line, char: t.char, in: ns, starts: lineStarts(ns))
+            let r = NSRange(location: min(off, ns.length), length: 0)
+            tv.setSelectedRange(r)
+            tv.scrollRangeToVisible(r)
+            tv.window?.makeFirstResponder(tv)
+            DispatchQueue.main.async { [weak self] in self?.parent.onConsumedScroll() }
         }
 
         func highlight(_ tv: NSTextView) {
@@ -135,6 +181,9 @@ private struct CodeTextView: UIViewRepresentable {
     let theme: CodeTheme
     var editable: Bool
     var diagnostics: [LSPDiagnostic]
+    var scrollTarget: EditorTarget?
+    var onCaret: (Int, Int) -> Void
+    var onConsumedScroll: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -160,17 +209,35 @@ private struct CodeTextView: UIViewRepresentable {
         }
         context.coordinator.parent = self
         context.coordinator.highlight(tv)
+        context.coordinator.applyScrollTarget(tv)
     }
 
     static let font = UIFont.monospacedSystemFont(ofSize: 13, weight: .regular)
 
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: CodeTextView
+        private var lastTarget: EditorTarget?
         init(_ p: CodeTextView) { parent = p }
 
         func textViewDidChange(_ tv: UITextView) {
             parent.text = tv.text
             highlight(tv)
+        }
+
+        func textViewDidChangeSelection(_ tv: UITextView) {
+            let (line, char) = lineChar(forOffset: tv.selectedRange.location, in: (tv.text ?? "") as NSString)
+            parent.onCaret(line, char)
+        }
+
+        func applyScrollTarget(_ tv: UITextView) {
+            guard let t = parent.scrollTarget, t != lastTarget else { return }
+            lastTarget = t
+            let ns = (tv.text ?? "") as NSString
+            let off = offsetFor(line: t.line, char: t.char, in: ns, starts: lineStarts(ns))
+            let r = NSRange(location: min(off, ns.length), length: 0)
+            tv.selectedRange = r
+            tv.scrollRangeToVisible(r)
+            DispatchQueue.main.async { [weak self] in self?.parent.onConsumedScroll() }
         }
 
         func highlight(_ tv: UITextView) {

@@ -4,6 +4,9 @@ import OculusKit
 /// State for the built-in editor: the file tree roots, the open file (buffer + base sha for
 /// conflict-checked saves), and an optional review diff. All file access goes through the
 /// daemon via `Model` (the files live on the host).
+/// A caret target (0-based line/char) the editor should scroll to and select.
+struct EditorTarget: Equatable { let line: Int; let char: Int }
+
 @MainActor final class CodeModel: ObservableObject {
     let model: Model
 
@@ -20,11 +23,16 @@ import OculusKit
     @Published var status: String?
     @Published var imageData: Data?         // non-nil → the open file is an image
     @Published var imageMime: String?
+    @Published var hoverInfo: String?       // type/doc info at the caret (from LSP hover)
+    @Published var scrollTarget: EditorTarget?  // editor moves the caret here, then clears it
 
     private var loadedSha = ""
     private var reloadTask: Task<Void, Never>?
     private var lspChangeTask: Task<Void, Never>?
+    private var hoverTask: Task<Void, Never>?
     private var lspOpenPath: String?        // path currently open in a language server
+    private var caretLine = 0
+    private var caretChar = 0
 
     init(model: Model) { self.model = model }
 
@@ -52,20 +60,24 @@ import OculusKit
 
     /// Opens a file into the editor (read-only for binary/oversized) and starts a poll that
     /// live-reloads it if the agent changes it on disk while the buffer is clean.
-    func open(_ node: FSNode) async {
+    func open(_ node: FSNode) async { await openFile(path: node.path, name: node.name) }
+
+    func openFile(path nodePath: String, name nodeName: String) async {
         reloadTask?.cancel()
         lspChangeTask?.cancel()
+        hoverTask?.cancel()
+        hoverInfo = nil
         closeLSP()          // release the previously-open document
         diffText = nil
         imageData = nil
         imageMime = nil
 
         // Images render inline rather than as text.
-        if isImage(node.path) {
+        if isImage(nodePath) {
             do {
-                let b = try await model.fsReadBytes(node.path)
-                openPath = node.path
-                fileName = node.name
+                let b = try await model.fsReadBytes(nodePath)
+                openPath = nodePath
+                fileName = nodeName
                 imageData = Data(base64Encoded: b.data)
                 imageMime = b.mime
                 readOnly = true
@@ -79,9 +91,9 @@ import OculusKit
         }
 
         do {
-            let f = try await model.fsRead(node.path)
+            let f = try await model.fsRead(nodePath)
             openPath = f.path
-            fileName = node.name
+            fileName = nodeName
             loadedSha = f.sha
             language = CodeLanguage.infer(fromPath: f.path)
             readOnly = (f.binary ?? false) || (f.truncated ?? false)
@@ -119,6 +131,34 @@ import OculusKit
             Task { await model.lspClose(p) }
         }
     }
+
+    /// The caret moved: debounce, then ask the language server for the type/docs there.
+    func caretMoved(line: Int, char: Int) {
+        caretLine = line; caretChar = char
+        guard let p = lspOpenPath else { hoverInfo = nil; return }
+        hoverTask?.cancel()
+        hoverTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard let self, !Task.isCancelled, self.openPath == p else { return }
+            let info = await self.model.lspHover(p, line: line, character: char)
+            if !Task.isCancelled { self.hoverInfo = info.isEmpty ? nil : info }
+        }
+    }
+
+    /// Jumps to the definition of the symbol at the caret (opens the target file if needed).
+    func jumpToDefinition() async {
+        guard let p = lspOpenPath else { return }
+        guard let def = await model.lspDefinition(p, line: caretLine, character: caretChar) else {
+            status = "No definition found"; return
+        }
+        if def.path != openPath {
+            await openFile(path: def.path, name: (def.path as NSString).lastPathComponent)
+        }
+        scrollTarget = EditorTarget(line: def.line, char: def.character)
+    }
+
+    /// The editor consumed a scroll target (moved the caret) — clear it.
+    func consumeScrollTarget() { scrollTarget = nil }
 
     /// Saves the buffer if the on-disk sha still matches (conflict otherwise).
     func save() async {
@@ -231,7 +271,14 @@ struct CodeSurface: View {
             } else if code.openPath != nil {
                 CodeEditor(text: Binding(get: { code.content }, set: { code.content = $0; code.markEdited() }),
                            language: code.language, theme: theme, editable: !code.readOnly,
-                           diagnostics: code.fileDiagnostics)
+                           diagnostics: code.fileDiagnostics,
+                           scrollTarget: code.scrollTarget,
+                           onCaret: { line, char in code.caretMoved(line: line, char: char) },
+                           onConsumedScroll: { code.consumeScrollTarget() })
+                if let hover = code.hoverInfo {
+                    Divider().overlay(palette.border)
+                    HoverInfoBar(text: hover, palette: palette)
+                }
                 if !code.fileDiagnostics.isEmpty {
                     Divider().overlay(palette.border)
                     DiagnosticsBar(diagnostics: code.fileDiagnostics, palette: palette)
@@ -258,6 +305,13 @@ struct CodeSurface: View {
                     Text(s).font(.system(size: 11)).foregroundStyle(palette.mutedForeground).lineLimit(1)
                 }
                 Spacer()
+                if !code.readOnly {
+                    Button { Task { await code.jumpToDefinition() } } label: {
+                        Image(systemName: "arrow.uturn.forward.square")
+                    }
+                    .font(.system(size: 12)).help("Jump to definition (caret)")
+                    .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
+                }
                 if code.conflict {
                     Button("Reload") { Task { await code.reload() } }.font(.system(size: 12))
                     Button("Overwrite") { Task { await code.overwrite() } }
@@ -410,6 +464,25 @@ struct ImageFileView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.background)
+    }
+}
+
+/// Shows the language server's type/doc info for the symbol at the caret.
+struct HoverInfoBar: View {
+    let text: String
+    let palette: OculusPalette
+
+    var body: some View {
+        ScrollView {
+            Text(text.trimmingCharacters(in: .whitespacesAndNewlines))
+                .font(.system(size: 11.5, design: .monospaced))
+                .foregroundStyle(palette.foreground)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 12).padding(.vertical, 6)
+        }
+        .frame(maxHeight: 96)
+        .background(palette.card.opacity(0.5))
     }
 }
 
