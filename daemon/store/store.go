@@ -41,9 +41,30 @@ func Open(path string) (*Store, error) {
 }
 
 func (s *Store) migrate() error {
-	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS session_names (
+	// Enable incremental auto-vacuum so freed pages (pruned sessions/names) can be
+	// reclaimed with PRAGMA incremental_vacuum instead of the DB growing forever.
+	// auto_vacuum only takes effect on an empty DB or after a VACUUM, so if a legacy
+	// DB was created with the default (NONE=0) we switch the mode and VACUUM once.
+	var mode int
+	if err := s.db.QueryRow(`PRAGMA auto_vacuum`).Scan(&mode); err == nil && mode == 0 {
+		if _, err := s.db.Exec(`PRAGMA auto_vacuum=INCREMENTAL`); err == nil {
+			_, _ = s.db.Exec(`VACUUM`) // applies the auto_vacuum change to the existing file
+		}
+	}
+	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS session_names (
 		id         TEXT PRIMARY KEY,
 		name       TEXT NOT NULL,
+		updated_at INTEGER NOT NULL
+	)`); err != nil {
+		return err
+	}
+	// Managed-session records, so sessions survive a daemon restart (the daemon
+	// re-attaches them on startup). meta is a JSON blob of the hub's sessionMeta.
+	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS sessions (
+		id         TEXT PRIMARY KEY,
+		provider   TEXT NOT NULL,
+		cwd        TEXT,
+		meta       TEXT,
 		updated_at INTEGER NOT NULL
 	)`)
 	return err
@@ -99,4 +120,88 @@ func (s *Store) Names() (map[string]string, error) {
 		out[id] = name
 	}
 	return out, rows.Err()
+}
+
+// SessionRecord is a persisted managed session, enough to re-attach it on startup.
+// Meta is an opaque JSON blob (the hub's sessionMeta) the caller marshals/unmarshals.
+type SessionRecord struct {
+	ID       string
+	Provider string
+	Cwd      string
+	Meta     string // JSON
+}
+
+// SaveSession upserts a session record and stamps updated_at (used as the TTL/liveness
+// clock — the hub touches live sessions so only stale rows expire).
+func (s *Store) SaveSession(r SessionRecord, now int64) error {
+	_, err := s.db.Exec(
+		`INSERT INTO sessions(id, provider, cwd, meta, updated_at) VALUES(?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET provider=excluded.provider, cwd=excluded.cwd,
+		   meta=excluded.meta, updated_at=excluded.updated_at`,
+		r.ID, r.Provider, r.Cwd, r.Meta, now,
+	)
+	return err
+}
+
+// TouchSessions bumps updated_at for the given live session ids so they never expire while
+// running (the TTL clock is liveness, not creation time). No-op for an empty list.
+func (s *Store) TouchSessions(ids []string, now int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare(`UPDATE sessions SET updated_at = ? WHERE id = ?`)
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	defer stmt.Close()
+	for _, id := range ids {
+		if _, err := stmt.Exec(now, id); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// DeleteSession removes a session record (on stop/delete or a failed re-attach).
+func (s *Store) DeleteSession(id string) error {
+	_, err := s.db.Exec(`DELETE FROM sessions WHERE id = ?`, id)
+	return err
+}
+
+// Sessions returns all persisted session records.
+func (s *Store) Sessions() ([]SessionRecord, error) {
+	rows, err := s.db.Query(`SELECT id, provider, cwd, meta FROM sessions`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SessionRecord
+	for rows.Next() {
+		var r SessionRecord
+		if err := rows.Scan(&r.ID, &r.Provider, &r.Cwd, &r.Meta); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// PruneSessions deletes session records not updated since `cutoff` (unix seconds) and, if
+// anything was removed, reclaims the freed pages via incremental_vacuum. Returns the count.
+func (s *Store) PruneSessions(cutoff int64) (int, error) {
+	res, err := s.db.Exec(`DELETE FROM sessions WHERE updated_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	if n > 0 {
+		_, _ = s.db.Exec(`PRAGMA incremental_vacuum`)
+	}
+	return int(n), nil
 }

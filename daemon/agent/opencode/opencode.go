@@ -212,35 +212,82 @@ func (s *session) subscribe() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.ctx = ctx
 	s.cancel = cancel
-	// opencode partitions its /event SSE stream by ?directory=, exactly like POST
-	// /session and POST /message. A session created/scoped to a project folder or
-	// worktree emits its events ONLY on /event?directory=<that dir>; subscribing to a
-	// bare /event (the server's default directory) would silently miss every event for
-	// this session, so scope the subscription to the same directory we write to.
-	eventPath := s.p.baseURL + withDir("/event", s.dir)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, eventPath, nil)
+	body, err := s.openEvents(ctx)
 	if err != nil {
 		cancel()
 		return err
+	}
+	go s.readLoop(body)
+	return nil
+}
+
+// openEvents opens the SSE /event stream, scoped to this session's directory. opencode
+// partitions /event by ?directory= (exactly like POST /session and POST /message): a
+// session in a project folder or worktree emits its events ONLY on /event?directory=<dir>,
+// so a bare /event (the server's default directory) would silently miss them.
+func (s *session) openEvents(ctx context.Context) (io.ReadCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.p.baseURL+withDir("/event", s.dir), nil)
+	if err != nil {
+		return nil, err
 	}
 	req.Header.Set("Accept", "text/event-stream")
 	resp, err := s.p.http.Do(req)
 	if err != nil {
-		cancel()
-		return err
+		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
 		resp.Body.Close()
-		cancel()
-		return fmt.Errorf("opencode /event: %s", resp.Status)
+		return nil, fmt.Errorf("opencode /event: %s", resp.Status)
 	}
-	go s.readEvents(resp.Body)
-	return nil
+	return resp.Body, nil
 }
 
-func (s *session) readEvents(body io.ReadCloser) {
-	defer close(s.events) // single sender; safe to close on exit
-	defer body.Close()
+// readLoop drains the event stream, and — because an opencode session lives on the server
+// independent of any one SSE connection — transparently reconnects if the stream drops
+// (opencode restart, network blip, idle timeout) instead of ending the session. It only
+// stops (and closes s.events, ending the session) when the session is Closed/Stopped.
+func (s *session) readLoop(body io.ReadCloser) {
+	defer close(s.events) // single sender; closing ends the session in the hub's run()
+	for {
+		s.scanEvents(body)
+		body.Close()
+		if s.ctx.Err() != nil {
+			return // Close()/Stop() was called — the session is really done
+		}
+		// The stream dropped but the session still lives server-side: reconnect with a
+		// capped backoff, then resume. (Any turn in flight keeps running server-side.)
+		nb, ok := s.reconnectEvents()
+		if !ok {
+			return
+		}
+		log.Printf("opencode: /event reconnected sid=%s", s.id)
+		body = nb
+	}
+}
+
+// reconnectEvents retries openEvents with exponential backoff until it succeeds or the
+// session is closed. Returns (stream, true) on success, (nil, false) if the session ended.
+func (s *session) reconnectEvents() (io.ReadCloser, bool) {
+	backoff := 500 * time.Millisecond
+	for {
+		if s.ctx.Err() != nil {
+			return nil, false
+		}
+		if body, err := s.openEvents(s.ctx); err == nil {
+			return body, true
+		}
+		select {
+		case <-s.ctx.Done():
+			return nil, false
+		case <-time.After(backoff):
+		}
+		if backoff < 15*time.Second {
+			backoff *= 2
+		}
+	}
+}
+
+func (s *session) scanEvents(body io.ReadCloser) {
 	sc := bufio.NewScanner(body)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	dataPrefix := []byte("data:")

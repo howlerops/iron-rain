@@ -47,7 +47,7 @@ type Hub struct {
 	oauthRedirect string                   // loopback OAuth callback URL for tracker connect
 	worktreeBase  string                   // base dir for worktrees ("" = worktree.DefaultBase)
 	reservedPorts map[int]bool             // ports handed to worktree setup hooks (collision-free)
-	names         *store.Store             // optional: durable user-set session names (survive restart)
+	db            *store.Store             // optional: durable local state (session names + records)
 
 	pushTimeout     time.Duration // per-Notify deadline for the approval push fan-out
 	pushConcurrency int           // cap on concurrent in-flight pushes
@@ -82,11 +82,12 @@ func (h *Hub) SetWorktreeBase(dir string) {
 	h.mu.Unlock()
 }
 
-// SetNameStore attaches the durable session-name store. Set once at startup before
-// serving; nil disables persistence (renames then live only for the daemon's lifetime).
-func (h *Hub) SetNameStore(s *store.Store) {
+// SetStore attaches the durable local database (session names + records). Set once at
+// startup before serving; nil disables persistence (state then lives only for the
+// daemon's lifetime).
+func (h *Hub) SetStore(s *store.Store) {
 	h.mu.Lock()
-	h.names = s
+	h.db = s
 	h.mu.Unlock()
 }
 
@@ -428,8 +429,8 @@ func New() *Hub {
 // A persisted user-set name (from a prior rename) is restored here so it survives a
 // daemon restart, unless the caller already supplied an explicit label.
 func (h *Hub) addSession(sess agent.Session, meta sessionMeta) *managedSession {
-	if meta.label == "" && h.names != nil {
-		if n, ok := h.names.Name(sess.ID()); ok {
+	if meta.label == "" && h.db != nil {
+		if n, ok := h.db.Name(sess.ID()); ok {
 			meta.label = n
 		}
 	}
@@ -437,6 +438,7 @@ func (h *Hub) addSession(sess agent.Session, meta sessionMeta) *managedSession {
 	h.mu.Lock()
 	h.sessions[sess.ID()] = m
 	h.mu.Unlock()
+	h.persistSession(m) // durable record so it survives a daemon restart
 	return m
 }
 
@@ -449,7 +451,13 @@ func (h *Hub) managed(id string) *managedSession {
 func (h *Hub) removeSession(id string) {
 	h.mu.Lock()
 	delete(h.sessions, id)
+	db := h.db
 	h.mu.Unlock()
+	// The session's event stream ended for good (explicit stop or the provider closed
+	// it); drop its durable record so it isn't re-attached on the next start.
+	if db != nil {
+		_ = db.DeleteSession(id)
+	}
 }
 
 func (h *Hub) recordApproval(approvalID string, m *managedSession) {
@@ -1087,9 +1095,16 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		var req protocol.SessionRef
 		_ = env.Unmarshal(&req)
 		if m := h.managed(req.SessionID); m != nil {
-			_ = m.sess.Stop(ctx)
+			_ = m.sess.Stop(ctx)  // interrupt any running turn
+			_ = m.sess.Close()    // end the event stream -> run() -> removeSession (drops the record)
+			h.removeSession(req.SessionID)
+			if h.db != nil {
+				_ = h.db.SetName(req.SessionID, "") // clear the orphaned rename
+			}
 		}
 		h.sendOK(conn, env.ID, nil)
+		// Delete is permanent: tell every client to drop the row.
+		h.broadcastSessionList()
 
 	case protocol.TypeSessionRename:
 		var req protocol.SessionRename
@@ -1104,20 +1119,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		m.meta.label = name
 		m.mu.Unlock()
 		// Persist so the name survives a daemon restart (best-effort; log on failure).
-		if h.names != nil {
-			if err := h.names.SetName(req.SessionID, name); err != nil {
+		if h.db != nil {
+			if err := h.db.SetName(req.SessionID, name); err != nil {
 				log.Printf("session.rename: persist %s: %v", req.SessionID, err)
 			}
 		}
 		h.sendOK(conn, env.ID, m.info())
 		// Broadcast the updated list so every client reflects the new name.
-		h.mu.Lock()
-		list := make([]protocol.Session, 0, len(h.sessions))
-		for _, mm := range h.sessions {
-			list = append(list, mm.info())
-		}
-		h.mu.Unlock()
-		h.broadcast(protocol.TypeSessionList, protocol.SessionList{Sessions: list})
+		h.broadcastSessionList()
 
 	case protocol.TypeFSTree:
 		var req protocol.FSTreeReq

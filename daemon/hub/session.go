@@ -69,6 +69,14 @@ func newManagedSession(h *Hub, sess agent.Session, meta sessionMeta) *managedSes
 	return &managedSession{hub: h, sess: sess, meta: meta, subs: map[*transport.Conn]*subscriber{}, lastActivity: time.Now()}
 }
 
+// lastActive is the unix time of the session's last event — the liveness clock the DB TTL
+// prunes against (so a session with no activity for the TTL window ages out of the store).
+func (m *managedSession) lastActive() int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastActivity.Unix()
+}
+
 // info renders the session's identity + grouping metadata for the wire.
 func (m *managedSession) info() protocol.Session {
 	m.mu.Lock()

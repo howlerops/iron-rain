@@ -3,7 +3,66 @@ package store
 import (
 	"path/filepath"
 	"testing"
+	"time"
 )
+
+func TestSessionRecordsRoundTripAndPrune(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "sess.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+
+	now := time.Now().Unix()
+	if err := db.SaveSession(SessionRecord{ID: "a", Provider: "opencode", Cwd: "/repo", Meta: `{"cwd":"/repo"}`}, now); err != nil {
+		t.Fatalf("save a: %v", err)
+	}
+	// An old record (updated 30 days ago) should be prunable.
+	if err := db.SaveSession(SessionRecord{ID: "old", Provider: "opencode", Cwd: "/x"}, now-30*24*3600); err != nil {
+		t.Fatalf("save old: %v", err)
+	}
+
+	recs, err := db.Sessions()
+	if err != nil || len(recs) != 2 {
+		t.Fatalf("Sessions() = %d recs, %v; want 2", len(recs), err)
+	}
+
+	// Touch 'a' to now so a 7-day prune keeps it but drops 'old'.
+	if err := db.TouchSessions([]string{"a"}, now); err != nil {
+		t.Fatalf("touch: %v", err)
+	}
+	n, err := db.PruneSessions(now - 7*24*3600)
+	if err != nil || n != 1 {
+		t.Fatalf("PruneSessions = %d, %v; want 1 removed", n, err)
+	}
+	recs, _ = db.Sessions()
+	if len(recs) != 1 || recs[0].ID != "a" || recs[0].Meta != `{"cwd":"/repo"}` {
+		t.Fatalf("after prune: %+v; want only 'a' with its meta", recs)
+	}
+
+	// Delete removes it.
+	if err := db.DeleteSession("a"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if recs, _ := db.Sessions(); len(recs) != 0 {
+		t.Fatalf("after delete: %d recs; want 0", len(recs))
+	}
+}
+
+func TestAutoVacuumEnabled(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "vac.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	var mode int
+	if err := db.db.QueryRow(`PRAGMA auto_vacuum`).Scan(&mode); err != nil {
+		t.Fatalf("pragma: %v", err)
+	}
+	if mode != 2 { // 2 = INCREMENTAL
+		t.Fatalf("auto_vacuum = %d; want 2 (INCREMENTAL)", mode)
+	}
+}
 
 func TestSessionNamesRoundTrip(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "test.db"))

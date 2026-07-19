@@ -119,7 +119,7 @@ func serve(args []string) error {
 	} else if db, err := store.Open(dbPath()); err != nil {
 		fmt.Fprintf(os.Stderr, "  warning: could not open local database: %v\n", err)
 	} else {
-		h.SetNameStore(db)
+		h.SetStore(db)
 		defer db.Close()
 	}
 	// Trackers (Linear/Jira): load saved tokens, connect, and poll every 60s.
@@ -144,6 +144,13 @@ func serve(args []string) error {
 	if len(providers) == 0 {
 		fmt.Fprintln(os.Stderr, "  warning: no coding-agent providers detected (install opencode, claude-code, or pi and re-run) — serving anyway")
 	}
+
+	// Re-own sessions that survived a previous run (opencode/claude sessions persist
+	// server-side) and periodically prune stale records with incremental auto-vacuum.
+	// Restore runs in the background so a slow/absent opencode can't delay serving.
+	const sessionTTL = 7 * 24 * time.Hour
+	go h.RestoreSessions(context.Background(), sessionTTL)
+	h.StartSessionPruning(context.Background(), 6*time.Hour, sessionTTL)
 
 	pushEnabled := false
 	if *apnsKey != "" {
