@@ -40,6 +40,13 @@ const (
 	TypeIssueStates        = "issue.states"        // workflow states (kanban columns) for a team
 	TypeIssueLaunch        = "issue.launch"        // launch an agent on an issue (worktree)
 
+	// Built-in editor file access — all paths validated against project roots + session cwds.
+	TypeFSTree  = "fs.tree"  // list a directory (or the available roots when path is empty)
+	TypeFSRead  = "fs.read"  // read a text file (content + sha for conflict detection)
+	TypeFSWrite = "fs.write" // save a file if its base sha still matches on disk
+	TypeFSDiff  = "fs.diff"  // unified git diff for a path or session (review)
+	TypeFSWatch = "fs.watch" // subscribe to change events for open files
+
 	// events (daemon -> client), no id
 	TypeSessionStatus    = "session.status"
 	TypeSessionMessage   = "session.message" // a full (historical/replayed) turn
@@ -47,6 +54,7 @@ const (
 	TypeOutputDelta      = "output.delta"
 	TypeApprovalRequest  = "approval.request"
 	TypeApprovalResolved = "approval.resolved" // broadcast: this approval was answered
+	TypeFSChange         = "fs.change"         // a watched file changed on disk
 
 	// responses
 	TypeOK    = "ok"
@@ -209,6 +217,80 @@ type IssueLaunch struct {
 
 type SessionRef struct {
 	SessionID string `json:"session_id"`
+}
+
+// --- Built-in editor file access (fs.*) ---
+
+// FSTreeReq lists one directory. Empty Path returns the available roots (project roots +
+// active session working dirs) so the client can choose where to browse.
+type FSTreeReq struct {
+	Path string `json:"path,omitempty"`
+}
+
+// FSNode is one directory entry (or a root).
+type FSNode struct {
+	Name string `json:"name"`
+	Path string `json:"path"` // absolute
+	Dir  bool   `json:"dir"`
+	Size int64  `json:"size,omitempty"`
+}
+
+// FSTree is a directory listing. Roots is populated only for the empty-path request.
+type FSTree struct {
+	Path    string   `json:"path,omitempty"`
+	Entries []FSNode `json:"entries,omitempty"`
+	Roots   []FSNode `json:"roots,omitempty"`
+}
+
+// FSReadReq reads one file.
+type FSReadReq struct {
+	Path string `json:"path"`
+}
+
+// FSFile is a read file. Sha is over the returned content (the full file when not truncated)
+// and is what fs.write checks for conflicts.
+type FSFile struct {
+	Path      string `json:"path"`
+	Content   string `json:"content,omitempty"`
+	Sha       string `json:"sha"`
+	ModTime   int64  `json:"mtime,omitempty"`
+	Size      int64  `json:"size,omitempty"`
+	Binary    bool   `json:"binary,omitempty"`
+	Truncated bool   `json:"truncated,omitempty"`
+}
+
+// FSWriteReq saves a file if BaseSha still matches the on-disk sha.
+type FSWriteReq struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+	BaseSha string `json:"base_sha,omitempty"`
+}
+
+// FSWriteResult reports the outcome. Conflict=true means the file changed since the client
+// read it and nothing was written (prompt reload/overwrite).
+type FSWriteResult struct {
+	Path     string `json:"path"`
+	Sha      string `json:"sha,omitempty"`
+	ModTime  int64  `json:"mtime,omitempty"`
+	Conflict bool   `json:"conflict,omitempty"`
+}
+
+// FSDiffReq requests a unified diff for a session's changes (SessionID) or a repo path.
+type FSDiffReq struct {
+	SessionID string `json:"session_id,omitempty"`
+	Path      string `json:"path,omitempty"`
+}
+
+// FSDiff carries a unified diff.
+type FSDiff struct {
+	Path string `json:"path,omitempty"`
+	Diff string `json:"diff"`
+}
+
+// FSChange is a broadcast event: a watched file changed on disk (e.g. the agent edited it).
+type FSChange struct {
+	Path string `json:"path"`
+	Sha  string `json:"sha,omitempty"`
 }
 
 // SessionAttach attaches to an existing session discovered on the host.

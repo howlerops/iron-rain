@@ -9,10 +9,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/howlerops/oculus/daemon/agent"
+	"github.com/howlerops/oculus/daemon/fsaccess"
 	"github.com/howlerops/oculus/daemon/issues"
 	"github.com/howlerops/oculus/daemon/project"
 	"github.com/howlerops/oculus/daemon/protocol"
@@ -556,6 +558,10 @@ func asyncDispatch(typ string) bool {
 		protocol.TypeApprovalRespond,    // provider Respond (may be network)
 		protocol.TypeSessionAttach,      // provider Attach
 		protocol.TypeSessionStop,        // provider Stop
+		protocol.TypeFSTree,             // disk: dir listing
+		protocol.TypeFSRead,             // disk: file read
+		protocol.TypeFSWrite,            // disk: file write
+		protocol.TypeFSDiff,             // git diff
 		protocol.TypeDiscover:           // host scan
 		return true
 	}
@@ -933,9 +939,112 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		}
 		h.sendOK(conn, env.ID, nil)
 
+	case protocol.TypeFSTree:
+		var req protocol.FSTreeReq
+		_ = env.Unmarshal(&req)
+		guard := h.fsGuard()
+		if req.Path == "" {
+			roots := make([]protocol.FSNode, 0)
+			for _, r := range guard.Roots() {
+				roots = append(roots, protocol.FSNode{Name: filepath.Base(r), Path: r, Dir: true})
+			}
+			h.sendOK(conn, env.ID, protocol.FSTree{Roots: roots})
+			return
+		}
+		nodes, err := guard.Tree(req.Path)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		entries := make([]protocol.FSNode, 0, len(nodes))
+		for _, n := range nodes {
+			entries = append(entries, protocol.FSNode{Name: n.Name, Path: n.Path, Dir: n.Dir, Size: n.Size})
+		}
+		h.sendOK(conn, env.ID, protocol.FSTree{Path: req.Path, Entries: entries})
+
+	case protocol.TypeFSRead:
+		var req protocol.FSReadReq
+		_ = env.Unmarshal(&req)
+		f, err := h.fsGuard().Read(req.Path)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, protocol.FSFile{
+			Path: req.Path, Content: f.Content, Sha: f.Sha, ModTime: f.ModTime,
+			Size: f.Size, Binary: f.Binary, Truncated: f.Truncated,
+		})
+
+	case protocol.TypeFSWrite:
+		var req protocol.FSWriteReq
+		_ = env.Unmarshal(&req)
+		f, conflict, err := h.fsGuard().Write(req.Path, req.Content, req.BaseSha)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, protocol.FSWriteResult{Path: req.Path, Sha: f.Sha, ModTime: f.ModTime, Conflict: conflict})
+
+	case protocol.TypeFSDiff:
+		var req protocol.FSDiffReq
+		_ = env.Unmarshal(&req)
+		diff, err := h.fsDiff(ctx, req)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, protocol.FSDiff{Path: req.Path, Diff: diff})
+
 	default:
 		h.sendErr(conn, env.ID, "unknown type: "+env.Type)
 	}
+}
+
+// fsGuard builds a file-access guard scoped to the registered project roots plus every active
+// session's working dir and repo root — the only places the built-in editor may touch.
+func (h *Hub) fsGuard() *fsaccess.Guard {
+	var roots []string
+	if h.projects != nil {
+		for _, p := range h.projects.List() {
+			roots = append(roots, p.Path)
+		}
+	}
+	h.mu.Lock()
+	for _, m := range h.sessions {
+		if m.meta.cwd != "" {
+			roots = append(roots, m.meta.cwd)
+		}
+		if m.meta.repoRoot != "" {
+			roots = append(roots, m.meta.repoRoot)
+		}
+	}
+	h.mu.Unlock()
+	return fsaccess.New(roots)
+}
+
+// fsDiff returns the unified diff for a session's worktree, or `git diff` at a path's repo.
+func (h *Hub) fsDiff(ctx context.Context, req protocol.FSDiffReq) (string, error) {
+	if req.SessionID != "" {
+		m := h.managed(req.SessionID)
+		if m == nil {
+			return "", fmt.Errorf("unknown session")
+		}
+		if m.meta.worktreePath != "" {
+			return worktree.Diff(ctx, m.meta.worktreePath, m.meta.baseCommit)
+		}
+		if m.meta.cwd != "" {
+			return worktree.Diff(ctx, m.meta.cwd, "")
+		}
+		return "", fmt.Errorf("session has no working dir")
+	}
+	if req.Path == "" {
+		return "", fmt.Errorf("diff needs a session_id or path")
+	}
+	abs, err := h.fsGuard().Resolve(req.Path)
+	if err != nil {
+		return "", err
+	}
+	return worktree.Diff(ctx, abs, "")
 }
 
 func (h *Hub) sendOK(conn *transport.Conn, id string, payload any) {

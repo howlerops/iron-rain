@@ -40,10 +40,15 @@ func TestManager_OAuthStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"linear.app/oauth/authorize", "client_id=cid123", "response_type=code", "state=", "actor=application"} {
+	for _, want := range []string{"linear.app/oauth/authorize", "client_id=cid123", "response_type=code", "state=", "scope=read%2Cwrite"} {
 		if !strings.Contains(url1, want) {
 			t.Errorf("authorize URL %q missing %q", url1, want)
 		}
+	}
+	// User actor (default) — actor=application mixed with the write scope is what Linear
+	// rejects ("scopes not valid for this actor mode"), so it must NOT be present.
+	if strings.Contains(url1, "actor=application") {
+		t.Errorf("authorize URL must not use actor=application: %q", url1)
 	}
 	// A second start yields a fresh state.
 	url2, _ := m.OAuthStart("linear", redirect)
