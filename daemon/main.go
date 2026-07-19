@@ -71,6 +71,9 @@ func main() {
 func serve(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", "127.0.0.1:6000", "listen address")
+	// Browsers hard-block port 6000 (X11) with ERR_UNSAFE_PORT, so the loopback OAuth
+	// callback gets its own browser-safe port. The WebSocket (app, not a browser) is unaffected.
+	oauthPort := fs.String("oauth-port", "6900", "browser-safe loopback port for the OAuth callback")
 	// Providers are AUTO-DETECTED (a running/installed opencode, the claude-code sidecar
 	// if claude+node are present, and pi on PATH). These flags only OVERRIDE detection.
 	opencodeURL := fs.String("opencode", "", "override: URL of a running `opencode serve` (else auto-detected/started)")
@@ -115,11 +118,10 @@ func serve(args []string) error {
 		go func() { _ = issuesMgr.Refresh(context.Background()) }() // initial fetch
 	}
 	issuesMgr.StartPolling(context.Background(), 60*time.Second)
-	oauthRedirect := ""
-	if _, port, err := net.SplitHostPort(*addr); err == nil && port != "" {
-		oauthRedirect = issues.OAuthRedirectURI(net.JoinHostPort("127.0.0.1", port))
-		h.SetOAuthRedirect(oauthRedirect)
-	}
+	// The OAuth callback is served on a browser-safe loopback port (not the daemon's
+	// possibly-blocked WS port), so the redirect URI Linear sends the browser to loads.
+	oauthRedirect := issues.OAuthRedirectURI(net.JoinHostPort("127.0.0.1", *oauthPort))
+	h.SetOAuthRedirect(oauthRedirect)
 	h.SetAttacherFactory(func(provider, url string) agent.Attacher {
 		if provider == "opencode" && url != "" {
 			return opencode.New(url)
@@ -148,8 +150,10 @@ func serve(args []string) error {
 	mux.Handle("/ws", srv.Handler())
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
 	// Loopback OAuth callback for tracker connect (Linear). The redirect URI must be
-	// registered on the Linear OAuth app.
-	mux.HandleFunc("/oauth/linear/callback", func(w http.ResponseWriter, r *http.Request) {
+	// registered on the Linear OAuth app. It is served both on the main mux (reachable via
+	// --public-url tunnels) and on a dedicated browser-safe loopback port below, since the
+	// local browser can't load the daemon's WS port when it's a browser-restricted one (6000).
+	oauthCallback := func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		code, state := r.URL.Query().Get("code"), r.URL.Query().Get("state")
 		if err := issuesMgr.OAuthCallback(r.Context(), code, state, oauthRedirect); err != nil {
@@ -158,12 +162,25 @@ func serve(args []string) error {
 			return
 		}
 		fmt.Fprint(w, "<h2>Iron Rain connected to Linear ✓</h2><p>You can close this tab and return to the app.</p>")
-	})
+	}
+	mux.HandleFunc("/oauth/linear/callback", oauthCallback)
+	// Dedicated browser-safe loopback listener for the OAuth callback.
+	if *oauthPort != "" {
+		oauthMux := http.NewServeMux()
+		oauthMux.HandleFunc("/oauth/linear/callback", oauthCallback)
+		oauthSrv := &http.Server{Addr: net.JoinHostPort("127.0.0.1", *oauthPort), Handler: oauthMux, ReadHeaderTimeout: 10 * time.Second}
+		go func() {
+			if err := oauthSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				fmt.Fprintf(os.Stderr, "  oauth callback listener (%s): %v\n", *oauthPort, err)
+			}
+		}()
+	}
 
 	fmt.Printf("oculusd %s\n", version)
 	fmt.Printf("  listening:      ws://%s/ws\n", *addr)
 	fmt.Printf("  daemon pubkey:  %s\n", hex.EncodeToString(kp.Public()))
 	fmt.Printf("  pairing secret: %s\n", sec)
+	fmt.Printf("  oauth redirect: %s  (register this on your Linear OAuth app)\n", oauthRedirect)
 	for _, pv := range providers {
 		fmt.Printf("  provider:       %s\n", pv)
 	}
