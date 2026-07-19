@@ -75,6 +75,8 @@ struct SessionSidebar: View {
     @Binding var searchText: String
     /// Opens the Code detail in review mode for a session's changes (macOS).
     var onReview: ((String) -> Void)? = nil
+    /// Opens the New Session sheet straight into "Take over" mode (empty-state action).
+    var onTakeOver: (() -> Void)? = nil
     @AppStorage("oculus.appearance") private var appearance: Appearance = .system
     @State private var filter: SessionFilter = .all
 
@@ -82,6 +84,11 @@ struct SessionSidebar: View {
 
     var body: some View {
         sessionsList
+            .overlay {
+                if model.connected && searchText.isEmpty && filter == .all && filteredGroups.isEmpty {
+                    emptyState
+                }
+            }
             .tint(palette.primary)
         // The desktop switcher hangs off the title as a `.toolbarTitleMenu` (the
         // Xcode scheme-menu pattern). `.navigationTitle` is also what makes the
@@ -158,6 +165,33 @@ struct SessionSidebar: View {
             }
         }
         .listStyle(.sidebar)
+    }
+
+    /// First-run empty state: no in-app sessions yet, so guide the two ways to get one —
+    /// start fresh, or take over a session already running in a terminal.
+    private var emptyState: some View {
+        VStack(spacing: 14) {
+            Image("WolfMark").resizable().scaledToFit().frame(width: 40, height: 40).opacity(0.9)
+            VStack(spacing: 4) {
+                Text("No sessions yet").font(.system(size: 15, weight: .semibold))
+                Text("Start an agent on one of your projects, or take over a session already running in a terminal.")
+                    .font(.system(size: 12)).foregroundStyle(palette.mutedForeground)
+                    .multilineTextAlignment(.center)
+            }
+            VStack(spacing: 8) {
+                Button { selection = Self.newSessionTag } label: {
+                    Label("New session", systemImage: "plus").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent).tint(palette.primary).controlSize(.large)
+                Button { onTakeOver?() } label: {
+                    Label("Take over a terminal session", systemImage: "arrow.down.left.circle").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered).tint(palette.primary)
+            }
+            .padding(.top, 2)
+        }
+        .padding(.horizontal, 22)
+        .frame(maxWidth: .infinity)
     }
 
     /// A soft, elevated selection card in the brand gold — a light gold wash + a faint gold

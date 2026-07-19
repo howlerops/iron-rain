@@ -10,6 +10,7 @@ public struct RootView: View {
     private var palette: OculusPalette { .current(scheme) }
     @State private var selection: String?
     @State private var showNewSession = false
+    @State private var newSessionTakeOver = false
     @State private var selectedTab = 0
     @State private var searchText = ""
     @State private var reviewSessionID: String?
@@ -74,7 +75,8 @@ public struct RootView: View {
         GeometryReader { proxy in
             NavigationSplitView {
                 SessionSidebar(store: store, model: model, selection: $selection, searchText: $searchText,
-                               onReview: { sid in reviewSessionID = sid; selectedTab = 2 })
+                               onReview: { sid in reviewSessionID = sid; selectedTab = 2 },
+                               onTakeOver: { newSessionTakeOver = true; showNewSession = true })
                     .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 340)
             } detail: {
                 detailPane(model)
@@ -89,7 +91,7 @@ public struct RootView: View {
             .frame(width: proxy.size.width, height: proxy.size.height)
             .onChange(of: selection) { handleSelection($0, model) }
             .sheet(isPresented: $showNewSession) {
-                NewSessionView(model: model, palette: palette) { showNewSession = false }
+                NewSessionView(model: model, palette: palette, initialTakeOver: newSessionTakeOver) { showNewSession = false }
             }
         }
         #else
@@ -102,7 +104,7 @@ public struct RootView: View {
             }
             .onChange(of: selection) { handleSelection($0, model) }
             .sheet(isPresented: $showNewSession) {
-                NewSessionView(model: model, palette: palette) { showNewSession = false }
+                NewSessionView(model: model, palette: palette, initialTakeOver: newSessionTakeOver) { showNewSession = false }
             }
             .tabItem { Label("Sessions", systemImage: "bubble.left.and.bubble.right.fill") }
             .tag(0)
@@ -147,6 +149,7 @@ public struct RootView: View {
     private func handleSelection(_ sel: String?, _ model: Model) {
         guard let sel else { return }
         if sel == SessionSidebar.newSessionTag {
+            newSessionTakeOver = false // the ✎ / empty-state "New session" opens in Start-new mode
             showNewSession = true
             selection = nil
         } else if model.sessions.contains(where: { $0.id == sel }) {

@@ -4,9 +4,10 @@ import OculusKit
 import AppKit
 #endif
 
-/// Configures a new session: which provider, which project folder, and whether to run
-/// it in an isolated git worktree. Applying just sets the Model's pending options; the
-/// session is created when the user sends the first message.
+/// Start a new agent session (provider + working folder(s) + optional worktree), or take over
+/// a session already running in a terminal. A modern modal: fixed header with a Start-new /
+/// Take-over switch, a scrollable body of card rows, and a pinned footer. Starting just sets
+/// the Model's pending options; the session is created on the first message.
 struct NewSessionView: View {
     @ObservedObject var model: Model
     let palette: OculusPalette
@@ -19,16 +20,23 @@ struct NewSessionView: View {
     @State private var terminalSearch = ""
     @State private var scanning = false
     @State private var scanned = false
-    @State private var mode: Mode = .new
+    @State private var mode: Mode
+    #if os(iOS)
+    @State private var addPath = ""
+    #endif
+
+    init(model: Model, palette: OculusPalette, initialTakeOver: Bool = false, onStart: @escaping () -> Void) {
+        self.model = model
+        self.palette = palette
+        self.onStart = onStart
+        _mode = State(initialValue: initialTakeOver ? .takeOver : .new)
+    }
 
     private enum Mode: String, CaseIterable, Identifiable {
         case new = "Start new"
         case takeOver = "Take over"
         var id: String { rawValue }
     }
-    #if os(iOS)
-    @State private var addPath = ""
-    #endif
 
     private static let providers = ["opencode", "claude-code", "pi"]
 
@@ -40,135 +48,247 @@ struct NewSessionView: View {
     private var canWorktree: Bool { singleSelectedProject?.isGitRepo == true }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Picker("Mode", selection: $mode) {
-                    ForEach(Mode.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-
-                if mode == .new {
-                Section("Agent") {
-                    Picker("Provider", selection: $provider) {
-                        ForEach(Self.providers, id: \.self) { Text($0).tag($0) }
-                    }
-                }
-
-                Section {
-                    ForEach(model.projects) { p in
-                        Button { toggle(p.id) } label: {
-                            HStack(spacing: 9) {
-                                Image(systemName: selectedProjects.contains(p.id) ? "checkmark.circle.fill" : "circle")
-                                    .foregroundStyle(selectedProjects.contains(p.id) ? palette.primary : palette.mutedForeground)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(p.name).foregroundStyle(palette.foreground)
-                                    Text(p.path).font(.caption).foregroundStyle(palette.mutedForeground).lineLimit(1)
-                                }
-                                Spacer()
-                                if p.isGitRepo {
-                                    Image(systemName: "arrow.triangle.branch").font(.caption).foregroundStyle(palette.mutedForeground)
-                                }
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    addProjectControl
-                } header: {
-                    Text(isMulti ? "Projects · \(selectedProjects.count) selected" : "Project")
-                } footer: {
-                    if isMulti {
-                        Text("Multi-repo: the agent runs in the shared parent folder of the selected repos, so it can work across all of them. (Worktrees are single-repo only.)")
-                            .font(.caption)
-                    } else {
-                        Text("Pick a folder to run the agent in, or none for the daemon default. Select multiple for a multi-repo update.")
-                            .font(.caption)
-                    }
-                }
-
-                Section {
-                    Toggle("Isolate in a git worktree", isOn: $useWorktree)
-                        .disabled(!canWorktree)
-                    if useWorktree {
-                        TextField("Workspace name", text: $workspaceName)
-                            .textFieldStyle(.roundedBorder)
-                    }
-                } header: {
-                    Text("Worktree")
-                } footer: {
-                    Text(canWorktree
-                         ? "Runs on a fresh oculus/<name> branch; changes stay isolated until you open a PR."
-                         : "Pick a git project to enable worktrees.")
-                        .font(.caption)
-                }
-                } // end: mode == .new
-
-                if mode == .takeOver {
-                Section {
-                    HStack(spacing: 6) {
-                        Image(systemName: "magnifyingglass").foregroundStyle(palette.mutedForeground)
-                        TextField("Search sessions", text: $terminalSearch)
-                            .textFieldStyle(.plain)
-                            #if os(iOS)
-                            .autocorrectionDisabled().textInputAutocapitalization(.never)
-                            #endif
-                    }
-                    if scanning {
-                        HStack(spacing: 8) { ProgressView().controlSize(.small); Text("Scanning…").foregroundStyle(palette.mutedForeground) }
-                    } else if filteredDiscovered.isEmpty && scanned {
-                        Text("Nothing found. Start a session in a terminal (opencode/claude) and Scan.")
-                            .font(.caption).foregroundStyle(palette.mutedForeground)
-                    }
-                    ForEach(Array(filteredDiscovered.enumerated()), id: \.offset) { _, d in
-                        Button {
-                            Task { await model.attach(d); onStart() }
-                        } label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: d.provider == "claude-code" ? "terminal" : "bolt.horizontal.circle")
-                                    .foregroundStyle(palette.primary)
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(discoveredTitle(d)).foregroundStyle(palette.foreground)
-                                    Text(discoveredSubtitle(d)).font(.caption)
-                                        .foregroundStyle(palette.mutedForeground).lineLimit(1)
-                                }
-                                Spacer()
-                                if d.live == true { liveChip }
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                } header: {
-                    HStack {
-                        Text("Running in a terminal")
-                        Spacer()
-                        Button { Task { await scan() } } label: { Label("Scan", systemImage: "arrow.clockwise").font(.caption) }
-                            .buttonStyle(.plain)
-                    }
-                } footer: {
-                    Text("Take over a session running in a terminal. opencode attaches to the live session (shared control with the terminal); claude-code resumes it. It then appears in your sidebar as a managed session.")
-                        .font(.caption)
-                }
-                } // end: mode == .takeOver
-            }
-            .navigationTitle(mode == .new ? "New session" : "Take over a session")
-            .toolbar {
-                if mode == .new {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Start") {
-                            model.newSession(provider: provider,
-                                             projectIDs: selectedProjects.isEmpty ? nil : Array(selectedProjects),
-                                             worktree: useWorktree && canWorktree,
-                                             workspaceName: workspaceName.isEmpty ? nil : workspaceName)
-                            onStart()
-                        }
-                    }
-                }
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { onStart() }
-                }
-            }
-            .task { await model.loadProjects(); await scan() }
+        VStack(spacing: 0) {
+            header
+            Divider().overlay(palette.border)
+            ScrollView { (mode == .new ? AnyView(newContent) : AnyView(takeOverContent)).padding(20) }
+            Divider().overlay(palette.border)
+            footer
         }
+        #if os(macOS)
+        .frame(width: 560, height: 640)
+        #endif
+        .background(palette.background)
+        .task { await model.loadProjects(); await scan() }
+    }
+
+    // MARK: header / footer
+
+    private var header: some View {
+        VStack(spacing: 14) {
+            HStack {
+                Text(mode == .new ? "New session" : "Take over a session")
+                    .font(.system(size: 17, weight: .semibold))
+                Spacer()
+                Button { onStart() } label: {
+                    Image(systemName: "xmark").font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(palette.mutedForeground)
+                        .frame(width: 22, height: 22)
+                        .background(Circle().fill(palette.muted.opacity(0.5)))
+                }
+                .buttonStyle(.plain)
+            }
+            Picker("", selection: $mode) {
+                ForEach(Mode.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented).labelsHidden()
+        }
+        .padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 14)
+    }
+
+    private var footer: some View {
+        HStack(spacing: 10) {
+            if mode == .new && isMulti {
+                Label("\(selectedProjects.count) repos", systemImage: "square.stack.3d.up")
+                    .font(.caption).foregroundStyle(palette.mutedForeground)
+            }
+            Spacer()
+            Button("Cancel") { onStart() }
+                .keyboardShortcut(.cancelAction)
+            if mode == .new {
+                Button {
+                    model.newSession(provider: provider,
+                                     projectIDs: selectedProjects.isEmpty ? nil : Array(selectedProjects),
+                                     worktree: useWorktree && canWorktree,
+                                     workspaceName: workspaceName.isEmpty ? nil : workspaceName)
+                    onStart()
+                } label: { Text("Start").frame(minWidth: 52) }
+                .buttonStyle(.borderedProminent).tint(palette.primary)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(.horizontal, 20).padding(.vertical, 13)
+    }
+
+    // MARK: new-session body
+
+    private var newContent: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            field("Agent") {
+                Picker("", selection: $provider) {
+                    ForEach(Self.providers, id: \.self) { Text($0).tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden()
+            }
+
+            field(isMulti ? "Working directory · \(selectedProjects.count) selected" : "Working directory") {
+                VStack(spacing: 5) {
+                    ForEach(model.projects) { p in projectRow(p) }
+                    addFolderRow
+                }
+                Text(isMulti
+                     ? "Multi-repo: the agent runs in the shared parent folder, so it can work across all selected repos."
+                     : "Where the agent runs. Pick none for the daemon default, or select multiple folders for a multi-repo task.")
+                    .font(.caption).foregroundStyle(palette.mutedForeground)
+            }
+
+            field("Worktree") {
+                Toggle(isOn: $useWorktree) {
+                    Text("Isolate in a fresh git worktree").font(.system(size: 13))
+                }
+                .toggleStyle(.switch).tint(palette.primary)
+                .disabled(!canWorktree)
+                if useWorktree {
+                    TextField("Workspace name (branch)", text: $workspaceName)
+                        .textFieldStyle(.roundedBorder)
+                }
+                Text(canWorktree
+                     ? "Runs on a fresh oculus/<name> branch; changes stay isolated until you open a PR."
+                     : "Select one git project to enable worktrees.")
+                    .font(.caption).foregroundStyle(palette.mutedForeground)
+            }
+        }
+    }
+
+    private func projectRow(_ p: Project) -> some View {
+        let sel = selectedProjects.contains(p.id)
+        return Button { toggle(p.id) } label: {
+            HStack(spacing: 10) {
+                Image(systemName: sel ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 15)).foregroundStyle(sel ? palette.primary : palette.mutedForeground)
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 5) {
+                        Text(p.name).font(.system(size: 13, weight: .medium)).foregroundStyle(palette.foreground)
+                        if p.isGitRepo {
+                            Image(systemName: "arrow.triangle.branch").font(.system(size: 9)).foregroundStyle(palette.mutedForeground)
+                        }
+                    }
+                    Text((p.path as NSString).abbreviatingWithTildeInPath)
+                        .font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 8).fill(sel ? palette.primary.opacity(0.10) : palette.muted.opacity(0.22)))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(sel ? palette.primary.opacity(0.3) : .clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder private var addFolderRow: some View {
+        #if os(macOS)
+        Button {
+            if let path = pickFolder() {
+                Task { if let p = await model.addProject(path: path) { selectedProjects.insert(p.id) } }
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "folder.badge.plus").foregroundStyle(palette.primary)
+                Text("Add folder…").font(.system(size: 13, weight: .medium)).foregroundStyle(palette.primary)
+                Spacer()
+            }
+            .padding(.horizontal, 10).padding(.vertical, 9)
+            .background(RoundedRectangle(cornerRadius: 8).strokeBorder(palette.primary.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        #else
+        HStack(spacing: 8) {
+            TextField("Add folder by path", text: $addPath)
+                .textFieldStyle(.roundedBorder).autocorrectionDisabled()
+            Button("Add") {
+                let p = addPath; addPath = ""
+                Task { if let proj = await model.addProject(path: p) { selectedProjects.insert(proj.id) } }
+            }.disabled(addPath.isEmpty)
+        }
+        #endif
+    }
+
+    // MARK: take-over body
+
+    private var takeOverContent: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(palette.mutedForeground)
+                TextField("Search running sessions", text: $terminalSearch)
+                    .textFieldStyle(.plain)
+                    #if os(iOS)
+                    .autocorrectionDisabled().textInputAutocapitalization(.never)
+                    #endif
+                Button { Task { await scan() } } label: {
+                    Image(systemName: scanning ? "circle.dotted" : "arrow.clockwise").foregroundStyle(palette.mutedForeground)
+                }
+                .buttonStyle(.plain).disabled(scanning)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 9)
+            .background(RoundedRectangle(cornerRadius: 10).fill(palette.muted.opacity(0.4)))
+
+            if scanning && filteredDiscovered.isEmpty {
+                centerHint(icon: "circle.dotted", text: "Scanning for running sessions…")
+            } else if filteredDiscovered.isEmpty {
+                centerHint(icon: "terminal", text: "No running sessions found.\nStart one in a terminal (opencode/claude), then Scan.")
+            } else {
+                VStack(spacing: 6) {
+                    ForEach(Array(filteredDiscovered.enumerated()), id: \.offset) { _, d in takeOverRow(d) }
+                }
+            }
+
+            Text("opencode attaches to the live session (shared control with your terminal). claude-code resumes it as a safe fork. Either way it becomes a managed session in your sidebar.")
+                .font(.caption).foregroundStyle(palette.mutedForeground)
+        }
+    }
+
+    private func takeOverRow(_ d: Discovered) -> some View {
+        Button {
+            Task { await model.attach(d); onStart() }
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: d.provider == "claude-code" ? "terminal" : "bolt.horizontal.circle")
+                    .font(.system(size: 15)).foregroundStyle(palette.primary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(discoveredTitle(d)).font(.system(size: 13, weight: .medium)).foregroundStyle(palette.foreground)
+                    Text(discoveredSubtitle(d)).font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+                Spacer(minLength: 0)
+                if d.live == true { liveChip }
+            }
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 8).fill(palette.muted.opacity(0.22)))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: bits
+
+    @ViewBuilder private func field<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title.uppercased()).font(.system(size: 11, weight: .semibold)).tracking(0.4)
+                .foregroundStyle(palette.mutedForeground)
+            content()
+        }
+    }
+
+    private func centerHint(icon: String, text: String) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: icon).font(.system(size: 26)).foregroundStyle(palette.mutedForeground)
+            Text(text).font(.system(size: 12)).foregroundStyle(palette.mutedForeground)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity).padding(.vertical, 30)
+    }
+
+    private var liveChip: some View {
+        HStack(spacing: 3) {
+            Circle().fill(palette.primary).frame(width: 5, height: 5)
+            Text("Live").font(.system(size: 10, weight: .semibold))
+        }
+        .foregroundStyle(palette.primary)
+        .padding(.horizontal, 6).padding(.vertical, 2)
+        .background(Capsule().fill(palette.primary.opacity(0.16)))
     }
 
     private func scan() async {
@@ -189,19 +309,9 @@ struct NewSessionView: View {
                     || (d.sessionID ?? "").lowercased().contains(q)
             }
             .sorted { a, b in
-                if (a.live == true) != (b.live == true) { return a.live == true } // live first
+                if (a.live == true) != (b.live == true) { return a.live == true }
                 return (a.updatedAt ?? 0) > (b.updatedAt ?? 0)
             }
-    }
-
-    private var liveChip: some View {
-        HStack(spacing: 3) {
-            Circle().fill(palette.primary).frame(width: 5, height: 5)
-            Text("Live").font(.system(size: 10, weight: .semibold))
-        }
-        .foregroundStyle(palette.primary)
-        .padding(.horizontal, 6).padding(.vertical, 2)
-        .background(Capsule().fill(palette.primary.opacity(0.16)))
     }
 
     private func discoveredTitle(_ d: Discovered) -> String {
@@ -214,29 +324,6 @@ struct NewSessionView: View {
         var parts = [d.provider]
         if let cwd = d.cwd, !cwd.isEmpty { parts.append((cwd as NSString).abbreviatingWithTildeInPath) }
         return parts.joined(separator: " · ")
-    }
-
-    @ViewBuilder private var addProjectControl: some View {
-        #if os(macOS)
-        Button {
-            if let path = pickFolder() {
-                Task { if let p = await model.addProject(path: path) { selectedProjects.insert(p.id) } }
-            }
-        } label: {
-            Label("Add folder…", systemImage: "folder.badge.plus")
-        }
-        #else
-        HStack {
-            TextField("Add folder by path", text: $addPath)
-                .textFieldStyle(.roundedBorder)
-                .autocorrectionDisabled()
-            Button("Add") {
-                let p = addPath
-                addPath = ""
-                Task { if let proj = await model.addProject(path: p) { selectedProjects.insert(proj.id) } }
-            }.disabled(addPath.isEmpty)
-        }
-        #endif
     }
 
     private func toggle(_ id: String) {
