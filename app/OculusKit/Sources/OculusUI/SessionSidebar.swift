@@ -115,7 +115,11 @@ struct SessionSidebar: View {
     /// sizing is handled in RootView (windowResizability + detail clamp), so no inset hacks
     /// are needed here.
     private var sessionsList: some View {
-        List(selection: $selection) {
+        // Selection is drawn by the rows (a soft, elevated gold card), NOT the native List
+        // highlight — the system selection is a full-bleed accent-blue rectangle that clashes
+        // with the gold theme. Rows are buttons that set `selection`; RootView's onChange opens
+        // the session.
+        List {
             if !model.connected {
                 HStack(spacing: 5) {
                     Circle().fill(Color.red).frame(width: 6, height: 6)
@@ -131,16 +135,21 @@ struct SessionSidebar: View {
             ForEach(filteredGroups) { group in
                 Section {
                     ForEach(group.items) { item in
-                        SessionRow(item: item, active: model.sessionID == item.id,
-                                   showProvider: group.showProvider, showProject: group.showProject,
-                                   palette: palette)
-                            .tag(item.id)
-                            .listRowBackground(
-                                model.sessionID == item.id
-                                    ? palette.primary.opacity(scheme == .dark ? 0.16 : 0.10)
-                                    : Color.clear
-                            )
-                            .contextMenu { rowMenu(item) }
+                        let selected = model.sessionID == item.id
+                        Button { selection = item.id } label: {
+                            SessionRow(item: item, active: selected,
+                                       showProvider: group.showProvider, showProject: group.showProject,
+                                       palette: palette)
+                                .padding(.horizontal, 8).padding(.vertical, 5)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(rowSelectionBackground(selected))
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                        .contextMenu { rowMenu(item) }
                     }
                 } header: {
                     sectionHeader(group.name, running: group.hasRunning)
@@ -148,6 +157,20 @@ struct SessionSidebar: View {
             }
         }
         .listStyle(.sidebar)
+    }
+
+    /// A soft, elevated selection card in the brand gold — a light gold wash + a faint gold
+    /// hairline + a subtle shadow, so the active row reads as raised rather than a jarring
+    /// full-blue system highlight.
+    @ViewBuilder private func rowSelectionBackground(_ selected: Bool) -> some View {
+        if selected {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(palette.primary.opacity(scheme == .dark ? 0.18 : 0.12))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(palette.primary.opacity(0.28)))
+                .shadow(color: palette.primary.opacity(scheme == .dark ? 0.25 : 0.14), radius: 3, y: 1)
+        } else {
+            Color.clear
+        }
     }
 
     /// The desktop switcher — the list of paired Macs plus add/rename/remove. Hangs off the
@@ -370,7 +393,7 @@ private struct SessionRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.title)
                     .font(.system(size: 13, weight: active ? .semibold : .medium))
-                    .foregroundStyle(active ? palette.primary : palette.foreground)
+                    .foregroundStyle(palette.foreground)
                     .lineLimit(1)
                 if let sub = secondary {
                     Text(sub)
