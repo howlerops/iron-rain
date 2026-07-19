@@ -8,23 +8,24 @@ import UIKit
 
 /// A native code editor: a platform text view (NSTextView / UITextView) with a monospaced font,
 /// live syntax highlighting from `SyntaxHighlighter`, and language-server diagnostics drawn as
-/// colored underlines. Reports the caret position (for hover/type info) and can scroll to a
-/// target (go-to-definition). Dependency-free — the highlighting backend can be swapped for
-/// tree-sitter behind `SyntaxHighlighter`.
+/// colored underlines. On macOS, hovering a symbol shows a type/doc popover (VSCode/Zed style);
+/// the caret position feeds go-to-definition, and the editor can scroll to a target.
 struct CodeEditor: View {
     @Binding var text: String
     let language: CodeLanguage
     let theme: CodeTheme
+    let palette: OculusPalette
     var editable: Bool
     var diagnostics: [LSPDiagnostic] = []
     var scrollTarget: EditorTarget? = nil
     var onCaret: (Int, Int) -> Void = { _, _ in }
     var onConsumedScroll: () -> Void = {}
+    var hoverProvider: (Int, Int) async -> String = { _, _ in "" }
 
     var body: some View {
-        CodeTextView(text: $text, language: language, theme: theme, editable: editable,
+        CodeTextView(text: $text, language: language, theme: theme, palette: palette, editable: editable,
                      diagnostics: diagnostics, scrollTarget: scrollTarget,
-                     onCaret: onCaret, onConsumedScroll: onConsumedScroll)
+                     onCaret: onCaret, onConsumedScroll: onConsumedScroll, hoverProvider: hoverProvider)
             .background(theme.background)
     }
 }
@@ -55,7 +56,6 @@ private func lineChar(forOffset off: Int, in ns: NSString) -> (Int, Int) {
     return (line, off - starts[line])
 }
 
-/// Maps LSP diagnostics to NSRanges + severities.
 private func diagnosticRanges(_ diags: [LSPDiagnostic], in ns: NSString) -> [(NSRange, Int)] {
     guard !diags.isEmpty else { return [] }
     let starts = lineStarts(ns)
@@ -69,22 +69,94 @@ private func diagnosticRanges(_ diags: [LSPDiagnostic], in ns: NSString) -> [(NS
     return out
 }
 
+// MARK: - Hover popover card
+
+/// The floating card shown on hover: the language server's type/doc info. LSP hover is often
+/// markdown with ```lang fenced code```; we strip the fences and render monospaced.
+struct HoverCard: View {
+    let text: String
+    let theme: CodeTheme
+    let palette: OculusPalette
+
+    private var cleaned: String {
+        var s = text.replacingOccurrences(of: "```swift", with: "")
+        for fence in ["```go", "```typescript", "```javascript", "```python", "```rust", "```c", "```cpp", "```"] {
+            s = s.replacingOccurrences(of: fence, with: "")
+        }
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        ScrollView {
+            Text(cleaned)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(palette.foreground)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
+        }
+        .frame(width: 460)
+        .frame(maxHeight: 300)
+        .background(palette.card)
+    }
+}
+
 #if os(macOS)
+/// NSTextView that forwards mouse-hover to the coordinator (for the type popover).
+final class HoverTextView: NSTextView {
+    var onHoverMove: ((NSPoint) -> Void)?
+    var onHoverExit: (() -> Void)?
+    private var hoverTracking: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let t = hoverTracking { removeTrackingArea(t) }
+        let t = NSTrackingArea(rect: bounds,
+                               options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+                               owner: self, userInfo: nil)
+        addTrackingArea(t)
+        hoverTracking = t
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        onHoverMove?(convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        onHoverExit?()
+    }
+}
+
 private struct CodeTextView: NSViewRepresentable {
     @Binding var text: String
     let language: CodeLanguage
     let theme: CodeTheme
+    let palette: OculusPalette
     var editable: Bool
     var diagnostics: [LSPDiagnostic]
     var scrollTarget: EditorTarget?
     var onCaret: (Int, Int) -> Void
     var onConsumedScroll: () -> Void
+    var hoverProvider: (Int, Int) async -> String
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSTextView.scrollableTextView()
-        guard let tv = scroll.documentView as? NSTextView else { return scroll }
+        let scroll = NSScrollView()
+        scroll.hasVerticalScroller = true
+        scroll.drawsBackground = false
+        scroll.borderType = .noBorder
+
+        let tv = HoverTextView(frame: NSRect(origin: .zero, size: scroll.contentSize))
+        tv.minSize = NSSize(width: 0, height: 0)
+        tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        tv.isVerticallyResizable = true
+        tv.isHorizontallyResizable = false
+        tv.autoresizingMask = [.width]
+        tv.textContainer?.containerSize = NSSize(width: scroll.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
+        tv.textContainer?.widthTracksTextView = true
         tv.delegate = context.coordinator
         tv.isRichText = false
         tv.isAutomaticQuoteSubstitutionEnabled = false
@@ -96,12 +168,15 @@ private struct CodeTextView: NSViewRepresentable {
         tv.backgroundColor = NSColor(theme.background)
         tv.textContainerInset = NSSize(width: 8, height: 8)
         tv.string = text
+        tv.onHoverMove = { [weak tv] p in if let tv { context.coordinator.hoverMoved(tv, to: p) } }
+        tv.onHoverExit = { context.coordinator.hoverExited() }
+        scroll.documentView = tv
         context.coordinator.highlight(tv)
         return scroll
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
-        guard let tv = scroll.documentView as? NSTextView else { return }
+        guard let tv = scroll.documentView as? HoverTextView else { return }
         tv.isEditable = editable
         tv.isSelectable = true
         tv.backgroundColor = NSColor(theme.background)
@@ -120,11 +195,15 @@ private struct CodeTextView: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: CodeTextView
         private var lastTarget: EditorTarget?
+        private var hoverTask: Task<Void, Never>?
+        private var popover: NSPopover?
+        private var shownRange: NSRange?
         init(_ p: CodeTextView) { parent = p }
 
         func textDidChange(_ notification: Notification) {
             guard let tv = notification.object as? NSTextView else { return }
             parent.text = tv.string
+            hideHover()
             highlight(tv)
         }
 
@@ -132,6 +211,60 @@ private struct CodeTextView: NSViewRepresentable {
             guard let tv = notification.object as? NSTextView else { return }
             let (line, char) = lineChar(forOffset: tv.selectedRange().location, in: tv.string as NSString)
             parent.onCaret(line, char)
+        }
+
+        // MARK: hover
+
+        func hoverMoved(_ tv: HoverTextView, to point: NSPoint) {
+            guard let lm = tv.layoutManager, let container = tv.textContainer else { return }
+            let ns = tv.string as NSString
+            guard ns.length > 0 else { hideHover(); return }
+            let inset = tv.textContainerInset
+            let p = NSPoint(x: point.x - inset.width, y: point.y - inset.height)
+            var frac: CGFloat = 0
+            let glyph = lm.glyphIndex(for: p, in: container, fractionOfDistanceThroughGlyph: &frac)
+            let charIndex = lm.characterIndexForGlyph(at: glyph)
+            guard charIndex < ns.length else { hoverTask?.cancel(); return }
+            // Only trigger when the pointer is actually over the glyph (not trailing whitespace).
+            let glyphRect = lm.boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container)
+                .offsetBy(dx: inset.width, dy: inset.height)
+            guard glyphRect.contains(point) else { hoverTask?.cancel(); return }
+            let ch = ns.character(at: charIndex)
+            if let scalar = Unicode.Scalar(ch), CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                hoverTask?.cancel(); return
+            }
+            if let sr = shownRange, NSLocationInRange(charIndex, sr) { return } // same token already shown
+
+            let (line, col) = lineChar(forOffset: charIndex, in: ns)
+            hoverTask?.cancel()
+            hoverTask = Task { [weak self, weak tv] in
+                try? await Task.sleep(nanoseconds: 300_000_000) // debounce like VSCode
+                guard let self, let tv, !Task.isCancelled else { return }
+                let info = await self.parent.hoverProvider(line, col)
+                guard !Task.isCancelled, !info.isEmpty else { return }
+                self.showHover(info, at: glyphRect, in: tv, charIndex: charIndex)
+            }
+        }
+
+        func hoverExited() { hoverTask?.cancel(); hideHover() }
+
+        private func showHover(_ text: String, at rect: NSRect, in tv: NSTextView, charIndex: Int) {
+            hideHover()
+            let pop = NSPopover()
+            pop.behavior = .transient
+            pop.animates = false
+            let host = NSHostingController(rootView: HoverCard(text: text, theme: parent.theme, palette: parent.palette))
+            host.sizingOptions = [.preferredContentSize]
+            pop.contentViewController = host
+            shownRange = NSRange(location: charIndex, length: 1)
+            popover = pop
+            pop.show(relativeTo: rect, of: tv, preferredEdge: .maxY)
+        }
+
+        private func hideHover() {
+            popover?.performClose(nil)
+            popover = nil
+            shownRange = nil
         }
 
         func applyScrollTarget(_ tv: NSTextView) {
@@ -179,11 +312,13 @@ private struct CodeTextView: UIViewRepresentable {
     @Binding var text: String
     let language: CodeLanguage
     let theme: CodeTheme
+    let palette: OculusPalette
     var editable: Bool
     var diagnostics: [LSPDiagnostic]
     var scrollTarget: EditorTarget?
     var onCaret: (Int, Int) -> Void
     var onConsumedScroll: () -> Void
+    var hoverProvider: (Int, Int) async -> String // unused on iOS (no mouse hover)
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 

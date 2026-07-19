@@ -23,13 +23,11 @@ struct EditorTarget: Equatable { let line: Int; let char: Int }
     @Published var status: String?
     @Published var imageData: Data?         // non-nil → the open file is an image
     @Published var imageMime: String?
-    @Published var hoverInfo: String?       // type/doc info at the caret (from LSP hover)
     @Published var scrollTarget: EditorTarget?  // editor moves the caret here, then clears it
 
     private var loadedSha = ""
     private var reloadTask: Task<Void, Never>?
     private var lspChangeTask: Task<Void, Never>?
-    private var hoverTask: Task<Void, Never>?
     private var lspOpenPath: String?        // path currently open in a language server
     private var caretLine = 0
     private var caretChar = 0
@@ -65,8 +63,6 @@ struct EditorTarget: Equatable { let line: Int; let char: Int }
     func openFile(path nodePath: String, name nodeName: String) async {
         reloadTask?.cancel()
         lspChangeTask?.cancel()
-        hoverTask?.cancel()
-        hoverInfo = nil
         closeLSP()          // release the previously-open document
         diffText = nil
         imageData = nil
@@ -132,17 +128,15 @@ struct EditorTarget: Equatable { let line: Int; let char: Int }
         }
     }
 
-    /// The caret moved: debounce, then ask the language server for the type/docs there.
+    /// The caret moved: remember it (the go-to-definition button acts at the caret).
     func caretMoved(line: Int, char: Int) {
         caretLine = line; caretChar = char
-        guard let p = lspOpenPath else { hoverInfo = nil; return }
-        hoverTask?.cancel()
-        hoverTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 350_000_000)
-            guard let self, !Task.isCancelled, self.openPath == p else { return }
-            let info = await self.model.lspHover(p, line: line, character: char)
-            if !Task.isCancelled { self.hoverInfo = info.isEmpty ? nil : info }
-        }
+    }
+
+    /// Type/doc info at a position, for the mouse-hover popover ("" if none or no server).
+    func hover(line: Int, char: Int) async -> String {
+        guard let p = lspOpenPath else { return "" }
+        return await model.lspHover(p, line: line, character: char)
     }
 
     /// Jumps to the definition of the symbol at the caret (opens the target file if needed).
@@ -270,15 +264,12 @@ struct CodeSurface: View {
                 ImageFileView(data: data, palette: palette, theme: theme)
             } else if code.openPath != nil {
                 CodeEditor(text: Binding(get: { code.content }, set: { code.content = $0; code.markEdited() }),
-                           language: code.language, theme: theme, editable: !code.readOnly,
+                           language: code.language, theme: theme, palette: palette, editable: !code.readOnly,
                            diagnostics: code.fileDiagnostics,
                            scrollTarget: code.scrollTarget,
                            onCaret: { line, char in code.caretMoved(line: line, char: char) },
-                           onConsumedScroll: { code.consumeScrollTarget() })
-                if let hover = code.hoverInfo {
-                    Divider().overlay(palette.border)
-                    HoverInfoBar(text: hover, palette: palette)
-                }
+                           onConsumedScroll: { code.consumeScrollTarget() },
+                           hoverProvider: { line, char in await code.hover(line: line, char: char) })
                 if !code.fileDiagnostics.isEmpty {
                     Divider().overlay(palette.border)
                     DiagnosticsBar(diagnostics: code.fileDiagnostics, palette: palette)
@@ -464,25 +455,6 @@ struct ImageFileView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.background)
-    }
-}
-
-/// Shows the language server's type/doc info for the symbol at the caret.
-struct HoverInfoBar: View {
-    let text: String
-    let palette: OculusPalette
-
-    var body: some View {
-        ScrollView {
-            Text(text.trimmingCharacters(in: .whitespacesAndNewlines))
-                .font(.system(size: 11.5, design: .monospaced))
-                .foregroundStyle(palette.foreground)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 12).padding(.vertical, 6)
-        }
-        .frame(maxHeight: 96)
-        .background(palette.card.opacity(0.5))
     }
 }
 
