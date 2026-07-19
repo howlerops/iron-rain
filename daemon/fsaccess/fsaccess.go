@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // maxReadBytes caps how much of a file the editor loads. Larger files come back truncated
@@ -194,7 +195,10 @@ func (g *Guard) Read(path string) (File, error) {
 	}
 	buf = buf[:n]
 	out := File{Sha: shaHex(buf), ModTime: info.ModTime().Unix(), Size: info.Size(), Truncated: truncated}
-	if isBinary(buf) {
+	// Binary if it has a NUL byte, or (for a fully-read file) isn't valid UTF-8 — editing such
+	// a file would let a JSON round-trip substitute U+FFFD and corrupt bytes on save. A
+	// truncated read may cut a multi-byte rune, so skip the UTF-8 check there (already read-only).
+	if isBinary(buf) || (!truncated && !utf8.Valid(buf)) {
 		out.Binary = true
 		return out, nil
 	}

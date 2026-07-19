@@ -1004,12 +1004,10 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 // session's working dir and repo root — the only places the built-in editor may touch.
 func (h *Hub) fsGuard() *fsaccess.Guard {
 	var roots []string
-	if h.projects != nil {
-		for _, p := range h.projects.List() {
-			roots = append(roots, p.Path)
-		}
-	}
+	// Read h.projects and the session set under the same lock that guards them (List() has
+	// its own lock, so call it after releasing h.mu).
 	h.mu.Lock()
+	reg := h.projects
 	for _, m := range h.sessions {
 		if m.meta.cwd != "" {
 			roots = append(roots, m.meta.cwd)
@@ -1019,6 +1017,11 @@ func (h *Hub) fsGuard() *fsaccess.Guard {
 		}
 	}
 	h.mu.Unlock()
+	if reg != nil {
+		for _, p := range reg.List() {
+			roots = append(roots, p.Path)
+		}
+	}
 	return fsaccess.New(roots)
 }
 

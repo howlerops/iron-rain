@@ -70,6 +70,16 @@ func TestReadShaAndBinary(t *testing.T) {
 	if !b.Binary || b.Content != "" {
 		t.Fatalf("binary not flagged: %+v", b)
 	}
+
+	// Invalid UTF-8 (no early NUL) is treated as binary so a save can't corrupt it.
+	must(t, os.WriteFile(filepath.Join(root, "bad.txt"), []byte("ok \xff\xfe not utf8"), 0o644))
+	u, err := g.Read(filepath.Join(root, "bad.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !u.Binary {
+		t.Fatalf("invalid utf-8 not flagged binary: %+v", u)
+	}
 }
 
 func TestWriteConflict(t *testing.T) {
