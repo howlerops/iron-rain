@@ -49,6 +49,7 @@ public final class Model: ObservableObject {
     /// Options applied to the NEXT session created (by the first send). Set via newSession(...).
     @Published public var newSessionProvider = "opencode"
     public var pendingProjectID: String?
+    public var pendingProjectIDs: [String]?  // multi-root workspace (multi-repo)
     public var pendingWorktree = false
     public var pendingWorkspaceName: String?
 
@@ -237,6 +238,7 @@ public final class Model: ObservableObject {
                 let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.sessionCreate,
                                               payload: SessionCreate(provider: newSessionProvider,
                                                                      projectID: pendingProjectID,
+                                                                     projectIDs: pendingProjectIDs,
                                                                      prompt: trimmed,
                                                                      images: imgs.isEmpty ? nil : imgs,
                                                                      worktree: pendingWorktree ? true : nil,
@@ -284,12 +286,16 @@ public final class Model: ObservableObject {
         lastDiff = nil
     }
 
-    /// Starts a fresh session with explicit options (provider, project folder, and an
-    /// opt-in git worktree). The options apply when the first message creates the session.
-    public func newSession(provider: String, projectID: String? = nil, worktree: Bool = false, workspaceName: String? = nil) {
+    /// Starts a fresh session with explicit options (provider, one or more project folders,
+    /// and an opt-in git worktree). Options apply when the first message creates the session.
+    /// Passing 2+ project IDs makes a multi-root workspace (the daemon runs in their common
+    /// ancestor); a single folder uses `projectID` and can be worktree-isolated.
+    public func newSession(provider: String, projectID: String? = nil, projectIDs: [String]? = nil, worktree: Bool = false, workspaceName: String? = nil) {
         newSessionProvider = provider
-        pendingProjectID = projectID
-        pendingWorktree = worktree
+        let multi = (projectIDs?.count ?? 0) > 1
+        pendingProjectIDs = multi ? projectIDs : nil
+        pendingProjectID = multi ? nil : (projectID ?? projectIDs?.first)
+        pendingWorktree = multi ? false : worktree
         pendingWorkspaceName = workspaceName
         newSession()
     }

@@ -13,7 +13,7 @@ struct NewSessionView: View {
     let onStart: () -> Void
 
     @State private var provider = "opencode"
-    @State private var projectID: String? = nil
+    @State private var selectedProjects: Set<String> = []
     @State private var useWorktree = false
     @State private var workspaceName = ""
     @State private var terminalSearch = ""
@@ -25,10 +25,12 @@ struct NewSessionView: View {
 
     private static let providers = ["opencode", "claude-code", "pi"]
 
-    private var selectedProject: Project? {
-        model.projects.first { $0.id == projectID }
+    private var isMulti: Bool { selectedProjects.count > 1 }
+    private var singleSelectedProject: Project? {
+        guard selectedProjects.count == 1, let id = selectedProjects.first else { return nil }
+        return model.projects.first { $0.id == id }
     }
-    private var canWorktree: Bool { selectedProject?.isGitRepo == true }
+    private var canWorktree: Bool { singleSelectedProject?.isGitRepo == true }
 
     var body: some View {
         NavigationStack {
@@ -39,18 +41,35 @@ struct NewSessionView: View {
                     }
                 }
 
-                Section("Project") {
-                    Picker("Folder", selection: $projectID) {
-                        Text("None (daemon default)").tag(String?.none)
-                        ForEach(model.projects) { p in
-                            Text(p.name).tag(String?.some(p.id))
+                Section {
+                    ForEach(model.projects) { p in
+                        Button { toggle(p.id) } label: {
+                            HStack(spacing: 9) {
+                                Image(systemName: selectedProjects.contains(p.id) ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(selectedProjects.contains(p.id) ? palette.primary : palette.mutedForeground)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(p.name).foregroundStyle(palette.foreground)
+                                    Text(p.path).font(.caption).foregroundStyle(palette.mutedForeground).lineLimit(1)
+                                }
+                                Spacer()
+                                if p.isGitRepo {
+                                    Image(systemName: "arrow.triangle.branch").font(.caption).foregroundStyle(palette.mutedForeground)
+                                }
+                            }
                         }
-                    }
-                    if let p = selectedProject {
-                        LabeledContent("Path", value: p.path)
-                            .font(.caption).foregroundStyle(palette.mutedForeground)
+                        .buttonStyle(.plain)
                     }
                     addProjectControl
+                } header: {
+                    Text(isMulti ? "Projects · \(selectedProjects.count) selected" : "Project")
+                } footer: {
+                    if isMulti {
+                        Text("Multi-repo: the agent runs in the shared parent folder of the selected repos, so it can work across all of them. (Worktrees are single-repo only.)")
+                            .font(.caption)
+                    } else {
+                        Text("Pick a folder to run the agent in, or none for the daemon default. Select multiple for a multi-repo update.")
+                            .font(.caption)
+                    }
                 }
 
                 Section {
@@ -117,7 +136,7 @@ struct NewSessionView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Start") {
                         model.newSession(provider: provider,
-                                         projectID: projectID,
+                                         projectIDs: selectedProjects.isEmpty ? nil : Array(selectedProjects),
                                          worktree: useWorktree && canWorktree,
                                          workspaceName: workspaceName.isEmpty ? nil : workspaceName)
                         onStart()
@@ -166,7 +185,7 @@ struct NewSessionView: View {
         #if os(macOS)
         Button {
             if let path = pickFolder() {
-                Task { if let p = await model.addProject(path: path) { projectID = p.id } }
+                Task { if let p = await model.addProject(path: path) { selectedProjects.insert(p.id) } }
             }
         } label: {
             Label("Add folder…", systemImage: "folder.badge.plus")
@@ -179,10 +198,14 @@ struct NewSessionView: View {
             Button("Add") {
                 let p = addPath
                 addPath = ""
-                Task { if let proj = await model.addProject(path: p) { projectID = proj.id } }
+                Task { if let proj = await model.addProject(path: p) { selectedProjects.insert(proj.id) } }
             }.disabled(addPath.isEmpty)
         }
         #endif
+    }
+
+    private func toggle(_ id: String) {
+        if selectedProjects.contains(id) { selectedProjects.remove(id) } else { selectedProjects.insert(id) }
     }
 
     #if os(macOS)

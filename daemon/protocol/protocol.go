@@ -89,7 +89,8 @@ type Envelope struct {
 type SessionCreate struct {
 	Provider      string            `json:"provider"`
 	Cwd           string            `json:"cwd,omitempty"`
-	ProjectID     string            `json:"project_id,omitempty"` // resolve cwd from this registered project
+	ProjectID     string            `json:"project_id,omitempty"`  // resolve cwd from this registered project
+	ProjectIDs    []string          `json:"project_ids,omitempty"` // multi-root workspace: cwd = common ancestor
 	Prompt        string            `json:"prompt,omitempty"`
 	Images        []ImageAttachment `json:"images,omitempty"`         // images for the first prompt
 	Worktree      bool              `json:"worktree,omitempty"`       // run in a fresh git worktree (opt-in)

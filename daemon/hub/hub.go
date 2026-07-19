@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -89,6 +90,36 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 		return nil, fmt.Errorf("unknown provider: %s", req.Provider)
 	}
 	cwd := req.Cwd
+	// Multi-root workspace: run in the common ancestor of the selected repos so the agent can
+	// work across all of them (a "multi-repo update"). One selection falls through to the
+	// normal single-project path; a parent dir can't be a git worktree, so worktree is off.
+	multiRepo := false
+	if len(req.ProjectIDs) == 1 && req.ProjectID == "" {
+		req.ProjectID = req.ProjectIDs[0]
+	} else if len(req.ProjectIDs) > 1 {
+		reg := h.projectRegistry()
+		if reg == nil {
+			return nil, fmt.Errorf("projects not enabled")
+		}
+		var paths []string
+		for _, id := range req.ProjectIDs {
+			if proj, ok := reg.Get(id); ok {
+				paths = append(paths, proj.Path)
+			}
+		}
+		if len(paths) < 2 {
+			return nil, fmt.Errorf("multi-repo needs at least 2 valid projects")
+		}
+		anc := commonAncestor(paths)
+		if anc == "" || anc == string(filepath.Separator) {
+			return nil, fmt.Errorf("selected repos have no shared parent directory")
+		}
+		cwd = anc
+		req.Worktree = false
+		req.ProjectID = ""
+		multiRepo = true
+		meta.workspaceName = fmt.Sprintf("%d repos", len(paths))
+	}
 	if req.ProjectID != "" {
 		reg := h.projectRegistry()
 		if reg == nil {
@@ -100,7 +131,7 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 		}
 		cwd = proj.Path
 	}
-	if req.ProjectID == "" {
+	if req.ProjectID == "" && !multiRepo {
 		h.autoRegisterCwd(cwd)
 	}
 	meta.projectID = req.ProjectID
@@ -998,6 +1029,32 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 	default:
 		h.sendErr(conn, env.ID, "unknown type: "+env.Type)
 	}
+}
+
+// commonAncestor returns the deepest directory containing all the given absolute paths, or the
+// filesystem root ("/") if they share only that.
+func commonAncestor(paths []string) string {
+	if len(paths) == 0 {
+		return ""
+	}
+	parts := strings.Split(filepath.Clean(paths[0]), string(filepath.Separator))
+	for _, p := range paths[1:] {
+		pp := strings.Split(filepath.Clean(p), string(filepath.Separator))
+		n := len(parts)
+		if len(pp) < n {
+			n = len(pp)
+		}
+		i := 0
+		for i < n && parts[i] == pp[i] {
+			i++
+		}
+		parts = parts[:i]
+	}
+	anc := strings.Join(parts, string(filepath.Separator))
+	if anc == "" {
+		return string(filepath.Separator)
+	}
+	return anc
 }
 
 // fsGuard builds a file-access guard scoped to the registered project roots plus every active

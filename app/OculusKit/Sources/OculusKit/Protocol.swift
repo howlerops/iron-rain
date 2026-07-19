@@ -66,16 +66,18 @@ public struct SessionCreate: Codable {
     public var provider: String
     public var cwd: String?
     public var projectID: String?
+    public var projectIDs: [String]?
     public var prompt: String?
     public var images: [ImageAttachment]?
     public var worktree: Bool?
     public var workspaceName: String?
-    public init(provider: String, cwd: String? = nil, projectID: String? = nil, prompt: String? = nil, images: [ImageAttachment]? = nil, worktree: Bool? = nil, workspaceName: String? = nil) {
-        self.provider = provider; self.cwd = cwd; self.projectID = projectID; self.prompt = prompt; self.images = images; self.worktree = worktree; self.workspaceName = workspaceName
+    public init(provider: String, cwd: String? = nil, projectID: String? = nil, projectIDs: [String]? = nil, prompt: String? = nil, images: [ImageAttachment]? = nil, worktree: Bool? = nil, workspaceName: String? = nil) {
+        self.provider = provider; self.cwd = cwd; self.projectID = projectID; self.projectIDs = projectIDs; self.prompt = prompt; self.images = images; self.worktree = worktree; self.workspaceName = workspaceName
     }
     enum CodingKeys: String, CodingKey {
         case provider, cwd, prompt, images, worktree
         case projectID = "project_id"
+        case projectIDs = "project_ids"
         case workspaceName = "workspace_name"
     }
 }
