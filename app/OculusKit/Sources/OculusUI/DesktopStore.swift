@@ -35,6 +35,10 @@ public struct PairingPayload {
 public final class DesktopStore: ObservableObject {
     @Published public private(set) var models: [Model] = []
     @Published public var selectedID: String?
+    /// False until `bootstrap()` has loaded saved desktops and made its first connection
+    /// attempt. The UI shows a loading screen until this flips, so the connected surface
+    /// isn't preceded by a flash of the onboarding/disconnected default.
+    @Published public private(set) var didBootstrap = false
 
     private let defaults = UserDefaults.standard
     private let key = "oculus.desktops"
@@ -76,6 +80,7 @@ public final class DesktopStore: ObservableObject {
         save()
         if selectedID == nil { selectedID = models.first?.id }
         await connectAll()
+        didBootstrap = true
     }
 
     public func connectAll() async {

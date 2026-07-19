@@ -12,6 +12,7 @@ public struct RootView: View {
     @State private var showNewSession = false
     @State private var selectedTab = 0
     @State private var searchText = ""
+    @AppStorage("oculus.appearance") private var appearance: Appearance = .system
     #if os(macOS)
     @StateObject private var launcher = DaemonLauncher()
     #endif
@@ -20,7 +21,11 @@ public struct RootView: View {
 
     public var body: some View {
         Group {
-            if store.isEmpty {
+            if !store.didBootstrap {
+                // Gate the app behind the first connection attempt so the connected surface
+                // isn't preceded by a flash of onboarding / disconnected default.
+                loadingScreen
+            } else if store.isEmpty {
                 DesktopOnboardView(store: store, palette: palette)
             } else if let model = store.active {
                 mainSurface(model)
@@ -35,12 +40,23 @@ public struct RootView: View {
         .background(palette.background.ignoresSafeArea())
         .foregroundStyle(palette.foreground)
         .tint(palette.primary)
+        .preferredColorScheme(appearance.colorScheme)
         .task {
             #if os(macOS)
             await launcher.ensureRunning() // start the local daemon (no terminal) if needed
             #endif
             await store.bootstrap()
         }
+    }
+
+    /// Shown until the first connection attempt resolves — the wolf mark over a spinner.
+    private var loadingScreen: some View {
+        VStack(spacing: 18) {
+            Image("WolfMark").resizable().scaledToFit().frame(width: 56, height: 56).opacity(0.9)
+            ProgressView().controlSize(.small)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(palette.background)
     }
 
     /// The Sessions/Issues surface. macOS uses ONE NavigationSplitView (the mode switch

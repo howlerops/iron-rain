@@ -39,6 +39,7 @@ struct SessionSidebar: View {
     /// Driven by `.searchable` on the NavigationSplitView (RootView), per Apple's guidance;
     /// it filters `filteredGroups` here.
     @Binding var searchText: String
+    @AppStorage("oculus.appearance") private var appearance: Appearance = .system
 
     static let newSessionTag = "__new__"
 
@@ -74,19 +75,12 @@ struct SessionSidebar: View {
         }
     }
 
-    /// The sidebar body — a plain session `List`, modeled on Apple's macOS 26
-    /// NavigationSplitView sample: the system insets and styles it. No wrapping VStack,
-    /// safeAreaInset, or on-List `.searchable` (search is on the split view; the
-    /// Sessions/Issues switch is on the detail toolbar). A tiny clear spacer row is the
-    /// inset technique from Apple's "extend scrolling under a sidebar" guide, so the first
-    /// real row clears the macOS 26 glass titlebar edge instead of being clipped by it.
+    /// The sidebar body — a plain session `List`, styled by the system as a sidebar. Search
+    /// is on the split view; the Sessions/Issues switch is on the detail toolbar. The window
+    /// sizing is handled in RootView (windowResizability + detail clamp), so no inset hacks
+    /// are needed here.
     private var sessionsList: some View {
         List(selection: $selection) {
-            Color.clear
-                .frame(height: 1)
-                .listRowInsets(EdgeInsets())
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
             if !model.connected {
                 HStack(spacing: 5) {
                     Circle().fill(Color.red).frame(width: 6, height: 6)
@@ -147,6 +141,13 @@ struct SessionSidebar: View {
                     Button { showPairingQR = true } label: { Label("Pair a phone…", systemImage: "qrcode") }
                 }
                 Button { Task { await model.discover() } } label: { Label("Refresh sessions", systemImage: "arrow.clockwise") }
+                Picker(selection: $appearance) {
+                    ForEach(Appearance.allCases) { a in
+                        Label(a.label, systemImage: a.symbol).tag(a)
+                    }
+                } label: {
+                    Label("Appearance", systemImage: "circle.lefthalf.filled")
+                }
                 Button(role: .destructive) { model.disconnect() } label: { Label("Disconnect", systemImage: "bolt.horizontal.circle") }
             } label: {
                 Image(systemName: "ellipsis")

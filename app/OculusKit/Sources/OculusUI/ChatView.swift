@@ -157,10 +157,11 @@ struct MessageRow: View {
             HStack {
                 Spacer(minLength: 40)
                 Text(message.text)
-                    .padding(.horizontal, 14).padding(.vertical, 10)
-                    .background(palette.primary.opacity(0.18))
-                    .overlay(RoundedRectangle(cornerRadius: 18).stroke(palette.primary.opacity(0.35)))
-                    .clipShape(RoundedRectangle(cornerRadius: 18))
+                    .foregroundStyle(palette.foreground)
+                    .padding(.horizontal, 14).padding(.vertical, 9)
+                    .background(palette.secondary)
+                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(palette.border))
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
                     .textSelection(.enabled)
             }
         case .assistant:
@@ -189,7 +190,8 @@ struct MessageRow: View {
             .foregroundStyle(palette.accentForeground)
             .padding(.horizontal, 12).padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(palette.accent.opacity(0.5))
+            .background(palette.accent)
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.primary.opacity(0.25)))
             .clipShape(RoundedRectangle(cornerRadius: 10))
         case .system:
             Text(message.text).font(.caption).foregroundStyle(palette.mutedForeground)

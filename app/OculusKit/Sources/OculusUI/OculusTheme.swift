@@ -19,35 +19,39 @@ public struct OculusPalette {
     public let border: Color
     public let input: Color
 
+    /// Reserved brand gold — HowlerOps `--primary` oklch(0.7516 0.1469 84) = #D9A520
+    /// (goldenrod). The same gold is used in both schemes; only backgrounds/text invert.
+    public static let brandGold = Color(hex: 0xD9A520)
+
     public static let dark = OculusPalette(
         background: Color(hex: 0x000000),
-        foreground: Color(hex: 0xE5E5E5),
-        card: Color(hex: 0x1F1F1F),
-        cardForeground: Color(hex: 0xF2F2F2),
-        primary: Color(hex: 0xE3B65B), // brand gold (dark) — reserved for state: selection, running, actions
+        foreground: Color(hex: 0xE2E2E2),
+        card: Color(hex: 0x1C1C1C),
+        cardForeground: Color(hex: 0xF0F0F0),
+        primary: brandGold, // reserved for state: selection, running, actions
         primaryForeground: Color(hex: 0x000000),
-        secondary: Color(hex: 0x252525),
+        secondary: Color(hex: 0x242424),
         muted: Color(hex: 0x333333),
-        mutedForeground: Color(hex: 0xB3B3B3),
-        accent: Color(hex: 0x3A2D10),
-        accentForeground: Color(hex: 0xF0C441),
-        destructive: Color(hex: 0xDC2626),
-        border: Color(hex: 0x2D2D2D),
-        input: Color(hex: 0x1C1C1C)
+        mutedForeground: Color(hex: 0xADADAD),
+        accent: Color(hex: 0x3A2E17),
+        accentForeground: Color(hex: 0xE9C34A),
+        destructive: Color(hex: 0xE5484D),
+        border: Color(hex: 0x2A2A2A),
+        input: Color(hex: 0x171717)
     )
 
     public static let light = OculusPalette(
         background: Color(hex: 0xFFFFFF),
         foreground: Color(hex: 0x000000),
         card: Color(hex: 0xF7F7F7),
-        cardForeground: Color(hex: 0x242424),
-        primary: Color(hex: 0xB8842A), // brand gold (light) — reserved for state: selection, running, actions
+        cardForeground: Color(hex: 0x1F1F1F),
+        primary: brandGold, // reserved for state: selection, running, actions
         primaryForeground: Color(hex: 0xFFFFFF),
         secondary: Color(hex: 0xF0F0F0),
-        muted: Color(hex: 0xE6E6E6),
-        mutedForeground: Color(hex: 0x666666),
-        accent: Color(hex: 0xFFF7DB),
-        accentForeground: Color(hex: 0x9A6B00),
+        muted: Color(hex: 0xE2E2E2),
+        mutedForeground: Color(hex: 0x6B6B6B),
+        accent: Color(hex: 0xFDF5E3),
+        accentForeground: Color(hex: 0xB8860B),
         destructive: Color(hex: 0xDC2626),
         border: Color(hex: 0xE5E5E5),
         input: Color(hex: 0xF4F4F4)
@@ -55,6 +59,35 @@ public struct OculusPalette {
 
     public static func current(_ scheme: ColorScheme) -> OculusPalette {
         scheme == .dark ? .dark : .light
+    }
+}
+
+/// User appearance preference, persisted via `@AppStorage("oculus.appearance")`. `.system`
+/// follows the OS; light/dark force a scheme via `.preferredColorScheme`.
+public enum Appearance: Int, CaseIterable, Identifiable {
+    case system, light, dark
+    public var id: Int { rawValue }
+    public var label: String {
+        switch self {
+        case .system: return "System"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+    public var symbol: String {
+        switch self {
+        case .system: return "circle.lefthalf.filled"
+        case .light: return "sun.max"
+        case .dark: return "moon"
+        }
+    }
+    /// nil = follow the system; otherwise force the scheme.
+    public var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
     }
 }
 
