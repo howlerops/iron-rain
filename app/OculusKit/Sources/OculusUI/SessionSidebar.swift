@@ -98,7 +98,6 @@ struct SessionSidebar: View {
         .searchable(text: $searchText, prompt: "Search sessions")
         #endif
         .toolbar { sidebarToolbar }
-        .task { await model.discover() }
         .sheet(isPresented: $showPairingQR) {
             PairingQRView(url: model.pairingURL ?? "", palette: palette) { showPairingQR = false }
         }
@@ -284,7 +283,6 @@ struct SessionSidebar: View {
     // MARK: grouping
 
     private var groups: [SessionGroup] {
-        let managedIDs = Set(model.sessions.map { $0.id })
         let projectNames = Dictionary(model.projects.map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a })
         let discoveredTitles = Dictionary(model.discovered.compactMap { d -> (String, String)? in
             guard let s = d.sessionID, let t = d.title, !t.isEmpty else { return nil }
@@ -305,23 +303,9 @@ struct SessionSidebar: View {
                                     branch: s.branch, isRunning: s.status == SessionStatusValue.running,
                                     viewOnly: false, managed: true, updatedAt: date(s.updatedAt)))
         }
-        for d in model.discovered where d.provider == "opencode" && d.kind == DiscoveredKind.session {
-            guard let sid = d.sessionID, !managedIDs.contains(sid) else { continue }
-            add("On this Mac", SidebarSession(id: sid, title: clean(d.title) ?? "ses \(sid.prefix(6))",
-                                              provider: "opencode", projectName: "On this Mac", branch: nil,
-                                              isRunning: false, viewOnly: false, managed: false, updatedAt: date(d.updatedAt)))
-        }
-        for d in model.discovered where d.provider == "claude-code" {
-            // Use the real session id (not the composite discoveryID) so selecting the row
-            // matches in handleSelection and attaches (resumes) the session; skip any already
-            // resumed into a managed session to avoid showing it twice.
-            let sid = d.sessionID ?? d.discoveryID
-            guard !managedIDs.contains(sid) else { continue }
-            let name = (d.cwd as NSString?)?.lastPathComponent ?? "session"
-            add("View-only", SidebarSession(id: sid, title: name, provider: "claude-code",
-                                            projectName: "View-only", branch: nil, isRunning: false,
-                                            viewOnly: true, managed: false, updatedAt: date(d.updatedAt)))
-        }
+        // Terminal-owned sessions discovered on the host are intentionally NOT shown here —
+        // the sidebar lists only sessions started/opened in the app. Discovered sessions are
+        // found on demand via the Add Session search (which attaches them, making them managed).
 
         // Pull recently-active sessions (active within the window, or running) out of their
         // project buckets into a single "Recent" section at the top. View-only sessions stay

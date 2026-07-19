@@ -153,7 +153,8 @@ public final class Model: ObservableObject {
             statusDetail = nil
             savePairing()
             Task { await receiveLoop() }
-            await discover()
+            // Note: discovery of terminal-owned sessions is on-demand (the Add Session search),
+            // not auto-loaded — the sidebar shows only sessions started/opened in the app.
             await loadProjects()
             await loadSessions()
             await loadIntegrationStatus()
@@ -366,11 +367,20 @@ public final class Model: ObservableObject {
         }
     }
 
-    public func addProject(path: String) async {
-        guard let client, !path.isEmpty else { return }
-        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.projectAdd, payload: ProjectAdd(path: path)) {
-            try? await client.send(env)
-            await loadProjects()
+    /// Registers a project folder and returns it (the daemon replies with the created
+    /// Project). The returned project is merged into `projects` so callers can select it
+    /// immediately — fixing the old fire-and-forget flow where an added folder never appeared.
+    @discardableResult
+    public func addProject(path: String) async -> Project? {
+        guard path.trimmingCharacters(in: .whitespaces).isEmpty == false else { return nil }
+        do {
+            let env = try await request(MessageType.projectAdd, payload: ProjectAdd(path: path))
+            let p = try env.payload(as: Project.self)
+            if let i = projects.firstIndex(where: { $0.id == p.id }) { projects[i] = p } else { projects.append(p) }
+            return p
+        } catch {
+            status = "Add project failed: \(error.localizedDescription)"
+            return nil
         }
     }
 
