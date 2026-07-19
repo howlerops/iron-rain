@@ -13,6 +13,7 @@ public struct IssuesView: View {
     @State private var kanban = true
     @State private var token = ""
     @State private var launching: Issue?
+    @State private var selectedIssue: Issue?
     @Environment(\.openURL) private var openURL
 
     public init(model: Model, palette: OculusPalette, embedded: Bool = false, onLaunched: @escaping () -> Void = {}) {
@@ -30,6 +31,11 @@ public struct IssuesView: View {
                     launching = nil
                     if launched { onLaunched() }
                 }
+            }
+            .sheet(item: $selectedIssue) { issue in
+                IssueDetailSheet(issue: issue, palette: palette,
+                                 onStart: { selectedIssue = nil; launching = issue },
+                                 onClose: { selectedIssue = nil })
             }
             .task { await model.loadIntegrationStatus(); await model.loadIssues() }
     }
@@ -145,19 +151,27 @@ public struct IssuesView: View {
                             Text("\(colIssues.count)").font(.caption)
                                 .foregroundStyle(palette.mutedForeground)
                         }
-                        ForEach(colIssues) { issue in
-                            card(issue)
+                        .padding(.horizontal, 4)
+                        // Each column scrolls its own cards, lazily — a "Done" column with
+                        // hundreds of tickets must not overflow the board's height.
+                        ScrollView(.vertical, showsIndicators: false) {
+                            LazyVStack(alignment: .leading, spacing: 10) {
+                                ForEach(colIssues) { issue in card(issue) }
+                            }
+                            .padding(.bottom, 8)
                         }
-                        Spacer(minLength: 0)
                     }
-                    .frame(width: 260)
+                    .frame(width: 280)
+                    .frame(maxHeight: .infinity, alignment: .top)
                     .padding(10)
                     .background(palette.card.opacity(0.5))
                     .clipShape(RoundedRectangle(cornerRadius: 14))
                 }
             }
             .padding(14)
+            .frame(maxHeight: .infinity, alignment: .top)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func card(_ issue: Issue) -> some View {
@@ -178,8 +192,10 @@ public struct IssuesView: View {
         }
         .padding(12)
         .background(palette.card)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(palette.border))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(selectedIssue?.id == issue.id ? palette.primary : palette.border))
         .clipShape(RoundedRectangle(cornerRadius: 12))
+        .contentShape(Rectangle())
+        .onTapGesture { selectedIssue = issue }
     }
 
     private func priorityDot(_ p: Int) -> some View {
@@ -201,7 +217,85 @@ public struct IssuesView: View {
                 Button { launching = issue } label: { Image(systemName: "play.circle.fill") }
                     .buttonStyle(.plain).foregroundStyle(palette.primary)
             }
+            .contentShape(Rectangle())
+            .onTapGesture { selectedIssue = issue }
         }
+    }
+}
+
+/// A floating detail sheet for a ticket: full title/body + status/priority/assignee and the
+/// primary actions (start an agent, open in Linear).
+struct IssueDetailSheet: View {
+    let issue: Issue
+    let palette: OculusPalette
+    let onStart: () -> Void
+    let onClose: () -> Void
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Text(issue.key).font(.system(.caption, design: .monospaced).bold())
+                    .foregroundStyle(palette.primary)
+                if let p = issue.priority, p > 0 {
+                    Text(priorityLabel(p)).font(.caption2.bold())
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Capsule().fill(priorityColor(p).opacity(0.18)))
+                        .foregroundStyle(priorityColor(p))
+                }
+                Spacer()
+                Button { onClose() } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
+            }
+            .padding(.horizontal, 18).padding(.top, 16).padding(.bottom, 10)
+
+            Divider().overlay(palette.border)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(issue.title).font(.title3.bold()).textSelection(.enabled)
+                    HStack(spacing: 10) {
+                        chip(issue.status, systemImage: "circle.fill")
+                        if let a = issue.assignee, !a.isEmpty { chip(a, systemImage: "person") }
+                    }
+                    if let body = issue.body, !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Divider().overlay(palette.border)
+                        Text(body).font(.callout).foregroundStyle(palette.foreground.opacity(0.9))
+                            .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .padding(18)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            Divider().overlay(palette.border)
+            HStack(spacing: 10) {
+                if let u = issue.url, let url = URL(string: u) {
+                    Button { openURL(url) } label: { Label("Open in Linear", systemImage: "arrow.up.right.square") }
+                        .buttonStyle(.bordered)
+                }
+                Spacer()
+                Button { onStart() } label: { Label("Start agent", systemImage: "play.circle.fill") }
+                    .buttonStyle(.borderedProminent).tint(palette.primary)
+            }
+            .padding(.horizontal, 18).padding(.vertical, 12)
+        }
+        .frame(width: 460, height: 520)
+        .background(palette.background)
+    }
+
+    private func chip(_ text: String, systemImage: String) -> some View {
+        Label(text, systemImage: systemImage)
+            .font(.caption).foregroundStyle(palette.mutedForeground)
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(Capsule().fill(palette.muted.opacity(0.4)))
+    }
+
+    private func priorityLabel(_ p: Int) -> String {
+        switch p { case 1: return "Urgent"; case 2: return "High"; case 3: return "Medium"; default: return "Low" }
+    }
+    private func priorityColor(_ p: Int) -> Color {
+        p == 1 ? .red : (p == 2 ? .orange : palette.mutedForeground)
     }
 }
 
