@@ -390,6 +390,7 @@ type Discovered struct {
 	Path      string `json:"path,omitempty"` // claude-code transcript path
 	PID       int    `json:"pid,omitempty"`
 	UpdatedAt int64  `json:"updated_at,omitempty"` // unix seconds of last activity (0 = unknown)
+	Live      bool   `json:"live,omitempty"`       // currently running in a terminal (not just a transcript)
 }
 
 // DiscoverList is the response to a discover.list request.

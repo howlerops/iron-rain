@@ -209,19 +209,50 @@ var listOpenCodeSessions = func(ctx context.Context, url string) ([]protocol.Ses
 	return opencode.New(url).List(ctx)
 }
 
+// findLiveClaudeSessions returns the set of claude-code session ids currently running in a
+// terminal (`claude agents --json`), so a discovered transcript can be flagged live vs
+// historical. Overridable in tests; best-effort — empty if claude isn't on PATH or errors.
+var findLiveClaudeSessions = func(ctx context.Context) map[string]bool {
+	live := map[string]bool{}
+	bin, err := exec.LookPath("claude")
+	if err != nil {
+		return live
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, bin, "agents", "--json").Output()
+	if err != nil {
+		return live
+	}
+	var rows []struct {
+		SessionID string `json:"sessionId"`
+	}
+	if json.Unmarshal(out, &rows) != nil {
+		return live
+	}
+	for _, r := range rows {
+		if r.SessionID != "" {
+			live[r.SessionID] = true
+		}
+	}
+	return live
+}
+
 // Scan discovers active agent artifacts on the host and returns them as protocol
 // items ready to send to the app. Best-effort: a failing scan of one kind does not
 // block the others.
 func Scan(ctx context.Context) ([]protocol.Discovered, error) {
 	servers, _ := FindOpenCodeServers(ctx)
 	claude, _ := FindClaudeSessions(DefaultClaudeProjectsDir(), 24*time.Hour, time.Now())
-	return combine(ctx, servers, claude, listOpenCodeSessions), nil
+	live := findLiveClaudeSessions(ctx)
+	return combine(ctx, servers, claude, live, listOpenCodeSessions), nil
 }
 
 func combine(
 	ctx context.Context,
 	servers []OpenCodeServer,
 	claude []ClaudeSession,
+	liveClaude map[string]bool,
 	list func(context.Context, string) ([]protocol.Session, error),
 ) []protocol.Discovered {
 	items := []protocol.Discovered{}
@@ -238,6 +269,7 @@ func combine(
 			items = append(items, protocol.Discovered{
 				Provider: "opencode", Kind: protocol.KindSession,
 				URL: s.URL, SessionID: sess.ID, Title: sess.Title, UpdatedAt: sess.UpdatedAt,
+				Live: true, // it lives on a running opencode server — attach = live shared session
 			})
 		}
 	}
@@ -245,6 +277,7 @@ func combine(
 		items = append(items, protocol.Discovered{
 			Provider: "claude-code", Kind: protocol.KindSession,
 			SessionID: c.ID, Cwd: c.Cwd, Path: c.Path, UpdatedAt: c.ModTime.Unix(),
+			Live: liveClaude[c.ID], // currently running in a terminal per `claude agents`
 		})
 	}
 	return items

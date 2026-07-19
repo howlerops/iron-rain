@@ -360,11 +360,13 @@ public struct Discovered: Codable {
     public var path: String?
     public var pid: Int?
     public var updatedAt: Int? // unix seconds of last activity
+    public var live: Bool?     // currently running in a terminal (not just a transcript)
     enum CodingKeys: String, CodingKey {
         case provider, kind, url
         case sessionID = "session_id"
         case title, cwd, path, pid
         case updatedAt = "updated_at"
+        case live
     }
 }
 public struct DiscoverList: Codable { public var items: [Discovered] }

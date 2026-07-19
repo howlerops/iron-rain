@@ -131,6 +131,8 @@ struct NewSessionView: View {
                                     Text(discoveredSubtitle(d)).font(.caption)
                                         .foregroundStyle(palette.mutedForeground).lineLimit(1)
                                 }
+                                Spacer()
+                                if d.live == true { liveChip }
                             }
                         }
                         .buttonStyle(.plain)
@@ -186,6 +188,20 @@ struct NewSessionView: View {
                     || (d.cwd ?? "").lowercased().contains(q)
                     || (d.sessionID ?? "").lowercased().contains(q)
             }
+            .sorted { a, b in
+                if (a.live == true) != (b.live == true) { return a.live == true } // live first
+                return (a.updatedAt ?? 0) > (b.updatedAt ?? 0)
+            }
+    }
+
+    private var liveChip: some View {
+        HStack(spacing: 3) {
+            Circle().fill(palette.primary).frame(width: 5, height: 5)
+            Text("Live").font(.system(size: 10, weight: .semibold))
+        }
+        .foregroundStyle(palette.primary)
+        .padding(.horizontal, 6).padding(.vertical, 2)
+        .background(Capsule().fill(palette.primary.opacity(0.16)))
     }
 
     private func discoveredTitle(_ d: Discovered) -> String {

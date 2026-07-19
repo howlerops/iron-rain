@@ -115,7 +115,7 @@ func TestCombine(t *testing.T) {
 		return []protocol.Session{{ID: "ses_a", Title: "hello"}}, nil
 	}
 
-	items := combine(context.Background(), servers, claude, list)
+	items := combine(context.Background(), servers, claude, nil, list)
 
 	// expect: 1 server + 1 opencode session + 1 claude session = 3
 	if len(items) != 3 {
@@ -137,7 +137,7 @@ func TestCombineSkipsUnreachableServer(t *testing.T) {
 	list := func(_ context.Context, _ string) ([]protocol.Session, error) {
 		return nil, context.DeadlineExceeded
 	}
-	items := combine(context.Background(), servers, nil, list)
+	items := combine(context.Background(), servers, nil, nil, list)
 	// still lists the server itself, just no sessions under it
 	if len(items) != 1 || items[0].Kind != protocol.KindServer {
 		t.Fatalf("want 1 server item, got %+v", items)
@@ -162,7 +162,7 @@ func TestCombineThreadsContextToProcCwd(t *testing.T) {
 	servers := []OpenCodeServer{{URL: "http://127.0.0.1:4096", PID: 111}}
 	list := func(_ context.Context, _ string) ([]protocol.Session, error) { return nil, nil }
 
-	combine(ctx, servers, nil, list)
+	combine(ctx, servers, nil, nil, list)
 	if !sawCancel {
 		t.Fatal("combine did not thread the scan context into procCwd")
 	}
