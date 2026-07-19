@@ -35,6 +35,7 @@ import (
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/push"
 	"github.com/howlerops/oculus/daemon/server"
+	"github.com/howlerops/oculus/daemon/store"
 )
 
 const version = "0.0.0-dev"
@@ -110,6 +111,16 @@ func serve(args []string) error {
 	} else {
 		h.SetProjects(reg)
 		h.SetAutoProjects(*autoProjects)
+	}
+	// Durable local state (session names, etc.): a pure-Go SQLite DB in ~/.oculus.
+	// Best-effort — if it can't open, we log and run with in-memory-only names.
+	if err := os.MkdirAll(filepath.Dir(dbPath()), 0o700); err != nil {
+		fmt.Fprintf(os.Stderr, "  warning: could not create state dir: %v\n", err)
+	} else if db, err := store.Open(dbPath()); err != nil {
+		fmt.Fprintf(os.Stderr, "  warning: could not open local database: %v\n", err)
+	} else {
+		h.SetNameStore(db)
+		defer db.Close()
 	}
 	// Trackers (Linear/Jira): load saved tokens, connect, and poll every 60s.
 	issuesMgr := issues.NewManager(integrationsPath(), h.BroadcastIssues)
@@ -373,6 +384,14 @@ func integrationsPath() string {
 		return "oculus-integrations.json"
 	}
 	return filepath.Join(home, ".oculus", "integrations.json")
+}
+
+func dbPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "oculus.db"
+	}
+	return filepath.Join(home, ".oculus", "oculus.db")
 }
 
 func loadOrCreateKey(path string) (crypto.KeyPair, error) {

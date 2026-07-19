@@ -20,6 +20,7 @@ import (
 	"github.com/howlerops/oculus/daemon/project"
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/push"
+	"github.com/howlerops/oculus/daemon/store"
 	"github.com/howlerops/oculus/daemon/transport"
 	"github.com/howlerops/oculus/daemon/worktree"
 )
@@ -45,6 +46,7 @@ type Hub struct {
 	oauthRedirect string                   // loopback OAuth callback URL for tracker connect
 	worktreeBase  string                   // base dir for worktrees ("" = worktree.DefaultBase)
 	reservedPorts map[int]bool             // ports handed to worktree setup hooks (collision-free)
+	names         *store.Store             // optional: durable user-set session names (survive restart)
 
 	pushTimeout     time.Duration // per-Notify deadline for the approval push fan-out
 	pushConcurrency int           // cap on concurrent in-flight pushes
@@ -76,6 +78,14 @@ func (h *Hub) releasePort(p int) {
 func (h *Hub) SetWorktreeBase(dir string) {
 	h.mu.Lock()
 	h.worktreeBase = dir
+	h.mu.Unlock()
+}
+
+// SetNameStore attaches the durable session-name store. Set once at startup before
+// serving; nil disables persistence (renames then live only for the daemon's lifetime).
+func (h *Hub) SetNameStore(s *store.Store) {
+	h.mu.Lock()
+	h.names = s
 	h.mu.Unlock()
 }
 
@@ -405,7 +415,14 @@ func New() *Hub {
 }
 
 // addSession creates and stores a managed (shared) session for a provider session.
+// A persisted user-set name (from a prior rename) is restored here so it survives a
+// daemon restart, unless the caller already supplied an explicit label.
 func (h *Hub) addSession(sess agent.Session, meta sessionMeta) *managedSession {
+	if meta.label == "" && h.names != nil {
+		if n, ok := h.names.Name(sess.ID()); ok {
+			meta.label = n
+		}
+	}
 	m := newManagedSession(h, sess, meta)
 	h.mu.Lock()
 	h.sessions[sess.ID()] = m
@@ -978,9 +995,16 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, "unknown session")
 			return
 		}
+		name := strings.TrimSpace(req.Name)
 		m.mu.Lock()
-		m.meta.label = strings.TrimSpace(req.Name)
+		m.meta.label = name
 		m.mu.Unlock()
+		// Persist so the name survives a daemon restart (best-effort; log on failure).
+		if h.names != nil {
+			if err := h.names.SetName(req.SessionID, name); err != nil {
+				log.Printf("session.rename: persist %s: %v", req.SessionID, err)
+			}
+		}
 		h.sendOK(conn, env.ID, m.info())
 		// Broadcast the updated list so every client reflects the new name.
 		h.mu.Lock()
