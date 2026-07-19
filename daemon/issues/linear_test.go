@@ -35,7 +35,7 @@ func TestLinear_ListAssigned(t *testing.T) {
 		}
 		io.WriteString(w, `{"data":{"viewer":{"assignedIssues":{"nodes":[
 		  {"id":"u1","identifier":"ENG-1","title":"Fix bug","description":"desc","url":"https://linear.app/ENG-1",
-		   "branchName":"jacob/eng-1-fix-bug","priority":2,"updatedAt":"2026-07-17","state":{"id":"s1","name":"In Progress","type":"started"},"team":{"id":"t1","key":"ENG"}}
+		   "branchName":"jacob/eng-1-fix-bug","priority":2,"updatedAt":"2026-07-17","state":{"id":"s1","name":"In Progress","type":"started"},"team":{"id":"t1","key":"ENG"},"cycle":{"id":"c1","number":7,"name":"Sprint 7"}}
 		]}}}}`)
 	}))
 	defer srv.Close()
@@ -53,6 +53,9 @@ func TestLinear_ListAssigned(t *testing.T) {
 	if i.Key != "ENG-1" || i.Title != "Fix bug" || i.Category != "in_progress" ||
 		i.BranchName != "jacob/eng-1-fix-bug" || i.TeamID != "t1" || i.Provider != "linear" {
 		t.Fatalf("parsed issue = %+v", i)
+	}
+	if i.CycleID != "c1" || i.CycleNumber != 7 || i.CycleName != "Sprint 7" {
+		t.Fatalf("parsed cycle = %+v", i)
 	}
 }
 

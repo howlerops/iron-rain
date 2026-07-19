@@ -375,6 +375,7 @@ func toProtoIssue(i issues.Issue) protocol.Issue {
 		ID: i.ID, Key: i.Key, Title: i.Title, Body: i.Body, Status: i.Status,
 		Category: i.Category, Assignee: i.Assignee, URL: i.URL, Provider: i.Provider,
 		BranchName: i.BranchName, TeamID: i.TeamID, Priority: i.Priority, UpdatedAt: i.UpdatedAt,
+		CycleID: i.CycleID, CycleName: i.CycleName, CycleNumber: i.CycleNumber,
 	}
 }
 

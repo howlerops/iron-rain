@@ -78,7 +78,7 @@ func (l *Linear) gql(ctx context.Context, query string, vars map[string]any, out
 
 const assignedIssuesQuery = `query { viewer { assignedIssues(first: 50, includeArchived: false) {
   nodes { id identifier title description url branchName priority updatedAt
-    state { id name type } team { id key } }
+    state { id name type } team { id key } cycle { id number name } }
 } } }`
 
 func (l *Linear) ListAssigned(ctx context.Context) ([]Issue, error) {
@@ -97,7 +97,12 @@ func (l *Linear) ListAssigned(ctx context.Context) ([]Issue, error) {
 					State       struct {
 						ID, Name, Type string
 					} `json:"state"`
-					Team struct{ ID, Key string } `json:"team"`
+					Team  struct{ ID, Key string } `json:"team"`
+					Cycle struct {
+						ID     string `json:"id"`
+						Number int    `json:"number"`
+						Name   string `json:"name"`
+					} `json:"cycle"`
 				} `json:"nodes"`
 			} `json:"assignedIssues"`
 		} `json:"viewer"`
@@ -112,6 +117,7 @@ func (l *Linear) ListAssigned(ctx context.Context) ([]Issue, error) {
 			Status: n.State.Name, Category: categoryFor(n.State.Type),
 			Provider: "linear", BranchName: n.BranchName, TeamID: n.Team.ID,
 			Priority: n.Priority, UpdatedAt: n.UpdatedAt,
+			CycleID: n.Cycle.ID, CycleNumber: n.Cycle.Number, CycleName: n.Cycle.Name,
 		})
 	}
 	return out, nil
@@ -158,7 +164,7 @@ func (l *Linear) Transition(ctx context.Context, issueID, toStateID string) erro
 // issueFields is the GraphQL selection shared by Detail and Update so both return a
 // fully-populated issue node.
 const issueFields = `id identifier title description url branchName priority updatedAt
-  state { id name type } team { id key }`
+  state { id name type } team { id key } cycle { id number name }`
 
 // linearIssueNode mirrors issueFields for JSON decoding.
 type linearIssueNode struct {
@@ -173,7 +179,12 @@ type linearIssueNode struct {
 	State       struct {
 		ID, Name, Type string
 	} `json:"state"`
-	Team struct{ ID, Key string } `json:"team"`
+	Team  struct{ ID, Key string } `json:"team"`
+	Cycle struct {
+		ID     string `json:"id"`
+		Number int    `json:"number"`
+		Name   string `json:"name"`
+	} `json:"cycle"`
 }
 
 func (n linearIssueNode) toIssue() Issue {
@@ -182,6 +193,7 @@ func (n linearIssueNode) toIssue() Issue {
 		Status: n.State.Name, Category: categoryFor(n.State.Type),
 		Provider: "linear", BranchName: n.BranchName, TeamID: n.Team.ID,
 		Priority: n.Priority, UpdatedAt: n.UpdatedAt,
+		CycleID: n.Cycle.ID, CycleNumber: n.Cycle.Number, CycleName: n.Cycle.Name,
 	}
 }
 

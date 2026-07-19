@@ -152,6 +152,7 @@ struct IssueInspectorPanel: View {
             .menuStyle(.borderlessButton).fixedSize()
 
             if let a = current.assignee, !a.isEmpty { chip(a, systemImage: "person") }
+            if let cycle = current.cycleLabel { chip(cycle, systemImage: "arrow.triangle.2.circlepath") }
             Spacer()
         }
     }

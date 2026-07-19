@@ -189,9 +189,12 @@ type Issue struct {
 	URL        string `json:"url,omitempty"`
 	Provider   string `json:"provider"`
 	BranchName string `json:"branch_name,omitempty"`
-	TeamID     string `json:"team_id,omitempty"`
-	Priority   int    `json:"priority,omitempty"`
-	UpdatedAt  string `json:"updated_at,omitempty"`
+	TeamID      string `json:"team_id,omitempty"`
+	Priority    int    `json:"priority,omitempty"`
+	UpdatedAt   string `json:"updated_at,omitempty"`
+	CycleID     string `json:"cycle_id,omitempty"`
+	CycleName   string `json:"cycle_name,omitempty"`
+	CycleNumber int    `json:"cycle_number,omitempty"`
 }
 
 type IssueList struct {

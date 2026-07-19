@@ -313,11 +313,23 @@ public struct Issue: Codable, Identifiable, Hashable {
     public var teamID: String?
     public var priority: Int?
     public var updatedAt: String?
+    public var cycleID: String?
+    public var cycleName: String?
+    public var cycleNumber: Int?
     enum CodingKeys: String, CodingKey {
         case id, key, title, body, status, category, assignee, url, provider, priority
         case branchName = "branch_name"
         case teamID = "team_id"
         case updatedAt = "updated_at"
+        case cycleID = "cycle_id"
+        case cycleName = "cycle_name"
+        case cycleNumber = "cycle_number"
+    }
+    /// Display label for the issue's cycle/sprint, e.g. "Cycle 12" or a named cycle.
+    public var cycleLabel: String? {
+        if let n = cycleName, !n.isEmpty { return n }
+        if let num = cycleNumber, num > 0 { return "Cycle \(num)" }
+        return nil
     }
 }
 public struct IssueList: Codable { public var issues: [Issue] }

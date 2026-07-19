@@ -14,6 +14,10 @@ public struct IssuesView: View {
     @State private var token = ""
     @State private var launching: Issue?
     @State private var selectedIssue: Issue?
+    @State private var searchText = ""
+    @State private var priorityFilter: Int?     // nil = any
+    @State private var assigneeFilter: String?  // nil = any
+    @State private var cycleFilter: String?     // nil = any; "__none__" = not in a cycle; else cycle id
     @Environment(\.openURL) private var openURL
 
     public init(model: Model, palette: OculusPalette, embedded: Bool = false, onLaunched: @escaping () -> Void = {}) {
@@ -108,11 +112,113 @@ public struct IssuesView: View {
     @ViewBuilder private var surface: some View {
         if model.connectedTrackers.isEmpty && model.issues.isEmpty {
             connectScreen
-        } else if kanban {
-            board
         } else {
-            table
+            VStack(spacing: 0) {
+                filterBar
+                if kanban { board } else { table }
+            }
         }
+    }
+
+    // MARK: search + filter
+
+    /// Issues after the active search text + priority/assignee/cycle filters.
+    private var filteredIssues: [Issue] {
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return model.issues.filter { i in
+            if !q.isEmpty {
+                let hay = "\(i.key) \(i.title) \(i.body ?? "")".lowercased()
+                if !hay.contains(q) { return false }
+            }
+            if let p = priorityFilter, i.priority != p { return false }
+            if let a = assigneeFilter, (i.assignee ?? "") != a { return false }
+            if let c = cycleFilter {
+                if c == "__none__" { if (i.cycleID ?? "").isEmpty == false { return false } }
+                else if i.cycleID != c { return false }
+            }
+            return true
+        }
+    }
+
+    private var availableCycles: [(id: String, label: String)] {
+        var seen = Set<String>()
+        var out: [(id: String, label: String)] = []
+        for i in model.issues {
+            guard let id = i.cycleID, !id.isEmpty, let label = i.cycleLabel, !seen.contains(id) else { continue }
+            seen.insert(id); out.append((id: id, label: label))
+        }
+        return out.sorted { $0.label.localizedStandardCompare($1.label) == .orderedAscending }
+    }
+
+    private var availableAssignees: [String] {
+        Array(Set(model.issues.compactMap { $0.assignee }.filter { !$0.isEmpty })).sorted()
+    }
+
+    private var activeFilterCount: Int {
+        [priorityFilter != nil, assigneeFilter != nil, cycleFilter != nil].filter { $0 }.count
+    }
+
+    private func clearFilters() { priorityFilter = nil; assigneeFilter = nil; cycleFilter = nil }
+
+    private var filterBar: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass").font(.caption).foregroundStyle(palette.mutedForeground)
+                TextField("Search issues…", text: $searchText).textFieldStyle(.plain).font(.callout)
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    #endif
+                if !searchText.isEmpty {
+                    Button { searchText = "" } label: { Image(systemName: "xmark.circle.fill").font(.caption) }
+                        .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
+                }
+            }
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(palette.card).clipShape(Capsule())
+            .overlay(Capsule().stroke(palette.border))
+
+            Menu {
+                Menu("Priority") {
+                    Button { priorityFilter = nil } label: { filterRow("Any priority", priorityFilter == nil) }
+                    ForEach([1, 2, 3, 4], id: \.self) { p in
+                        Button { priorityFilter = p } label: { filterRow(priorityLabel(p), priorityFilter == p) }
+                    }
+                }
+                if !availableCycles.isEmpty {
+                    Menu("Cycle") {
+                        Button { cycleFilter = nil } label: { filterRow("Any cycle", cycleFilter == nil) }
+                        Button { cycleFilter = "__none__" } label: { filterRow("No cycle", cycleFilter == "__none__") }
+                        ForEach(availableCycles, id: \.id) { c in
+                            Button { cycleFilter = c.id } label: { filterRow(c.label, cycleFilter == c.id) }
+                        }
+                    }
+                }
+                if !availableAssignees.isEmpty {
+                    Menu("Assignee") {
+                        Button { assigneeFilter = nil } label: { filterRow("Anyone", assigneeFilter == nil) }
+                        ForEach(availableAssignees, id: \.self) { a in
+                            Button { assigneeFilter = a } label: { filterRow(a, assigneeFilter == a) }
+                        }
+                    }
+                }
+                if activeFilterCount > 0 { Divider(); Button("Clear filters", role: .destructive) { clearFilters() } }
+            } label: {
+                Label(activeFilterCount == 0 ? "Filter" : "Filter (\(activeFilterCount))",
+                      systemImage: "line.3.horizontal.decrease.circle\(activeFilterCount == 0 ? "" : ".fill")")
+                    .font(.callout)
+            }
+            .menuStyle(.borderlessButton).fixedSize()
+            .foregroundStyle(activeFilterCount == 0 ? palette.mutedForeground : palette.primary)
+        }
+        .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 6)
+    }
+
+    private func filterRow(_ text: String, _ on: Bool) -> some View {
+        Label(text, systemImage: on ? "checkmark" : "")
+    }
+
+    private func priorityLabel(_ p: Int) -> String {
+        switch p { case 1: return "Urgent"; case 2: return "High"; case 3: return "Medium"; case 4: return "Low"; default: return "No priority" }
     }
 
     private var inlineHeader: some View {
@@ -166,9 +272,9 @@ public struct IssuesView: View {
     // MARK: kanban
 
     private var board: some View {
-        // Group once per render instead of re-filtering `model.issues` twice per
+        // Group once per render instead of re-filtering the issues twice per
         // column (count + ForEach); indexing the grouping is O(1) per column.
-        let grouped = Dictionary(grouping: model.issues, by: { $0.category })
+        let grouped = Dictionary(grouping: filteredIssues, by: { $0.category })
         return ScrollView(.horizontal, showsIndicators: false) {
             HStack(alignment: .top, spacing: 14) {
                 ForEach(columns, id: \.category) { col in
@@ -210,6 +316,12 @@ public struct IssuesView: View {
                 if let p = issue.priority, p > 0 { priorityDot(p) }
             }
             Text(issue.title).font(.callout).lineLimit(3)
+            if let cycle = issue.cycleLabel {
+                Label(cycle, systemImage: "arrow.triangle.2.circlepath").font(.caption2)
+                    .foregroundStyle(palette.mutedForeground)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Capsule().fill(palette.muted.opacity(0.4)))
+            }
             HStack {
                 Text(issue.status).font(.caption2).foregroundStyle(palette.mutedForeground)
                 Spacer()
@@ -234,12 +346,17 @@ public struct IssuesView: View {
     // MARK: table
 
     private var table: some View {
-        List(model.issues) { issue in
+        List(filteredIssues) { issue in
             HStack(spacing: 10) {
                 Text(issue.key).font(.caption.bold()).foregroundStyle(palette.primary).frame(width: 72, alignment: .leading)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(issue.title).lineLimit(1)
-                    Text(issue.status).font(.caption2).foregroundStyle(palette.mutedForeground)
+                    HStack(spacing: 6) {
+                        Text(issue.status).font(.caption2).foregroundStyle(palette.mutedForeground)
+                        if let cycle = issue.cycleLabel {
+                            Text("· \(cycle)").font(.caption2).foregroundStyle(palette.mutedForeground)
+                        }
+                    }
                 }
                 Spacer()
                 Button { launching = issue } label: { Image(systemName: "play.circle.fill") }
