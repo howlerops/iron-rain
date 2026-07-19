@@ -300,6 +300,28 @@ public final class Model: ObservableObject {
         newSession()
     }
 
+    /// Eagerly creates a session NOW (no prompt) so it appears in the sidebar and opens in the
+    /// detail immediately — rather than only stashing options until the first message (which
+    /// looked like "nothing happened"). The provider makes an idle session; the first message
+    /// then prompts it. 2+ folders → a multi-root workspace (common ancestor, no worktree).
+    public func createSession(provider: String, projectIDs: [String]? = nil, worktree: Bool = false, workspaceName: String? = nil) async {
+        guard let client else { return }
+        newSession() // clear the conversation; the created session arrives via the OK/broadcast
+        let multi = (projectIDs?.count ?? 0) > 1
+        do {
+            let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.sessionCreate,
+                payload: SessionCreate(provider: provider,
+                                       projectID: multi ? nil : projectIDs?.first,
+                                       projectIDs: multi ? projectIDs : nil,
+                                       prompt: nil,
+                                       worktree: (!multi && worktree) ? true : nil,
+                                       workspaceName: workspaceName))
+            try await client.send(env)
+        } catch {
+            status = "Create failed: \(error.localizedDescription)"
+        }
+    }
+
     // MARK: projects + worktrees
 
     public func loadProjects() async {

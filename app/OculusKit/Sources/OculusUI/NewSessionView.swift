@@ -97,10 +97,12 @@ struct NewSessionView: View {
                 .keyboardShortcut(.cancelAction)
             if mode == .new {
                 Button {
-                    model.newSession(provider: provider,
-                                     projectIDs: selectedProjects.isEmpty ? nil : Array(selectedProjects),
-                                     worktree: useWorktree && canWorktree,
-                                     workspaceName: workspaceName.isEmpty ? nil : workspaceName)
+                    Task {
+                        await model.createSession(provider: provider,
+                                                  projectIDs: selectedProjects.isEmpty ? nil : Array(selectedProjects),
+                                                  worktree: useWorktree && canWorktree,
+                                                  workspaceName: workspaceName.isEmpty ? nil : workspaceName)
+                    }
                     onStart()
                 } label: { Text("Start").frame(minWidth: 52) }
                 .buttonStyle(.borderedProminent).tint(palette.primary)
