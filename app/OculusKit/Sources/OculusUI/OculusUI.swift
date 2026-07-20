@@ -58,6 +58,8 @@ public final class Model: ObservableObject {
     @Published public var sessions: [Session] = [] // hub-managed sessions (for sidebar grouping)
     @Published public var lastDiff: String? // populated by worktreeDiff()
     @Published public var workspaceDiffs: [WorkspaceMemberDiff] = [] // per-repo diffs (workspace sessions)
+    @Published public var workspacePRResults: [WorkspaceMemberPR] = [] // per-repo PR outcomes
+    @Published public var workspacePRRunning = false
     @Published public var conflicts: [FileConflict] = [] // files shared with other worktrees
     @Published public var pendingImages: [ImageAttachment] = [] // attached, sent with the next prompt
 
@@ -629,6 +631,18 @@ public final class Model: ObservableObject {
             let members = wd.members ?? []
             workspaceDiffs = members
             lastDiff = members.map(\.diff).filter { !$0.isEmpty }.joined(separator: "\n")
+        }
+    }
+
+    /// Commits, pushes, and opens a PR for every member repo of a workspace session — the
+    /// coordinated multi-PR finish. Populates workspacePRResults (per-repo outcome).
+    public func workspacePR(title: String, body: String? = nil) async {
+        guard client != nil, let sid = sessionID else { return }
+        workspacePRRunning = true
+        defer { workspacePRRunning = false }
+        if let resp = try? await request(MessageType.workspacePR, payload: WorkspacePR(sessionID: sid, title: title, body: body)),
+           let pr = try? resp.payload(as: WorkspacePR.self) {
+            workspacePRResults = pr.members ?? []
         }
     }
 

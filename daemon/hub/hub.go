@@ -518,6 +518,37 @@ func (h *Hub) removeSession(id string) {
 	}
 }
 
+// finishWorkspaceMember commits, pushes, and opens a PR for one workspace member. It never
+// aborts the whole finish: a clean repo or one without an origin remote is reported as skipped,
+// and a per-member failure is captured in Error so the other members still proceed.
+func (h *Hub) finishWorkspaceMember(ctx context.Context, mem worktree.Member, title, body string) protocol.WorkspaceMemberPR {
+	res := protocol.WorkspaceMemberPR{Name: mem.Name, Branch: mem.Branch}
+	changed, err := worktree.ChangedFiles(mem.Path, mem.BaseCommit)
+	if err != nil {
+		res.Error = err.Error()
+		return res
+	}
+	if len(changed) == 0 {
+		res.Skipped = "no changes"
+		return res
+	}
+	if _, err := worktree.CommitAll(ctx, mem.Path, title); err != nil {
+		res.Error = err.Error()
+		return res
+	}
+	if !worktree.HasRemote(mem.Path) {
+		res.Skipped = "no origin remote — commit is local"
+		return res
+	}
+	if err := worktree.Push(ctx, mem.Path, mem.Branch); err != nil {
+		res.Error = err.Error()
+		return res
+	}
+	res.Pushed = true
+	res.URL, _ = worktree.CreatePR(ctx, mem.Path, mem.Branch, title, body) // gh optional; branch is pushed regardless
+	return res
+}
+
 func (h *Hub) recordApproval(approvalID string, m *managedSession) {
 	h.mu.Lock()
 	h.approvals[approvalID] = m
@@ -737,6 +768,7 @@ func asyncDispatch(typ string) bool {
 		protocol.TypeWorktreePR,         // git CommitAll/Push/CreatePR
 		protocol.TypeWorktreeConflicts,  // git per-worktree ChangedFiles
 		protocol.TypeWorkspaceDiff,      // git diff per workspace member
+		protocol.TypeWorkspacePR,        // git commit/push/PR per workspace member
 		protocol.TypeIntegrationConnect, // tracker HTTP
 		protocol.TypeIntegrationOAuth,   // tracker HTTP
 		protocol.TypeIssueStates,        // tracker HTTP
@@ -940,6 +972,24 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			out = append(out, protocol.WorkspaceMemberDiff{Name: mem.Name, Branch: mem.Branch, Diff: diff})
 		}
 		h.sendOK(conn, env.ID, protocol.WorkspaceDiff{SessionID: req.SessionID, Members: out})
+
+	case protocol.TypeWorkspacePR:
+		var req protocol.WorkspacePR
+		_ = env.Unmarshal(&req)
+		m := h.managed(req.SessionID)
+		if m == nil || len(m.meta.members) == 0 {
+			h.sendErr(conn, env.ID, "not a workspace session")
+			return
+		}
+		title := req.Title
+		if title == "" {
+			title = m.meta.workspaceName
+		}
+		results := make([]protocol.WorkspaceMemberPR, 0, len(m.meta.members))
+		for _, mem := range m.meta.members {
+			results = append(results, h.finishWorkspaceMember(ctx, mem, title, req.Body))
+		}
+		h.sendOK(conn, env.ID, protocol.WorkspacePR{SessionID: req.SessionID, Title: title, Body: req.Body, Members: results})
 
 	case protocol.TypeWorktreeRemove:
 		var req protocol.WorktreeRemove

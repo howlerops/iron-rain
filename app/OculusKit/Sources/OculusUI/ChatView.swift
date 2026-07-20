@@ -502,6 +502,10 @@ struct WorkspaceReviewSheet: View {
     let palette: OculusPalette
     let onClose: () -> Void
 
+    @State private var prTitle = ""
+
+    private var anyChanges: Bool { model.workspaceDiffs.contains { !$0.diff.isEmpty } }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
@@ -533,10 +537,44 @@ struct WorkspaceReviewSheet: View {
                 }
             }
             DiffReviewView(model: model, palette: palette)
-                .padding(10)
+                .padding(.horizontal, 10)
+            prBar
         }
-        .frame(minWidth: 560, minHeight: 460)
+        .frame(minWidth: 560, minHeight: 500)
         .background(palette.background)
+    }
+
+    // Coordinated multi-PR finish: one shared title → a commit + push + PR per changed repo.
+    private var prBar: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider()
+            if !model.workspacePRResults.isEmpty {
+                ForEach(model.workspacePRResults) { r in
+                    HStack(spacing: 6) {
+                        Image(systemName: r.error != nil ? "xmark.circle" : (r.skipped != nil ? "minus.circle" : "checkmark.circle.fill"))
+                            .font(.caption2)
+                            .foregroundStyle(r.error != nil ? .orange : (r.skipped != nil ? palette.mutedForeground : .green))
+                        Text(r.name).font(.caption.bold())
+                        Text(r.error ?? r.skipped ?? (r.url ?? (r.pushed ? "pushed \(r.branch)" : "")))
+                            .font(.caption2).foregroundStyle(palette.mutedForeground)
+                            .lineLimit(1).truncationMode(.middle)
+                    }
+                }
+            }
+            HStack(spacing: 8) {
+                TextField("PR title (shared across repos)", text: $prTitle)
+                    .textFieldStyle(.roundedBorder)
+                Button {
+                    Task { await model.workspacePR(title: prTitle.isEmpty ? (model.currentSession?.workspaceName ?? "workspace") : prTitle) }
+                } label: {
+                    if model.workspacePRRunning { ProgressView().controlSize(.small) }
+                    else { Label("Open PRs", systemImage: "arrow.up.forward.square") }
+                }
+                .buttonStyle(.borderedProminent).tint(palette.primary)
+                .disabled(model.workspacePRRunning || !anyChanges)
+            }
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
     }
 }
 

@@ -20,6 +20,7 @@ public enum MessageType {
     public static let projectRemove = "project.remove"
     public static let worktreeDiff = "worktree.diff"
     public static let workspaceDiff = "workspace.diff"
+    public static let workspacePR = "workspace.pr"
     public static let worktreeRemove = "worktree.remove"
     public static let worktreePR = "worktree.pr"
     public static let worktreeConflicts = "worktree.conflicts"
@@ -568,6 +569,25 @@ public struct WorkspaceDiff: Codable {
     public var members: [WorkspaceMemberDiff]?
     public init(sessionID: String, members: [WorkspaceMemberDiff]? = nil) { self.sessionID = sessionID; self.members = members }
     enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case members }
+}
+public struct WorkspaceMemberPR: Codable, Identifiable, Hashable {
+    public var id: String { name }
+    public var name: String
+    public var branch: String
+    public var pushed: Bool
+    public var url: String?
+    public var skipped: String?
+    public var error: String?
+}
+public struct WorkspacePR: Codable {
+    public var sessionID: String
+    public var title: String
+    public var body: String?
+    public var members: [WorkspaceMemberPR]?
+    public init(sessionID: String, title: String, body: String? = nil, members: [WorkspaceMemberPR]? = nil) {
+        self.sessionID = sessionID; self.title = title; self.body = body; self.members = members
+    }
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case title, body, members }
 }
 public struct WorktreePR: Codable {
     public var sessionID: String; public var title: String; public var body: String?

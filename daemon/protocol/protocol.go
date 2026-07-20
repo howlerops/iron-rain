@@ -38,6 +38,7 @@ const (
 	TypeWorktreePR         = "worktree.pr"         // commit + push + open a PR for a worktree session
 	TypeWorktreeConflicts  = "worktree.conflicts"  // files this worktree shares with other active worktrees
 	TypeWorkspaceDiff      = "workspace.diff"      // per-member diff for a cross-repo workspace session
+	TypeWorkspacePR        = "workspace.pr"        // commit + push + open a PR for each workspace member
 	TypeIntegrationConnect = "integration.connect" // connect a tracker (Linear/Jira) with a token
 	TypeIntegrationStatus  = "integration.status"  // which trackers are connected
 	TypeIntegrationOAuth   = "integration.oauth"   // begin an OAuth flow; returns an authorize URL
@@ -179,6 +180,24 @@ type WorkspaceMemberDiff struct {
 	Name   string `json:"name"`
 	Branch string `json:"branch"`
 	Diff   string `json:"diff"`
+}
+
+// WorkspacePR commits, pushes, and opens a PR for every member repo of a workspace session — the
+// coordinated multi-PR finish. Request carries SessionID + Title/Body (shared across members).
+type WorkspacePR struct {
+	SessionID string              `json:"session_id"`
+	Title     string              `json:"title"`
+	Body      string              `json:"body,omitempty"`
+	Members   []WorkspaceMemberPR `json:"members,omitempty"` // populated on the response
+}
+
+type WorkspaceMemberPR struct {
+	Name    string `json:"name"`
+	Branch  string `json:"branch"`
+	Pushed  bool   `json:"pushed"`
+	URL     string `json:"url,omitempty"`     // set when a PR was opened via gh
+	Skipped string `json:"skipped,omitempty"` // reason a member was skipped (no changes / no remote)
+	Error   string `json:"error,omitempty"`   // per-member failure (others still proceed)
 }
 
 type WorktreePR struct {
