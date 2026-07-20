@@ -47,26 +47,10 @@ struct WorktreePanel: View {
                 }
 
                 Section("Review") {
-                    Button {
-                        Task { await model.worktreeDiff() }
-                    } label: {
-                        Label("Refresh diff", systemImage: "arrow.triangle.branch")
-                    }
-                    if let diff = model.lastDiff, !diff.isEmpty {
-                        ScrollView {
-                            Text(diff)
-                                .font(.system(.caption2, design: .monospaced))
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .textSelection(.enabled)
-                        }
-                        .frame(maxHeight: 220)
-                        .padding(8)
-                        .background(palette.input)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                    } else {
-                        Text("No diff yet — tap Refresh diff.")
-                            .font(.caption).foregroundStyle(palette.mutedForeground)
-                    }
+                    DiffReviewView(model: model, palette: palette)
+                        .frame(height: 360)
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
                 }
 
                 Section("Open a pull request") {
