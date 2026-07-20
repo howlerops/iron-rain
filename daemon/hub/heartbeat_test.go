@@ -7,6 +7,21 @@ import (
 	"github.com/howlerops/oculus/daemon/protocol"
 )
 
+func TestParseHandoff(t *testing.T) {
+	md := "# Ship the widget\n\n## Done\n- wired the API\n- added tests\n\n## In progress\n- polish the UI\n"
+	title, summary := parseHandoff(md)
+	if title != "Ship the widget" {
+		t.Errorf("title = %q, want %q", title, "Ship the widget")
+	}
+	if summary == "" || len(summary) > 260 {
+		t.Errorf("summary length off: %q", summary)
+	}
+	// Empty input must not panic and yields empties.
+	if tt, ss := parseHandoff(""); tt != "" || ss != "" {
+		t.Errorf("empty parse = (%q,%q), want empties", tt, ss)
+	}
+}
+
 func TestDeriveState(t *testing.T) {
 	now := time.Now()
 	old := now.Add(-10 * time.Minute)

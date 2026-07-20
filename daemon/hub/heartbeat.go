@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/howlerops/oculus/daemon/protocol"
+	"github.com/howlerops/oculus/daemon/store"
 )
 
 // Heartbeat supervision keeps long-running autonomous sessions on track. Every tick it derives
@@ -98,6 +100,10 @@ func (h *Hub) heartbeatTick() {
 			})
 		}
 
+		// Index the agent-authored handoff file if it changed since last tick (cheap stat;
+		// runs for every session so a hand-written handoff is picked up even without autonomy).
+		h.indexHandoff(m, m.meta.cwd, handoff)
+
 		if !auto {
 			continue // opt-in supervision — never nudge a session the user didn't enroll
 		}
@@ -150,6 +156,81 @@ func (h *Hub) broadcastHeartbeat(m *managedSession, state string, nudge, done, t
 		SessionID: m.sess.ID(), State: state, NudgeCount: nudge,
 		TodosDone: done, TodosTotal: total, CostUSD: cost, BudgetUSD: budget,
 	})
+}
+
+// indexHandoff stats the session's handoff file and, if it changed since the last index,
+// parses a title + summary and upserts it into the store. Best-effort and silent: a missing
+// file (the common case) or a store-less daemon is a no-op. Broadcasts handoff.list on change
+// so connected clients refresh.
+func (h *Hub) indexHandoff(m *managedSession, cwd, path string) {
+	if h.db == nil || path == "" || cwd == "" {
+		return
+	}
+	fi, err := os.Stat(path)
+	if err != nil || fi.IsDir() {
+		return
+	}
+	mtime := fi.ModTime().Unix()
+	m.mu.Lock()
+	unchanged := m.lastHandoffMtime == mtime
+	if !unchanged {
+		m.lastHandoffMtime = mtime
+	}
+	m.mu.Unlock()
+	if unchanged {
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	title, summary := parseHandoff(string(data))
+	if err := h.db.UpsertHandoff(store.HandoffRecord{
+		SessionID: m.sess.ID(), Cwd: cwd, Path: path,
+		Title: title, Summary: summary, UpdatedAt: mtime,
+	}); err != nil {
+		return
+	}
+	if list, err := h.db.Handoffs(""); err == nil {
+		h.broadcast(protocol.TypeHandoffList, protocol.HandoffList{Handoffs: toHandoffEntries(list)})
+	}
+}
+
+// parseHandoff extracts a display title (first markdown heading or first non-empty line) and a
+// short summary (the next few non-heading lines) from a handoff file.
+func parseHandoff(md string) (title, summary string) {
+	lines := strings.Split(md, "\n")
+	var body []string
+	for _, ln := range lines {
+		t := strings.TrimSpace(ln)
+		if t == "" {
+			continue
+		}
+		if title == "" {
+			title = strings.TrimLeft(t, "# ")
+			continue
+		}
+		body = append(body, strings.TrimLeft(t, "#> -"))
+		if len(body) >= 3 {
+			break
+		}
+	}
+	summary = strings.Join(body, " ")
+	if len(summary) > 240 {
+		summary = summary[:240] + "…"
+	}
+	return title, summary
+}
+
+func toHandoffEntries(rs []store.HandoffRecord) []protocol.HandoffEntry {
+	out := make([]protocol.HandoffEntry, 0, len(rs))
+	for _, r := range rs {
+		out = append(out, protocol.HandoffEntry{
+			SessionID: r.SessionID, Cwd: r.Cwd, Path: r.Path,
+			Title: r.Title, Summary: r.Summary, UpdatedAt: r.UpdatedAt,
+		})
+	}
+	return out
 }
 
 // deriveState computes a session's supervision state. Caller holds m.mu.

@@ -14,6 +14,7 @@ public struct ChatView: View {
 
     @State private var draft = ""
     @State private var showWorktreePanel = false
+    @State private var showHandoff = false
 
     public init(model: Model) { self.model = model }
 
@@ -59,6 +60,14 @@ public struct ChatView: View {
             if let sid = model.sessionID, let hb = model.heartbeats[sid] {
                 ToolbarItem(placement: .automatic) { HeartbeatChip(hb: hb, palette: palette) }
             }
+            if model.activeHandoff != nil {
+                ToolbarItem(placement: .automatic) {
+                    Button { showHandoff = true } label: {
+                        Label("Handoff", systemImage: "doc.text.magnifyingglass")
+                    }
+                    .help("The agent saved its progress to a handoff file. Tap to view.")
+                }
+            }
             if model.sessionID != nil {
                 ToolbarItem(placement: .automatic) {
                     Button { Task { await model.setAutonomy(!model.autonomous) } } label: {
@@ -87,6 +96,11 @@ public struct ChatView: View {
         }
         .sheet(isPresented: $showWorktreePanel) {
             WorktreePanel(model: model, palette: palette) { showWorktreePanel = false }
+        }
+        .sheet(isPresented: $showHandoff) {
+            if let h = model.activeHandoff {
+                HandoffSheet(model: model, entry: h, palette: palette) { showHandoff = false }
+            }
         }
     }
 
@@ -418,6 +432,52 @@ struct HeartbeatChip: View {
         if hb.nudgeCount > 0 { s += " · \(hb.nudgeCount) nudges" }
         if hb.budgetUSD > 0 { s += String(format: " · $%.2f/$%.2f", hb.costUSD, hb.budgetUSD) }
         return s
+    }
+}
+
+/// Shows an agent-authored handoff file — the externalized progress/state a session saves so it
+/// survives context compaction. Loads the full markdown from disk via fs.read.
+struct HandoffSheet: View {
+    @ObservedObject var model: Model
+    let entry: HandoffEntry
+    let palette: OculusPalette
+    let onClose: () -> Void
+
+    @State private var content: String?
+    @State private var loadError: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(entry.title.isEmpty ? "Handoff" : entry.title).font(.headline)
+                    Text(entry.path).font(.caption2).foregroundStyle(palette.mutedForeground).lineLimit(1).truncationMode(.middle)
+                }
+                Spacer()
+                Button("Done", action: onClose).keyboardShortcut(.cancelAction)
+            }
+            .padding(.horizontal, 16).padding(.vertical, 12)
+            Divider()
+            ScrollView {
+                if let c = content {
+                    Text(c)
+                        .font(.system(size: 13, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(16)
+                } else if let e = loadError {
+                    Text(e).foregroundStyle(.orange).padding(16)
+                } else {
+                    ProgressView().padding(24)
+                }
+            }
+        }
+        .frame(minWidth: 420, minHeight: 360)
+        .background(palette.background)
+        .task(id: entry.path) {
+            do { content = try await model.fsRead(entry.path).content ?? "" }
+            catch { loadError = "Couldn't load handoff: \(error.localizedDescription)" }
+        }
     }
 }
 

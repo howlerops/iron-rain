@@ -496,6 +496,7 @@ func (h *Hub) removeSession(id string) {
 	// it); drop its durable record so it isn't re-attached on the next start.
 	if db != nil {
 		_ = db.DeleteSession(id)
+		_ = db.DeleteHandoff(id)
 	}
 }
 
@@ -737,6 +738,7 @@ func asyncDispatch(typ string) bool {
 		protocol.TypeFSDiff,             // git diff
 		protocol.TypeFSSearch,           // disk: multi-file search
 		protocol.TypeRunTest,            // run tests/build (subprocess)
+		protocol.TypeHandoffList,        // disk-backed store read
 		protocol.TypeLSPReferences,      // language server: references
 		protocol.TypeLSPRename,          // language server: rename
 		protocol.TypeLSPSymbols,         // language server: document symbols
@@ -818,6 +820,20 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			m.mu.Unlock()
 		}
 		h.sendOK(conn, env.ID, nil)
+
+	case protocol.TypeHandoffList:
+		var req protocol.HandoffList
+		_ = env.Unmarshal(&req)
+		if h.db == nil {
+			h.sendOK(conn, env.ID, protocol.HandoffList{Handoffs: []protocol.HandoffEntry{}})
+			return
+		}
+		list, err := h.db.Handoffs(req.Cwd)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, protocol.HandoffList{Cwd: req.Cwd, Handoffs: toHandoffEntries(list)})
 
 	case protocol.TypeSessionList:
 		h.mu.Lock()

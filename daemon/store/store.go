@@ -60,13 +60,30 @@ func (s *Store) migrate() error {
 	}
 	// Managed-session records, so sessions survive a daemon restart (the daemon
 	// re-attaches them on startup). meta is a JSON blob of the hub's sessionMeta.
-	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS sessions (
+	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS sessions (
 		id         TEXT PRIMARY KEY,
 		provider   TEXT NOT NULL,
 		cwd        TEXT,
 		meta       TEXT,
 		updated_at INTEGER NOT NULL
-	)`)
+	)`); err != nil {
+		return err
+	}
+	// Handoff index: one row per agent-authored handoff/progress file
+	// (.oculus/handoff/<session>.md). Lets the app discover a session's externalized
+	// state and later seed scoped child sessions without replaying a transcript. cwd is
+	// indexed so handoffs can be listed per working directory / workspace.
+	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS handoffs (
+		session_id TEXT PRIMARY KEY,
+		cwd        TEXT NOT NULL,
+		path       TEXT NOT NULL,
+		title      TEXT,
+		summary    TEXT,
+		updated_at INTEGER NOT NULL
+	)`); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS handoffs_cwd ON handoffs(cwd)`)
 	return err
 }
 
@@ -204,4 +221,58 @@ func (s *Store) PruneSessions(cutoff int64) (int, error) {
 		_, _ = s.db.Exec(`PRAGMA incremental_vacuum`)
 	}
 	return int(n), nil
+}
+
+// HandoffRecord is an indexed agent-authored handoff file for a session.
+type HandoffRecord struct {
+	SessionID string
+	Cwd       string
+	Path      string
+	Title     string
+	Summary   string
+	UpdatedAt int64
+}
+
+// UpsertHandoff records (or refreshes) a session's handoff file in the index.
+func (s *Store) UpsertHandoff(r HandoffRecord) error {
+	_, err := s.db.Exec(
+		`INSERT INTO handoffs(session_id, cwd, path, title, summary, updated_at)
+		 VALUES(?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(session_id) DO UPDATE SET cwd=excluded.cwd, path=excluded.path,
+		   title=excluded.title, summary=excluded.summary, updated_at=excluded.updated_at`,
+		r.SessionID, r.Cwd, r.Path, r.Title, r.Summary, r.UpdatedAt,
+	)
+	return err
+}
+
+// Handoffs returns indexed handoffs, most-recent first. If cwd is non-empty, only handoffs
+// under that working directory are returned.
+func (s *Store) Handoffs(cwd string) ([]HandoffRecord, error) {
+	q := `SELECT session_id, cwd, path, title, summary, updated_at FROM handoffs`
+	var args []any
+	if cwd != "" {
+		q += ` WHERE cwd = ?`
+		args = append(args, cwd)
+	}
+	q += ` ORDER BY updated_at DESC`
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []HandoffRecord
+	for rows.Next() {
+		var r HandoffRecord
+		if err := rows.Scan(&r.SessionID, &r.Cwd, &r.Path, &r.Title, &r.Summary, &r.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// DeleteHandoff removes a session's handoff from the index (on session delete).
+func (s *Store) DeleteHandoff(sessionID string) error {
+	_, err := s.db.Exec(`DELETE FROM handoffs WHERE session_id = ?`, sessionID)
+	return err
 }

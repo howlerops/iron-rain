@@ -23,6 +23,7 @@ const (
 	TypeSessionStop        = "session.stop"
 	TypeSessionInterrupt   = "session.interrupt" // stop the current turn, keep the session
 	TypeSessionAutonomy    = "session.autonomy"  // toggle/re-arm heartbeat supervision
+	TypeHandoffList        = "handoff.list"      // indexed agent-authored handoff files (request + event)
 	TypeSessionRename      = "session.rename"
 	TypeSessionAttach      = "session.attach"
 	TypeSessionSubscribe   = "session.subscribe" // observe an already-owned session (no dup subscription)
@@ -681,6 +682,23 @@ type SessionHeartbeat struct {
 	TodosTotal int     `json:"todos_total"`
 	CostUSD    float64 `json:"cost_usd"`
 	BudgetUSD  float64 `json:"budget_usd"`
+}
+
+// HandoffEntry is one indexed agent-authored handoff file (progress externalized to disk so it
+// survives context compaction and can seed scoped child sessions).
+type HandoffEntry struct {
+	SessionID string `json:"session_id"`
+	Cwd       string `json:"cwd"`
+	Path      string `json:"path"`
+	Title     string `json:"title"`
+	Summary   string `json:"summary"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
+// HandoffList is the request (optionally filtered by cwd) and the event payload for handoffs.
+type HandoffList struct {
+	Cwd      string         `json:"cwd,omitempty"`
+	Handoffs []HandoffEntry `json:"handoffs"`
 }
 
 // RunTest requests a test/build run in a session's workspace. Command is optional (the daemon

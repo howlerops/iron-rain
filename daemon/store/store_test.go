@@ -6,6 +6,44 @@ import (
 	"time"
 )
 
+func TestHandoffsRoundTrip(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "h.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+
+	now := time.Now().Unix()
+	if err := db.UpsertHandoff(HandoffRecord{SessionID: "s1", Cwd: "/repo", Path: "/repo/.oculus/handoff/s1.md", Title: "T1", Summary: "sum", UpdatedAt: now}); err != nil {
+		t.Fatalf("upsert s1: %v", err)
+	}
+	if err := db.UpsertHandoff(HandoffRecord{SessionID: "s2", Cwd: "/other", Path: "/other/.oculus/handoff/s2.md", Title: "T2", UpdatedAt: now + 1}); err != nil {
+		t.Fatalf("upsert s2: %v", err)
+	}
+	// Upsert same session updates in place (no duplicate row).
+	if err := db.UpsertHandoff(HandoffRecord{SessionID: "s1", Cwd: "/repo", Path: "/repo/.oculus/handoff/s1.md", Title: "T1b", UpdatedAt: now + 2}); err != nil {
+		t.Fatalf("re-upsert s1: %v", err)
+	}
+
+	all, err := db.Handoffs("")
+	if err != nil || len(all) != 2 {
+		t.Fatalf("Handoffs(all) = %d, %v; want 2", len(all), err)
+	}
+	if all[0].SessionID != "s1" || all[0].Title != "T1b" { // most-recent first, updated title
+		t.Fatalf("ordering/update wrong: %+v", all[0])
+	}
+	scoped, err := db.Handoffs("/other")
+	if err != nil || len(scoped) != 1 || scoped[0].SessionID != "s2" {
+		t.Fatalf("Handoffs(/other) = %+v, %v", scoped, err)
+	}
+	if err := db.DeleteHandoff("s1"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if all, _ := db.Handoffs(""); len(all) != 1 {
+		t.Fatalf("after delete = %d, want 1", len(all))
+	}
+}
+
 func TestSessionRecordsRoundTripAndPrune(t *testing.T) {
 	db, err := Open(filepath.Join(t.TempDir(), "sess.db"))
 	if err != nil {

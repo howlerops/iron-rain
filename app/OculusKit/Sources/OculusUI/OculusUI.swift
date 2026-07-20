@@ -43,6 +43,10 @@ public final class Model: ObservableObject {
     // is enrolled in autonomous nudging (mirrors the daemon; user-toggleable).
     @Published public var heartbeats: [String: SessionHeartbeat] = [:]
     @Published public var autonomous = false
+
+    // Indexed agent-authored handoff files (progress externalized to disk). Keyed lookups by
+    // session id let the chat surface a "handoff saved" affordance for the active session.
+    @Published public var handoffs: [HandoffEntry] = []
     /// Test/build run output + outcome for the active session.
     @Published public var testOutput: [String] = []
     @Published public var testResult: RunResult?
@@ -182,6 +186,7 @@ public final class Model: ObservableObject {
             await loadSessions()
             await loadIntegrationStatus()
             await loadIssues()
+            await listHandoffs() // seed the handoff index (live updates arrive via handoff.list)
             // If a session was open when the socket dropped (e.g. the daemon restarted and
             // forgot its in-memory sessions), re-attach it so its transcript + prompts resume.
             await reopenCurrentSession()
@@ -450,6 +455,22 @@ public final class Model: ObservableObject {
         } catch {
             status = "Create failed: \(error.localizedDescription)"
         }
+    }
+
+    /// Fetches the handoff index (optionally scoped to a working directory). Also arrives
+    /// unsolicited via the handoff.list event whenever an agent saves progress.
+    public func listHandoffs(cwd: String? = nil) async {
+        guard client != nil else { return }
+        if let resp = try? await request(MessageType.handoffList, payload: HandoffList(cwd: cwd)),
+           let hl = try? resp.payload(as: HandoffList.self) {
+            handoffs = hl.handoffs
+        }
+    }
+
+    /// The indexed handoff for the active session, if the agent has saved one.
+    public var activeHandoff: HandoffEntry? {
+        guard let sid = sessionID else { return nil }
+        return handoffs.first { $0.sessionID == sid }
     }
 
     /// Toggles autonomous heartbeat supervision for the active session. Re-arming (autonomous =
@@ -1082,6 +1103,10 @@ public final class Model: ObservableObject {
                         // The daemon disarms autonomy when a session exhausts its budget; mirror that
                         // so the toggle reflects reality.
                         if hb.sessionID == sessionID, hb.state == "exhausted" { autonomous = false }
+                    }
+                case MessageType.handoffList: // the handoff index changed (agent saved progress)
+                    if let hl = try? env.payload(as: HandoffList.self) {
+                        handoffs = hl.handoffs
                     }
                 case MessageType.runOutput: // streamed line from a test/build run
                     if let o = try? env.payload(as: RunOutput.self), o.sessionID == sessionID {

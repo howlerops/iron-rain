@@ -63,6 +63,7 @@ public enum MessageType {
     public static let sessionTodos = "session.todos"
     public static let sessionHeartbeat = "session.heartbeat"
     public static let sessionAutonomy = "session.autonomy"
+    public static let handoffList = "handoff.list"
     public static let runTest = "run.test"
     public static let runOutput = "run.output"
     public static let runResult = "run.result"
@@ -462,6 +463,25 @@ public struct SessionHeartbeat: Codable {
         case costUSD = "cost_usd"
         case budgetUSD = "budget_usd"
     }
+}
+public struct HandoffEntry: Codable, Identifiable, Hashable {
+    public var id: String { sessionID }
+    public var sessionID: String
+    public var cwd: String
+    public var path: String
+    public var title: String
+    public var summary: String
+    public var updatedAt: Int
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+        case cwd, path, title, summary
+        case updatedAt = "updated_at"
+    }
+}
+public struct HandoffList: Codable {
+    public var cwd: String?
+    public var handoffs: [HandoffEntry]
+    public init(cwd: String? = nil, handoffs: [HandoffEntry] = []) { self.cwd = cwd; self.handoffs = handoffs }
 }
 public struct SessionAutonomy: Codable {
     public var sessionID: String

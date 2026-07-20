@@ -51,6 +51,7 @@ type managedSession struct {
 	hbState          string          // last derived heartbeat state (for change detection)
 	maxNudges        int             // give-up bound (0 = default)
 	budgetUSD        float64         // cost ceiling for autonomous nudging (0 = default)
+	lastHandoffMtime int64           // mtime of the handoff file at last index (skip re-index if unchanged)
 }
 
 // subscriber owns one client's outbound queue plus the writer goroutine that drains it.
