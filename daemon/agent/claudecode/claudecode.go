@@ -54,17 +54,23 @@ func (p *Provider) List(context.Context) ([]protocol.Session, error) { return ni
 
 // Create starts a new streaming claude-code session and kicks it off with prompt.
 func (p *Provider) Create(ctx context.Context, cwd, prompt string) (agent.Session, error) {
-	return p.start(ctx, cwd, "cc_"+randID(), "create", prompt)
+	return p.start(ctx, cwd, "cc_"+randID(), "create", prompt, false)
+}
+
+// CreatePlan starts a session in plan mode: the agent proposes a plan and requests approval
+// (via ExitPlanMode → the normal approval channel) before making changes.
+func (p *Provider) CreatePlan(ctx context.Context, cwd, prompt string) (agent.Session, error) {
+	return p.start(ctx, cwd, "cc_"+randID(), "create", prompt, true)
 }
 
 // Attach resumes an existing claude-code session by id, running in its original cwd so the
 // resumed session's tool calls (edits, bash) target the right project (the SDK's resume runs
 // as a fresh process in the given directory, not the session's recorded one).
 func (p *Provider) Attach(ctx context.Context, sessionID, cwd string) (agent.Session, error) {
-	return p.start(ctx, cwd, sessionID, "attach", "")
+	return p.start(ctx, cwd, sessionID, "attach", "", false)
 }
 
-func (p *Provider) start(ctx context.Context, cwd, id, mode, prompt string) (agent.Session, error) {
+func (p *Provider) start(ctx context.Context, cwd, id, mode, prompt string, plan bool) (agent.Session, error) {
 	if len(p.sidecar) == 0 {
 		return nil, fmt.Errorf("claude-code: no sidecar configured")
 	}
@@ -74,6 +80,9 @@ func (p *Provider) start(ctx context.Context, cwd, id, mode, prompt string) (age
 		cmd.Dir = cwd
 	}
 	cmd.Env = append(os.Environ(), "OCULUS_SESSION_ID="+id, "OCULUS_MODE="+mode)
+	if plan {
+		cmd.Env = append(cmd.Env, "OCULUS_PLAN=1")
+	}
 	cmd.Stderr = os.Stderr // surface sidecar errors
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

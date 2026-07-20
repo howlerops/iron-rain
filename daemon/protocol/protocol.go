@@ -21,6 +21,7 @@ const (
 	TypeSessionCreate      = "session.create"
 	TypeSessionPrompt      = "session.prompt"
 	TypeSessionStop        = "session.stop"
+	TypeSessionInterrupt   = "session.interrupt" // stop the current turn, keep the session
 	TypeSessionRename      = "session.rename"
 	TypeSessionAttach      = "session.attach"
 	TypeSessionSubscribe   = "session.subscribe" // observe an already-owned session (no dup subscription)
@@ -120,6 +121,7 @@ type SessionCreate struct {
 	Images        []ImageAttachment `json:"images,omitempty"`         // images for the first prompt
 	Worktree      bool              `json:"worktree,omitempty"`       // run in a fresh git worktree (opt-in)
 	WorkspaceName string            `json:"workspace_name,omitempty"` // human name for the worktree branch
+	Plan          bool              `json:"plan,omitempty"`           // start in plan mode (propose a plan to approve first)
 }
 
 // Project is a registered folder sessions can be spawned in (mirrors project.Project).

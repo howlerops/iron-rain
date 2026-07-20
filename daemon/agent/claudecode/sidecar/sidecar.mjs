@@ -58,8 +58,11 @@ let approvalSeq = 0;
 const approvals = new Map();
 function canUseTool(toolName, input) {
   const id = "ap_" + ++approvalSeq;
+  // Plan mode: ExitPlanMode's input.plan is the proposed plan — surface it so the human can
+  // approve the plan itself (on their phone) before any changes are made.
   const detail =
-    input?.command || input?.file_path || input?.path ||
+    (toolName === "ExitPlanMode" && input?.plan) ||
+    input?.command || input?.file_path || input?.path || input?.plan ||
     (input ? JSON.stringify(input).slice(0, 160) : "");
   send({ t: "approval", id, tool: toolName, detail });
   return new Promise((resolve) => approvals.set(id, { resolve, input }));
@@ -104,7 +107,12 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 });
 
 // --- run the session ---
-const options = { permissionMode: "default", includePartialMessages: true, canUseTool };
+const planMode = process.env.OCULUS_PLAN === "1";
+const options = {
+  permissionMode: planMode ? "plan" : "default",
+  includePartialMessages: true,
+  canUseTool,
+};
 if (mode === "attach" && sessionLabel) {
   // Take-over = resume the session's full history but FORK it into a fresh id. Claude Code
   // has no live multi-client attach for plain sessions, and two writers on one session id

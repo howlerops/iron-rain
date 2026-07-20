@@ -56,6 +56,7 @@ public final class Model: ObservableObject {
     public var pendingProjectIDs: [String]?  // multi-root workspace (multi-repo)
     public var pendingWorktree = false
     public var pendingWorkspaceName: String?
+    public var pendingPlan = false
 
     private var client: OculusClient?
     private let clientPrivate = OculusCrypto.generatePrivateKey()
@@ -259,7 +260,8 @@ public final class Model: ObservableObject {
                                                                      prompt: trimmed,
                                                                      images: imgs.isEmpty ? nil : imgs,
                                                                      worktree: pendingWorktree ? true : nil,
-                                                                     workspaceName: pendingWorkspaceName))
+                                                                     workspaceName: pendingWorkspaceName,
+                                                                     plan: pendingPlan ? true : nil))
                 try await client.send(env)
                 armWatchdog()
             } catch {
@@ -403,7 +405,7 @@ public final class Model: ObservableObject {
     /// and an opt-in git worktree). Options apply when the first message creates the session.
     /// Passing 2+ project IDs makes a multi-root workspace (the daemon runs in their common
     /// ancestor); a single folder uses `projectID` and can be worktree-isolated.
-    public func newSession(provider: String, projectID: String? = nil, projectIDs: [String]? = nil, worktree: Bool = false, workspaceName: String? = nil) {
+    public func newSession(provider: String, projectID: String? = nil, projectIDs: [String]? = nil, worktree: Bool = false, workspaceName: String? = nil, plan: Bool = false) {
         newSessionProvider = provider
         let multi = (projectIDs?.count ?? 0) > 1
         pendingProjectIDs = multi ? projectIDs : nil
@@ -411,13 +413,14 @@ public final class Model: ObservableObject {
         pendingWorktree = multi ? false : worktree
         pendingWorkspaceName = workspaceName
         newSession()
+        pendingPlan = plan
     }
 
     /// Eagerly creates a session NOW (no prompt) so it appears in the sidebar and opens in the
     /// detail immediately — rather than only stashing options until the first message (which
     /// looked like "nothing happened"). The provider makes an idle session; the first message
     /// then prompts it. 2+ folders → a multi-root workspace (common ancestor, no worktree).
-    public func createSession(provider: String, projectIDs: [String]? = nil, worktree: Bool = false, workspaceName: String? = nil) async {
+    public func createSession(provider: String, projectIDs: [String]? = nil, worktree: Bool = false, workspaceName: String? = nil, plan: Bool = false) async {
         guard let client else { return }
         newSession() // clear the conversation; the created session arrives via the OK/broadcast
         let multi = (projectIDs?.count ?? 0) > 1
@@ -428,10 +431,26 @@ public final class Model: ObservableObject {
                                        projectIDs: multi ? projectIDs : nil,
                                        prompt: nil,
                                        worktree: (!multi && worktree) ? true : nil,
-                                       workspaceName: workspaceName))
+                                       workspaceName: workspaceName,
+                                       plan: plan ? true : nil))
             try await client.send(env)
         } catch {
             status = "Create failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Interrupts the current agent turn without ending the session — so you can redirect it
+    /// with a new prompt (mid-run steering).
+    public func interrupt() async {
+        guard let client, let sid = sessionID else { return }
+        cancelWatchdog()
+        busy = false
+        activity = nil
+        finalizeStreaming()
+        status = "Interrupted"
+        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.sessionInterrupt,
+                                          payload: SessionRef(sessionID: sid)) {
+            try? await client.send(env)
         }
     }
 

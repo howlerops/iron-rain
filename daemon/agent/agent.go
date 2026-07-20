@@ -53,6 +53,13 @@ type Attacher interface {
 	Attach(ctx context.Context, sessionID, cwd string) (Session, error)
 }
 
+// PlanCreator is an optional Provider capability: start a session in "plan mode", where the
+// agent proposes a plan (and requests approval to proceed) before making changes. Providers
+// that don't support it simply aren't asserted to this interface (the hub falls back to Create).
+type PlanCreator interface {
+	CreatePlan(ctx context.Context, cwd, prompt string) (Session, error)
+}
+
 // ImagePrompter is an optional Session capability: send a prompt with attached images
 // to a multimodal agent. Sessions that don't implement it fall back to text-only Prompt.
 type ImagePrompter interface {

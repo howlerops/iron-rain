@@ -16,6 +16,7 @@ struct NewSessionView: View {
     @State private var provider = "opencode"
     @State private var selectedProjects: Set<String> = []
     @State private var useWorktree = false
+    @State private var planFirst = false
     @State private var workspaceName = ""
     @State private var terminalSearch = ""
     @State private var scanning = false
@@ -101,7 +102,8 @@ struct NewSessionView: View {
                         await model.createSession(provider: provider,
                                                   projectIDs: selectedProjects.isEmpty ? nil : Array(selectedProjects),
                                                   worktree: useWorktree && canWorktree,
-                                                  workspaceName: workspaceName.isEmpty ? nil : workspaceName)
+                                                  workspaceName: workspaceName.isEmpty ? nil : workspaceName,
+                                                  plan: planFirst && provider == "claude-code")
                     }
                     onStart()
                 } label: { Text("Start").frame(minWidth: 52) }
@@ -148,6 +150,17 @@ struct NewSessionView: View {
                      ? "Runs on a fresh oculus/<name> branch; changes stay isolated until you open a PR."
                      : "Select one git project to enable worktrees.")
                     .font(.caption).foregroundStyle(palette.mutedForeground)
+            }
+
+            if provider == "claude-code" {
+                field("Plan first") {
+                    Toggle(isOn: $planFirst) {
+                        Text("Propose a plan to approve before making changes").font(.system(size: 13))
+                    }
+                    .toggleStyle(.switch).tint(palette.primary)
+                    Text("The agent drafts a plan and waits for your approval (from anywhere) before it touches code.")
+                        .font(.caption).foregroundStyle(palette.mutedForeground)
+                }
             }
         }
     }

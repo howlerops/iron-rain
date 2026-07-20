@@ -8,6 +8,7 @@ public enum MessageType {
     public static let sessionCreate = "session.create"
     public static let sessionPrompt = "session.prompt"
     public static let sessionStop = "session.stop"
+    public static let sessionInterrupt = "session.interrupt"
     public static let sessionRename = "session.rename"
     public static let sessionAttach = "session.attach"
     public static let sessionSubscribe = "session.subscribe"
@@ -96,11 +97,12 @@ public struct SessionCreate: Codable {
     public var images: [ImageAttachment]?
     public var worktree: Bool?
     public var workspaceName: String?
-    public init(provider: String, cwd: String? = nil, projectID: String? = nil, projectIDs: [String]? = nil, prompt: String? = nil, images: [ImageAttachment]? = nil, worktree: Bool? = nil, workspaceName: String? = nil) {
-        self.provider = provider; self.cwd = cwd; self.projectID = projectID; self.projectIDs = projectIDs; self.prompt = prompt; self.images = images; self.worktree = worktree; self.workspaceName = workspaceName
+    public var plan: Bool?
+    public init(provider: String, cwd: String? = nil, projectID: String? = nil, projectIDs: [String]? = nil, prompt: String? = nil, images: [ImageAttachment]? = nil, worktree: Bool? = nil, workspaceName: String? = nil, plan: Bool? = nil) {
+        self.provider = provider; self.cwd = cwd; self.projectID = projectID; self.projectIDs = projectIDs; self.prompt = prompt; self.images = images; self.worktree = worktree; self.workspaceName = workspaceName; self.plan = plan
     }
     enum CodingKeys: String, CodingKey {
-        case provider, cwd, prompt, images, worktree
+        case provider, cwd, prompt, images, worktree, plan
         case projectID = "project_id"
         case projectIDs = "project_ids"
         case workspaceName = "workspace_name"

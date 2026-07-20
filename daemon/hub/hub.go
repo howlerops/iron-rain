@@ -192,7 +192,17 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 	if len(req.Images) > 0 {
 		createPrompt = ""
 	}
-	sess, err := p.Create(ctx, cwd, createPrompt)
+	var sess agent.Session
+	var err error
+	if req.Plan {
+		if pc, ok := p.(agent.PlanCreator); ok {
+			sess, err = pc.CreatePlan(ctx, cwd, createPrompt)
+		} else {
+			sess, err = p.Create(ctx, cwd, createPrompt) // provider has no plan mode; run normally
+		}
+	} else {
+		sess, err = p.Create(ctx, cwd, createPrompt)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -689,6 +699,7 @@ func asyncDispatch(typ string) bool {
 		protocol.TypeApprovalRespond,    // provider Respond (may be network)
 		protocol.TypeSessionAttach,      // provider Attach
 		protocol.TypeSessionStop,        // provider Stop
+		protocol.TypeSessionInterrupt,   // provider Stop (interrupt only)
 		protocol.TypeFSTree,             // disk: dir listing
 		protocol.TypeFSRead,             // disk: file read
 		protocol.TypeFSReadBytes,        // disk: raw bytes (images)
@@ -1163,6 +1174,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		}
 		h.RegisterDevice(req.Token)
 		log.Printf("hub: device registered for push (token %s…, %d chars)", safePrefix(req.Token), len(req.Token))
+		h.sendOK(conn, env.ID, nil)
+
+	case protocol.TypeSessionInterrupt:
+		var req protocol.SessionRef
+		_ = env.Unmarshal(&req)
+		if m := h.managed(req.SessionID); m != nil {
+			_ = m.sess.Stop(ctx) // interrupt the current turn; the session stays open for a redirect
+		}
 		h.sendOK(conn, env.ID, nil)
 
 	case protocol.TypeSessionStop:

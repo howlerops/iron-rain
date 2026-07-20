@@ -49,6 +49,7 @@ struct Composer: View {
                         Text("Listening…").font(.caption).foregroundStyle(palette.primary)
                     }
                     Spacer()
+                    if model.busy && model.sessionID != nil { interruptButton }
                     sendButton
                 }
             }
@@ -159,6 +160,20 @@ struct Composer: View {
         #else
         return nil
         #endif
+    }
+
+    /// Interrupt the current turn so you can redirect the agent (mid-run steering).
+    private var interruptButton: some View {
+        Button { Task { await model.interrupt() } } label: {
+            Image(systemName: "stop.fill")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(palette.primaryForeground)
+                .frame(width: 28, height: 28)
+                .background(palette.destructive)
+                .clipShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help("Interrupt the agent")
     }
 
     private var sendButton: some View {
