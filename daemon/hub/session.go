@@ -85,6 +85,11 @@ type sessionMeta struct {
 	// Cross-repo workspace: one worktree per member repo, all under cwd (the layout dir). Empty
 	// for single-repo/shared sessions. Drives the fs guard, session file tree, and workspace.diff.
 	members []worktree.Member
+
+	// Scoped child session: the parent it was delegated from + the subtask it owns. Empty for
+	// top-level sessions. Lets the app group children under their parent and label them.
+	parentID string
+	subtask  string
 }
 
 func newManagedSession(h *Hub, sess agent.Session, meta sessionMeta) *managedSession {
@@ -146,6 +151,8 @@ func (m *managedSession) info() protocol.Session {
 		WorkspaceName: m.meta.workspaceName,
 		Branch:        m.meta.branch,
 		IsWorkspace:   isWorkspace,
+		ParentID:      m.meta.parentID,
+		Subtask:       m.meta.subtask,
 		Port:          m.meta.port,
 		IssueKey:      m.meta.issueKey,
 		IssueID:       m.meta.issueID,

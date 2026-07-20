@@ -1,10 +1,12 @@
 package hub
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/howlerops/oculus/daemon/protocol"
+	"github.com/howlerops/oculus/daemon/store"
 )
 
 func TestParseHandoff(t *testing.T) {
@@ -19,6 +21,35 @@ func TestParseHandoff(t *testing.T) {
 	// Empty input must not panic and yields empties.
 	if tt, ss := parseHandoff(""); tt != "" || ss != "" {
 		t.Errorf("empty parse = (%q,%q), want empties", tt, ss)
+	}
+}
+
+func TestBuildChildPrompt(t *testing.T) {
+	req := protocol.SessionChild{
+		Subtask: "Add retries to the HTTP client",
+		Files:   []string{"http/client.go", "http/client_test.go"},
+	}
+	rec := store.HandoffRecord{Title: "Ship resilient networking", Summary: "wired the client; retries pending"}
+	p := buildChildPrompt(req, "/repo/.oculus/handoff/parent.md", rec)
+
+	for _, want := range []string{
+		"Add retries to the HTTP client",  // the subtask
+		"/repo/.oculus/handoff/parent.md", // handoff pointer (context, not transcript)
+		"Ship resilient networking",       // objective from the decision doc
+		"http/client.go",                  // file allowlist
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("child prompt missing %q\n---\n%s", want, p)
+		}
+	}
+	// It must NOT invent a transcript or tell the child to re-plan everything.
+	if strings.Contains(p, "transcript") {
+		t.Errorf("child prompt should not reference a transcript")
+	}
+	// Degrades without a handoff or files.
+	bare := buildChildPrompt(protocol.SessionChild{Subtask: "x"}, "", store.HandoffRecord{})
+	if !strings.Contains(bare, "x") {
+		t.Errorf("bare prompt missing subtask: %s", bare)
 	}
 }
 

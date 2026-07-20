@@ -271,6 +271,19 @@ func (s *Store) Handoffs(cwd string) ([]HandoffRecord, error) {
 	return out, rows.Err()
 }
 
+// Handoff returns the indexed handoff for a single session, if one exists.
+func (s *Store) Handoff(sessionID string) (HandoffRecord, bool) {
+	var r HandoffRecord
+	err := s.db.QueryRow(
+		`SELECT session_id, cwd, path, title, summary, updated_at FROM handoffs WHERE session_id = ?`,
+		sessionID,
+	).Scan(&r.SessionID, &r.Cwd, &r.Path, &r.Title, &r.Summary, &r.UpdatedAt)
+	if err != nil {
+		return HandoffRecord{}, false
+	}
+	return r, true
+}
+
 // DeleteHandoff removes a session's handoff from the index (on session delete).
 func (s *Store) DeleteHandoff(sessionID string) error {
 	_, err := s.db.Exec(`DELETE FROM handoffs WHERE session_id = ?`, sessionID)

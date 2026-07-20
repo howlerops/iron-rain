@@ -66,6 +66,7 @@ public enum MessageType {
     public static let sessionHeartbeat = "session.heartbeat"
     public static let sessionAutonomy = "session.autonomy"
     public static let handoffList = "handoff.list"
+    public static let sessionChild = "session.child"
     public static let runTest = "run.test"
     public static let runOutput = "run.output"
     public static let runResult = "run.result"
@@ -401,6 +402,8 @@ public struct Session: Codable, Identifiable {
     public var workspaceName: String?
     public var branch: String?
     public var isWorkspace: Bool?
+    public var parentID: String?
+    public var subtask: String?
     public var port: Int?
     public var issueKey: String?
     public var issueID: String?
@@ -413,6 +416,8 @@ public struct Session: Codable, Identifiable {
         case projectID = "project_id"
         case workspaceName = "workspace_name"
         case isWorkspace = "is_workspace"
+        case parentID = "parent_id"
+        case subtask
         case issueKey = "issue_key"
         case issueID = "issue_id"
         case updatedAt = "updated_at"
@@ -466,6 +471,20 @@ public struct SessionHeartbeat: Codable {
         case todosTotal = "todos_total"
         case costUSD = "cost_usd"
         case budgetUSD = "budget_usd"
+    }
+}
+public struct SessionChild: Codable {
+    public var parentSessionID: String
+    public var subtask: String
+    public var files: [String]?
+    public var provider: String?
+    public var autonomous: Bool?
+    public init(parentSessionID: String, subtask: String, files: [String]? = nil, provider: String? = nil, autonomous: Bool? = nil) {
+        self.parentSessionID = parentSessionID; self.subtask = subtask; self.files = files; self.provider = provider; self.autonomous = autonomous
+    }
+    enum CodingKeys: String, CodingKey {
+        case parentSessionID = "parent_session_id"
+        case subtask, files, provider, autonomous
     }
 }
 public struct HandoffEntry: Codable, Identifiable, Hashable {

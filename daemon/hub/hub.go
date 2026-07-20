@@ -518,6 +518,85 @@ func (h *Hub) removeSession(id string) {
 	}
 }
 
+// spawnChild creates a scoped sub-agent for one subtask of a parent session. The child is seeded
+// with a compact prompt (subtask + a pointer to the parent's handoff/decision doc + an optional
+// file allowlist) instead of the parent transcript, so it starts with minimal context. It runs in
+// the parent's working directory and is linked back to the parent for grouping.
+func (h *Hub) spawnChild(ctx context.Context, req protocol.SessionChild) (*managedSession, error) {
+	parent := h.managed(req.ParentSessionID)
+	if parent == nil {
+		return nil, fmt.Errorf("unknown parent session: %s", req.ParentSessionID)
+	}
+	if strings.TrimSpace(req.Subtask) == "" {
+		return nil, fmt.Errorf("child session needs a subtask")
+	}
+	parent.mu.Lock()
+	cwd := parent.meta.cwd
+	projectID := parent.meta.projectID
+	parent.mu.Unlock()
+
+	provider := req.Provider
+	if provider == "" {
+		provider = parent.sess.Provider()
+	}
+	h.mu.Lock()
+	p := h.providers[provider]
+	db := h.db
+	h.mu.Unlock()
+	if p == nil {
+		return nil, fmt.Errorf("unknown provider: %s", provider)
+	}
+
+	var handoff store.HandoffRecord
+	if db != nil {
+		handoff, _ = db.Handoff(req.ParentSessionID)
+	}
+	prompt := buildChildPrompt(req, handoffPath(cwd, req.ParentSessionID), handoff)
+
+	sess, err := p.Create(ctx, cwd, prompt)
+	if err != nil {
+		return nil, err
+	}
+	meta := sessionMeta{
+		projectID: projectID, cwd: cwd, workspaceName: "subtask",
+		parentID: req.ParentSessionID, subtask: req.Subtask,
+	}
+	m := h.addSession(sess, meta)
+	if req.Autonomous {
+		m.mu.Lock()
+		m.autonomous = true
+		m.mu.Unlock()
+	}
+	return m, nil
+}
+
+// buildChildPrompt composes the scoped seed prompt for a delegated sub-agent: the subtask, a
+// pointer to the shared handoff (decision/state doc) to read for context, and the file allowlist.
+// It deliberately omits the parent transcript to keep the child's context small.
+func buildChildPrompt(req protocol.SessionChild, handoff string, rec store.HandoffRecord) string {
+	b := &strings.Builder{}
+	b.WriteString("You are a sub-agent handling ONE subtask of a larger effort. Do that subtask only — don't re-plan the whole project.\n\n")
+	b.WriteString("## Subtask\n")
+	b.WriteString(strings.TrimSpace(req.Subtask))
+	b.WriteString("\n\n## Shared context (read first; don't duplicate its work)\n")
+	if handoff != "" {
+		b.WriteString("The current progress + decisions are in " + handoff + " — read it before you start.\n")
+	}
+	if rec.Title != "" {
+		b.WriteString("Objective: " + rec.Title + "\n")
+	}
+	if rec.Summary != "" {
+		b.WriteString("Recent state: " + rec.Summary + "\n")
+	}
+	if len(req.Files) > 0 {
+		b.WriteString("\n## Files you may change\n")
+		b.WriteString(strings.Join(req.Files, "\n"))
+		b.WriteString("\nStay within these unless the subtask clearly requires more.\n")
+	}
+	b.WriteString("\nWhen you finish, briefly note what you changed (so the parent can integrate it) and stop.")
+	return b.String()
+}
+
 // finishWorkspaceMember commits, pushes, and opens a PR for one workspace member. It never
 // aborts the whole finish: a clean repo or one without an origin remote is reported as skipped,
 // and a per-member failure is captured in Error so the other members still proceed.
@@ -769,6 +848,7 @@ func asyncDispatch(typ string) bool {
 		protocol.TypeWorktreeConflicts,  // git per-worktree ChangedFiles
 		protocol.TypeWorkspaceDiff,      // git diff per workspace member
 		protocol.TypeWorkspacePR,        // git commit/push/PR per workspace member
+		protocol.TypeSessionChild,       // provider Create for a scoped sub-agent
 		protocol.TypeIntegrationConnect, // tracker HTTP
 		protocol.TypeIntegrationOAuth,   // tracker HTTP
 		protocol.TypeIssueStates,        // tracker HTTP
@@ -885,6 +965,21 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			return
 		}
 		h.sendOK(conn, env.ID, protocol.HandoffList{Cwd: req.Cwd, Handoffs: toHandoffEntries(list)})
+
+	case protocol.TypeSessionChild:
+		var req protocol.SessionChild
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad session.child")
+			return
+		}
+		child, err := h.spawnChild(ctx, req)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, child.info())
+		child.subscribe(conn)
+		go child.run()
 
 	case protocol.TypeSessionList:
 		h.mu.Lock()

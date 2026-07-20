@@ -16,6 +16,7 @@ public struct ChatView: View {
     @State private var showWorktreePanel = false
     @State private var showHandoff = false
     @State private var showWorkspace = false
+    @State private var showDelegate = false
 
     public init(model: Model) { self.model = model }
 
@@ -86,6 +87,12 @@ public struct ChatView: View {
                     }
                     .disabled(model.testRunning)
                 }
+                ToolbarItem(placement: .automatic) {
+                    Button { showDelegate = true } label: {
+                        Label("Delegate subtask", systemImage: "arrow.triangle.branch.circle")
+                    }
+                    .help("Spawn a scoped sub-agent for one subtask, seeded from this session's handoff.")
+                }
             }
             if isWorktreeSession {
                 ToolbarItem(placement: .primaryAction) {
@@ -115,6 +122,9 @@ public struct ChatView: View {
         }
         .sheet(isPresented: $showWorkspace) {
             WorkspaceReviewSheet(model: model, palette: palette) { showWorkspace = false }
+        }
+        .sheet(isPresented: $showDelegate) {
+            DelegateSheet(model: model, palette: palette) { showDelegate = false }
         }
     }
 
@@ -492,6 +502,66 @@ struct HandoffSheet: View {
             do { content = try await model.fsRead(entry.path).content ?? "" }
             catch { loadError = "Couldn't load handoff: \(error.localizedDescription)" }
         }
+    }
+}
+
+/// Delegates one subtask to a scoped sub-agent. The child is seeded from this session's handoff
+/// (state + decisions) plus the subtask and an optional file allowlist — not the transcript — so
+/// it starts small. It becomes the active session on launch.
+struct DelegateSheet: View {
+    @ObservedObject var model: Model
+    let palette: OculusPalette
+    let onClose: () -> Void
+
+    @State private var subtask = ""
+    @State private var filesText = ""
+    @State private var autonomous = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Delegate a subtask").font(.headline)
+                Spacer()
+                Button("Cancel", action: onClose).keyboardShortcut(.cancelAction)
+            }
+            if model.activeHandoff == nil {
+                Label("No handoff saved yet — the child will get the subtask and file list, but no shared state. Ask this session to save a handoff first for richer context.",
+                      systemImage: "info.circle")
+                    .font(.caption).foregroundStyle(palette.mutedForeground)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Subtask").font(.caption).foregroundStyle(palette.mutedForeground)
+                TextEditor(text: $subtask)
+                    .font(.system(size: 13))
+                    .frame(minHeight: 80)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(palette.border))
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Files it may change (optional, one per line)").font(.caption).foregroundStyle(palette.mutedForeground)
+                TextEditor(text: $filesText)
+                    .font(.system(size: 12, design: .monospaced))
+                    .frame(minHeight: 54)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(palette.border))
+            }
+            Toggle(isOn: $autonomous) {
+                Text("Run autonomously (heartbeat keeps it going)").font(.system(size: 13))
+            }
+            .toggleStyle(.switch).tint(palette.primary)
+            HStack {
+                Spacer()
+                Button {
+                    let files = filesText.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+                    Task { await model.delegateSubtask(subtask: subtask, files: files.isEmpty ? nil : files, autonomous: autonomous) }
+                    onClose()
+                } label: { Text("Delegate").frame(minWidth: 72) }
+                .buttonStyle(.borderedProminent).tint(palette.primary)
+                .keyboardShortcut(.defaultAction)
+                .disabled(subtask.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(18)
+        .frame(minWidth: 440)
+        .background(palette.background)
     }
 }
 

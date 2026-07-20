@@ -24,6 +24,7 @@ const (
 	TypeSessionInterrupt   = "session.interrupt" // stop the current turn, keep the session
 	TypeSessionAutonomy    = "session.autonomy"  // toggle/re-arm heartbeat supervision
 	TypeHandoffList        = "handoff.list"      // indexed agent-authored handoff files (request + event)
+	TypeSessionChild       = "session.child"     // spawn a scoped sub-agent seeded from a parent's handoff
 	TypeSessionRename      = "session.rename"
 	TypeSessionAttach      = "session.attach"
 	TypeSessionSubscribe   = "session.subscribe" // observe an already-owned session (no dup subscription)
@@ -667,6 +668,8 @@ type Session struct {
 	WorkspaceName string `json:"workspace_name,omitempty"` // human name of a worktree workspace
 	Branch        string `json:"branch,omitempty"`         // git branch (for worktree sessions)
 	IsWorkspace   bool   `json:"is_workspace,omitempty"`   // cross-repo workspace (per-member worktrees)
+	ParentID      string `json:"parent_id,omitempty"`      // parent session this was delegated from (child sessions)
+	Subtask       string `json:"subtask,omitempty"`        // the subtask a child session owns
 	Port          int    `json:"port,omitempty"`           // port a setup hook assigned to this worktree
 	IssueKey      string `json:"issue_key,omitempty"`      // the ticket this session works (e.g. ENG-42)
 	IssueID       string `json:"issue_id,omitempty"`
@@ -716,6 +719,18 @@ type SessionHeartbeat struct {
 	TodosTotal int     `json:"todos_total"`
 	CostUSD    float64 `json:"cost_usd"`
 	BudgetUSD  float64 `json:"budget_usd"`
+}
+
+// SessionChild spawns a scoped sub-agent for one subtask of a parent session. The child is
+// seeded with a compact context — the subtask, a pointer to the parent's handoff file (the
+// decision/state doc), and an optional file allowlist — NOT the parent transcript, so its context
+// stays small. Response is the created Session.
+type SessionChild struct {
+	ParentSessionID string   `json:"parent_session_id"`
+	Subtask         string   `json:"subtask"`
+	Files           []string `json:"files,omitempty"`      // allowlist the child should stay within (advisory)
+	Provider        string   `json:"provider,omitempty"`   // defaults to the parent's provider
+	Autonomous      bool     `json:"autonomous,omitempty"` // enroll the child in heartbeat supervision
 }
 
 // HandoffEntry is one indexed agent-authored handoff file (progress externalized to disk so it

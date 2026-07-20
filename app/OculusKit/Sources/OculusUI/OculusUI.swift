@@ -476,6 +476,25 @@ public final class Model: ObservableObject {
         return handoffs.first { $0.sessionID == sid }
     }
 
+    /// Delegates a subtask to a scoped sub-agent seeded from the parent's handoff (not its
+    /// transcript). On success the child becomes the active session (it arrives via the OK).
+    public func delegateSubtask(subtask: String, files: [String]? = nil, autonomous: Bool = false) async {
+        guard client != nil, let parent = sessionID else { return }
+        let trimmed = subtask.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        newSession() // the child's transcript replaces the view; it arrives via the OK/broadcast
+        if let resp = try? await request(MessageType.sessionChild,
+                                         payload: SessionChild(parentSessionID: parent, subtask: trimmed,
+                                                               files: files, autonomous: autonomous)),
+           let child = try? resp.payload(as: Session.self) {
+            // The daemon already subscribed this connection to the child, so just make it active;
+            // its transcript replays over the subscription.
+            self.autonomous = autonomous
+            sessionID = child.id
+            currentSession = child
+        }
+    }
+
     /// Toggles autonomous heartbeat supervision for the active session. Re-arming (autonomous =
     /// true) also resets the daemon's nudge counter so a previously-exhausted session runs again.
     public func setAutonomy(_ on: Bool) async {
