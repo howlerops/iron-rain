@@ -43,16 +43,16 @@ type Hub struct {
 	notifier      push.Notifier // optional: push actionable approvals to a device
 	pushTokens    []string      // registered device tokens
 	attach        AttacherFactory
-	clients       map[*transport.Conn]bool // all connected clients (for global broadcasts)
-	projects      *project.Registry        // optional: registered folders sessions spawn in
-	autoProjects  bool                     // auto-register projects from active agents' cwds
-	issues        *issues.Manager          // optional: connected trackers (Linear/Jira)
-	oauthRedirect string                   // loopback OAuth callback URL for tracker connect
-	worktreeBase  string                   // base dir for worktrees ("" = worktree.DefaultBase)
-	reservedPorts map[int]bool             // ports handed to worktree setup hooks (collision-free)
-	db            *store.Store             // optional: durable local state (session names + records)
-	lsp           *lsp.Manager             // language servers for the built-in editor (diagnostics/types)
-	runningTests  map[string]bool          // session ids with a test/build run in progress
+	clients       map[*transport.Conn]*hubClient // all connected clients (for global broadcasts)
+	projects      *project.Registry              // optional: registered folders sessions spawn in
+	autoProjects  bool                           // auto-register projects from active agents' cwds
+	issues        *issues.Manager                // optional: connected trackers (Linear/Jira)
+	oauthRedirect string                         // loopback OAuth callback URL for tracker connect
+	worktreeBase  string                         // base dir for worktrees ("" = worktree.DefaultBase)
+	reservedPorts map[int]bool                   // ports handed to worktree setup hooks (collision-free)
+	db            *store.Store                   // optional: durable local state (session names + records)
+	lsp           *lsp.Manager                   // language servers for the built-in editor (diagnostics/types)
+	runningTests  map[string]bool                // session ids with a test/build run in progress
 
 	pushTimeout     time.Duration // per-Notify deadline for the approval push fan-out
 	pushConcurrency int           // cap on concurrent in-flight pushes
@@ -451,7 +451,7 @@ func New() *Hub {
 		providers:       map[string]agent.Provider{},
 		sessions:        map[string]*managedSession{},
 		approvals:       map[string]*managedSession{},
-		clients:         map[*transport.Conn]bool{},
+		clients:         map[*transport.Conn]*hubClient{},
 		autoProjects:    true, // on by default; disable with --auto-projects=false
 		pushTimeout:     defaultPushTimeout,
 		pushConcurrency: defaultPushConcurrency,
@@ -796,12 +796,14 @@ func safePrefix(s string) string {
 
 // Serve handles one client connection until it closes or errors.
 func (h *Hub) Serve(ctx context.Context, conn *transport.Conn) error {
+	c := &hubClient{conn: conn, ch: make(chan []byte, hubOutboundBuffer), done: make(chan struct{})}
 	h.mu.Lock()
-	h.clients[conn] = true
+	h.clients[conn] = c
 	h.mu.Unlock()
+	go h.writeClientLoop(c)
 	defer func() {
+		h.dropClient(conn)
 		h.mu.Lock()
-		delete(h.clients, conn)
 		sessions := make([]*managedSession, 0, len(h.sessions))
 		for _, m := range h.sessions {
 			sessions = append(sessions, m)
@@ -895,19 +897,67 @@ func (h *Hub) broadcast(typ string, payload any) {
 		return
 	}
 	h.mu.Lock()
-	conns := make([]*transport.Conn, 0, len(h.clients))
-	for c := range h.clients {
-		conns = append(conns, c)
+	clients := make([]*hubClient, 0, len(h.clients))
+	for _, c := range h.clients {
+		clients = append(clients, c)
 	}
 	h.mu.Unlock()
-	// Fan the Sends out per-connection so one slow/wedged client can't apply
-	// head-of-line blocking to the others (Conn.Send is a blocking encrypted write and
-	// is goroutine-safe). Cross-device broadcasts are infrequent, so a goroutine per
-	// send is cheap here.
-	for _, c := range conns {
-		go func(c *transport.Conn) { _ = c.Send(raw) }(c)
+	// Enqueue to each client's bounded outbound queue without blocking: a client whose
+	// queue is full (a wedged socket) is dropped rather than allowed to apply head-of-line
+	// blocking or accumulate unbounded sender goroutines. Its writer goroutine performs the
+	// actual (blocking) encrypted Send. Mirrors the per-session subscriber fan-out.
+	for _, c := range clients {
+		select {
+		case c.ch <- raw:
+		default:
+			h.dropClient(c.conn)
+		}
 	}
 }
+
+// hubClient is one connected client's bounded outbound queue for hub-level (cross-device)
+// broadcasts, drained by a dedicated writer goroutine. broadcast() enqueues without blocking;
+// a client whose queue overflows is dropped. Point-to-point replies (sendOK/sendErr) still write
+// to conn directly — Conn.Send serializes frames, so queued and direct writes can't interleave.
+type hubClient struct {
+	conn *transport.Conn
+	ch   chan []byte
+	done chan struct{}
+	once sync.Once
+}
+
+func (c *hubClient) close() { c.once.Do(func() { close(c.done) }) }
+
+// writeClientLoop delivers queued broadcasts to one client until it's dropped or its socket
+// errors. It is the only goroutine that writes broadcast frames to this conn.
+func (h *Hub) writeClientLoop(c *hubClient) {
+	for {
+		select {
+		case raw := <-c.ch:
+			if c.conn.Send(raw) != nil {
+				h.dropClient(c.conn)
+				return
+			}
+		case <-c.done:
+			return
+		}
+	}
+}
+
+// dropClient removes a client from the broadcast set and stops its writer goroutine. Idempotent
+// (safe to call from the writer, broadcast overflow, and Serve teardown). It does not close the
+// conn — the Serve read loop owns the connection's lifecycle.
+func (h *Hub) dropClient(conn *transport.Conn) {
+	h.mu.Lock()
+	c := h.clients[conn]
+	delete(h.clients, conn)
+	h.mu.Unlock()
+	if c != nil {
+		c.close()
+	}
+}
+
+const hubOutboundBuffer = 256 // queued broadcasts per client before it is dropped
 
 func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.Envelope) {
 	switch env.Type {

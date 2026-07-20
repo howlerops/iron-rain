@@ -89,7 +89,8 @@ func (h *Hub) heartbeatTick() {
 		if label == "" {
 			label = m.meta.workspaceName
 		}
-		handoff := handoffPath(m.meta.cwd, m.sess.ID())
+		cwd := m.meta.cwd
+		handoff := handoffPath(cwd, m.sess.ID())
 		m.mu.Unlock()
 
 		done, total := todoProgress(todos)
@@ -102,7 +103,7 @@ func (h *Hub) heartbeatTick() {
 
 		// Index the agent-authored handoff file if it changed since last tick (cheap stat;
 		// runs for every session so a hand-written handoff is picked up even without autonomy).
-		h.indexHandoff(m, m.meta.cwd, handoff)
+		h.indexHandoff(m, cwd, handoff)
 
 		if !auto {
 			continue // opt-in supervision — never nudge a session the user didn't enroll
@@ -122,18 +123,30 @@ func (h *Hub) heartbeatTick() {
 			case tokens-lastCk >= checkpointTokens:
 				// Context is getting large: ask the agent to externalize state before it
 				// compacts, then let it continue next tick. Not counted against the nudge cap.
+				// Re-validate idle under the lock (the session may have resumed since the
+				// snapshot) so we never inject a prompt into an in-flight turn.
 				m.mu.Lock()
-				m.lastCheckpoint = tokens
-				m.lastNudge = now
+				stillIdle := deriveState(m, time.Now()) == hbIdleIncomplete
+				if stillIdle {
+					m.lastCheckpoint = tokens
+					m.lastNudge = now
+				}
 				m.mu.Unlock()
-				_ = m.sess.Prompt(context.Background(), checkpointNudge(handoff))
+				if stillIdle {
+					_ = m.sess.Prompt(context.Background(), checkpointNudge(handoff))
+				}
 			default:
 				m.mu.Lock()
-				m.nudgeCount++
-				m.lastNudge = now
+				stillIdle := deriveState(m, time.Now()) == hbIdleIncomplete
+				if stillIdle {
+					m.nudgeCount++
+					m.lastNudge = now
+				}
 				m.mu.Unlock()
-				_ = m.sess.Prompt(context.Background(), continueNudge(todos, handoff))
-				log.Printf("heartbeat: nudged %s (%d/%d)", m.sess.ID(), nudgeN+1, maxN)
+				if stillIdle {
+					_ = m.sess.Prompt(context.Background(), continueNudge(todos, handoff))
+					log.Printf("heartbeat: nudged %s (%d/%d)", m.sess.ID(), nudgeN+1, maxN)
+				}
 			}
 		case hbStalled:
 			if changed {

@@ -21,7 +21,6 @@ struct NewSessionView: View {
     @State private var workspaceName = ""
     @State private var terminalSearch = ""
     @State private var scanning = false
-    @State private var scanned = false
     @State private var mode: Mode
     #if os(iOS)
     @State private var addPath = ""
@@ -274,7 +273,7 @@ struct NewSessionView: View {
                 centerHint(icon: "terminal", text: "No running sessions found.\nStart one in a terminal (opencode/claude), then Scan.")
             } else {
                 VStack(spacing: 6) {
-                    ForEach(Array(filteredDiscovered.enumerated()), id: \.offset) { _, d in takeOverRow(d) }
+                    ForEach(filteredDiscovered, id: \.discoveryID) { d in takeOverRow(d) }
                 }
             }
 
@@ -337,7 +336,6 @@ struct NewSessionView: View {
     private func scan() async {
         scanning = true
         await model.discover()
-        scanned = true
         scanning = false
     }
 

@@ -794,6 +794,14 @@ public struct Discovered: Codable {
         case live
     }
 }
+public extension Discovered {
+    /// A stable composite identity for a discovered artifact, used to key ForEach so live host
+    /// re-discovery (insert/remove/reorder) associates rows to the right data instead of to a
+    /// positional array offset.
+    var discoveryID: String {
+        [provider, kind, sessionID, cwd, path].compactMap { $0 }.joined(separator: "|")
+    }
+}
 public struct DiscoverList: Codable { public var items: [Discovered] }
 
 /// Registers this device's APNs token to receive approval pushes. Mirrors

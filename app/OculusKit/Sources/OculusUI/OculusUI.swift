@@ -482,16 +482,20 @@ public final class Model: ObservableObject {
         guard client != nil, let parent = sessionID else { return }
         let trimmed = subtask.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        newSession() // the child's transcript replaces the view; it arrives via the OK/broadcast
-        if let resp = try? await request(MessageType.sessionChild,
+        do {
+            let resp = try await request(MessageType.sessionChild,
                                          payload: SessionChild(parentSessionID: parent, subtask: trimmed,
-                                                               files: files, autonomous: autonomous)),
-           let child = try? resp.payload(as: Session.self) {
-            // The daemon already subscribed this connection to the child, so just make it active;
-            // its transcript replays over the subscription.
+                                                               files: files, autonomous: autonomous))
+            let child = try resp.payload(as: Session.self)
+            // Only now replace the view — a failed delegate must not lose the parent conversation.
+            // The daemon already subscribed this connection to the child, so its transcript replays
+            // over the subscription.
+            newSession()
             self.autonomous = autonomous
             sessionID = child.id
             currentSession = child
+        } catch {
+            status = "Delegate failed: \(error.localizedDescription)"
         }
     }
 

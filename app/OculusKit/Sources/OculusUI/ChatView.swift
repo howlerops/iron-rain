@@ -537,7 +537,7 @@ struct SubAgentsStrip: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(children) { child in
-                        Button { Task { await model.openSession(child.id); model.currentSession = child } } label: {
+                        Button { Task { await model.openSession(child.id) } } label: {
                             childChip(child)
                         }
                         .buttonStyle(.plain)
