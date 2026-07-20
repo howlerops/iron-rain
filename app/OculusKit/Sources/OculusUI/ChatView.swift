@@ -21,10 +21,16 @@ public struct ChatView: View {
     public init(model: Model) { self.model = model }
 
     private var isWorktreeSession: Bool { model.currentSession?.branch != nil }
+    /// Sub-agents delegated from the active session (the orchestration cockpit).
+    private var children: [Session] {
+        guard let sid = model.sessionID else { return [] }
+        return model.sessions.filter { $0.parentID == sid }
+    }
 
     public var body: some View {
         VStack(spacing: 0) {
             if isWorktreeSession { worktreeBanner }
+            if !children.isEmpty { SubAgentsStrip(model: model, children: children, palette: palette) }
             if !model.todos.isEmpty { TodoBar(todos: model.todos, palette: palette) }
             if model.messages.isEmpty && model.sessionID == nil {
                 emptyState
@@ -501,6 +507,77 @@ struct HandoffSheet: View {
         .task(id: entry.path) {
             do { content = try await model.fsRead(entry.path).content ?? "" }
             catch { loadError = "Couldn't load handoff: \(error.localizedDescription)" }
+        }
+    }
+}
+
+/// The orchestration cockpit: sub-agents delegated from the active session, each with its live
+/// heartbeat state + to-do progress, tap to open. Lets a human drive several lanes and see which
+/// need attention.
+struct SubAgentsStrip: View {
+    @ObservedObject var model: Model
+    let children: [Session]
+    let palette: OculusPalette
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Sub-agents").font(.caption2.bold()).foregroundStyle(palette.mutedForeground)
+                .padding(.horizontal, 12)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(children) { child in
+                        Button { Task { await model.openSession(child.id); model.currentSession = child } } label: {
+                            childChip(child)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 12)
+            }
+        }
+        .padding(.vertical, 7)
+        .background(palette.secondary.opacity(0.35))
+    }
+
+    private func childChip(_ child: Session) -> some View {
+        let hb = model.heartbeats[child.id]
+        return HStack(spacing: 6) {
+            Circle().fill(dotColor(hb)).frame(width: 7, height: 7)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(child.subtask ?? child.workspaceName ?? "subtask").font(.caption.bold())
+                    .lineLimit(1).frame(maxWidth: 180, alignment: .leading)
+                if let hb, hb.todosTotal > 0 {
+                    Text("\(stateLabel(hb.state)) · \(hb.todosDone)/\(hb.todosTotal)")
+                        .font(.caption2).foregroundStyle(palette.mutedForeground)
+                } else if let hb {
+                    Text(stateLabel(hb.state)).font(.caption2).foregroundStyle(palette.mutedForeground)
+                }
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(palette.background, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(palette.border))
+    }
+
+    private func dotColor(_ hb: SessionHeartbeat?) -> Color {
+        switch hb?.state {
+        case "working", "idle_incomplete": return .green
+        case "awaiting_input": return .yellow
+        case "stalled", "errored", "exhausted": return .orange
+        case "done": return palette.mutedForeground
+        default: return palette.mutedForeground
+        }
+    }
+    private func stateLabel(_ s: String) -> String {
+        switch s {
+        case "working": return "on track"
+        case "idle_incomplete": return "nudging"
+        case "awaiting_input": return "needs you"
+        case "stalled": return "stalled"
+        case "exhausted": return "budget used"
+        case "errored": return "error"
+        case "done": return "done"
+        default: return s
         }
     }
 }

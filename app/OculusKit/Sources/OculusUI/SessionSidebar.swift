@@ -15,6 +15,7 @@ private struct SidebarSession: Identifiable {
     /// stopped/managed. False for sessions discovered from a terminal (view-only lifecycle).
     let managed: Bool
     let updatedAt: Date?
+    var isChild: Bool = false // delegated sub-agent (shown with a ↳ marker)
 }
 
 private struct SessionGroup: Identifiable {
@@ -347,11 +348,12 @@ struct SessionSidebar: View {
         }
 
         for s in model.sessions {
-            let title = clean(s.name) ?? s.workspaceName ?? clean(s.title) ?? clean(discoveredTitles[s.id]) ?? "ses \(s.id.prefix(6))"
+            let isChild = !(s.parentID?.isEmpty ?? true)
+            let title = clean(s.subtask) ?? clean(s.name) ?? s.workspaceName ?? clean(s.title) ?? clean(discoveredTitles[s.id]) ?? "ses \(s.id.prefix(6))"
             let key = s.projectID.flatMap { projectNames[$0] } ?? ((s.projectID?.isEmpty ?? true) ? "On this Mac" : s.projectID!)
             add(key, SidebarSession(id: s.id, title: title, provider: s.provider, projectName: key,
                                     branch: s.branch, isRunning: s.status == SessionStatusValue.running,
-                                    viewOnly: false, managed: true, updatedAt: date(s.updatedAt)))
+                                    viewOnly: false, managed: true, updatedAt: date(s.updatedAt), isChild: isChild))
         }
         // Terminal-owned sessions discovered on the host are intentionally NOT shown here —
         // the sidebar lists only sessions started/opened in the app. Discovered sessions are
@@ -430,10 +432,16 @@ private struct SessionRow: View {
                 .fill(active ? palette.primary : Color.clear)
                 .frame(width: 3, height: 22)
             VStack(alignment: .leading, spacing: 2) {
-                Text(item.title)
-                    .font(.system(size: 13, weight: active ? .semibold : .medium))
-                    .foregroundStyle(palette.foreground)
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    if item.isChild {
+                        Image(systemName: "arrow.turn.down.right")
+                            .font(.system(size: 10)).foregroundStyle(palette.mutedForeground)
+                    }
+                    Text(item.title)
+                        .font(.system(size: 13, weight: active ? .semibold : .medium))
+                        .foregroundStyle(palette.foreground)
+                        .lineLimit(1)
+                }
                 if let sub = secondary {
                     Text(sub)
                         .font(.system(size: 11))
