@@ -103,7 +103,7 @@ struct NewSessionView: View {
                                                   projectIDs: selectedProjects.isEmpty ? nil : Array(selectedProjects),
                                                   worktree: useWorktree && canWorktree,
                                                   workspaceName: workspaceName.isEmpty ? nil : workspaceName,
-                                                  plan: planFirst && provider == "claude-code")
+                                                  plan: planFirst && provider != "pi")
                     }
                     onStart()
                 } label: { Text("Start").frame(minWidth: 52) }
@@ -152,13 +152,15 @@ struct NewSessionView: View {
                     .font(.caption).foregroundStyle(palette.mutedForeground)
             }
 
-            if provider == "claude-code" {
+            if provider != "pi" { // claude-code + opencode support plan mode natively
                 field("Plan first") {
                     Toggle(isOn: $planFirst) {
                         Text("Propose a plan to approve before making changes").font(.system(size: 13))
                     }
                     .toggleStyle(.switch).tint(palette.primary)
-                    Text("The agent drafts a plan and waits for your approval (from anywhere) before it touches code.")
+                    Text(provider == "opencode"
+                         ? "Runs opencode's plan agent — edits and commands wait for your approval."
+                         : "The agent drafts a plan and waits for your approval (from anywhere) before it touches code.")
                         .font(.caption).foregroundStyle(palette.mutedForeground)
                 }
             }

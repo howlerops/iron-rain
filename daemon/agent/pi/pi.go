@@ -29,6 +29,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 
 	"github.com/howlerops/oculus/daemon/agent"
@@ -178,17 +179,79 @@ type piEvent struct {
 	} `json:"assistantMessageEvent"`
 }
 
+// piMessageEnd is decoded separately from a message_end line (its "message" key is an object,
+// whereas piEvent.Message is a string for other events — same key, so keep them apart).
+type piMessageEnd struct {
+	Message struct {
+		Usage struct {
+			Input  int `json:"input"`
+			Output int `json:"output"`
+			Cost   struct {
+				Total float64 `json:"total"`
+			} `json:"cost"`
+		} `json:"usage"`
+	} `json:"message"`
+}
+
+// piTodo tool arg names a coding agent might use for a todo/task list (pi has none natively;
+// a valhalla-style extension provides one, and its call arrives as tool_execution_start).
+func todosFromToolArgs(toolName string, args map[string]any) ([]protocol.Todo, bool) {
+	switch strings.ToLower(toolName) {
+	case "todowrite", "todo", "todos", "todo_write", "update_todos", "task", "tasks":
+	default:
+		return nil, false
+	}
+	raw, ok := args["todos"]
+	if !ok {
+		raw = args["items"]
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return nil, false
+	}
+	out := make([]protocol.Todo, 0, len(list))
+	for _, it := range list {
+		m, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		content, _ := m["content"].(string)
+		if content == "" {
+			content, _ = m["text"].(string)
+		}
+		status, _ := m["status"].(string)
+		if status == "" {
+			status = "pending"
+		}
+		if content != "" {
+			out = append(out, protocol.Todo{Content: content, Status: status})
+		}
+	}
+	return out, len(out) > 0
+}
+
 func (s *session) readLoop(stdout io.ReadCloser) {
 	defer close(s.events)
 	sc := bufio.NewScanner(stdout) // \n framing only — pi-rpc-compliant
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	idle := false
 	for sc.Scan() {
+		line := sc.Bytes()
 		var e piEvent
-		if json.Unmarshal(sc.Bytes(), &e) != nil {
+		if json.Unmarshal(line, &e) != nil {
 			continue
 		}
 		switch e.Type {
+		case "message_end":
+			// Per-turn token/cost usage (the "message" key here is an object → decode separately).
+			var me piMessageEnd
+			if json.Unmarshal(line, &me) == nil {
+				u := me.Message.Usage
+				if u.Input > 0 || u.Output > 0 || u.Cost.Total > 0 {
+					s.emit(agent.Event{Type: protocol.TypeSessionUsage, Payload: protocol.SessionUsage{
+						SessionID: s.id, InputTokens: u.Input, OutputTokens: u.Output, CostUSD: u.Cost.Total}})
+				}
+			}
 		case "message_update":
 			switch e.Asst.Type {
 			case "text_delta":
@@ -203,9 +266,16 @@ func (s *session) readLoop(stdout io.ReadCloser) {
 				}
 			}
 		case "tool_execution_start":
+			// pi has no native to-do tool; a valhalla-style extension can add one, and its
+			// call arrives here — surface it as the normalized session.todos.
+			if todos, ok := todosFromToolArgs(e.ToolName, e.Args); ok {
+				s.emit(agent.Event{Type: protocol.TypeSessionTodos, Payload: protocol.SessionTodos{SessionID: s.id, Todos: todos}})
+			}
 			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusRunning, Detail: "running " + e.ToolName}})
 		case "extension_ui_request":
-			if e.Method == "confirm" {
+			// confirm (yes/no) and select (options) both gate an action — a plan-mode
+			// extension surfaces its plan through here, reusing the approval channel.
+			if e.Method == "confirm" || e.Method == "select" {
 				detail := e.Message
 				if detail == "" {
 					detail = e.Title

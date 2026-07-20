@@ -77,6 +77,16 @@ func (p *Provider) List(ctx context.Context) ([]protocol.Session, error) {
 
 // Create starts a session and (if prompt != "") kicks it off.
 func (p *Provider) Create(ctx context.Context, cwd, prompt string) (agent.Session, error) {
+	return p.create(ctx, cwd, prompt, "")
+}
+
+// CreatePlan starts a session that runs turns as opencode's "plan" agent — edits and bash are
+// gated on approval, so the agent proposes/plans and nothing changes until you allow it.
+func (p *Provider) CreatePlan(ctx context.Context, cwd, prompt string) (agent.Session, error) {
+	return p.create(ctx, cwd, prompt, "plan")
+}
+
+func (p *Provider) create(ctx context.Context, cwd, prompt, agentName string) (agent.Session, error) {
 	var created struct {
 		ID    string `json:"id"`
 		Title string `json:"title"`
@@ -88,7 +98,7 @@ func (p *Provider) Create(ctx context.Context, cwd, prompt string) (agent.Sessio
 		return nil, fmt.Errorf("opencode: create returned empty session id")
 	}
 
-	s := &session{p: p, id: created.ID, dir: cwd, events: make(chan agent.Event, 32), done: make(chan struct{})}
+	s := &session{p: p, id: created.ID, dir: cwd, agent: agentName, events: make(chan agent.Event, 32), done: make(chan struct{})}
 	if err := s.subscribe(); err != nil {
 		return nil, err
 	}
@@ -192,6 +202,7 @@ type session struct {
 	p      *Provider
 	id     string
 	dir    string // working directory; forwarded to opencode as ?directory= (scopes the session)
+	agent  string // opencode agent to run turns as ("plan" = gate edits/bash on approval); "" = default
 	events chan agent.Event
 
 	ctx       context.Context
@@ -202,6 +213,7 @@ type session struct {
 	// populated in the (single) readEvents goroutine — no mutex needed.
 	msgRoles    map[string]string // messageID -> role (from message.updated)
 	emittedUser map[string]bool   // messageIDs already forwarded as a user turn
+	usageDone   map[string]bool   // messageIDs whose usage was already emitted (once per turn)
 }
 
 func (s *session) ID() string                 { return s.id }
@@ -317,11 +329,24 @@ func (s *session) handle(raw []byte) {
 	}
 	switch e.Type {
 	case "message.updated":
-		// Record messageID -> role so we can tell user turns from assistant turns.
+		// Record messageID -> role so we can tell user turns from assistant turns, and — for a
+		// completed assistant message — emit token/cost usage (opencode carries it on info).
 		var mu struct {
 			Info struct {
-				ID   string `json:"id"`
-				Role string `json:"role"`
+				ID     string  `json:"id"`
+				Role   string  `json:"role"`
+				Cost   float64 `json:"cost"`
+				Tokens struct {
+					Input  int `json:"input"`
+					Output int `json:"output"`
+					Cache  struct {
+						Read  int `json:"read"`
+						Write int `json:"write"`
+					} `json:"cache"`
+				} `json:"tokens"`
+				Time struct {
+					Completed int64 `json:"completed"`
+				} `json:"time"`
 			} `json:"info"`
 		}
 		if json.Unmarshal(e.Properties, &mu) == nil && mu.Info.ID != "" {
@@ -329,6 +354,20 @@ func (s *session) handle(raw []byte) {
 				s.msgRoles = map[string]string{}
 			}
 			s.msgRoles[mu.Info.ID] = mu.Info.Role
+			// One clean usage number per assistant turn, once the turn has completed. Guard
+			// against re-emitting for the same message id (message.updated fires repeatedly).
+			if mu.Info.Role == "assistant" && mu.Info.Time.Completed != 0 &&
+				(mu.Info.Cost > 0 || mu.Info.Tokens.Input > 0 || mu.Info.Tokens.Output > 0) {
+				if s.usageDone == nil {
+					s.usageDone = map[string]bool{}
+				}
+				if !s.usageDone[mu.Info.ID] {
+					s.usageDone[mu.Info.ID] = true
+					in := mu.Info.Tokens.Input + mu.Info.Tokens.Cache.Read + mu.Info.Tokens.Cache.Write
+					s.emit(agent.Event{Type: protocol.TypeSessionUsage, Payload: protocol.SessionUsage{
+						SessionID: s.id, InputTokens: in, OutputTokens: mu.Info.Tokens.Output, CostUSD: mu.Info.Cost}})
+				}
+			}
 		}
 
 	case "message.part.updated":
@@ -391,6 +430,25 @@ func (s *session) handle(raw []byte) {
 			s.emit(agent.Event{Type: protocol.TypeThinking, Payload: protocol.Thinking{SessionID: s.id, Text: pr.Delta}})
 		}
 
+	case "todo.updated":
+		// opencode's todowrite tool publishes a dedicated todo.updated bus event with the
+		// full list — map it to the normalized session.todos.
+		var tu struct {
+			SessionID string `json:"sessionID"`
+			Todos     []struct {
+				Content string `json:"content"`
+				Status  string `json:"status"`
+			} `json:"todos"`
+		}
+		if json.Unmarshal(e.Properties, &tu) != nil || tu.SessionID != s.id {
+			return
+		}
+		todos := make([]protocol.Todo, len(tu.Todos))
+		for i, td := range tu.Todos {
+			todos[i] = protocol.Todo{Content: td.Content, Status: td.Status}
+		}
+		s.emit(agent.Event{Type: protocol.TypeSessionTodos, Payload: protocol.SessionTodos{SessionID: s.id, Todos: todos}})
+
 	case "permission.asked", "permission.updated":
 		// opencode 1.17.x emits `permission.asked` with properties.permission (the tool);
 		// older builds used `permission.updated` with properties.type/title. Handle both.
@@ -414,6 +472,14 @@ func (s *session) handle(raw []byte) {
 		}
 		if tool == "" {
 			tool = perm.Title
+		}
+		// todowrite/todoread are bookkeeping, not code changes — don't surface them as
+		// approvals (they'd pop a spurious card); the list arrives via todo.updated.
+		if tool == "todowrite" || tool == "todoread" {
+			if perm.ID != "" {
+				go func() { _ = s.Respond(context.Background(), perm.ID, protocol.DecisionAllow) }()
+			}
+			return
 		}
 		// Detail: the concrete command/args to show inline (e.g. the bash command).
 		detail := ""
@@ -443,6 +509,7 @@ func (s *session) handle(raw []byte) {
 		// one turn's worth of message IDs instead of growing for the session's lifetime.
 		s.msgRoles = nil
 		s.emittedUser = nil
+		s.usageDone = nil
 		s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusIdle}})
 	}
 }
@@ -485,6 +552,9 @@ func (s *session) PromptImages(_ context.Context, text string, images []protocol
 // until the turn yields, so we drive progress from SSE — see the note above).
 func (s *session) sendParts(parts []map[string]any) error {
 	body := map[string]any{"parts": parts}
+	if s.agent != "" {
+		body["agent"] = s.agent // e.g. "plan" — gate edits/bash on approval
+	}
 	ctx := s.ctx
 	if ctx == nil {
 		ctx = context.Background()

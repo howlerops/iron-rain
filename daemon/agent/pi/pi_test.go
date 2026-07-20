@@ -93,3 +93,23 @@ func TestPi_NoCommand(t *testing.T) {
 		t.Fatal("expected an error when no command is configured")
 	}
 }
+
+func TestTodosFromToolArgs(t *testing.T) {
+	// A todo-style extension tool call → normalized todos.
+	args := map[string]any{"todos": []any{
+		map[string]any{"content": "write tests", "status": "in_progress"},
+		map[string]any{"content": "ship", "status": "pending"},
+	}}
+	todos, ok := todosFromToolArgs("todowrite", args)
+	if !ok || len(todos) != 2 || todos[0].Content != "write tests" || todos[0].Status != "in_progress" {
+		t.Fatalf("todowrite → %+v, ok=%v", todos, ok)
+	}
+	// A non-todo tool → ignored.
+	if _, ok := todosFromToolArgs("bash", map[string]any{"command": "ls"}); ok {
+		t.Error("bash should not yield todos")
+	}
+	// Missing list → ignored.
+	if _, ok := todosFromToolArgs("todo", map[string]any{}); ok {
+		t.Error("empty args should not yield todos")
+	}
+}
