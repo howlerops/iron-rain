@@ -519,10 +519,21 @@ struct SubAgentsStrip: View {
     let children: [Session]
     let palette: OculusPalette
 
+    /// Combined spend across the parent + all its sub-agents — delegation multiplies sessions, so
+    /// the orchestrator watches the total, not just the active lane.
+    private var totalCost: Double {
+        (model.currentSession?.costUSD ?? 0) + children.reduce(0) { $0 + ($1.costUSD ?? 0) }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Sub-agents").font(.caption2.bold()).foregroundStyle(palette.mutedForeground)
-                .padding(.horizontal, 12)
+            HStack {
+                Text("Sub-agents").font(.caption2.bold()).foregroundStyle(palette.mutedForeground)
+                Spacer()
+                Text(String(format: "total $%.3f · %d lanes", totalCost, children.count + 1))
+                    .font(.caption2.monospacedDigit()).foregroundStyle(palette.mutedForeground)
+            }
+            .padding(.horizontal, 12)
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(children) { child in
