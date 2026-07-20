@@ -585,6 +585,23 @@ func (h *Hub) pushAgentError(sessionID, label, detail string) {
 	})
 }
 
+// pushAgentStalled notifies that a supervised session needs attention (stalled, out of nudge
+// budget, or waiting on you).
+func (h *Hub) pushAgentStalled(sessionID, label, reason string) {
+	title := "Agent needs you"
+	if label != "" {
+		title = label + " needs you"
+	}
+	body := reason
+	if body == "" {
+		body = "The agent stopped making progress — tap to review"
+	}
+	h.pushNotify(push.Notification{
+		Title: title, Body: body, Category: "AGENT_STALLED",
+		ThreadID: sessionID, Custom: map[string]any{"session_id": sessionID},
+	})
+}
+
 // pushTestsFailed notifies that a test/build run failed in a session.
 func (h *Hub) pushTestsFailed(sessionID, label, cmd string) {
 	title := "Tests failed"
@@ -772,9 +789,35 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, err.Error())
 			return
 		}
+		if req.Autonomous { // opt into heartbeat supervision at create time
+			m.mu.Lock()
+			m.autonomous = true
+			m.maxNudges = req.MaxNudges
+			m.budgetUSD = req.BudgetUSD
+			m.mu.Unlock()
+		}
 		h.sendOK(conn, env.ID, m.info())
 		m.subscribe(conn) // the creator observes its own session
 		go m.run()
+
+	case protocol.TypeSessionAutonomy:
+		var req protocol.SessionAutonomy
+		_ = env.Unmarshal(&req)
+		if m := h.managed(req.SessionID); m != nil {
+			m.mu.Lock()
+			m.autonomous = req.Autonomous
+			if req.MaxNudges > 0 {
+				m.maxNudges = req.MaxNudges
+			}
+			if req.BudgetUSD > 0 {
+				m.budgetUSD = req.BudgetUSD
+			}
+			if req.Autonomous { // re-arming clears the give-up state
+				m.nudgeCount = 0
+			}
+			m.mu.Unlock()
+		}
+		h.sendOK(conn, env.ID, nil)
 
 	case protocol.TypeSessionList:
 		h.mu.Lock()
@@ -1118,6 +1161,11 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, "no such approval")
 			return
 		}
+		m.mu.Lock()
+		if m.pendingApprovals > 0 {
+			m.pendingApprovals--
+		}
+		m.mu.Unlock()
 		if err := m.sess.Respond(ctx, req.ApprovalID, req.Decision); err != nil {
 			h.sendErr(conn, env.ID, err.Error())
 			return
@@ -1202,8 +1250,8 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		var req protocol.SessionRef
 		_ = env.Unmarshal(&req)
 		if m := h.managed(req.SessionID); m != nil {
-			_ = m.sess.Stop(ctx)  // interrupt any running turn
-			_ = m.sess.Close()    // end the event stream -> run() -> removeSession (drops the record)
+			_ = m.sess.Stop(ctx) // interrupt any running turn
+			_ = m.sess.Close()   // end the event stream -> run() -> removeSession (drops the record)
 			h.removeSession(req.SessionID)
 			if h.db != nil {
 				_ = h.db.SetName(req.SessionID, "") // clear the orphaned rename

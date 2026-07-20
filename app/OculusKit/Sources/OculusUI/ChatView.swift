@@ -56,7 +56,20 @@ public struct ChatView: View {
             if let s = model.currentSession, (s.costUSD ?? 0) > 0 || (s.inputTokens ?? 0) > 0 {
                 ToolbarItem(placement: .automatic) { UsageChip(session: s, palette: palette) }
             }
+            if let sid = model.sessionID, let hb = model.heartbeats[sid] {
+                ToolbarItem(placement: .automatic) { HeartbeatChip(hb: hb, palette: palette) }
+            }
             if model.sessionID != nil {
+                ToolbarItem(placement: .automatic) {
+                    Button { Task { await model.setAutonomy(!model.autonomous) } } label: {
+                        Label(model.autonomous ? "Autonomous on" : "Autonomous off",
+                              systemImage: model.autonomous ? "infinity.circle.fill" : "infinity.circle")
+                    }
+                    .tint(model.autonomous ? palette.primary : nil)
+                    .help(model.autonomous
+                          ? "The heartbeat keeps this session going until its to-dos are done. Tap to stop."
+                          : "Let the heartbeat nudge this session to keep going until done.")
+                }
                 ToolbarItem(placement: .automatic) {
                     Button { Task { await model.runTests() } } label: {
                         Label("Run tests", systemImage: "checkmark.seal")
@@ -348,6 +361,63 @@ struct UsageChip: View {
         let t = (session.inputTokens ?? 0) + (session.outputTokens ?? 0)
         guard t > 0 else { return nil }
         return t >= 1000 ? String(format: "%.1fk", Double(t) / 1000) : "\(t)"
+    }
+}
+
+/// Compact "on-track" indicator driven by the daemon's heartbeat supervision (toolbar).
+struct HeartbeatChip: View {
+    let hb: SessionHeartbeat
+    let palette: OculusPalette
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: icon).font(.caption2)
+            Text(label).font(.caption2)
+            if hb.todosTotal > 0 {
+                Text("· \(hb.todosDone)/\(hb.todosTotal)").font(.caption2.monospacedDigit()).foregroundStyle(palette.mutedForeground)
+            }
+        }
+        .foregroundStyle(color)
+        .help(helpText)
+    }
+
+    private var icon: String {
+        switch hb.state {
+        case "working": return "waveform.path.ecg"
+        case "idle_incomplete": return "arrow.triangle.2.circlepath"
+        case "awaiting_input": return "hand.raised"
+        case "stalled": return "exclamationmark.triangle"
+        case "exhausted": return "bolt.slash"
+        case "errored": return "xmark.octagon"
+        case "done": return "checkmark.circle"
+        default: return "waveform.path.ecg"
+        }
+    }
+    private var label: String {
+        switch hb.state {
+        case "working": return "On track"
+        case "idle_incomplete": return "Nudging"
+        case "awaiting_input": return "Needs you"
+        case "stalled": return "Stalled"
+        case "exhausted": return "Budget used"
+        case "errored": return "Error"
+        case "done": return "Done"
+        default: return hb.state
+        }
+    }
+    private var color: Color {
+        switch hb.state {
+        case "stalled", "errored", "exhausted": return .orange
+        case "awaiting_input": return .yellow
+        case "done": return .green
+        default: return palette.mutedForeground
+        }
+    }
+    private var helpText: String {
+        var s = "Supervision: \(label)"
+        if hb.nudgeCount > 0 { s += " · \(hb.nudgeCount) nudges" }
+        if hb.budgetUSD > 0 { s += String(format: " · $%.2f/$%.2f", hb.costUSD, hb.budgetUSD) }
+        return s
     }
 }
 

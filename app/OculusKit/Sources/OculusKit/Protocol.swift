@@ -61,6 +61,8 @@ public enum MessageType {
 
     public static let sessionUsage = "session.usage"
     public static let sessionTodos = "session.todos"
+    public static let sessionHeartbeat = "session.heartbeat"
+    public static let sessionAutonomy = "session.autonomy"
     public static let runTest = "run.test"
     public static let runOutput = "run.output"
     public static let runResult = "run.result"
@@ -101,14 +103,19 @@ public struct SessionCreate: Codable {
     public var worktree: Bool?
     public var workspaceName: String?
     public var plan: Bool?
-    public init(provider: String, cwd: String? = nil, projectID: String? = nil, projectIDs: [String]? = nil, prompt: String? = nil, images: [ImageAttachment]? = nil, worktree: Bool? = nil, workspaceName: String? = nil, plan: Bool? = nil) {
-        self.provider = provider; self.cwd = cwd; self.projectID = projectID; self.projectIDs = projectIDs; self.prompt = prompt; self.images = images; self.worktree = worktree; self.workspaceName = workspaceName; self.plan = plan
+    public var autonomous: Bool?
+    public var maxNudges: Int?
+    public var budgetUSD: Double?
+    public init(provider: String, cwd: String? = nil, projectID: String? = nil, projectIDs: [String]? = nil, prompt: String? = nil, images: [ImageAttachment]? = nil, worktree: Bool? = nil, workspaceName: String? = nil, plan: Bool? = nil, autonomous: Bool? = nil, maxNudges: Int? = nil, budgetUSD: Double? = nil) {
+        self.provider = provider; self.cwd = cwd; self.projectID = projectID; self.projectIDs = projectIDs; self.prompt = prompt; self.images = images; self.worktree = worktree; self.workspaceName = workspaceName; self.plan = plan; self.autonomous = autonomous; self.maxNudges = maxNudges; self.budgetUSD = budgetUSD
     }
     enum CodingKeys: String, CodingKey {
-        case provider, cwd, prompt, images, worktree, plan
+        case provider, cwd, prompt, images, worktree, plan, autonomous
         case projectID = "project_id"
         case projectIDs = "project_ids"
         case workspaceName = "workspace_name"
+        case maxNudges = "max_nudges"
+        case budgetUSD = "budget_usd"
     }
 }
 public struct SessionRef: Codable {
@@ -434,6 +441,42 @@ public struct SessionTodos: Codable {
     public var sessionID: String
     public var todos: [Todo]
     enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case todos }
+}
+
+// Heartbeat supervision: derived on-track state for a session (event), and the client→daemon
+// toggle to opt a session into (or out of) autonomous nudging.
+public struct SessionHeartbeat: Codable {
+    public var sessionID: String
+    public var state: String // working|awaiting_input|idle_incomplete|stalled|done|errored|exhausted
+    public var nudgeCount: Int
+    public var todosDone: Int
+    public var todosTotal: Int
+    public var costUSD: Double
+    public var budgetUSD: Double
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+        case state
+        case nudgeCount = "nudge_count"
+        case todosDone = "todos_done"
+        case todosTotal = "todos_total"
+        case costUSD = "cost_usd"
+        case budgetUSD = "budget_usd"
+    }
+}
+public struct SessionAutonomy: Codable {
+    public var sessionID: String
+    public var autonomous: Bool
+    public var maxNudges: Int?
+    public var budgetUSD: Double?
+    public init(sessionID: String, autonomous: Bool, maxNudges: Int? = nil, budgetUSD: Double? = nil) {
+        self.sessionID = sessionID; self.autonomous = autonomous; self.maxNudges = maxNudges; self.budgetUSD = budgetUSD
+    }
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+        case autonomous
+        case maxNudges = "max_nudges"
+        case budgetUSD = "budget_usd"
+    }
 }
 public struct RunTest: Codable {
     public var sessionID: String

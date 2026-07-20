@@ -152,6 +152,7 @@ func serve(args []string) error {
 	const sessionTTL = 7 * 24 * time.Hour
 	go h.RestoreSessions(context.Background(), sessionTTL)
 	h.StartSessionPruning(context.Background(), 6*time.Hour, sessionTTL)
+	h.StartHeartbeat(context.Background()) // supervise autonomous sessions (nudge/checkpoint/escalate)
 
 	pushEnabled := false
 	if *apnsKey != "" {

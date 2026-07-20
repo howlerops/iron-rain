@@ -38,6 +38,19 @@ type managedSession struct {
 	inTok, outTok   int       // cumulative token usage across the session
 	costUSD         float64   // cumulative cost (USD)
 	wasRunning      bool      // saw activity since the last idle (gates the "finished" push)
+
+	// Heartbeat supervision state (recorded from the event pump; read by the heartbeat tick).
+	lastStatus       string          // last session.status ("running"/"idle"/"awaiting_approval"/"error")
+	latestTodos      []protocol.Todo // last session.todos (completion signal)
+	turnEnded        bool            // true after idle, false after running (turn boundary vs done)
+	pendingApprovals int             // outstanding approval requests (never nudge while > 0)
+	autonomous       bool            // opt-in: heartbeat may auto-nudge this session to continue
+	nudgeCount       int             // nudges spent this session (capped by maxNudges)
+	lastNudge        time.Time       // for the nudge cooldown
+	lastCheckpoint   int             // token count at the last handoff-checkpoint nudge
+	hbState          string          // last derived heartbeat state (for change detection)
+	maxNudges        int             // give-up bound (0 = default)
+	budgetUSD        float64         // cost ceiling for autonomous nudging (0 = default)
 }
 
 // subscriber owns one client's outbound queue plus the writer goroutine that drains it.
@@ -241,6 +254,9 @@ func (m *managedSession) run() {
 		if ev.Type == protocol.TypeApprovalRequest {
 			if ar, ok := ev.Payload.(protocol.ApprovalRequest); ok {
 				m.hub.recordApproval(ar.ApprovalID, m)
+				m.mu.Lock()
+				m.pendingApprovals++
+				m.mu.Unlock()
 				m.hub.pushApproval(ar)
 			}
 		}
@@ -253,6 +269,13 @@ func (m *managedSession) run() {
 				m.mu.Unlock()
 			}
 		}
+		if ev.Type == protocol.TypeSessionTodos {
+			if t, ok := ev.Payload.(protocol.SessionTodos); ok {
+				m.mu.Lock()
+				m.latestTodos = t.Todos
+				m.mu.Unlock()
+			}
+		}
 		if ev.Type == protocol.TypeOutputDelta || ev.Type == protocol.TypeThinking {
 			m.mu.Lock()
 			m.wasRunning = true
@@ -260,6 +283,15 @@ func (m *managedSession) run() {
 		}
 		if ev.Type == protocol.TypeSessionStatus {
 			if ss, ok := ev.Payload.(protocol.SessionStatus); ok {
+				m.mu.Lock()
+				m.lastStatus = ss.Status
+				switch ss.Status {
+				case protocol.StatusRunning:
+					m.turnEnded = false
+				case protocol.StatusIdle, protocol.StatusDone:
+					m.turnEnded = true
+				}
+				m.mu.Unlock()
 				m.onStatus(ss)
 			}
 		}

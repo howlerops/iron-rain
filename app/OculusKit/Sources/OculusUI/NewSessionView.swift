@@ -17,6 +17,7 @@ struct NewSessionView: View {
     @State private var selectedProjects: Set<String> = []
     @State private var useWorktree = false
     @State private var planFirst = false
+    @State private var autonomous = false
     @State private var workspaceName = ""
     @State private var terminalSearch = ""
     @State private var scanning = false
@@ -103,7 +104,8 @@ struct NewSessionView: View {
                                                   projectIDs: selectedProjects.isEmpty ? nil : Array(selectedProjects),
                                                   worktree: useWorktree && canWorktree,
                                                   workspaceName: workspaceName.isEmpty ? nil : workspaceName,
-                                                  plan: planFirst && provider != "pi")
+                                                  plan: planFirst && provider != "pi",
+                                                  autonomous: autonomous)
                     }
                     onStart()
                 } label: { Text("Start").frame(minWidth: 52) }
@@ -163,6 +165,15 @@ struct NewSessionView: View {
                          : "The agent drafts a plan and waits for your approval (from anywhere) before it touches code.")
                         .font(.caption).foregroundStyle(palette.mutedForeground)
                 }
+            }
+
+            field("Autonomous") {
+                Toggle(isOn: $autonomous) {
+                    Text("Keep going until the task is done").font(.system(size: 13))
+                }
+                .toggleStyle(.switch).tint(palette.primary)
+                Text("A heartbeat nudges the agent to continue when it stalls with unfinished to-dos, checkpoints its progress before context fills, and pings you if it gets stuck or hits its budget.")
+                    .font(.caption).foregroundStyle(palette.mutedForeground)
             }
         }
     }

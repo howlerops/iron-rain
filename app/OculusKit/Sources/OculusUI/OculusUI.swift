@@ -38,6 +38,11 @@ public final class Model: ObservableObject {
     @Published public var diagnostics: [String: [LSPDiagnostic]] = [:]
     /// The active session's live to-do list (from the agent).
     @Published public var todos: [Todo] = []
+
+    // Heartbeat supervision: latest derived state per session, and whether the active session
+    // is enrolled in autonomous nudging (mirrors the daemon; user-toggleable).
+    @Published public var heartbeats: [String: SessionHeartbeat] = [:]
+    @Published public var autonomous = false
     /// Test/build run output + outcome for the active session.
     @Published public var testOutput: [String] = []
     @Published public var testResult: RunResult?
@@ -426,9 +431,10 @@ public final class Model: ObservableObject {
     /// detail immediately — rather than only stashing options until the first message (which
     /// looked like "nothing happened"). The provider makes an idle session; the first message
     /// then prompts it. 2+ folders → a multi-root workspace (common ancestor, no worktree).
-    public func createSession(provider: String, projectIDs: [String]? = nil, worktree: Bool = false, workspaceName: String? = nil, plan: Bool = false) async {
+    public func createSession(provider: String, projectIDs: [String]? = nil, worktree: Bool = false, workspaceName: String? = nil, plan: Bool = false, autonomous: Bool = false) async {
         guard let client else { return }
         newSession() // clear the conversation; the created session arrives via the OK/broadcast
+        self.autonomous = autonomous
         let multi = (projectIDs?.count ?? 0) > 1
         do {
             let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.sessionCreate,
@@ -438,10 +444,22 @@ public final class Model: ObservableObject {
                                        prompt: nil,
                                        worktree: (!multi && worktree) ? true : nil,
                                        workspaceName: workspaceName,
-                                       plan: plan ? true : nil))
+                                       plan: plan ? true : nil,
+                                       autonomous: autonomous ? true : nil))
             try await client.send(env)
         } catch {
             status = "Create failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Toggles autonomous heartbeat supervision for the active session. Re-arming (autonomous =
+    /// true) also resets the daemon's nudge counter so a previously-exhausted session runs again.
+    public func setAutonomy(_ on: Bool) async {
+        autonomous = on
+        guard let client, let sid = sessionID else { return }
+        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.sessionAutonomy,
+                                          payload: SessionAutonomy(sessionID: sid, autonomous: on)) {
+            try? await client.send(env)
         }
     }
 
@@ -1057,6 +1075,13 @@ public final class Model: ObservableObject {
                 case MessageType.sessionTodos: // the agent's live to-do list (replaces the prior list)
                     if let t = try? env.payload(as: SessionTodos.self), t.sessionID == sessionID {
                         todos = t.todos
+                    }
+                case MessageType.sessionHeartbeat: // supervision "on-track" state for a session
+                    if let hb = try? env.payload(as: SessionHeartbeat.self) {
+                        heartbeats[hb.sessionID] = hb
+                        // The daemon disarms autonomy when a session exhausts its budget; mirror that
+                        // so the toggle reflects reality.
+                        if hb.sessionID == sessionID, hb.state == "exhausted" { autonomous = false }
                     }
                 case MessageType.runOutput: // streamed line from a test/build run
                     if let o = try? env.payload(as: RunOutput.self), o.sessionID == sessionID {

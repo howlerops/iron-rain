@@ -22,6 +22,7 @@ const (
 	TypeSessionPrompt      = "session.prompt"
 	TypeSessionStop        = "session.stop"
 	TypeSessionInterrupt   = "session.interrupt" // stop the current turn, keep the session
+	TypeSessionAutonomy    = "session.autonomy"  // toggle/re-arm heartbeat supervision
 	TypeSessionRename      = "session.rename"
 	TypeSessionAttach      = "session.attach"
 	TypeSessionSubscribe   = "session.subscribe" // observe an already-owned session (no dup subscription)
@@ -82,6 +83,7 @@ const (
 	TypeFSChange         = "fs.change"         // a watched file changed on disk
 	TypeSessionUsage     = "session.usage"     // token/cost usage for a session (event)
 	TypeSessionTodos     = "session.todos"     // the agent's live to-do list (event)
+	TypeSessionHeartbeat = "session.heartbeat" // supervision state for a session (event)
 	TypeRunOutput        = "run.output"        // streamed line from a test/build run (event)
 	TypeRunResult        = "run.result"        // final pass/fail of a test/build run (event)
 
@@ -125,6 +127,9 @@ type SessionCreate struct {
 	Worktree      bool              `json:"worktree,omitempty"`       // run in a fresh git worktree (opt-in)
 	WorkspaceName string            `json:"workspace_name,omitempty"` // human name for the worktree branch
 	Plan          bool              `json:"plan,omitempty"`           // start in plan mode (propose a plan to approve first)
+	Autonomous    bool              `json:"autonomous,omitempty"`     // let the heartbeat nudge it to keep going
+	MaxNudges     int               `json:"max_nudges,omitempty"`     // give-up bound for auto-nudging (0 = default)
+	BudgetUSD     float64           `json:"budget_usd,omitempty"`     // cost ceiling for auto-nudging (0 = default)
 }
 
 // Project is a registered folder sessions can be spawned in (mirrors project.Project).
@@ -203,16 +208,16 @@ type IntegrationOAuth struct {
 }
 
 type Issue struct {
-	ID         string `json:"id"`
-	Key        string `json:"key"`
-	Title      string `json:"title"`
-	Body       string `json:"body,omitempty"`
-	Status     string `json:"status"`
-	Category   string `json:"category"` // todo | in_progress | done | other
-	Assignee   string `json:"assignee,omitempty"`
-	URL        string `json:"url,omitempty"`
-	Provider   string `json:"provider"`
-	BranchName string `json:"branch_name,omitempty"`
+	ID          string `json:"id"`
+	Key         string `json:"key"`
+	Title       string `json:"title"`
+	Body        string `json:"body,omitempty"`
+	Status      string `json:"status"`
+	Category    string `json:"category"` // todo | in_progress | done | other
+	Assignee    string `json:"assignee,omitempty"`
+	URL         string `json:"url,omitempty"`
+	Provider    string `json:"provider"`
+	BranchName  string `json:"branch_name,omitempty"`
 	TeamID      string `json:"team_id,omitempty"`
 	Priority    int    `json:"priority,omitempty"`
 	UpdatedAt   string `json:"updated_at,omitempty"`
@@ -301,7 +306,7 @@ type IssueImage struct {
 type IssueLaunch struct {
 	IssueID       string `json:"issue_id"`
 	Provider      string `json:"provider"`
-	ProjectID     string `json:"project_id"`               // which registered repo to work in
+	ProjectID     string `json:"project_id"` // which registered repo to work in
 	Worktree      bool   `json:"worktree,omitempty"`
 	AgentProvider string `json:"agent_provider,omitempty"` // opencode|claude-code|pi (default opencode)
 }
@@ -417,7 +422,7 @@ type LSPDiagnostics struct {
 // LSPServerInfo reports whether a language server is available for a file, and whether we can
 // install one (a scripted recipe whose prerequisite tool is present).
 type LSPServerInfo struct {
-	Language     string `json:"language"`      // "" if the file type is unsupported
+	Language     string `json:"language"` // "" if the file type is unsupported
 	Installed    bool   `json:"installed"`
 	Installable  bool   `json:"installable"`
 	InstallLabel string `json:"install_label"` // e.g. "gopls" or "Xcode / Swift toolchain"
@@ -432,8 +437,8 @@ type LSPInstallResult struct {
 
 // LSPCompletionItem is one autocomplete suggestion.
 type LSPCompletionItem struct {
-	Label  string `json:"label"`         // shown in the list
-	Insert string `json:"insert"`        // text to insert (may differ from Label)
+	Label  string `json:"label"`            // shown in the list
+	Insert string `json:"insert"`           // text to insert (may differ from Label)
 	Detail string `json:"detail,omitempty"` // type/signature
 	Kind   int    `json:"kind,omitempty"`   // LSP CompletionItemKind (1..25)
 }
@@ -630,7 +635,7 @@ type Session struct {
 	Port          int    `json:"port,omitempty"`           // port a setup hook assigned to this worktree
 	IssueKey      string `json:"issue_key,omitempty"`      // the ticket this session works (e.g. ENG-42)
 	IssueID       string `json:"issue_id,omitempty"`
-	UpdatedAt     int64  `json:"updated_at,omitempty"`     // unix seconds of last activity (0 = unknown)
+	UpdatedAt     int64  `json:"updated_at,omitempty"` // unix seconds of last activity (0 = unknown)
 	// Cumulative token/cost usage for the session (surfaced as a meter; 0 = unknown).
 	InputTokens  int     `json:"input_tokens,omitempty"`
 	OutputTokens int     `json:"output_tokens,omitempty"`
@@ -656,6 +661,26 @@ type Todo struct {
 type SessionTodos struct {
 	SessionID string `json:"session_id"`
 	Todos     []Todo `json:"todos"`
+}
+
+// SessionAutonomy toggles/re-arms heartbeat supervision for a session (client → daemon).
+type SessionAutonomy struct {
+	SessionID  string  `json:"session_id"`
+	Autonomous bool    `json:"autonomous"`
+	MaxNudges  int     `json:"max_nudges,omitempty"`
+	BudgetUSD  float64 `json:"budget_usd,omitempty"`
+}
+
+// SessionHeartbeat is the heartbeat's derived supervision state for a session (event). State is
+// working|awaiting_input|idle_incomplete|stalled|done|errored|exhausted.
+type SessionHeartbeat struct {
+	SessionID  string  `json:"session_id"`
+	State      string  `json:"state"`
+	NudgeCount int     `json:"nudge_count"`
+	TodosDone  int     `json:"todos_done"`
+	TodosTotal int     `json:"todos_total"`
+	CostUSD    float64 `json:"cost_usd"`
+	BudgetUSD  float64 `json:"budget_usd"`
 }
 
 // RunTest requests a test/build run in a session's workspace. Command is optional (the daemon
