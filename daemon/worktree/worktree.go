@@ -59,8 +59,12 @@ func Create(base, repoDir, name string) (Worktree, error) {
 		base = DefaultBase()
 	}
 	path := filepath.Join(base, filepath.Base(root), slug)
-	branch := "oculus/" + slug
+	return createAt(root, path, "oculus/"+slug)
+}
 
+// createAt adds a worktree for an already-resolved repo root at an explicit path on branch.
+// Shared by Create (single repo) and CreateWorkspace (one call per member repo).
+func createAt(root, path, branch string) (Worktree, error) {
 	if _, err := os.Stat(path); err == nil {
 		return Worktree{}, fmt.Errorf("worktree path already exists: %s", path)
 	}

@@ -7,6 +7,7 @@ import (
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/transport"
+	"github.com/howlerops/oculus/daemon/worktree"
 )
 
 // Fan-out and transcript limits. broadcast() runs on the single run() goroutine that
@@ -80,6 +81,10 @@ type sessionMeta struct {
 	issueID       string // the ticket this session works (for write-back)
 	issueKey      string // human ticket id (ENG-42)
 	issueProvider string // "linear" | "jira"
+
+	// Cross-repo workspace: one worktree per member repo, all under cwd (the layout dir). Empty
+	// for single-repo/shared sessions. Drives the fs guard, session file tree, and workspace.diff.
+	members []worktree.Member
 }
 
 func newManagedSession(h *Hub, sess agent.Session, meta sessionMeta) *managedSession {
@@ -129,6 +134,7 @@ func (m *managedSession) info() protocol.Session {
 	updated := m.lastActivity.Unix()
 	label := m.meta.label
 	inTok, outTok, cost := m.inTok, m.outTok, m.costUSD
+	isWorkspace := len(m.meta.members) > 0
 	m.mu.Unlock()
 	return protocol.Session{
 		ID:            m.sess.ID(),
@@ -139,6 +145,7 @@ func (m *managedSession) info() protocol.Session {
 		Cwd:           m.meta.cwd,
 		WorkspaceName: m.meta.workspaceName,
 		Branch:        m.meta.branch,
+		IsWorkspace:   isWorkspace,
 		Port:          m.meta.port,
 		IssueKey:      m.meta.issueKey,
 		IssueID:       m.meta.issueID,

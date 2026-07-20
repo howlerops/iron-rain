@@ -15,6 +15,7 @@ public struct ChatView: View {
     @State private var draft = ""
     @State private var showWorktreePanel = false
     @State private var showHandoff = false
+    @State private var showWorkspace = false
 
     public init(model: Model) { self.model = model }
 
@@ -93,6 +94,16 @@ public struct ChatView: View {
                     }
                 }
             }
+            if model.currentSession?.isWorkspace == true {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        showWorkspace = true
+                        Task { await model.workspaceDiff() }
+                    } label: {
+                        Label("Review workspace", systemImage: "square.stack.3d.up")
+                    }
+                }
+            }
         }
         .sheet(isPresented: $showWorktreePanel) {
             WorktreePanel(model: model, palette: palette) { showWorktreePanel = false }
@@ -101,6 +112,9 @@ public struct ChatView: View {
             if let h = model.activeHandoff {
                 HandoffSheet(model: model, entry: h, palette: palette) { showHandoff = false }
             }
+        }
+        .sheet(isPresented: $showWorkspace) {
+            WorkspaceReviewSheet(model: model, palette: palette) { showWorkspace = false }
         }
     }
 
@@ -478,6 +492,51 @@ struct HandoffSheet: View {
             do { content = try await model.fsRead(entry.path).content ?? "" }
             catch { loadError = "Couldn't load handoff: \(error.localizedDescription)" }
         }
+    }
+}
+
+/// Reviews a cross-repo workspace: each member repo's branch + change summary, over the combined
+/// diff (rendered by the shared DiffReviewView, which reads model.lastDiff).
+struct WorkspaceReviewSheet: View {
+    @ObservedObject var model: Model
+    let palette: OculusPalette
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Workspace review").font(.headline)
+                    Text(model.currentSession?.workspaceName ?? "\(model.workspaceDiffs.count) repos")
+                        .font(.caption2).foregroundStyle(palette.mutedForeground)
+                }
+                Spacer()
+                Button("Done", action: onClose).keyboardShortcut(.cancelAction)
+            }
+            .padding(.horizontal, 16).padding(.vertical, 12)
+            Divider()
+            if !model.workspaceDiffs.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(model.workspaceDiffs) { m in
+                            HStack(spacing: 5) {
+                                Image(systemName: "arrow.triangle.branch").font(.caption2)
+                                Text(m.name).font(.caption.bold())
+                                Text(m.diff.isEmpty ? "no changes" : m.branch)
+                                    .font(.caption2).foregroundStyle(palette.mutedForeground)
+                            }
+                            .padding(.horizontal, 9).padding(.vertical, 5)
+                            .background(palette.secondary.opacity(0.5), in: Capsule())
+                        }
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+                }
+            }
+            DiffReviewView(model: model, palette: palette)
+                .padding(10)
+        }
+        .frame(minWidth: 560, minHeight: 460)
+        .background(palette.background)
     }
 }
 

@@ -37,6 +37,7 @@ const (
 	TypeWorktreeRemove     = "worktree.remove"     // stop a worktree session + remove its worktree
 	TypeWorktreePR         = "worktree.pr"         // commit + push + open a PR for a worktree session
 	TypeWorktreeConflicts  = "worktree.conflicts"  // files this worktree shares with other active worktrees
+	TypeWorkspaceDiff      = "workspace.diff"      // per-member diff for a cross-repo workspace session
 	TypeIntegrationConnect = "integration.connect" // connect a tracker (Linear/Jira) with a token
 	TypeIntegrationStatus  = "integration.status"  // which trackers are connected
 	TypeIntegrationOAuth   = "integration.oauth"   // begin an OAuth flow; returns an authorize URL
@@ -165,6 +166,19 @@ type WorktreeRemove struct {
 type WorktreeDiff struct {
 	SessionID string `json:"session_id"`
 	Diff      string `json:"diff,omitempty"` // populated on the response
+}
+
+// WorkspaceDiff is the per-member diff for a cross-repo workspace session (one entry per repo,
+// each vs its own base commit). Request carries just SessionID.
+type WorkspaceDiff struct {
+	SessionID string                `json:"session_id"`
+	Members   []WorkspaceMemberDiff `json:"members,omitempty"` // populated on the response
+}
+
+type WorkspaceMemberDiff struct {
+	Name   string `json:"name"`
+	Branch string `json:"branch"`
+	Diff   string `json:"diff"`
 }
 
 type WorktreePR struct {
@@ -633,6 +647,7 @@ type Session struct {
 	Cwd           string `json:"cwd,omitempty"`            // working directory (project path or worktree)
 	WorkspaceName string `json:"workspace_name,omitempty"` // human name of a worktree workspace
 	Branch        string `json:"branch,omitempty"`         // git branch (for worktree sessions)
+	IsWorkspace   bool   `json:"is_workspace,omitempty"`   // cross-repo workspace (per-member worktrees)
 	Port          int    `json:"port,omitempty"`           // port a setup hook assigned to this worktree
 	IssueKey      string `json:"issue_key,omitempty"`      // the ticket this session works (e.g. ENG-42)
 	IssueID       string `json:"issue_id,omitempty"`

@@ -48,6 +48,22 @@ struct NewSessionView: View {
         return model.projects.first { $0.id == id }
     }
     private var canWorktree: Bool { singleSelectedProject?.isGitRepo == true }
+    /// Every selected repo is a git repo, so a multi-repo workspace (one worktree per repo) is
+    /// possible. Single-repo isolation is canWorktree; canIsolate covers both.
+    private var canIsolateMulti: Bool {
+        isMulti && selectedProjects.allSatisfy { id in model.projects.first { $0.id == id }?.isGitRepo == true }
+    }
+    private var canIsolate: Bool { canWorktree || canIsolateMulti }
+    private var isolationHelp: String {
+        if isMulti {
+            return canIsolateMulti
+                ? "Each repo checks out on a shared oculus/<name> branch under one workspace folder — the agent works across all of them, and you finish with a coordinated PR per repo."
+                : "Every selected folder must be a git repo to isolate a workspace."
+        }
+        return canWorktree
+            ? "Runs on a fresh oculus/<name> branch; changes stay isolated until you open a PR."
+            : "Select one git project to enable worktrees."
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -102,7 +118,7 @@ struct NewSessionView: View {
                     Task {
                         await model.createSession(provider: provider,
                                                   projectIDs: selectedProjects.isEmpty ? nil : Array(selectedProjects),
-                                                  worktree: useWorktree && canWorktree,
+                                                  worktree: useWorktree && canIsolate,
                                                   workspaceName: workspaceName.isEmpty ? nil : workspaceName,
                                                   plan: planFirst && provider != "pi",
                                                   autonomous: autonomous)
@@ -138,19 +154,18 @@ struct NewSessionView: View {
                     .font(.caption).foregroundStyle(palette.mutedForeground)
             }
 
-            field("Worktree") {
+            field(isMulti ? "Workspace" : "Worktree") {
                 Toggle(isOn: $useWorktree) {
-                    Text("Isolate in a fresh git worktree").font(.system(size: 13))
+                    Text(isMulti ? "Isolate each repo in its own worktree" : "Isolate in a fresh git worktree")
+                        .font(.system(size: 13))
                 }
                 .toggleStyle(.switch).tint(palette.primary)
-                .disabled(!canWorktree)
-                if useWorktree {
-                    TextField("Workspace name (branch)", text: $workspaceName)
+                .disabled(!canIsolate)
+                if useWorktree && canIsolate {
+                    TextField(isMulti ? "Workspace name (shared branch)" : "Workspace name (branch)", text: $workspaceName)
                         .textFieldStyle(.roundedBorder)
                 }
-                Text(canWorktree
-                     ? "Runs on a fresh oculus/<name> branch; changes stay isolated until you open a PR."
-                     : "Select one git project to enable worktrees.")
+                Text(isolationHelp)
                     .font(.caption).foregroundStyle(palette.mutedForeground)
             }
 

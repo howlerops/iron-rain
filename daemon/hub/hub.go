@@ -107,9 +107,13 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 		return nil, fmt.Errorf("unknown provider: %s", req.Provider)
 	}
 	cwd := req.Cwd
-	// Multi-root workspace: run in the common ancestor of the selected repos so the agent can
-	// work across all of them (a "multi-repo update"). One selection falls through to the
-	// normal single-project path; a parent dir can't be a git worktree, so worktree is off.
+	// isolate is the user's worktree/isolation intent, captured before the multi-repo branch
+	// clears req.Worktree (a shared multi-repo session can't use a single worktree).
+	isolate := req.Worktree
+	// Multi-root workspace: two paths. Isolated (isolate=true) → one git worktree per repo under a
+	// shared layout dir, so a task spans repos while each change stays on its own branch for a
+	// coordinated multi-PR finish. Shared (isolate=false) → run in the common ancestor in place.
+	// One selection falls through to the normal single-project path.
 	multiRepo := false
 	if len(req.ProjectIDs) == 1 && req.ProjectID == "" {
 		req.ProjectID = req.ProjectIDs[0]
@@ -127,15 +131,29 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 		if len(paths) < 2 {
 			return nil, fmt.Errorf("multi-repo needs at least 2 valid projects")
 		}
-		anc := commonAncestor(paths)
-		if anc == "" || anc == string(filepath.Separator) {
-			return nil, fmt.Errorf("selected repos have no shared parent directory")
-		}
-		cwd = anc
-		req.Worktree = false
+		req.Worktree = false // handled here, not by the single-repo worktree block below
 		req.ProjectID = ""
 		multiRepo = true
-		meta.workspaceName = fmt.Sprintf("%d repos", len(paths))
+		if isolate {
+			name := req.WorkspaceName
+			if name == "" {
+				name = "workspace-" + randToken()
+			}
+			layout, members, err := worktree.CreateWorkspace("", name, paths)
+			if err != nil {
+				return nil, fmt.Errorf("workspace setup failed: %w", err)
+			}
+			cwd = layout
+			meta.members = members
+			meta.workspaceName = name
+		} else {
+			anc := commonAncestor(paths)
+			if anc == "" || anc == string(filepath.Separator) {
+				return nil, fmt.Errorf("selected repos have no shared parent directory")
+			}
+			cwd = anc
+			meta.workspaceName = fmt.Sprintf("%d repos", len(paths))
+		}
 	}
 	if req.ProjectID != "" {
 		reg := h.projectRegistry()
@@ -718,6 +736,7 @@ func asyncDispatch(typ string) bool {
 		protocol.TypeWorktreeRemove,     // provider Stop/Close + git remove/prune
 		protocol.TypeWorktreePR,         // git CommitAll/Push/CreatePR
 		protocol.TypeWorktreeConflicts,  // git per-worktree ChangedFiles
+		protocol.TypeWorkspaceDiff,      // git diff per workspace member
 		protocol.TypeIntegrationConnect, // tracker HTTP
 		protocol.TypeIntegrationOAuth,   // tracker HTTP
 		protocol.TypeIssueStates,        // tracker HTTP
@@ -902,21 +921,52 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		}
 		h.sendOK(conn, env.ID, protocol.WorktreeDiff{SessionID: req.SessionID, Diff: diff})
 
+	case protocol.TypeWorkspaceDiff:
+		var req protocol.WorkspaceDiff
+		_ = env.Unmarshal(&req)
+		m := h.managed(req.SessionID)
+		if m == nil || len(m.meta.members) == 0 {
+			h.sendErr(conn, env.ID, "not a workspace session")
+			return
+		}
+		members := m.meta.members
+		out := make([]protocol.WorkspaceMemberDiff, 0, len(members))
+		for _, mem := range members {
+			diff, err := worktree.Diff(ctx, mem.Path, mem.BaseCommit)
+			if err != nil {
+				h.sendErr(conn, env.ID, err.Error())
+				return
+			}
+			out = append(out, protocol.WorkspaceMemberDiff{Name: mem.Name, Branch: mem.Branch, Diff: diff})
+		}
+		h.sendOK(conn, env.ID, protocol.WorkspaceDiff{SessionID: req.SessionID, Members: out})
+
 	case protocol.TypeWorktreeRemove:
 		var req protocol.WorktreeRemove
 		_ = env.Unmarshal(&req)
 		m := h.managed(req.SessionID)
-		if m == nil || m.meta.worktreePath == "" {
+		if m == nil || (m.meta.worktreePath == "" && len(m.meta.members) == 0) {
 			h.sendErr(conn, env.ID, "not a worktree session")
 			return
 		}
 		_ = m.sess.Stop(ctx)
 		_ = m.sess.Close()
-		if err := worktree.Remove(m.meta.repoRoot, m.meta.worktreePath, req.Force); err != nil {
-			h.sendErr(conn, env.ID, err.Error())
-			return
+		if len(m.meta.members) > 0 {
+			// Cross-repo workspace: tear down every member worktree + the layout dir.
+			if err := worktree.RemoveWorkspace(m.meta.cwd, m.meta.members, req.Force); err != nil {
+				h.sendErr(conn, env.ID, err.Error())
+				return
+			}
+			for _, mem := range m.meta.members {
+				_ = worktree.Prune(mem.RepoRoot)
+			}
+		} else {
+			if err := worktree.Remove(m.meta.repoRoot, m.meta.worktreePath, req.Force); err != nil {
+				h.sendErr(conn, env.ID, err.Error())
+				return
+			}
+			_ = worktree.Prune(m.meta.repoRoot)
 		}
-		_ = worktree.Prune(m.meta.repoRoot)
 		h.releasePort(m.meta.port) // return the worktree's reserved port to the pool
 		h.removeSession(req.SessionID)
 		h.sendOK(conn, env.ID, protocol.SessionRef{SessionID: req.SessionID})
@@ -1575,6 +1625,15 @@ func (h *Hub) sessionRoots(sessionID string) []string {
 	if m == nil || m.meta.cwd == "" {
 		return nil
 	}
+	if len(m.meta.members) > 0 {
+		// A cross-repo workspace: the file tree spans each member repo's worktree (the layout dir
+		// itself is just a container). Return them so the editor scopes to the actual checkouts.
+		roots := make([]string, 0, len(m.meta.members))
+		for _, mem := range m.meta.members {
+			roots = append(roots, mem.Path)
+		}
+		return roots
+	}
 	return []string{m.meta.cwd}
 }
 
@@ -1590,6 +1649,9 @@ func (h *Hub) fsGuard() *fsaccess.Guard {
 		}
 		if m.meta.repoRoot != "" {
 			roots = append(roots, m.meta.repoRoot)
+		}
+		for _, mem := range m.meta.members { // cross-repo workspace member checkouts
+			roots = append(roots, mem.Path)
 		}
 	}
 	h.mu.Unlock()

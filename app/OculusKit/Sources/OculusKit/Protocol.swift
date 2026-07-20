@@ -19,6 +19,7 @@ public enum MessageType {
     public static let projectAdd = "project.add"
     public static let projectRemove = "project.remove"
     public static let worktreeDiff = "worktree.diff"
+    public static let workspaceDiff = "workspace.diff"
     public static let worktreeRemove = "worktree.remove"
     public static let worktreePR = "worktree.pr"
     public static let worktreeConflicts = "worktree.conflicts"
@@ -398,6 +399,7 @@ public struct Session: Codable, Identifiable {
     public var cwd: String?
     public var workspaceName: String?
     public var branch: String?
+    public var isWorkspace: Bool?
     public var port: Int?
     public var issueKey: String?
     public var issueID: String?
@@ -409,6 +411,7 @@ public struct Session: Codable, Identifiable {
         case id, provider, status, title, name, cwd, branch, port
         case projectID = "project_id"
         case workspaceName = "workspace_name"
+        case isWorkspace = "is_workspace"
         case issueKey = "issue_key"
         case issueID = "issue_id"
         case updatedAt = "updated_at"
@@ -553,6 +556,18 @@ public struct WorktreeDiff: Codable {
     public var sessionID: String; public var diff: String?
     public init(sessionID: String, diff: String? = nil) { self.sessionID = sessionID; self.diff = diff }
     enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case diff }
+}
+public struct WorkspaceMemberDiff: Codable, Identifiable, Hashable {
+    public var id: String { name }
+    public var name: String
+    public var branch: String
+    public var diff: String
+}
+public struct WorkspaceDiff: Codable {
+    public var sessionID: String
+    public var members: [WorkspaceMemberDiff]?
+    public init(sessionID: String, members: [WorkspaceMemberDiff]? = nil) { self.sessionID = sessionID; self.members = members }
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case members }
 }
 public struct WorktreePR: Codable {
     public var sessionID: String; public var title: String; public var body: String?

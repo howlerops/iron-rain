@@ -9,6 +9,7 @@ import (
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/store"
+	"github.com/howlerops/oculus/daemon/worktree"
 )
 
 // persistedMeta is the JSON-serializable snapshot of sessionMeta stored in the DB so a
@@ -16,24 +17,25 @@ import (
 // daemon restart. The user-set label is NOT stored here — the session_names table owns it,
 // so a rename has a single source of truth (addSession re-applies it on restore).
 type persistedMeta struct {
-	ProjectID     string `json:"project_id,omitempty"`
-	Cwd           string `json:"cwd,omitempty"`
-	WorkspaceName string `json:"workspace_name,omitempty"`
-	Branch        string `json:"branch,omitempty"`
-	WorktreePath  string `json:"worktree_path,omitempty"`
-	BaseCommit    string `json:"base_commit,omitempty"`
-	RepoRoot      string `json:"repo_root,omitempty"`
-	Port          int    `json:"port,omitempty"`
-	IssueID       string `json:"issue_id,omitempty"`
-	IssueKey      string `json:"issue_key,omitempty"`
-	IssueProvider string `json:"issue_provider,omitempty"`
+	ProjectID     string            `json:"project_id,omitempty"`
+	Cwd           string            `json:"cwd,omitempty"`
+	WorkspaceName string            `json:"workspace_name,omitempty"`
+	Branch        string            `json:"branch,omitempty"`
+	WorktreePath  string            `json:"worktree_path,omitempty"`
+	BaseCommit    string            `json:"base_commit,omitempty"`
+	RepoRoot      string            `json:"repo_root,omitempty"`
+	Port          int               `json:"port,omitempty"`
+	IssueID       string            `json:"issue_id,omitempty"`
+	IssueKey      string            `json:"issue_key,omitempty"`
+	IssueProvider string            `json:"issue_provider,omitempty"`
+	Members       []worktree.Member `json:"members,omitempty"`
 }
 
 func metaToPersisted(m sessionMeta) persistedMeta {
 	return persistedMeta{
 		ProjectID: m.projectID, Cwd: m.cwd, WorkspaceName: m.workspaceName, Branch: m.branch,
 		WorktreePath: m.worktreePath, BaseCommit: m.baseCommit, RepoRoot: m.repoRoot, Port: m.port,
-		IssueID: m.issueID, IssueKey: m.issueKey, IssueProvider: m.issueProvider,
+		IssueID: m.issueID, IssueKey: m.issueKey, IssueProvider: m.issueProvider, Members: m.members,
 	}
 }
 
@@ -41,7 +43,7 @@ func (pm persistedMeta) toMeta() sessionMeta {
 	return sessionMeta{
 		projectID: pm.ProjectID, cwd: pm.Cwd, workspaceName: pm.WorkspaceName, branch: pm.Branch,
 		worktreePath: pm.WorktreePath, baseCommit: pm.BaseCommit, repoRoot: pm.RepoRoot, port: pm.Port,
-		issueID: pm.IssueID, issueKey: pm.IssueKey, issueProvider: pm.IssueProvider,
+		issueID: pm.IssueID, issueKey: pm.IssueKey, issueProvider: pm.IssueProvider, members: pm.Members,
 	}
 }
 

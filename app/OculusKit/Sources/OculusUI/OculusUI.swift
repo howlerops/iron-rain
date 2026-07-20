@@ -57,6 +57,7 @@ public final class Model: ObservableObject {
     @Published public var projects: [Project] = []
     @Published public var sessions: [Session] = [] // hub-managed sessions (for sidebar grouping)
     @Published public var lastDiff: String? // populated by worktreeDiff()
+    @Published public var workspaceDiffs: [WorkspaceMemberDiff] = [] // per-repo diffs (workspace sessions)
     @Published public var conflicts: [FileConflict] = [] // files shared with other worktrees
     @Published public var pendingImages: [ImageAttachment] = [] // attached, sent with the next prompt
 
@@ -616,6 +617,18 @@ public final class Model: ObservableObject {
         guard let client, let sid = sessionID else { return }
         if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.worktreeDiff, payload: WorktreeDiff(sessionID: sid)) {
             try? await client.send(env)
+        }
+    }
+
+    /// Fetches the per-member diff for a cross-repo workspace session. Populates workspaceDiffs
+    /// and also concatenates them into lastDiff so the existing diff review UI renders every repo.
+    public func workspaceDiff() async {
+        guard client != nil, let sid = sessionID else { return }
+        if let resp = try? await request(MessageType.workspaceDiff, payload: WorkspaceDiff(sessionID: sid)),
+           let wd = try? resp.payload(as: WorkspaceDiff.self) {
+            let members = wd.members ?? []
+            workspaceDiffs = members
+            lastDiff = members.map(\.diff).filter { !$0.isEmpty }.joined(separator: "\n")
         }
     }
 
