@@ -55,6 +55,7 @@ const (
 	TypeFSDiff      = "fs.diff"      // unified git diff for a path or session (review)
 	TypeFSWatch     = "fs.watch"     // subscribe to change events for open files
 	TypeFSSearch    = "fs.search"    // multi-file text search across the workspace
+	TypeRunTest     = "run.test"     // run the project's tests/build in a session's workspace
 
 	// LSP (built-in editor: diagnostics/linting/types/definition)
 	TypeLSPOpen        = "lsp.open"        // open a document in its language server
@@ -81,6 +82,8 @@ const (
 	TypeFSChange         = "fs.change"         // a watched file changed on disk
 	TypeSessionUsage     = "session.usage"     // token/cost usage for a session (event)
 	TypeSessionTodos     = "session.todos"     // the agent's live to-do list (event)
+	TypeRunOutput        = "run.output"        // streamed line from a test/build run (event)
+	TypeRunResult        = "run.result"        // final pass/fail of a test/build run (event)
 
 	// responses
 	TypeOK    = "ok"
@@ -653,6 +656,27 @@ type Todo struct {
 type SessionTodos struct {
 	SessionID string `json:"session_id"`
 	Todos     []Todo `json:"todos"`
+}
+
+// RunTest requests a test/build run in a session's workspace. Command is optional (the daemon
+// auto-detects one from the project type when empty).
+type RunTest struct {
+	SessionID string `json:"session_id"`
+	Command   string `json:"command,omitempty"`
+}
+
+// RunOutput is one streamed line of a test/build run (event).
+type RunOutput struct {
+	SessionID string `json:"session_id"`
+	Line      string `json:"line"`
+}
+
+// RunResult is the final outcome of a test/build run (event).
+type RunResult struct {
+	SessionID string `json:"session_id"`
+	Command   string `json:"command"`
+	OK        bool   `json:"ok"`
+	ExitCode  int    `json:"exit_code"`
 }
 
 type SessionList struct {

@@ -28,6 +28,10 @@ public struct ChatView: View {
             } else {
                 transcript
             }
+            if model.showTests {
+                TestResultPanel(model: model, palette: palette)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
             if let ap = model.pendingApproval {
                 ApprovalCard(approval: ap, palette: palette,
                              onAllow: { Task { await model.respond(Decision.allow) } },
@@ -51,6 +55,14 @@ public struct ChatView: View {
         .toolbar {
             if let s = model.currentSession, (s.costUSD ?? 0) > 0 || (s.inputTokens ?? 0) > 0 {
                 ToolbarItem(placement: .automatic) { UsageChip(session: s, palette: palette) }
+            }
+            if model.sessionID != nil {
+                ToolbarItem(placement: .automatic) {
+                    Button { Task { await model.runTests() } } label: {
+                        Label("Run tests", systemImage: "checkmark.seal")
+                    }
+                    .disabled(model.testRunning)
+                }
             }
             if isWorktreeSession {
                 ToolbarItem(placement: .primaryAction) {
@@ -336,5 +348,60 @@ struct UsageChip: View {
         let t = (session.inputTokens ?? 0) + (session.outputTokens ?? 0)
         guard t > 0 else { return nil }
         return t >= 1000 ? String(format: "%.1fk", Double(t) / 1000) : "\(t)"
+    }
+}
+
+/// Streams a test/build run's output with a pass/fail header; a failure can be handed to the
+/// agent to fix in one tap.
+struct TestResultPanel: View {
+    @ObservedObject var model: Model
+    let palette: OculusPalette
+
+    private var passed: Bool? { model.testResult.map { $0.ok } }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                if model.testRunning {
+                    ProgressView().controlSize(.small)
+                    Text("Running tests…").font(.caption.bold())
+                } else if let r = model.testResult {
+                    Image(systemName: r.ok ? "checkmark.seal.fill" : "xmark.octagon.fill")
+                        .foregroundStyle(r.ok ? Color(hex: 0x2EA043) : Color(hex: 0xF85149))
+                    Text(r.ok ? "Tests passed" : "Tests failed (exit \(r.exitCode))").font(.caption.bold())
+                        .foregroundStyle(r.ok ? Color(hex: 0x2EA043) : Color(hex: 0xF85149))
+                }
+                Spacer()
+                if let r = model.testResult, !r.ok {
+                    Button {
+                        Task { await model.send("The tests are failing (`\(r.command)`). Please investigate and fix them.") }
+                    } label: { Label("Fix with agent", systemImage: "wand.and.stars").font(.caption) }
+                        .buttonStyle(.plain).foregroundStyle(palette.primary)
+                }
+                Button { model.showTests = false } label: { Image(systemName: "xmark").font(.caption2) }
+                    .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 7)
+            Divider().overlay(palette.border)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(model.testOutput.enumerated()), id: \.offset) { _, line in
+                            Text(line).font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(palette.foreground.opacity(0.9))
+                                .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+                        }
+                        Color.clear.frame(height: 1).id("end")
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                }
+                .onChange(of: model.testOutput.count) { _ in proxy.scrollTo("end", anchor: .bottom) }
+            }
+            .frame(maxHeight: 180)
+        }
+        .background(palette.input)
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke((passed == false ? Color(hex: 0xF85149) : palette.border).opacity(0.5)))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .padding(.horizontal, 12).padding(.bottom, 6)
     }
 }

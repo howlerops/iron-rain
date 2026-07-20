@@ -61,6 +61,9 @@ public enum MessageType {
 
     public static let sessionUsage = "session.usage"
     public static let sessionTodos = "session.todos"
+    public static let runTest = "run.test"
+    public static let runOutput = "run.output"
+    public static let runResult = "run.result"
     public static let sessionStatus = "session.status"
     public static let sessionMessage = "session.message"
     public static let thinking = "thinking.delta"
@@ -431,6 +434,24 @@ public struct SessionTodos: Codable {
     public var sessionID: String
     public var todos: [Todo]
     enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case todos }
+}
+public struct RunTest: Codable {
+    public var sessionID: String
+    public var command: String?
+    public init(sessionID: String, command: String? = nil) { self.sessionID = sessionID; self.command = command }
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case command }
+}
+public struct RunOutput: Codable {
+    public var sessionID: String
+    public var line: String
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case line }
+}
+public struct RunResult: Codable {
+    public var sessionID: String
+    public var command: String
+    public var ok: Bool
+    public var exitCode: Int
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case command; case ok; case exitCode = "exit_code" }
 }
 
 // Projects — registered folders sessions can be spawned in.

@@ -52,6 +52,7 @@ type Hub struct {
 	reservedPorts map[int]bool             // ports handed to worktree setup hooks (collision-free)
 	db            *store.Store             // optional: durable local state (session names + records)
 	lsp           *lsp.Manager             // language servers for the built-in editor (diagnostics/types)
+	runningTests  map[string]bool          // session ids with a test/build run in progress
 
 	pushTimeout     time.Duration // per-Notify deadline for the approval push fan-out
 	pushConcurrency int           // cap on concurrent in-flight pushes
@@ -584,6 +585,18 @@ func (h *Hub) pushAgentError(sessionID, label, detail string) {
 	})
 }
 
+// pushTestsFailed notifies that a test/build run failed in a session.
+func (h *Hub) pushTestsFailed(sessionID, label, cmd string) {
+	title := "Tests failed"
+	if label != "" {
+		title = label + ": tests failed"
+	}
+	h.pushNotify(push.Notification{
+		Title: title, Body: cmd + " — tap to review", Category: "TESTS_FAILED",
+		ThreadID: sessionID, Custom: map[string]any{"session_id": sessionID},
+	})
+}
+
 // pushNotify fans a notification out to every registered device without blocking the caller.
 func (h *Hub) pushNotify(notif push.Notification) {
 	h.mu.Lock()
@@ -706,6 +719,7 @@ func asyncDispatch(typ string) bool {
 		protocol.TypeFSWrite,            // disk: file write
 		protocol.TypeFSDiff,             // git diff
 		protocol.TypeFSSearch,           // disk: multi-file search
+		protocol.TypeRunTest,            // run tests/build (subprocess)
 		protocol.TypeLSPReferences,      // language server: references
 		protocol.TypeLSPRename,          // language server: rename
 		protocol.TypeLSPSymbols,         // language server: document symbols
@@ -1382,6 +1396,12 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			return
 		}
 		h.sendOK(conn, env.ID, protocol.LSPRenameResult{Files: files, Count: len(files)})
+
+	case protocol.TypeRunTest:
+		var req protocol.RunTest
+		_ = env.Unmarshal(&req)
+		h.sendOK(conn, env.ID, nil) // ack; results stream as run.output / run.result events
+		go h.runTest(req.SessionID, req.Command)
 
 	case protocol.TypeFSSearch:
 		var req protocol.FSSearchReq

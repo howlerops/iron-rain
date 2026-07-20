@@ -38,6 +38,11 @@ public final class Model: ObservableObject {
     @Published public var diagnostics: [String: [LSPDiagnostic]] = [:]
     /// The active session's live to-do list (from the agent).
     @Published public var todos: [Todo] = []
+    /// Test/build run output + outcome for the active session.
+    @Published public var testOutput: [String] = []
+    @Published public var testResult: RunResult?
+    @Published public var testRunning = false
+    @Published public var showTests = false
 
     // Projects + worktrees.
     @Published public var projects: [Project] = []
@@ -399,6 +404,7 @@ public final class Model: ObservableObject {
         busy = false
         lastDiff = nil
         todos = []
+        testOutput = []; testResult = nil; testRunning = false; showTests = false
     }
 
     /// Starts a fresh session with explicit options (provider, one or more project folders,
@@ -436,6 +442,20 @@ public final class Model: ObservableObject {
             try await client.send(env)
         } catch {
             status = "Create failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Runs the session's tests/build (daemon auto-detects the command, or pass one). Output
+    /// streams into testOutput; the outcome lands in testResult.
+    public func runTests(command: String? = nil) async {
+        guard let client, let sid = sessionID else { return }
+        testOutput = []
+        testResult = nil
+        testRunning = true
+        showTests = true
+        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.runTest,
+                                          payload: RunTest(sessionID: sid, command: command)) {
+            try? await client.send(env)
         }
     }
 
@@ -1037,6 +1057,16 @@ public final class Model: ObservableObject {
                 case MessageType.sessionTodos: // the agent's live to-do list (replaces the prior list)
                     if let t = try? env.payload(as: SessionTodos.self), t.sessionID == sessionID {
                         todos = t.todos
+                    }
+                case MessageType.runOutput: // streamed line from a test/build run
+                    if let o = try? env.payload(as: RunOutput.self), o.sessionID == sessionID {
+                        testOutput.append(o.line)
+                        if testOutput.count > 2000 { testOutput.removeFirst(testOutput.count - 2000) }
+                    }
+                case MessageType.runResult: // test/build run finished
+                    if let r = try? env.payload(as: RunResult.self), r.sessionID == sessionID {
+                        testResult = r
+                        testRunning = false
                     }
                 case MessageType.error:
                     if let e = try? env.payload(as: ProtocolError.self) {
