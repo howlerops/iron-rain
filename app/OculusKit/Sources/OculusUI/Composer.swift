@@ -17,6 +17,7 @@ struct Composer: View {
     let palette: OculusPalette
 
     @StateObject private var dictator = SpeechDictator()
+    @StateObject private var voice = VoiceController()
     @FocusState private var focused: Bool
     /// Decoded thumbnails, memoized by each attachment's base64 payload so the
     /// image is decoded once (not on every keystroke that re-evaluates `body`).
@@ -45,8 +46,12 @@ struct Composer: View {
                 HStack(spacing: 14) {
                     attachButton
                     micButton
+                    voiceButton
                     if dictator.isRecording {
                         Text("Listening…").font(.caption).foregroundStyle(palette.primary)
+                    } else if voice.active {
+                        Text(voice.speaking ? "Speaking…" : (voice.listening ? "Listening…" : "Voice mode"))
+                            .font(.caption).foregroundStyle(palette.primary)
                     }
                     Spacer()
                     if model.busy && model.sessionID != nil { interruptButton }
@@ -63,7 +68,21 @@ struct Composer: View {
         .onChange(of: dictator.transcript) { newValue in
             if dictator.isRecording { draft = newValue }
         }
-        .onAppear { refreshThumbs() }
+        // Voice mode: a finished turn (busy → false) → speak the agent's reply, which then resumes
+        // listening. Wire the send closure once the view appears.
+        .onChange(of: model.busy) { nowBusy in
+            if voice.active && !nowBusy {
+                voice.speak(model.messages.last(where: { $0.role == .assistant })?.text ?? "")
+            }
+        }
+        .onAppear {
+            refreshThumbs()
+            voice.onUtterance = { text in
+                guard !text.isEmpty else { return }
+                Task { await model.send(text) }
+            }
+        }
+        .onDisappear { voice.stop() }
         .onChange(of: model.pendingImages) { _ in refreshThumbs() }
         #if os(macOS)
         .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.image]) { result in
@@ -198,6 +217,22 @@ struct Composer: View {
                 .foregroundStyle(dictator.isRecording ? palette.primary : palette.mutedForeground)
         }
         .buttonStyle(.plain)
+    }
+
+    // Hands-free voice mode: speak your prompt, it auto-sends on a pause, and the agent's reply is
+    // read back — then it listens again. Distinct from the mic (which just dictates into the field).
+    private var voiceButton: some View {
+        Button {
+            if dictator.isRecording { dictator.stop() } // don't run plain dictation + voice mode at once
+            voice.toggle()
+        } label: {
+            Image(systemName: voice.active ? "waveform.circle.fill" : "waveform.circle")
+                .font(.system(size: 17))
+                .foregroundStyle(voice.active ? palette.primary : palette.mutedForeground)
+        }
+        .buttonStyle(.plain)
+        .disabled(model.sessionID == nil)
+        .help("Voice mode — talk to the agent hands-free")
     }
 
     private var attachButton: some View {
