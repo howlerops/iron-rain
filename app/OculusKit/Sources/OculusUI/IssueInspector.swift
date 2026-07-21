@@ -291,35 +291,46 @@ struct IssueInspectorPanel: View {
         }
     }
 
+    // These mutate the real tracker (Linear/Jira). On failure, surface the reason and DON'T apply
+    // the change locally — a fake "saved" that silently vanished on refresh was worse than an error.
     private func saveTitle() async {
         let t = titleDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
         editingTitle = false
-        if let up = try? await model.updateIssue(current, title: t) { current = up } else { current.title = t }
+        do { current = try await model.updateIssue(current, title: t) }
+        catch { model.actionError = "Couldn’t update the title.\n\n\(error.localizedDescription)" }
     }
 
     private func saveBody() async {
         savingBody = true; defer { savingBody = false }
-        if let up = try? await model.updateIssue(current, description: bodyDraft) { current = up } else { current.body = bodyDraft }
         editingBody = false
+        do { current = try await model.updateIssue(current, description: bodyDraft) }
+        catch { model.actionError = "Couldn’t update the description.\n\n\(error.localizedDescription)" }
     }
 
     private func saveStatus(_ s: IssueState) async {
-        if let up = try? await model.updateIssue(current, stateID: s.id) { current = up } else { current.status = s.name }
+        do { current = try await model.updateIssue(current, stateID: s.id) }
+        catch { model.actionError = "Couldn’t change the status.\n\n\(error.localizedDescription)" }
     }
 
     private func savePriority(_ p: Int) async {
-        if let up = try? await model.updateIssue(current, priority: p) { current = up } else { current.priority = p }
+        do { current = try await model.updateIssue(current, priority: p) }
+        catch { model.actionError = "Couldn’t change the priority.\n\n\(error.localizedDescription)" }
     }
 
     private func postComment() async {
         let body = newComment.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !body.isEmpty else { return }
         postingComment = true; defer { postingComment = false }
-        guard (try? await model.addComment(current, body: body)) != nil else { return }
+        do { _ = try await model.addComment(current, body: body) }
+        catch {
+            model.actionError = "Couldn’t post the comment.\n\n\(error.localizedDescription)"
+            return
+        }
         newComment = ""
-        // Re-fetch so the new comment shows with its real id/author/timestamp (the add
-        // mutation returns only success). Falls back to an optimistic append on failure.
+        // Re-fetch so the new comment shows with its real id/author/timestamp (the add mutation
+        // returns only success). Fall back to an optimistic append only on a failed RE-FETCH — the
+        // comment did post, we just couldn't reload the thread.
         if let d = try? await model.issueDetail(issue) {
             comments = d.comments
         } else {
@@ -329,9 +340,13 @@ struct IssueInspectorPanel: View {
 
     private func saveComment(_ c: IssueComment) async {
         let body = commentDraft
-        try? await model.editComment(provider: current.provider, commentID: c.id, body: body)
-        if let i = comments.firstIndex(where: { $0.id == c.id }) { comments[i].body = body }
         editingCommentID = nil
+        do {
+            try await model.editComment(provider: current.provider, commentID: c.id, body: body)
+            if let i = comments.firstIndex(where: { $0.id == c.id }) { comments[i].body = body }
+        } catch {
+            model.actionError = "Couldn’t edit the comment.\n\n\(error.localizedDescription)"
+        }
     }
 
     // MARK: bits

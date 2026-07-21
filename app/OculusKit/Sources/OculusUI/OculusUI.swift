@@ -410,7 +410,8 @@ public final class Model: ObservableObject {
                 await deliverPrompt(sessionID: revived, text: text, images: images, allowReattach: false)
                 return
             }
-            status = "Send failed: \(error.localizedDescription)"
+            actionError = "Couldn’t send your message.\n\n\(error.localizedDescription)"
+            status = "Send failed"
             busy = false
         }
     }
@@ -469,7 +470,8 @@ public final class Model: ObservableObject {
         busy = false
         activity = nil
         finalizeStreaming()
-        status = "No response from the agent — send again to retry."
+        actionError = "No response from the agent. It may have stopped or its backend may be unreachable — send again to retry, or check the agent."
+        status = "No response"
     }
 
     /// Deletes a daemon-managed session: halts its agent (which ends the session server-side)
@@ -832,9 +834,11 @@ public final class Model: ObservableObject {
         guard client != nil, let sid = sessionID else { return }
         workspacePRRunning = true
         defer { workspacePRRunning = false }
-        if let resp = try? await request(MessageType.workspacePR, payload: WorkspacePR(sessionID: sid, title: title, body: body)),
-           let pr = try? resp.payload(as: WorkspacePR.self) {
-            workspacePRResults = pr.members ?? []
+        do {
+            let resp = try await request(MessageType.workspacePR, payload: WorkspacePR(sessionID: sid, title: title, body: body))
+            if let pr = try? resp.payload(as: WorkspacePR.self) { workspacePRResults = pr.members ?? [] }
+        } catch {
+            actionError = "Couldn’t open the workspace PRs.\n\n\(error.localizedDescription)"
         }
     }
 
@@ -1080,7 +1084,12 @@ public final class Model: ObservableObject {
                                           payload: ApprovalRespond(approvalID: ap.approvalID, decision: decision))
             try await client.send(env)
         } catch {
-            status = "Respond failed: \(error)"
+            // Restore the pending approval so the agent isn't left hanging on a decision the daemon
+            // never received, and tell the user instead of silently dropping it.
+            pendingApproval = ap
+            refreshLiveActivity()
+            actionError = "Couldn’t send your \(decision == Decision.deny ? "denial" : "approval").\n\n\(error.localizedDescription)"
+            status = "Respond failed"
         }
     }
 
@@ -1347,11 +1356,6 @@ public final class Model: ObservableObject {
                     if let r = try? env.payload(as: RunResult.self), r.sessionID == sessionID {
                         testResult = r
                         testRunning = false
-                    }
-                case MessageType.error:
-                    if let e = try? env.payload(as: ProtocolError.self) {
-                        status = "error: \(e.message)"
-                        busy = false
                     }
                 default:
                     break
