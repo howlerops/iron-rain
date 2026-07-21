@@ -457,6 +457,8 @@ struct CodeSurface: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
+                sessionContextHeader
+                Divider().overlay(palette.border)
                 Picker("", selection: $sidebarMode) {
                     Image(systemName: "folder").tag(SidebarMode.files)
                     Image(systemName: "magnifyingglass").tag(SidebarMode.search)
@@ -487,6 +489,43 @@ struct CodeSurface: View {
             Button("Rename") { let n = renameText; Task { await code.rename(to: n) } }
             Button("Cancel", role: .cancel) {}
         } message: { Text("Renames every reference across the workspace.") }
+    }
+
+    /// Shows which session's workspace the editor is scoped to — its active directory, worktree
+    /// branch, or cross-repo workspace — so the Code tab reads as "this session's files", not a
+    /// generic global browser. Falls back to a clear "all projects" hint when no session is open.
+    @ViewBuilder private var sessionContextHeader: some View {
+        let s = model.sessions.first { $0.id == sessionID }
+        HStack(spacing: 7) {
+            Image(systemName: s == nil ? "folder" : "chevron.left.forwardslash.chevron.right")
+                .font(.caption).foregroundStyle(s == nil ? palette.mutedForeground : palette.primary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(scopeTitle(s)).font(.caption.bold()).lineLimit(1)
+                Text(scopeSubtitle(s)).font(.caption2).foregroundStyle(palette.mutedForeground)
+                    .lineLimit(1).truncationMode(.middle)
+            }
+            Spacer(minLength: 0)
+            if reviewSessionID != nil {
+                Text("review").font(.caption2.bold()).foregroundStyle(palette.primary)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(palette.primary.opacity(0.15), in: Capsule())
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 7)
+        .background(palette.secondary.opacity(0.4))
+    }
+
+    private func scopeTitle(_ s: Session?) -> String {
+        guard let s else { return "All projects" }
+        return s.name ?? s.workspaceName ?? s.title ?? "Session \(s.id.prefix(6))"
+    }
+
+    private func scopeSubtitle(_ s: Session?) -> String {
+        guard let s else { return "browsing every registered project — open a session to edit its files" }
+        if s.isWorkspace == true { return "cross-repo workspace · edit any member repo" }
+        if let b = s.branch, !b.isEmpty { return "worktree · \(b)" }
+        if let cwd = s.cwd, !cwd.isEmpty { return cwd }
+        return s.provider
     }
 
     @ViewBuilder private var editorPane: some View {
