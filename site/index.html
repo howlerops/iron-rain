@@ -3,81 +3,525 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Iron Rain — drive your coding agents from anywhere</title>
+<title>Iron Rain — Approve AI agents from your iPhone</title>
 <link rel="icon" href="./icon.png" />
-<meta name="description" content="Iron Rain is a native Apple app to drive and approve claude-code and opencode sessions on your Mac from your iPhone — with git-worktree isolation and multi-desktop support." />
+<meta name="description" content="Iron Rain is a native Apple app to drive, steer, and approve AI coding-agent sessions (claude-code, opencode) running on your Mac — from your iPhone. End-to-end encrypted. Your keys. Your hardware." />
+<meta property="og:title" content="Iron Rain — Approve AI agents from your iPhone" />
+<meta property="og:description" content="Lock-screen approvals, mobile diff review, heartbeat supervision, and a built-in IDE. Your Mac, your keys, end-to-end encrypted." />
+<meta property="og:image" content="./icon.png" />
+<meta property="og:type" content="website" />
+<meta name="theme-color" content="#09090a" media="(prefers-color-scheme: dark)" />
+<meta name="theme-color" content="#fafaf7" media="(prefers-color-scheme: light)" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" />
 <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
-<header class="wrap">
-  <div class="brand"><img class="mark" src="./icon.png" alt="Iron Rain logo" /> Iron Rain</div>
+
+<!-- ─── Header ──────────────────────────────────────────────── -->
+<header class="site-header wrap">
+  <a class="brand" href="./">
+    <img class="mark" src="./icon.png" alt="Iron Rain logo" /> Iron Rain
+  </a>
   <input type="checkbox" id="navtoggle" class="navtoggle" aria-hidden="true" />
-  <label for="navtoggle" class="burger" aria-label="Menu"><span></span><span></span><span></span></label>
-  <nav><a href="#install">Install</a><a href="#features">Features</a><a href="./support.html">Support</a><a href="./privacy.html">Privacy</a></nav>
+  <label for="navtoggle" class="burger" aria-label="Menu">
+    <span></span><span></span><span></span>
+  </label>
+  <nav>
+    <a href="#features">Features</a>
+    <a href="#install">Install</a>
+    <a href="./support.html">Support</a>
+    <a href="./privacy.html">Privacy</a>
+    <a href="https://github.com/howlerops/oculus" class="nav-gh" aria-label="GitHub">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+    </a>
+  </nav>
 </header>
 
 <main>
-  <section class="hero wrap">
-    <h1>Drive your coding agents<br/>from anywhere.</h1>
-    <p class="lede">Iron Rain is a native Apple app that lets you start, steer, and approve
-      <strong>claude-code</strong> and <strong>opencode</strong> sessions running on your Mac —
-      from your iPhone, on your subscription, end-to-end encrypted.</p>
-    <div class="cta">
-      <a class="btn primary" href="./support.html#testflight">Join the TestFlight</a>
-      <a class="btn" href="https://github.com/howlerops/oculus">View on GitHub</a>
-    </div>
-  </section>
 
-  <section id="install" class="install wrap">
-    <h2>Install</h2>
-    <p class="step"><span class="num">1</span> <strong>On your Mac</strong> — one line, no dependencies:</p>
-    <pre class="cmd"><code>curl -fsSL https://howlerops.github.io/oculus/install.sh | sh</code></pre>
-    <p class="hint">Installs the Iron Rain Mac app <em>and</em> the daemon, then launches the app — it
-      auto-starts the daemon, detects opencode/claude-code/pi, and shows a pairing QR.
-      No terminal, no manual steps.</p>
-    <p class="step"><span class="num">2</span> <strong>The iOS app</strong> —
-      <a href="./support.html#testflight">join the TestFlight beta</a>, then scan the QR to pair.</p>
-  </section>
+<!-- ─── 1. Hero ──────────────────────────────────────────────── -->
+<section class="hero wrap">
+  <div class="hero-eyebrow">
+    <span class="eyebrow-dot" aria-hidden="true"></span>
+    iPhone + Mac &nbsp;·&nbsp; TestFlight Beta
+  </div>
+  <h1 class="hero-h1">
+    Approve your AI agents<br />
+    from your iPhone.<br />
+    <em>Control them from your Mac.</em>
+  </h1>
+  <p class="hero-lede">
+    Set a heartbeat budget, catch problems mid-run before they compound,
+    approve sensitive tool calls from your lock screen — all over an
+    end-to-end encrypted link to your own Mac.
+    Your code stays on your hardware. Your Claude subscription, your API keys.
+    No per-seat compute, no cloud middleman.
+  </p>
+  <div class="hero-cta">
+    <a class="btn primary" href="./support.html#testflight">Join the TestFlight</a>
+    <a class="btn ghost" href="https://github.com/howlerops/oculus">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
+      View on GitHub
+    </a>
+  </div>
+  <ul class="hero-chips" aria-label="Key capabilities">
+    <li>Lock-screen approvals</li>
+    <li>Heartbeat supervision</li>
+    <li>Mobile diff review</li>
+    <li>Built-in IDE with LSP</li>
+    <li>Cross-repo workspaces</li>
+    <li>End-to-end encrypted</li>
+  </ul>
+</section>
 
-  <section id="features" class="features wrap">
-    <div class="card">
-      <h3>Projects &amp; worktrees</h3>
-      <p>Spawn sessions in any project folder, or in an isolated <code>git worktree</code> on its own
-        branch — with per-project setup hooks that copy your <code>.env</code>, install deps, and
-        assign a port. Review the diff and open a PR when you're done.</p>
+<!-- ─── 2. The Problem ───────────────────────────────────────── -->
+<section class="problem">
+  <div class="wrap problem-inner">
+    <div class="problem-text">
+      <span class="section-eyebrow">The problem</span>
+      <h2>Autonomous agents are powerful.<br /><em>Unsupervised,</em> they're risky.</h2>
+      <p>
+        You kick off an AI coding job, step away, and come back to find it deleted
+        a table, committed a breaking change, or burned through your budget while
+        you weren't watching. Current tools either chain you to your desk
+        or give you no visibility at all once the job is running.
+      </p>
+      <p>
+        Iron Rain solves the supervision problem: it brings the entire agent loop
+        to your pocket with real controls — not just a notification that
+        something already went wrong.
+      </p>
     </div>
-    <div class="card">
-      <h3>Approve from your pocket</h3>
-      <p>Tool calls block until you approve them — with a real Allow / Deny you can answer from the
-        lock screen. Live Activities show what the agent is doing in real time.</p>
+    <div class="problem-cards">
+      <div class="problem-card">
+        <div class="pcard-icon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        </div>
+        <div>
+          <h3>Immediate control</h3>
+          <p>Pause, redirect, or kill a runaway agent before it compounds the mistake — from anywhere.</p>
+        </div>
+      </div>
+      <div class="problem-card">
+        <div class="pcard-icon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+        </div>
+        <div>
+          <h3>Explicit approval</h3>
+          <p>Every sensitive tool call — shell commands, file writes, git ops — requires your sign-off.</p>
+        </div>
+      </div>
+      <div class="problem-card">
+        <div class="pcard-icon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>
+        </div>
+        <div>
+          <h3>Spending guardrails</h3>
+          <p>Set a dollar budget. The heartbeat loop stops the agent before it overspends.</p>
+        </div>
+      </div>
     </div>
-    <div class="card">
-      <h3>Multiple Macs, grouped</h3>
-      <p>Pair every Mac you own, name them, and switch between them instantly. Your sessions stay
-        grouped by machine and project.</p>
-    </div>
-    <div class="card">
-      <h3>Your keys, your subscription</h3>
-      <p>claude-code runs on <em>your</em> Claude subscription. Traffic is end-to-end encrypted
-        between phone and Mac — Iron Rain never sees your code or your keys.</p>
-    </div>
-  </section>
+  </div>
+</section>
 
-  <section class="how wrap">
-    <h2>How it works</h2>
-    <ol>
-      <li>Run the Iron Rain daemon on your Mac (it auto-detects opencode, claude-code, and pi).</li>
-      <li>Scan the pairing QR from the iOS app.</li>
-      <li>Start a session in any project — approve tools, review worktree diffs, ship.</li>
-    </ol>
-  </section>
+<!-- ─── 3. Core Capabilities ─────────────────────────────────── -->
+<section id="features" class="caps">
+  <div class="wrap">
+    <div class="caps-header">
+      <span class="section-eyebrow">Core capabilities</span>
+      <h2>Everything you need to run agents off-desk.</h2>
+    </div>
+
+    <div class="cap-grid">
+
+      <!-- 01 Live session control -->
+      <article class="cap-card">
+        <div class="cap-body">
+          <span class="cap-num" aria-hidden="true">01</span>
+          <h3>Live session control</h3>
+          <p>
+            Watch agent output stream in real time on your iPhone.
+            Pause a session mid-thought, redirect it with a new instruction,
+            or kill it outright — all without touching your Mac.
+            Push notifications alert you when a session finishes, errors, or needs input.
+          </p>
+        </div>
+        <figure class="cap-media" aria-label="Demo placeholder: live session control">
+          <div class="media-placeholder">
+            <span class="media-label">&#9654; demo: live session control</span>
+          </div>
+          <figcaption>Session stream with pause · redirect · kill controls</figcaption>
+        </figure>
+      </article>
+
+      <!-- 02 Lock-screen approvals -->
+      <article class="cap-card cap-card--highlight">
+        <div class="cap-body">
+          <span class="cap-num" aria-hidden="true">02</span>
+          <h3>Approve from your lock screen</h3>
+          <p>
+            When an agent needs to run a shell command, write a file, or push a commit,
+            a Live Activity appears on your lock screen.
+            Tap <strong>Allow</strong> or <strong>Deny</strong> — no unlock needed.
+            The agent waits, then continues from exactly where it stopped.
+          </p>
+        </div>
+        <figure class="cap-media" aria-label="Demo placeholder: lock-screen approval">
+          <div class="media-placeholder">
+            <span class="media-label">&#9654; demo: lock-screen approval</span>
+          </div>
+          <figcaption>Live Activity approval on iOS lock screen</figcaption>
+        </figure>
+      </article>
+
+      <!-- 03 Mobile diff review -->
+      <article class="cap-card">
+        <div class="cap-body">
+          <span class="cap-num" aria-hidden="true">03</span>
+          <h3>Review diffs. Comment to steer.</h3>
+          <p>
+            Open the agent's git diff in a native diff renderer on your phone.
+            Leave a comment on any line — your comment becomes a prompt the agent
+            acts on immediately. Correct a mistake or redirect an approach
+            without opening a terminal or pulling up your laptop.
+          </p>
+        </div>
+        <figure class="cap-media" aria-label="Demo placeholder: diff review with comment-to-prompt">
+          <div class="media-placeholder">
+            <span class="media-label">&#9654; demo: diff review + comment-to-prompt</span>
+          </div>
+          <figcaption>Native diff view with inline comment → agent prompt</figcaption>
+        </figure>
+      </article>
+
+      <!-- 04 Heartbeat + budgets -->
+      <article class="cap-card">
+        <div class="cap-body">
+          <span class="cap-num" aria-hidden="true">04</span>
+          <h3>Autonomous heartbeat + cost budgets</h3>
+          <p>
+            Let an agent run a long job completely unattended.
+            The heartbeat loop keeps it going until the task is done, with configurable
+            nudge caps and a dollar budget so it never runs away.
+            Before context fills, the agent checkpoints its own progress and
+            hands off cleanly to the next pass — no lost work.
+          </p>
+        </div>
+        <figure class="cap-media" aria-label="Demo placeholder: heartbeat supervision">
+          <div class="media-placeholder">
+            <span class="media-label">&#9654; demo: heartbeat supervision + budget meter</span>
+          </div>
+          <figcaption>Cost meter, token usage, and heartbeat progress tracker</figcaption>
+        </figure>
+      </article>
+
+      <!-- 05 Cross-repo workspaces -->
+      <article class="cap-card">
+        <div class="cap-body">
+          <span class="cap-num" aria-hidden="true">05</span>
+          <h3>Cross-repo workspaces</h3>
+          <p>
+            Tackle a task that spans multiple repositories in one coordinated job.
+            Each repo gets its own isolated git worktree and branch.
+            Per-project setup hooks copy your <code>.env</code>, install deps, and assign a port.
+            Ship the work as a coordinated set of PRs — one task, multiple repos, one flow.
+          </p>
+        </div>
+        <figure class="cap-media" aria-label="Demo placeholder: cross-repo workspace">
+          <div class="media-placeholder">
+            <span class="media-label">&#9654; demo: cross-repo workspace</span>
+          </div>
+          <figcaption>Multi-repo workspace with parallel git worktrees</figcaption>
+        </figure>
+      </article>
+
+      <!-- 06 Plan mode + cost meters -->
+      <article class="cap-card">
+        <div class="cap-body">
+          <span class="cap-num" aria-hidden="true">06</span>
+          <h3>Plan mode, cost meters &amp; live to-do</h3>
+          <p>
+            Switch an agent into plan mode: it proposes what it intends to do,
+            you approve the plan before it touches a single file.
+            Live cost and token meters let you track spend in real time.
+            A live to-do list shows which tasks are in flight and which are done —
+            so you're never guessing what the agent is actually up to.
+          </p>
+        </div>
+        <figure class="cap-media" aria-label="Demo placeholder: plan mode and to-do list">
+          <div class="media-placeholder">
+            <span class="media-label">&#9654; demo: plan mode + live to-do</span>
+          </div>
+          <figcaption>Plan approval, cost meter, and live task checklist</figcaption>
+        </figure>
+      </article>
+
+    </div><!-- /cap-grid -->
+  </div>
+</section>
+
+<!-- ─── 4. Built-in IDE ──────────────────────────────────────── -->
+<section class="ide">
+  <div class="wrap ide-inner">
+    <div class="ide-text">
+      <span class="section-eyebrow">Built-in IDE</span>
+      <h2>Inspect and edit code without leaving the app.</h2>
+      <p>
+        Iron Rain ships a native code editor with full LSP support —
+        diagnostics, hover documentation, and go-to-definition,
+        powered by the same language servers running on your Mac.
+        A native diff renderer lets you review changes with the precision
+        of a desktop IDE.
+      </p>
+      <p>
+        Most mobile agent tools give you a log tail and a text field.
+        Iron Rain gives you a real editor, connected to the real language server,
+        showing real compiler errors in real time.
+        It's the part of the stack nobody else in the mobile-agent space has built.
+      </p>
+      <ul class="ide-checklist" aria-label="IDE feature list">
+        <li>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+          Inline diagnostics (errors &amp; warnings) from the language server
+        </li>
+        <li>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+          Hover documentation &amp; go-to-definition across files
+        </li>
+        <li>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+          Native diff renderer with syntax highlighting
+        </li>
+        <li>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+          Inline image preview for agent-generated assets
+        </li>
+        <li>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+          sourcekit-lsp &nbsp;·&nbsp; pyright &nbsp;·&nbsp; rust-analyzer &nbsp;·&nbsp; clangd
+        </li>
+      </ul>
+    </div>
+    <figure class="ide-media" aria-label="IDE screenshot placeholder">
+      <div class="media-placeholder media-placeholder--tall">
+        <span class="media-label">&#9654; screenshot: built-in IDE with LSP</span>
+      </div>
+      <figcaption>Native code editor with live diagnostics, hover docs, and diff view</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ─── 5. Why Iron Rain ─────────────────────────────────────── -->
+<section class="why">
+  <div class="wrap">
+    <div class="why-header">
+      <span class="section-eyebrow">Why Iron Rain</span>
+      <h2>Built for developers who work away from their desk.</h2>
+      <p class="why-sub">
+        Cloud SaaS agents and desktop IDE plugins both leave a gap.
+        Iron Rain closes it.
+      </p>
+    </div>
+
+    <div class="compare-wrap" role="region" aria-label="Feature comparison" tabindex="0">
+      <table class="compare-table">
+        <thead>
+          <tr>
+            <th scope="col">Capability</th>
+            <th scope="col" class="col-ir">Iron Rain</th>
+            <th scope="col">Cloud SaaS agents</th>
+            <th scope="col">Desk-only IDE plugins</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Approve tool calls from iPhone lock screen</td>
+            <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
+            <td><span class="cmp-no">—</span></td>
+            <td><span class="cmp-no">—</span></td>
+          </tr>
+          <tr>
+            <td>Runs on your Mac, not cloud compute</td>
+            <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
+            <td><span class="cmp-no">—</span></td>
+            <td><span class="cmp-yes">&#10003;</span></td>
+          </tr>
+          <tr>
+            <td>Your Claude subscription / API keys</td>
+            <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
+            <td><span class="cmp-no">—</span></td>
+            <td><span class="cmp-yes">&#10003;</span></td>
+          </tr>
+          <tr>
+            <td>End-to-end encrypted phone↔Mac link</td>
+            <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
+            <td><span class="cmp-dim">n/a</span></td>
+            <td><span class="cmp-dim">local only</span></td>
+          </tr>
+          <tr>
+            <td>Mid-run steering &amp; redirect from phone</td>
+            <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
+            <td><span class="cmp-no">—</span></td>
+            <td><span class="cmp-no">—</span></td>
+          </tr>
+          <tr>
+            <td>Mobile diff review with comment-to-prompt</td>
+            <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
+            <td><span class="cmp-no">—</span></td>
+            <td><span class="cmp-no">—</span></td>
+          </tr>
+          <tr>
+            <td>Heartbeat supervision + dollar budget</td>
+            <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
+            <td><span class="cmp-dim">varies</span></td>
+            <td><span class="cmp-no">—</span></td>
+          </tr>
+          <tr>
+            <td>Built-in native code editor with LSP</td>
+            <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
+            <td><span class="cmp-no">—</span></td>
+            <td><span class="cmp-yes">&#10003;</span></td>
+          </tr>
+          <tr>
+            <td>Cross-repo workspaces + git worktrees</td>
+            <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
+            <td><span class="cmp-dim">varies</span></td>
+            <td><span class="cmp-no">—</span></td>
+          </tr>
+          <tr>
+            <td>No per-seat cloud compute cost</td>
+            <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
+            <td><span class="cmp-no">—</span></td>
+            <td><span class="cmp-yes">&#10003;</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="compare-note">
+      Comparisons above reflect general categories of tooling, not specific companies.
+      Iron Rain works with claude-code, opencode, and pi.
+    </p>
+  </div>
+</section>
+
+<!-- ─── 6. Security & Trust ──────────────────────────────────── -->
+<section class="trust">
+  <div class="wrap">
+    <div class="trust-header">
+      <span class="section-eyebrow">Security &amp; trust</span>
+      <h2>Your code never leaves your Mac.</h2>
+      <p class="trust-sub">
+        Iron Rain is designed to be private by construction.
+        We cannot see your code, your prompts, or your keys —
+        because none of it ever reaches our servers.
+      </p>
+    </div>
+    <div class="trust-grid">
+      <div class="trust-card">
+        <div class="trust-icon" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        </div>
+        <h3>End-to-end encrypted</h3>
+        <p>The iOS app and Mac daemon negotiate encryption keys during pairing.
+        All session data is encrypted in transit — Iron Rain's relay, if used,
+        sees only opaque ciphertext.</p>
+      </div>
+      <div class="trust-card">
+        <div class="trust-icon" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+        </div>
+        <h3>Runs on your hardware</h3>
+        <p>The coding agent runs on your Mac, in your environment,
+        using your filesystem. No cloud sandbox, no third-party compute
+        ever sees your source code.</p>
+      </div>
+      <div class="trust-card">
+        <div class="trust-icon" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="8" r="5"/><path d="M3 21a9 9 0 0118 0"/></svg>
+        </div>
+        <h3>Your subscription, your keys</h3>
+        <p>claude-code runs on your existing Claude subscription.
+        API keys, if needed for headless use, live on your Mac only —
+        never on our servers.</p>
+      </div>
+      <div class="trust-card">
+        <div class="trust-icon" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        </div>
+        <h3>No analytics, no tracking</h3>
+        <p>Iron Rain has no analytics, no ads, and no third-party trackers.
+        Read the <a href="./privacy.html">full privacy policy</a> —
+        it's short and plain-English.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── 7. Install ───────────────────────────────────────────── -->
+<section id="install" class="install">
+  <div class="wrap">
+    <div class="install-header">
+      <span class="section-eyebrow">Get started</span>
+      <h2>Up and running in two steps.</h2>
+      <p class="install-sub">No configuration files, no dependency wrangling.
+      The installer handles everything.</p>
+    </div>
+
+    <div class="install-steps">
+      <div class="install-step">
+        <div class="step-num" aria-hidden="true">1</div>
+        <div class="step-body">
+          <h3>Install on your Mac</h3>
+          <p>One command installs the Iron Rain Mac app and daemon, then launches the app.
+          It auto-detects opencode, claude-code, and pi, sets up the integration on first run,
+          and displays a pairing QR code to scan from your phone.</p>
+          <pre class="cmd"><code>curl -fsSL https://howlerops.github.io/oculus/install.sh | sh</code></pre>
+          <p class="step-note">
+            Headless or Linux? The same command installs just the daemon
+            (<code>~/.oculus/oculusd.log</code>). Prefer source?
+            <code>cd daemon &amp;&amp; go run . serve --secret &lt;your-secret&gt;</code>
+          </p>
+        </div>
+      </div>
+
+      <div class="install-step">
+        <div class="step-num" aria-hidden="true">2</div>
+        <div class="step-body">
+          <h3>Join the iOS TestFlight</h3>
+          <p>Join the TestFlight beta, install the Iron Rain iOS app,
+          then scan the QR code displayed by the Mac app to pair your devices.
+          Everything after that is automatic.</p>
+          <a class="btn primary" href="./support.html#testflight">Join the TestFlight &rarr;</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
 </main>
 
-<footer class="wrap">
-  <span>© <span id="y"></span> HowlerOps</span>
-  <span><a href="./privacy.html">Privacy</a> · <a href="./support.html">Support</a> · <a href="https://github.com/howlerops/oculus">GitHub</a></span>
+<!-- ─── Footer ──────────────────────────────────────────────── -->
+<footer class="site-footer wrap">
+  <div class="footer-top">
+    <div class="footer-brand">
+      <img class="mark" src="./icon.png" alt="Iron Rain logo" />
+      <span><strong>Iron Rain</strong></span>
+    </div>
+    <nav class="footer-links" aria-label="Footer navigation">
+      <a href="https://github.com/howlerops/oculus">GitHub</a>
+      <a href="./support.html">Support</a>
+      <a href="./privacy.html">Privacy</a>
+      <a href="mailto:support@howlerops.com">Contact</a>
+    </nav>
+  </div>
+  <p class="footer-copy">© <span id="y"></span> HowlerOps. All rights reserved.</p>
 </footer>
+
 <script>document.getElementById('y').textContent = new Date().getFullYear();
-document.querySelectorAll('nav a').forEach(function(a){a.addEventListener('click',function(){var t=document.getElementById('navtoggle');if(t)t.checked=false;});});</script>
+document.querySelectorAll('nav a, .footer-links a').forEach(function(a){
+  a.addEventListener('click', function(){var t=document.getElementById('navtoggle');if(t)t.checked=false;});
+});</script>
 </body>
 </html>
