@@ -82,6 +82,7 @@ struct SessionSidebar: View {
     @State private var filter: SessionFilter = .all
     @State private var renamingSessionID: String?
     @State private var renameText = ""
+    @State private var showFleet = false
     #if os(macOS)
     @StateObject private var updates = UpdateChecker()
     @State private var showUpdate = false
@@ -117,6 +118,11 @@ struct SessionSidebar: View {
         }
         .sheet(isPresented: $showAddDesktop) {
             AddDesktopView(store: store, palette: palette) { showAddDesktop = false }
+        }
+        .sheet(isPresented: $showFleet) {
+            FleetView(model: model, palette: palette,
+                      onOpen: { id in selection = id; showFleet = false },
+                      onClose: { showFleet = false })
         }
         .alert("Rename desktop", isPresented: $renamingDesktop) {
             TextField("Name", text: $desktopNewName)
@@ -341,6 +347,10 @@ struct SessionSidebar: View {
             } label: {
                 Image(systemName: "ellipsis")
             }
+            Button { showFleet = true } label: {
+                Image(systemName: "square.grid.2x2")
+            }
+            .help("Agent fleet — all sessions at a glance")
             Button { selection = Self.newSessionTag } label: {
                 Image(systemName: "square.and.pencil")
             }
