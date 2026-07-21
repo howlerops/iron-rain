@@ -10,7 +10,11 @@ let package = Package(
     ],
     targets: [
         .target(name: "OculusKit"),
-        .target(name: "OculusUI", dependencies: ["OculusKit"]),
+        .target(
+            name: "OculusUI",
+            dependencies: ["OculusKit"],
+            resources: [.process("Resources")]
+        ),
         .testTarget(name: "OculusKitTests", dependencies: ["OculusKit"]),
     ]
 )

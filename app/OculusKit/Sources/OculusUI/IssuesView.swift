@@ -517,17 +517,37 @@ struct TrackerConnectCard: View {
     private var configured: Bool { model.oauthApps.contains(provider) }
     private var connected: Bool { model.connectedTrackers.contains(provider) }
 
+    /// The provider's official brand color, when we ship its real logo (Brand.xcassets). nil → use
+    /// the generic SF Symbol badge.
+    private var brandColor: Color? {
+        switch provider {
+        case "linear": return Color(red: 94/255.0, green: 106/255.0, blue: 210/255.0) // #5E6AD2
+        case "jira":   return Color(red: 0, green: 82/255.0, blue: 204/255.0)          // #0052CC
+        default:       return nil
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Card header: icon badge, tracker name, connected pill
             HStack(spacing: 12) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 10)
-                        .fill(palette.accent.opacity(0.7))
+                        .fill(brandColor?.opacity(0.14) ?? palette.accent.opacity(0.7))
                         .frame(width: 44, height: 44)
-                    Image(systemName: systemImage)
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(palette.primary)
+                    if let brandColor {
+                        // The real Linear/Jira brand mark (template SVG in Brand.xcassets), tinted
+                        // in the provider's brand color.
+                        Image(provider, bundle: .module)
+                            .renderingMode(.template)
+                            .resizable().scaledToFit()
+                            .frame(width: 22, height: 22)
+                            .foregroundStyle(brandColor)
+                    } else {
+                        Image(systemName: systemImage)
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(palette.primary)
+                    }
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(displayName)
