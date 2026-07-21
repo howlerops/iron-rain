@@ -35,6 +35,7 @@ import (
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/push"
 	"github.com/howlerops/oculus/daemon/server"
+	"github.com/howlerops/oculus/daemon/slack"
 	"github.com/howlerops/oculus/daemon/store"
 )
 
@@ -91,6 +92,7 @@ func serve(args []string) error {
 	apnsSandbox := fs.Bool("apns-sandbox", false, "use the APNs sandbox endpoint")
 	publicURL := fs.String("public-url", "", "reachable base ws/wss URL for the pairing QR (e.g. wss://x.ngrok-free.app); default derives a LAN URL from --addr")
 	name := fs.String("name", "", "human name for this desktop shown in the app (default: hostname)")
+	slackWebhook := fs.String("slack-webhook", "", "Slack Incoming Webhook URL to mirror agent events to a channel (or set it in ~/.oculus/slack.json)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -154,6 +156,17 @@ func serve(args []string) error {
 	h.StartSessionPruning(context.Background(), 6*time.Hour, sessionTTL)
 	h.StartHeartbeat(context.Background()) // supervise autonomous sessions (nudge/checkpoint/escalate)
 
+	// Slack mirror (optional): agent events also post to a Slack channel via an Incoming Webhook.
+	slackURL := *slackWebhook
+	if slackURL == "" {
+		slackURL = loadSlackWebhook(slackWebhookPath())
+	}
+	slackEnabled := false
+	if slackURL != "" {
+		h.SetSlack(slack.New(slackURL))
+		slackEnabled = true
+	}
+
 	pushEnabled := false
 	if *apnsKey != "" {
 		if err := enablePush(h, *apnsKey, *apnsKeyID, *apnsTeamID, *apnsBundle, *apnsSandbox); err != nil {
@@ -206,6 +219,9 @@ func serve(args []string) error {
 	}
 	if pushEnabled {
 		fmt.Printf("  push:           APNs enabled (bundle %s)\n", *apnsBundle)
+	}
+	if slackEnabled {
+		fmt.Printf("  slack:          mirroring agent events to your webhook\n")
 	}
 	desktopName := *name
 	if desktopName == "" {
@@ -393,6 +409,30 @@ func integrationsPath() string {
 		return "oculus-integrations.json"
 	}
 	return filepath.Join(home, ".oculus", "integrations.json")
+}
+
+func slackWebhookPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "oculus-slack.json"
+	}
+	return filepath.Join(home, ".oculus", "slack.json")
+}
+
+// loadSlackWebhook reads {"webhook_url":"..."} from path (missing file → ""), for a persisted
+// Slack webhook so the app can enable Slack without re-passing a flag.
+func loadSlackWebhook(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	var cfg struct {
+		WebhookURL string `json:"webhook_url"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(cfg.WebhookURL)
 }
 
 func agentsPath() string {

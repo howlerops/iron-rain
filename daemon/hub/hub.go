@@ -24,6 +24,7 @@ import (
 	"github.com/howlerops/oculus/daemon/project"
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/push"
+	"github.com/howlerops/oculus/daemon/slack"
 	"github.com/howlerops/oculus/daemon/store"
 	"github.com/howlerops/oculus/daemon/transport"
 	"github.com/howlerops/oculus/daemon/worktree"
@@ -41,6 +42,7 @@ type Hub struct {
 	discover  DiscoverFunc
 
 	notifier      push.Notifier // optional: push actionable approvals to a device
+	slack         *slack.Client // optional: mirror agent events to a Slack channel
 	pushTokens    []string      // registered device tokens
 	attach        AttacherFactory
 	clients       map[*transport.Conn]*hubClient // all connected clients (for global broadcasts)
@@ -685,6 +687,13 @@ func (h *Hub) SetNotifier(n push.Notifier) {
 	h.notifier = n
 }
 
+// SetSlack enables mirroring agent-event notifications to a Slack channel (nil disables it).
+func (h *Hub) SetSlack(c *slack.Client) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.slack = c
+}
+
 // SetAttacherFactory installs the factory used to attach to discovered sessions.
 func (h *Hub) SetAttacherFactory(f AttacherFactory) {
 	h.mu.Lock()
@@ -776,8 +785,20 @@ func (h *Hub) pushTestsFailed(sessionID, label, cmd string) {
 func (h *Hub) pushNotify(notif push.Notification) {
 	h.mu.Lock()
 	n := h.notifier
+	sc := h.slack
 	tokens := append([]string(nil), h.pushTokens...)
 	h.mu.Unlock()
+	// Mirror to Slack (if configured) independently of APNs — a team may want Slack visibility
+	// without any paired phones. Fire-and-forget with a bounded context.
+	if sc != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := sc.Post(ctx, slack.Format(notif.Title, notif.Body, notif.Category)); err != nil {
+				log.Printf("hub: slack post (%s) failed: %v", notif.Category, err)
+			}
+		}()
+	}
 	if n == nil || len(tokens) == 0 {
 		return
 	}
