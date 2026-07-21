@@ -40,6 +40,14 @@ public struct IssuesView: View {
                 }
             }
             .task { await model.loadIntegrationStatus(); await model.loadIssues() }
+            // The initial .task can run before the desktop finishes connecting (client not ready),
+            // leaving trackers showing "not connected" even though the daemon has them. Re-fetch the
+            // moment the connection lands (e.g. right after scanning the pairing QR).
+            .onChange(of: model.connected) { isConnected in
+                if isConnected {
+                    Task { await model.loadIntegrationStatus(); await model.loadIssues() }
+                }
+            }
     }
 
     /// The right-slide inspector: a dimmed tap-to-dismiss backdrop + the panel sliding in
