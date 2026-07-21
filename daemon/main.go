@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	mrand "math/rand"
 	"strings"
 	"time"
 
@@ -42,9 +43,12 @@ import (
 
 const version = "0.0.0-dev"
 
-// defaultRelayURL is the shared HowlerOps relay every daemon connects to by default so the app can
-// reach it from anywhere (off-LAN) with zero setup. Override with --relay (or "" for LAN-only).
-const defaultRelayURL = "wss://oculus-relay-howlerops.fly.dev/ws"
+// defaultRelayURL is the comma-separated list of shared relays a daemon registers on by default so
+// the app can reach it from anywhere (off-LAN) with zero setup. The app races them (plus LAN), so
+// order is preference: the Cloudflare Durable-Object relay is primary (edge-local, hibernates so
+// idle cost ≈ 0, no single-region SPOF); the Fly relay is a portable fallback. Override with
+// --relay (or "" for LAN-only).
+const defaultRelayURL = "wss://oculus-relay.jacobbeck-dev.workers.dev/ws,wss://oculus-relay-howlerops.fly.dev/ws"
 
 func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "serve" {
@@ -98,7 +102,7 @@ func serve(args []string) error {
 	publicURL := fs.String("public-url", "", "reachable base ws/wss URL for the pairing QR (e.g. wss://x.ngrok-free.app); default derives a LAN URL from --addr")
 	name := fs.String("name", "", "human name for this desktop shown in the app (default: hostname)")
 	slackWebhook := fs.String("slack-webhook", "", "Slack Incoming Webhook URL to mirror agent events to a channel (or set it in ~/.oculus/slack.json)")
-	relayURL := fs.String("relay", defaultRelayURL, "relay ws URL for remote access from anywhere (empty = LAN-only). Default is the shared HowlerOps relay.")
+	relayURL := fs.String("relay", defaultRelayURL, "comma-separated relay ws URLs for remote access from anywhere (empty = LAN-only). The app races them + LAN; order is preference. Default: Cloudflare DO relay, then Fly fallback.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -190,8 +194,8 @@ func serve(args []string) error {
 	// from anywhere (off-LAN) with zero port-forwarding. The relay only forwards ciphertext — the
 	// same end-to-end-encrypted session runs over it. The relay server_id is the daemon pubkey, so
 	// pairing needs nothing extra beyond the relay URL (the app already has `pub`).
-	if *relayURL != "" {
-		go relayHost(*relayURL, hex.EncodeToString(kp.Public()), srv)
+	for _, ru := range splitRelays(*relayURL) {
+		go relayHost(ru, hex.EncodeToString(kp.Public()), srv)
 	}
 
 	mux := http.NewServeMux()
@@ -281,11 +285,24 @@ func relayHost(relayURL, serverID string, srv *server.Server) {
 			backoff = time.Second // served a client (or waited on one) — re-register immediately
 			continue
 		}
-		time.Sleep(backoff) // relay unreachable — retry with capped exponential backoff
+		// Relay unreachable — retry with capped exponential backoff plus full jitter, so a relay
+		// restart doesn't trigger a thundering herd of every daemon reconnecting in lockstep.
+		time.Sleep(backoff/2 + time.Duration(mrand.Int63n(int64(backoff/2)+1)))
 		if backoff < 30*time.Second {
 			backoff *= 2
 		}
 	}
+}
+
+// splitRelays parses the comma-separated --relay value into individual relay URLs.
+func splitRelays(list string) []string {
+	var out []string
+	for _, s := range strings.Split(list, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // localWSURL is the loopback ws URL for a same-machine app.
