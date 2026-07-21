@@ -14,6 +14,14 @@ primary_region = "sjc"
   auto_start_machines = true
   min_machines_running = 1
 
+  # Each online daemon holds one persistent host WebSocket, so concurrency is dominated by idle
+  # connections, not requests. Raise the fly-proxy limits well above the 25/250 default so the
+  # relay doesn't refuse connections long before it runs out of memory.
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 4000
+    hard_limit = 5000
+
   [[http_service.checks]]
     interval = "30s"
     timeout = "5s"

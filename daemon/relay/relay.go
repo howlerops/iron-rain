@@ -2,16 +2,20 @@
 // ("client") both dial the relay outbound and are bridged by server_id; the relay
 // copies opaque messages between them without opening inbound ports on either.
 //
-// Security note (v0): the relay forwards the transport handshake, so the pairing
-// secret + public keys transit the relay in cleartext (session CONTENT stays E2E
-// encrypted — the relay cannot read it). Hardening (prove secret knowledge without
-// revealing it) is a tracked follow-up.
+// Security: the relay forwards only opaque, end-to-end-encrypted bytes. The channel key is derived
+// from static-static X25519 ECDH between the client and daemon keypairs, so the relay — which sees
+// only the two PUBLIC keys — cannot derive it, cannot read session content, cannot read the pairing
+// secret (sent sealed, not in the clear), and cannot MITM (the client already has the real daemon
+// pubkey from the pairing QR). The one caveat is no forward secrecy: static keys mean a future key
+// compromise could decrypt recorded traffic — a Noise-style ephemeral handshake is a tracked
+// follow-up. It's independent of the relay itself.
 package relay
 
 import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -62,9 +66,15 @@ func New() *Relay {
 	return &Relay{hosts: map[string]*hostEntry{}, regTimeout: defaultRegistrationTimeout}
 }
 
-// Handler is the relay's WebSocket endpoint.
+// Handler is the relay's WebSocket endpoint. Registration is by URL query (?sid=&role=) — the
+// unified protocol shared with the Cloudflare Durable-Object relay, which lets an edge route to the
+// right instance without reading a frame. A first-frame JSON registration is still accepted as a
+// fallback so already-deployed clients keep working.
 func (r *Relay) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		sid := req.URL.Query().Get("sid")
+		role := req.URL.Query().Get("role")
+
 		ws, err := websocket.Accept(w, req, &websocket.AcceptOptions{InsecureSkipVerify: true})
 		if err != nil {
 			return
@@ -72,26 +82,29 @@ func (r *Relay) Handler() http.Handler {
 		ws.SetReadLimit(8 * 1024 * 1024)
 		ctx := req.Context()
 
-		// Bound only the registration phase; switch to the unbounded connection
-		// context after a valid registration completes.
-		rctx, cancel := context.WithTimeout(ctx, r.regTimeout)
-		_, data, err := ws.Read(rctx)
-		cancel()
-		if err != nil {
-			ws.Close(websocket.StatusPolicyViolation, "no registration")
-			return
-		}
-		var reg registration
-		if json.Unmarshal(data, &reg) != nil || reg.ServerID == "" {
-			ws.Close(websocket.StatusPolicyViolation, "bad registration")
-			return
+		if sid == "" { // legacy client: read the JSON registration frame instead
+			// Bound only the registration phase; switch to the unbounded connection
+			// context after a valid registration completes.
+			rctx, cancel := context.WithTimeout(ctx, r.regTimeout)
+			_, data, rerr := ws.Read(rctx)
+			cancel()
+			if rerr != nil {
+				ws.Close(websocket.StatusPolicyViolation, "no registration")
+				return
+			}
+			var reg registration
+			if json.Unmarshal(data, &reg) != nil || reg.ServerID == "" {
+				ws.Close(websocket.StatusPolicyViolation, "bad registration")
+				return
+			}
+			sid, role = reg.ServerID, reg.Role
 		}
 
-		switch reg.Role {
+		switch role {
 		case roleHost:
-			r.serveHost(ctx, reg.ServerID, ws)
+			r.serveHost(ctx, sid, ws)
 		case roleClient:
-			r.serveClient(ctx, reg.ServerID, ws)
+			r.serveClient(ctx, sid, ws)
 		default:
 			ws.Close(websocket.StatusPolicyViolation, "bad role")
 		}
@@ -196,15 +209,16 @@ func DialClient(ctx context.Context, relayURL, serverID string) (transport.MsgCo
 	return dialRegister(ctx, relayURL, roleClient, serverID)
 }
 
-func dialRegister(ctx context.Context, url, role, serverID string) (*wsmsg.Conn, error) {
-	mc, err := wsmsg.Dial(ctx, url)
+func dialRegister(ctx context.Context, rawURL, role, serverID string) (*wsmsg.Conn, error) {
+	// Register via URL query (?sid=&role=) — the unified protocol shared with the Cloudflare relay;
+	// no first frame, so the relay/edge routes before touching the socket.
+	u, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, err
 	}
-	reg, _ := json.Marshal(registration{Role: role, ServerID: serverID})
-	if err := mc.WriteMsg(reg); err != nil {
-		_ = mc.Close()
-		return nil, err
-	}
-	return mc, nil
+	q := u.Query()
+	q.Set("sid", serverID)
+	q.Set("role", role)
+	u.RawQuery = q.Encode()
+	return wsmsg.Dial(ctx, u.String())
 }
