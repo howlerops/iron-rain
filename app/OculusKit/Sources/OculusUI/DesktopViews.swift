@@ -4,6 +4,23 @@ import OculusKit
 /// The multi-desktop root: connect to every paired Mac at once, switch between them,
 /// and drive the selected one's sessions. Replaces the single-connection ContentView as
 /// the app entry surface.
+/// Presents `model.actionError` as an alert on the main surface. Needed because a failed action
+/// (e.g. a session that couldn't start) sets the error AFTER its New Session sheet has dismissed,
+/// when plain status text isn't visible — so the user would otherwise see "nothing happened".
+struct ActionErrorAlert: ViewModifier {
+    @ObservedObject var model: Model
+    func body(content: Content) -> some View {
+        content.alert("Couldn’t start the session", isPresented: Binding(
+            get: { model.actionError != nil },
+            set: { if !$0 { model.actionError = nil } }
+        )) {
+            Button("OK", role: .cancel) { model.actionError = nil }
+        } message: {
+            Text(model.actionError ?? "")
+        }
+    }
+}
+
 public struct RootView: View {
     @ObservedObject var store: DesktopStore
     @Environment(\.colorScheme) private var scheme
@@ -42,6 +59,7 @@ public struct RootView: View {
                 #endif
             } else if let model = store.active {
                 mainSurface(model)
+                    .modifier(ActionErrorAlert(model: model))
             }
         }
         // CRITICAL: force the surface to FILL the window instead of sizing to the split

@@ -38,6 +38,10 @@ public final class Model: ObservableObject {
     @Published public var connected = false
     @Published public var status = "Not connected"
     @Published public var statusDetail: String? // human reason when not connected (unreachable, wrong secret, key mismatch)
+    /// A prominent, dismissable error for a user action that failed while connected (e.g. a session
+    /// that couldn't start). Drives an alert on the main surface — status text alone is invisible
+    /// once the triggering sheet has dismissed.
+    @Published public var actionError: String?
     @Published public var messages: [ChatMessage] = []
     @Published public var sessionID: String?
     @Published public var currentSession: Session? // metadata (project/worktree/branch) of the active session
@@ -553,7 +557,10 @@ public final class Model: ObservableObject {
                                        projectID: multi ? nil : projectIDs?.first,
                                        projectIDs: multi ? projectIDs : nil,
                                        prompt: nil,
-                                       worktree: (!multi && worktree) ? true : nil,
+                                       // Isolation applies to both single-repo (one worktree) and
+                                       // multi-repo (a worktree per repo) — the daemon branches on
+                                       // it. Don't drop it for the multi-repo case.
+                                       worktree: worktree ? true : nil,
                                        workspaceName: workspaceName,
                                        plan: plan ? true : nil,
                                        autonomous: autonomous ? true : nil))
@@ -563,8 +570,12 @@ public final class Model: ObservableObject {
             refreshLiveActivity()
             await loadSessions() // reflect the new session in the sidebar
         } catch {
-            status = "Couldn’t start \(provider): \(error.localizedDescription)"
-            statusDetail = "Check that the \(provider) agent is installed and running, or pick another agent."
+            // Surface prominently: the New Session sheet has already dismissed, so status text alone
+            // is invisible while connected — actionError drives an alert on the main surface.
+            let reason = error.localizedDescription
+            actionError = "Couldn’t start \(provider).\n\n\(reason)\n\nCheck the agent is installed and running, or pick another agent."
+            status = "Couldn’t start \(provider)"
+            statusDetail = reason
         }
     }
 
@@ -1224,6 +1235,7 @@ public final class Model: ObservableObject {
                     if let e = try? env.payload(as: [String: String].self), let m = e["message"] {
                         status = "Error"
                         statusDetail = m
+                        actionError = m
                         busy = false
                     }
                 case MessageType.sessionMessage:
