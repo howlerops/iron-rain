@@ -13,6 +13,10 @@ import ActivityKit
 @MainActor
 public final class Model: ObservableObject {
     @Published public var wsURL = "ws://127.0.0.1:6000/ws"
+    /// Shared relay URL for remote access from anywhere (off-LAN). When set, the client dials the
+    /// relay and bridges to this daemon by server_id (= the daemon pubkey); the direct `wsURL` is
+    /// the LAN fallback. Empty = LAN-only.
+    @Published public var relayURL = ""
     @Published public var daemonPubHex = ""
     @Published public var secret = ""
     /// Human name of this desktop (set when managed by a DesktopStore).
@@ -106,19 +110,21 @@ public final class Model: ObservableObject {
         wsURL = defaults.string(forKey: Keys.ws) ?? wsURL
         daemonPubHex = defaults.string(forKey: Keys.pub) ?? ""
         secret = defaults.string(forKey: Keys.secret) ?? ""
+        relayURL = defaults.string(forKey: Keys.relay) ?? ""
     }
 
     /// A managed connection owned by a DesktopStore (persistence handled by the store).
-    public convenience init(name: String, wsURL: String, daemonPubHex: String, secret: String) {
+    public convenience init(name: String, wsURL: String, daemonPubHex: String, secret: String, relay: String = "") {
         self.init()
         self.managed = true
         self.name = name
         self.wsURL = wsURL
         self.daemonPubHex = daemonPubHex
         self.secret = secret
+        self.relayURL = relay
     }
 
-    private enum Keys { static let ws = "oculus.ws", pub = "oculus.pub", secret = "oculus.secret" }
+    private enum Keys { static let ws = "oculus.ws", pub = "oculus.pub", secret = "oculus.secret", relay = "oculus.relay" }
 
     /// True once the daemon has been paired at least once (creds are saved).
     public var hasSavedPairing: Bool { !wsURL.isEmpty && !daemonPubHex.isEmpty && !secret.isEmpty }
@@ -128,6 +134,7 @@ public final class Model: ObservableObject {
         defaults.set(wsURL, forKey: Keys.ws)
         defaults.set(daemonPubHex, forKey: Keys.pub)
         defaults.set(secret, forKey: Keys.secret) // TODO: move the secret to the Keychain
+        defaults.set(relayURL, forKey: Keys.relay)
     }
 
     // MARK: connection
@@ -152,7 +159,10 @@ public final class Model: ObservableObject {
         // Always refresh the reachable URL for the pairing QR — even once we're paired,
         // since the daemon's public URL (relay/tunnel) can change between launches.
         pairingPublicURL = obj["public"]
-        if !hasSavedPairing { applyPairing(url: ws, pub: pub, secret: sec) }
+        // Always refresh the relay URL (the daemon may have been upgraded to a build that connects
+        // to the shared relay), even once paired — so an existing local pairing gains remote access.
+        if let relay = obj["relay"], !relay.isEmpty { relayURL = relay }
+        if !hasSavedPairing { applyPairing(url: ws, pub: pub, secret: sec, relay: obj["relay"] ?? "") }
         #endif
     }
 
@@ -169,6 +179,9 @@ public final class Model: ObservableObject {
             .init(name: "pub", value: daemonPubHex),
             .init(name: "secret", value: secret),
         ]
+        if !relayURL.isEmpty {
+            c.queryItems?.append(.init(name: "relay", value: relayURL))
+        }
         return c.url?.absoluteString
     }
 
@@ -178,57 +191,81 @@ public final class Model: ObservableObject {
     }
 
     private func attemptConnect() async {
-        guard let url = URL(string: wsURL), let pub = Data(hexString: daemonPubHex) else {
-            status = "Invalid URL or daemon public key"
+        guard let pub = Data(hexString: daemonPubHex) else {
+            status = "Invalid daemon public key"
             return
         }
-        let c = OculusClient(url: url)
-        do {
-            try await c.connect(clientPrivate: clientPrivate, daemonPublic: pub, secret: secret)
-            client = c
-            connected = true
-            status = "Connected"
-            statusDetail = nil
-            savePairing()
-            Task { await receiveLoop() }
-            // Note: discovery of terminal-owned sessions is on-demand (the Add Session search),
-            // not auto-loaded — the sidebar shows only sessions started/opened in the app.
-            await loadProjects()
-            await loadSessions()
-            await loadIntegrationStatus()
-            await loadIssues()
-            await listProviders() // reflect the daemon's real agent set in the picker
-            await listHandoffs() // seed the handoff index (live updates arrive via handoff.list)
-            // If a session was open when the socket dropped (e.g. the daemon restarted and
-            // forgot its in-memory sessions), re-attach it so its transcript + prompts resume.
-            await reopenCurrentSession()
-            if let token = OculusStore.shared.deviceToken {
-                await registerDevice(token: token)
+        // Prefer the shared relay (reachable from anywhere); fall back to the direct LAN URL if the
+        // relay is unreachable or has no host registered for this daemon. server_id = daemon pubkey.
+        var routes: [(url: String, sid: String?)] = []
+        if !relayURL.isEmpty { routes.append((relayURL, daemonPubHex)) }
+        if !wsURL.isEmpty { routes.append((wsURL, nil)) }
+        guard !routes.isEmpty else { status = "No address to connect to"; return }
+
+        var rejected: String?      // the daemon actively refused us (wrong secret / key) — every route will
+        var lastTransport: Error?  // couldn't reach a route (relay down, Mac asleep) — try the next one
+        for route in routes {
+            guard let url = URL(string: route.url) else { continue }
+            let c = OculusClient(url: url)
+            do {
+                try await c.connect(clientPrivate: clientPrivate, daemonPublic: pub, secret: secret, relayServerID: route.sid)
+                client = c
+                connected = true
+                status = "Connected"
+                statusDetail = nil
+                savePairing()
+                Task { await receiveLoop() }
+                // Note: discovery of terminal-owned sessions is on-demand (the Add Session search),
+                // not auto-loaded — the sidebar shows only sessions started/opened in the app.
+                await loadProjects()
+                await loadSessions()
+                await loadIntegrationStatus()
+                await loadIssues()
+                await listProviders() // reflect the daemon's real agent set in the picker
+                await listHandoffs() // seed the handoff index (live updates arrive via handoff.list)
+                // If a session was open when the socket dropped (e.g. the daemon restarted and
+                // forgot its in-memory sessions), re-attach it so its transcript + prompts resume.
+                await reopenCurrentSession()
+                if let token = OculusStore.shared.deviceToken {
+                    await registerDevice(token: token)
+                }
+                if let queued = OculusStore.shared.pendingPrompt {
+                    OculusStore.shared.pendingPrompt = nil
+                    await send(queued)
+                }
+                if let decision = OculusStore.shared.pendingDecision, pendingApproval != nil {
+                    OculusStore.shared.pendingDecision = nil
+                    await respond(decision)
+                }
+                // Tapped a notification (agent finished / error / approval) → open that session.
+                if let sid = OculusStore.shared.handoffSessionID {
+                    OculusStore.shared.handoffSessionID = nil
+                    await openSession(sid)
+                }
+                return // connected on this route — done
+            } catch OculusClientError.handshakeRejected(let msg) {
+                // The daemon reached us and refused — another route (LAN vs relay) would refuse too.
+                c.close()
+                rejected = msg
+                break
+            } catch {
+                // Couldn't reach this route (relay down / Mac asleep / bad address) — try the next.
+                c.close()
+                lastTransport = error
+                continue
             }
-            if let queued = OculusStore.shared.pendingPrompt {
-                OculusStore.shared.pendingPrompt = nil
-                await send(queued)
-            }
-            if let decision = OculusStore.shared.pendingDecision, pendingApproval != nil {
-                OculusStore.shared.pendingDecision = nil
-                await respond(decision)
-            }
-            // Tapped a notification (agent finished / error / approval) → open that session.
-            if let sid = OculusStore.shared.handoffSessionID {
-                OculusStore.shared.handoffSessionID = nil
-                await openSession(sid)
-            }
-        } catch OculusClientError.handshakeRejected(let msg) {
-            status = "Connect failed"
-            statusDetail = msg.isEmpty ? "Pairing rejected" : "Pairing rejected: \(msg)"
-            scheduleReconnect()
-        } catch {
-            status = "Connect failed"
-            statusDetail = (error as NSError).domain == NSURLErrorDomain
-                ? "Can’t reach this Mac"          // daemon down / wrong address
-                : "Handshake failed — re-pair?"    // key mismatch / another daemon on the port
-            scheduleReconnect()
         }
+
+        // Every route failed.
+        status = "Connect failed"
+        if let rejected {
+            statusDetail = rejected.isEmpty ? "Pairing rejected" : "Pairing rejected: \(rejected)"
+        } else {
+            statusDetail = (lastTransport as NSError?)?.domain == NSURLErrorDomain
+                ? "Can’t reach this Mac"          // daemon down / wrong address / relay unreachable
+                : "Handshake failed — re-pair?"    // key mismatch / another daemon on the port
+        }
+        scheduleReconnect()
     }
 
     /// Retries the connection with exponential backoff until it succeeds or the user
@@ -258,10 +295,11 @@ public final class Model: ObservableObject {
     }
 
     /// Fills the connect fields from a scanned pairing payload (oculus://pair?...).
-    public func applyPairing(url: String, pub: String, secret: String) {
+    public func applyPairing(url: String, pub: String, secret: String, relay: String = "") {
         self.wsURL = url
         self.daemonPubHex = pub
         self.secret = secret
+        self.relayURL = relay
     }
 
     // MARK: conversation

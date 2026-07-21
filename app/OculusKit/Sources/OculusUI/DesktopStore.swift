@@ -10,21 +10,25 @@ public struct Desktop: Codable, Identifiable, Hashable {
     public var name: String
     public var wsURL: String
     public var secret: String
+    /// Shared relay URL for remote access from anywhere. Optional so JSON saved by older builds
+    /// (no relay key) still decodes.
+    public var relay: String?
 }
 
-/// Parsed `oculus://pair?ws=…&pub=…&secret=…&name=…` payload.
+/// Parsed `oculus://pair?ws=…&pub=…&secret=…&name=…[&relay=…]` payload.
 public struct PairingPayload {
     public var wsURL: String
     public var pub: String
     public var secret: String
     public var name: String?
+    public var relay: String?
 
     public init?(_ payload: String) {
         guard let comps = URLComponents(string: payload), comps.scheme == "oculus" else { return nil }
         let items = comps.queryItems ?? []
         func q(_ n: String) -> String? { items.first { $0.name == n }?.value }
         guard let ws = q("ws"), let pub = q("pub"), let secret = q("secret") else { return nil }
-        self.wsURL = ws; self.pub = pub; self.secret = secret; self.name = q("name")
+        self.wsURL = ws; self.pub = pub; self.secret = secret; self.name = q("name"); self.relay = q("relay")
     }
 }
 
@@ -64,7 +68,8 @@ public final class DesktopStore: ObservableObject {
             let pub = defaults.string(forKey: "oculus.pub") ?? ""
             let sec = defaults.string(forKey: "oculus.secret") ?? ""
             if !pub.isEmpty, !ws.isEmpty {
-                desks.append(Desktop(id: pub, name: "My Mac", wsURL: ws, secret: sec))
+                let relay = defaults.string(forKey: "oculus.relay") ?? ""
+                desks.append(Desktop(id: pub, name: "My Mac", wsURL: ws, secret: sec, relay: relay))
             }
         }
         // Read the local daemon pairing once and reuse it (avoids re-reading pairing.json).
@@ -80,6 +85,7 @@ public final class DesktopStore: ObservableObject {
             m.pairingPublicURL = local.publicURL
             m.secret = local.desktop.secret
             m.wsURL = local.desktop.wsURL
+            if let relay = local.desktop.relay, !relay.isEmpty { m.relayURL = relay }
         }
         save()
         if selectedID == nil { selectedID = models.first?.id }
@@ -102,8 +108,8 @@ public final class DesktopStore: ObservableObject {
     @discardableResult
     public func add(_ p: PairingPayload) -> Model {
         let name = (p.name?.isEmpty == false) ? p.name! : "Desktop"
-        let m = ensureModel(Desktop(id: p.pub, name: name, wsURL: p.wsURL, secret: p.secret))
-        m.name = name; m.wsURL = p.wsURL; m.secret = p.secret; m.daemonPubHex = p.pub
+        let m = ensureModel(Desktop(id: p.pub, name: name, wsURL: p.wsURL, secret: p.secret, relay: p.relay))
+        m.name = name; m.wsURL = p.wsURL; m.secret = p.secret; m.daemonPubHex = p.pub; m.relayURL = p.relay ?? ""
         selectedID = m.id
         save()
         Task { if !m.connected { await m.connect() } }
@@ -126,7 +132,7 @@ public final class DesktopStore: ObservableObject {
     @discardableResult
     private func ensureModel(_ d: Desktop) -> Model {
         if let existing = models.first(where: { $0.id == d.id }) { return existing }
-        let m = Model(name: d.name, wsURL: d.wsURL, daemonPubHex: d.id, secret: d.secret)
+        let m = Model(name: d.name, wsURL: d.wsURL, daemonPubHex: d.id, secret: d.secret, relay: d.relay ?? "")
         models.append(m)
         return m
     }
@@ -139,7 +145,7 @@ public final class DesktopStore: ObservableObject {
 
     private func save() {
         let list = models.filter { !$0.id.isEmpty }
-            .map { Desktop(id: $0.id, name: $0.name, wsURL: $0.wsURL, secret: $0.secret) }
+            .map { Desktop(id: $0.id, name: $0.name, wsURL: $0.wsURL, secret: $0.secret, relay: $0.relayURL) }
         if let data = try? encoder.encode(list) { defaults.set(data, forKey: key) }
     }
 
@@ -151,7 +157,7 @@ public final class DesktopStore: ObservableObject {
         guard let data,
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: String],
               let ws = obj["ws"], let pub = obj["pub"], let sec = obj["secret"] else { return nil }
-        return (Desktop(id: pub, name: obj["name"] ?? "This Mac", wsURL: ws, secret: sec), obj["public"])
+        return (Desktop(id: pub, name: obj["name"] ?? "This Mac", wsURL: ws, secret: sec, relay: obj["relay"]), obj["public"])
         #else
         return nil
         #endif

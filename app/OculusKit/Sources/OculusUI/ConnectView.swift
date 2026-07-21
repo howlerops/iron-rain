@@ -87,14 +87,14 @@ public struct ConnectView: View {
         #endif
     }
 
-    /// Parses `oculus://pair?ws=…&pub=…&secret=…` into the model. Returns true if valid.
+    /// Parses `oculus://pair?ws=…&pub=…&secret=…[&relay=…]` into the model. Returns true if valid.
     @discardableResult
     private func applyPairing(_ payload: String) -> Bool {
         guard let comps = URLComponents(string: payload), comps.scheme == "oculus" else { return false }
         let items = comps.queryItems ?? []
         func q(_ name: String) -> String? { items.first { $0.name == name }?.value }
         guard let ws = q("ws"), let pub = q("pub"), let secret = q("secret") else { return false }
-        model.applyPairing(url: ws, pub: pub, secret: secret)
+        model.applyPairing(url: ws, pub: pub, secret: secret, relay: q("relay") ?? "")
         return true
     }
 }
