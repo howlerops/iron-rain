@@ -28,6 +28,7 @@ public enum MessageType {
     public static let integrationConnect = "integration.connect"
     public static let integrationStatus = "integration.status"
     public static let integrationOAuth = "integration.oauth"
+    public static let integrationOAuthApp = "integration.oauthapp"
     public static let issueList = "issue.list"
     public static let issueStates = "issue.states"
     public static let issueLaunch = "issue.launch"
@@ -637,10 +638,27 @@ public struct IntegrationConnect: Codable {
     public var provider: String; public var token: String
     public init(provider: String, token: String) { self.provider = provider; self.token = token }
 }
-public struct IntegrationStatus: Codable { public var connected: [String] }
+public struct IntegrationStatus: Codable {
+    public var connected: [String]
+    public var oauthApps: [String]?   // providers with an OAuth app configured
+    enum CodingKeys: String, CodingKey { case connected; case oauthApps = "oauth_apps" }
+}
 public struct IntegrationOAuth: Codable {
     public var provider: String; public var url: String?
     public init(provider: String, url: String? = nil) { self.provider = provider; self.url = url }
+}
+public struct IntegrationOAuthApp: Codable {
+    public var provider: String
+    public var clientID: String
+    public var clientSecret: String
+    public init(provider: String, clientID: String, clientSecret: String) {
+        self.provider = provider; self.clientID = clientID; self.clientSecret = clientSecret
+    }
+    enum CodingKeys: String, CodingKey {
+        case provider
+        case clientID = "client_id"
+        case clientSecret = "client_secret"
+    }
 }
 public struct Issue: Codable, Identifiable, Hashable {
     public var id: String

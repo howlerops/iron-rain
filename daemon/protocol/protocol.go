@@ -16,42 +16,43 @@ import (
 // Message types.
 const (
 	// requests (client -> daemon), carry an id echoed on the response
-	TypeSessionList        = "session.list"
-	TypeSessionGet         = "session.get"
-	TypeSessionCreate      = "session.create"
-	TypeSessionPrompt      = "session.prompt"
-	TypeSessionStop        = "session.stop"
-	TypeSessionInterrupt   = "session.interrupt" // stop the current turn, keep the session
-	TypeSessionAutonomy    = "session.autonomy"  // toggle/re-arm heartbeat supervision
-	TypeHandoffList        = "handoff.list"      // indexed agent-authored handoff files (request + event)
-	TypeSessionChild       = "session.child"     // spawn a scoped sub-agent seeded from a parent's handoff
-	TypeSessionRename      = "session.rename"
-	TypeSessionAttach      = "session.attach"
-	TypeSessionSubscribe   = "session.subscribe" // observe an already-owned session (no dup subscription)
-	TypeApprovalRespond    = "approval.respond"
-	TypeDiscover           = "discover.list"
-	TypeDeviceRegister     = "device.register"
-	TypeProviderList       = "provider.list" // agent providers registered on this daemon
-	TypeProjectList        = "project.list"
-	TypeProjectAdd         = "project.add"
-	TypeProjectRemove      = "project.remove"
-	TypeWorktreeDiff       = "worktree.diff"       // request the diff of a worktree session
-	TypeWorktreeRemove     = "worktree.remove"     // stop a worktree session + remove its worktree
-	TypeWorktreePR         = "worktree.pr"         // commit + push + open a PR for a worktree session
-	TypeWorktreeConflicts  = "worktree.conflicts"  // files this worktree shares with other active worktrees
-	TypeWorkspaceDiff      = "workspace.diff"      // per-member diff for a cross-repo workspace session
-	TypeWorkspacePR        = "workspace.pr"        // commit + push + open a PR for each workspace member
-	TypeIntegrationConnect = "integration.connect" // connect a tracker (Linear/Jira) with a token
-	TypeIntegrationStatus  = "integration.status"  // which trackers are connected
-	TypeIntegrationOAuth   = "integration.oauth"   // begin an OAuth flow; returns an authorize URL
-	TypeIssueList          = "issue.list"          // assigned issues (request + broadcast)
-	TypeIssueStates        = "issue.states"        // workflow states (kanban columns) for a team
-	TypeIssueLaunch        = "issue.launch"        // launch an agent on an issue (worktree)
-	TypeIssueDetail        = "issue.detail"        // full issue + comments
-	TypeIssueUpdate        = "issue.update"        // edit issue fields (partial)
-	TypeIssueComment       = "issue.comment"       // add a comment
-	TypeIssueCommentEdit   = "issue.comment.edit"  // edit an existing comment
-	TypeIssueImage         = "issue.image"         // proxy an auth-gated attachment image
+	TypeSessionList         = "session.list"
+	TypeSessionGet          = "session.get"
+	TypeSessionCreate       = "session.create"
+	TypeSessionPrompt       = "session.prompt"
+	TypeSessionStop         = "session.stop"
+	TypeSessionInterrupt    = "session.interrupt" // stop the current turn, keep the session
+	TypeSessionAutonomy     = "session.autonomy"  // toggle/re-arm heartbeat supervision
+	TypeHandoffList         = "handoff.list"      // indexed agent-authored handoff files (request + event)
+	TypeSessionChild        = "session.child"     // spawn a scoped sub-agent seeded from a parent's handoff
+	TypeSessionRename       = "session.rename"
+	TypeSessionAttach       = "session.attach"
+	TypeSessionSubscribe    = "session.subscribe" // observe an already-owned session (no dup subscription)
+	TypeApprovalRespond     = "approval.respond"
+	TypeDiscover            = "discover.list"
+	TypeDeviceRegister      = "device.register"
+	TypeProviderList        = "provider.list" // agent providers registered on this daemon
+	TypeProjectList         = "project.list"
+	TypeProjectAdd          = "project.add"
+	TypeProjectRemove       = "project.remove"
+	TypeWorktreeDiff        = "worktree.diff"        // request the diff of a worktree session
+	TypeWorktreeRemove      = "worktree.remove"      // stop a worktree session + remove its worktree
+	TypeWorktreePR          = "worktree.pr"          // commit + push + open a PR for a worktree session
+	TypeWorktreeConflicts   = "worktree.conflicts"   // files this worktree shares with other active worktrees
+	TypeWorkspaceDiff       = "workspace.diff"       // per-member diff for a cross-repo workspace session
+	TypeWorkspacePR         = "workspace.pr"         // commit + push + open a PR for each workspace member
+	TypeIntegrationConnect  = "integration.connect"  // connect a tracker (Linear/Jira) with a token
+	TypeIntegrationStatus   = "integration.status"   // which trackers are connected
+	TypeIntegrationOAuth    = "integration.oauth"    // begin an OAuth flow; returns an authorize URL
+	TypeIntegrationOAuthApp = "integration.oauthapp" // save a provider's OAuth app client_id/secret
+	TypeIssueList           = "issue.list"           // assigned issues (request + broadcast)
+	TypeIssueStates         = "issue.states"         // workflow states (kanban columns) for a team
+	TypeIssueLaunch         = "issue.launch"         // launch an agent on an issue (worktree)
+	TypeIssueDetail         = "issue.detail"         // full issue + comments
+	TypeIssueUpdate         = "issue.update"         // edit issue fields (partial)
+	TypeIssueComment        = "issue.comment"        // add a comment
+	TypeIssueCommentEdit    = "issue.comment.edit"   // edit an existing comment
+	TypeIssueImage          = "issue.image"          // proxy an auth-gated attachment image
 
 	// Built-in editor file access — all paths validated against project roots + session cwds.
 	TypeFSTree      = "fs.tree"      // list a directory (or the available roots when path is empty)
@@ -235,12 +236,21 @@ type IntegrationConnect struct {
 }
 
 type IntegrationStatus struct {
-	Connected []string `json:"connected"` // provider names currently connected
+	Connected []string `json:"connected"`            // provider names currently connected
+	OAuthApps []string `json:"oauth_apps,omitempty"` // providers with an OAuth app configured (client_id present)
 }
 
 type IntegrationOAuth struct {
 	Provider string `json:"provider"`
 	URL      string `json:"url,omitempty"` // authorize URL (on the response)
+}
+
+// IntegrationOAuthApp stores a provider's OAuth app credentials so the OAuth flow can start
+// from the app without hand-editing integrations.json.
+type IntegrationOAuthApp struct {
+	Provider     string `json:"provider"`
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
 }
 
 type Issue struct {

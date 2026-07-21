@@ -123,6 +123,40 @@ func (m *Manager) AddProvider(name string, p Provider) {
 	m.mu.Unlock()
 }
 
+// SetOAuthApp stores a provider's OAuth app credentials (client_id/secret) so the OAuth flow can
+// start without hand-editing integrations.json. These are the OAuth APP's creds, not a user token.
+func (m *Manager) SetOAuthApp(provider, clientID, clientSecret string) error {
+	m.mu.Lock()
+	switch provider {
+	case "linear":
+		m.cfg.Linear.ClientID, m.cfg.Linear.ClientSecret = clientID, clientSecret
+	case "jira":
+		m.cfg.Jira.ClientID, m.cfg.Jira.ClientSecret = clientID, clientSecret
+	default:
+		m.mu.Unlock()
+		return fmt.Errorf("oauth not supported for %q", provider)
+	}
+	cfg := m.cfg
+	m.mu.Unlock()
+	m.save(cfg)
+	return nil
+}
+
+// OAuthApps reports which providers have an OAuth app configured (client_id present), so the app
+// can show the OAuth button vs a "add your OAuth app" prompt.
+func (m *Manager) OAuthApps() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []string
+	if m.cfg.Linear.ClientID != "" {
+		out = append(out, "linear")
+	}
+	if m.cfg.Jira.ClientID != "" {
+		out = append(out, "jira")
+	}
+	return out
+}
+
 // Connected returns the names of connected providers.
 func (m *Manager) Connected() []string {
 	m.mu.Lock()

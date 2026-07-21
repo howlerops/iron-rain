@@ -66,6 +66,11 @@ public final class Model: ObservableObject {
     // Trackers (Linear/Jira).
     @Published public var issues: [Issue] = []
     @Published public var connectedTrackers: [String] = []
+    // Trackers that have an OAuth app configured (client_id present) — drives whether the connect
+    // screen shows the OAuth button or asks for the OAuth app credentials.
+    @Published public var oauthApps: [String] = []
+    // Last tracker-connect/OAuth error, surfaced on the connect screen.
+    @Published public var trackerError: String?
     @Published public var oauthURL: URL? // set when an OAuth flow returns an authorize URL to open
     /// Options applied to the NEXT session created (by the first send). Set via newSession(...).
     @Published public var newSessionProvider = "opencode"
@@ -581,14 +586,39 @@ public final class Model: ObservableObject {
         }
     }
 
-    /// Begins a Linear OAuth flow; the daemon returns an authorize URL to open in a browser.
     /// Begins an OAuth flow for a tracker (linear/jira). The daemon replies with an authorize URL,
-    /// which the receive loop surfaces via `oauthURL` for the view to open.
+    /// which is opened in a browser. Surfaces a clear error (e.g. no OAuth app configured) via
+    /// `trackerError` instead of silently doing nothing.
     public func startOAuth(provider: String) async {
-        guard let client else { return }
-        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.integrationOAuth,
-                                          payload: IntegrationOAuth(provider: provider)) {
-            try? await client.send(env)
+        guard client != nil else { return }
+        trackerError = nil
+        do {
+            let resp = try await request(MessageType.integrationOAuth, payload: IntegrationOAuth(provider: provider))
+            if let oa = try? resp.payload(as: IntegrationOAuth.self), let u = oa.url, let url = URL(string: u) {
+                oauthURL = url
+            } else {
+                trackerError = "\(provider): the daemon didn't return an authorize URL."
+            }
+        } catch {
+            trackerError = "Couldn't start \(provider) OAuth: \(error.localizedDescription)"
+        }
+    }
+
+    /// Saves a tracker's OAuth app credentials (client_id/secret) on the daemon, then starts the
+    /// OAuth flow — so the user never has to hand-edit integrations.json.
+    public func setOAuthApp(provider: String, clientID: String, clientSecret: String) async {
+        guard client != nil else { return }
+        trackerError = nil
+        do {
+            let resp = try await request(MessageType.integrationOAuthApp,
+                                         payload: IntegrationOAuthApp(provider: provider, clientID: clientID, clientSecret: clientSecret))
+            if let st = try? resp.payload(as: IntegrationStatus.self) {
+                connectedTrackers = st.connected
+                oauthApps = st.oauthApps ?? []
+            }
+            await startOAuth(provider: provider)
+        } catch {
+            trackerError = "Couldn't save the \(provider) OAuth app: \(error.localizedDescription)"
         }
     }
 
@@ -1062,6 +1092,7 @@ public final class Model: ObservableObject {
                         sessions = sl.sessions
                     } else if keys.contains("connected"), let st = try? env.payload(as: IntegrationStatus.self) {
                         connectedTrackers = st.connected
+                        oauthApps = st.oauthApps ?? []
                     } else if keys.contains("issues"), let il = try? env.payload(as: IssueList.self) {
                         issues = il.issues
                     } else if keys.contains("url"), keys.contains("provider"), let oa = try? env.payload(as: IntegrationOAuth.self), let u = oa.url, let url = URL(string: u) {
@@ -1151,6 +1182,7 @@ public final class Model: ObservableObject {
                 case MessageType.integrationStatus: // broadcast after (re)connect
                     if let st = try? env.payload(as: IntegrationStatus.self) {
                         connectedTrackers = st.connected
+                        oauthApps = st.oauthApps ?? []
                     }
                 case MessageType.lspDiagnostics: // language server published diagnostics for a file
                     if let d = try? env.payload(as: LSPDiagnostics.self) {

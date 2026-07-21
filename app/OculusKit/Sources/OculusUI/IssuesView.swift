@@ -11,8 +11,6 @@ public struct IssuesView: View {
 
     var embedded = false // macOS: rendered inside a NavigationSplitView detail (no own nav/toolbar)
     @State private var kanban = true
-    @State private var token = ""
-    @State private var jiraToken = ""
     @State private var launching: Issue?
     @State private var selectedIssue: Issue?
     @State private var searchText = ""
@@ -240,69 +238,31 @@ public struct IssuesView: View {
 
     private var connectScreen: some View {
         ScrollView {
-            VStack(spacing: 22) {
+            VStack(spacing: 20) {
                 Image(systemName: "checklist").font(.system(size: 44)).foregroundStyle(palette.primary)
                 Text("Connect your issue tracker").font(.title2.bold())
                 Text("See your assigned issues and launch agents on them — a worktree per ticket, its PR linked back automatically.")
                     .font(.subheadline).foregroundStyle(palette.mutedForeground)
                     .multilineTextAlignment(.center).padding(.horizontal, 28)
-
-                // Linear
-                trackerCard(name: "Linear", systemImage: "link") {
-                    Button { Task { await model.startOAuth(provider: "linear") } } label: {
-                        Label("Connect with Linear", systemImage: "link").frame(maxWidth: 340)
-                    }
-                    .buttonStyle(.borderedProminent).tint(palette.primary)
-                    Text("or paste an API key (Settings → Security & access → Personal API keys)")
-                        .font(.caption2).foregroundStyle(palette.mutedForeground).multilineTextAlignment(.center)
-                    SecureField("Linear API key", text: $token)
-                        .textFieldStyle(.roundedBorder).frame(maxWidth: 340)
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled()
-                        #endif
-                    Button("Connect with key") {
-                        let t = token; token = ""
-                        Task { await model.connectTracker(provider: "linear", token: t) }
-                    }
-                    .buttonStyle(.bordered).tint(palette.primary).disabled(token.isEmpty)
+                if let err = model.trackerError {
+                    Label(err, systemImage: "exclamationmark.triangle.fill").font(.caption)
+                        .foregroundStyle(.orange).multilineTextAlignment(.center).padding(.horizontal, 24)
                 }
-
-                // Jira (Atlassian OAuth 2.0 3LO)
-                trackerCard(name: "Jira", systemImage: "square.stack.3d.up") {
-                    Button { Task { await model.startOAuth(provider: "jira") } } label: {
-                        Label("Connect with Jira", systemImage: "link").frame(maxWidth: 340)
-                    }
-                    .buttonStyle(.borderedProminent).tint(palette.primary)
-                    Text("Opens Atlassian to authorize. (Needs the OAuth app's client_id/secret in the daemon's ~/.oculus/integrations.json.)")
-                        .font(.caption2).foregroundStyle(palette.mutedForeground).multilineTextAlignment(.center)
-                    Text("or paste an API token as  site|email|token")
-                        .font(.caption2).foregroundStyle(palette.mutedForeground).multilineTextAlignment(.center)
-                    SecureField("https://you.atlassian.net|you@co.com|token", text: $jiraToken)
-                        .textFieldStyle(.roundedBorder).frame(maxWidth: 340)
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled()
-                        #endif
-                    Button("Connect with token") {
-                        let t = jiraToken; jiraToken = ""
-                        Task { await model.connectTracker(provider: "jira", token: t) }
-                    }
-                    .buttonStyle(.bordered).tint(palette.primary).disabled(jiraToken.isEmpty)
-                }
+                TrackerConnectCard(model: model, provider: "linear", displayName: "Linear",
+                                   systemImage: "link", palette: palette,
+                                   tokenLabel: "API key",
+                                   tokenHelp: "Linear → Settings → Security & access → Personal API keys.",
+                                   setupHelp: "Create an OAuth app at linear.app/settings/api, then paste its Client ID + Secret here.")
+                TrackerConnectCard(model: model, provider: "jira", displayName: "Jira",
+                                   systemImage: "square.stack.3d.up", palette: palette,
+                                   tokenLabel: "site|email|token",
+                                   tokenHelp: "Paste as https://you.atlassian.net|you@co.com|apitoken (id.atlassian.com → API tokens).",
+                                   setupHelp: "Create an OAuth 2.0 (3LO) app at developer.atlassian.com/console. Callback: http://127.0.0.1:6900/oauth/jira/callback. Scopes: read:jira-work, write:jira-work, read:jira-user, offline_access. Then paste its Client ID + Secret here.")
             }
             .padding(.vertical, 28)
             .frame(maxWidth: .infinity)
         }
-    }
-
-    @ViewBuilder private func trackerCard<Content: View>(name: String, systemImage: String, @ViewBuilder _ content: () -> Content) -> some View {
-        VStack(spacing: 10) {
-            Label(name, systemImage: systemImage).font(.headline)
-            content()
-        }
-        .padding(18)
-        .frame(maxWidth: 400)
-        .background(palette.secondary.opacity(0.35), in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(palette.border))
+        .task { await model.loadIntegrationStatus() }
     }
 
     // MARK: kanban
@@ -445,5 +405,96 @@ struct LaunchIssueSheet: View {
             }
             .task { await model.loadProjects() }
         }
+    }
+}
+
+/// One tracker's connect card: OAuth when its OAuth app is configured, an inline "set up the OAuth
+/// app" form (client_id + secret) when it isn't — so users never hand-edit integrations.json — plus
+/// a token/key fallback. Fixes the old "OAuth button does nothing" (no app configured, no feedback).
+struct TrackerConnectCard: View {
+    @ObservedObject var model: Model
+    let provider: String
+    let displayName: String
+    let systemImage: String
+    let palette: OculusPalette
+    let tokenLabel: String
+    let tokenHelp: String
+    let setupHelp: String
+
+    @State private var clientID = ""
+    @State private var clientSecret = ""
+    @State private var tokenField = ""
+    @State private var addingApp = false
+    @State private var showToken = false
+
+    private var configured: Bool { model.oauthApps.contains(provider) }
+    private var connected: Bool { model.connectedTrackers.contains(provider) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: systemImage).foregroundStyle(palette.primary)
+                Text(displayName).font(.headline)
+                Spacer()
+                if connected {
+                    Label("Connected", systemImage: "checkmark.circle.fill")
+                        .font(.caption).foregroundStyle(.green)
+                }
+            }
+
+            if configured {
+                oauthButton("Connect with \(displayName)")
+            } else if addingApp {
+                Text(setupHelp).font(.caption2).foregroundStyle(palette.mutedForeground)
+                field(TextField("Client ID", text: $clientID))
+                field(SecureField("Client secret", text: $clientSecret))
+                Button {
+                    let cid = clientID, sec = clientSecret
+                    Task { await model.setOAuthApp(provider: provider, clientID: cid, clientSecret: sec) }
+                } label: { Text("Save & connect").frame(maxWidth: .infinity) }
+                .buttonStyle(.borderedProminent).tint(palette.primary)
+                .disabled(clientID.isEmpty || clientSecret.isEmpty)
+            } else {
+                Button { addingApp = true } label: {
+                    Label("Set up \(displayName) OAuth", systemImage: "link").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent).tint(palette.primary)
+            }
+
+            Button { withAnimation { showToken.toggle() } } label: {
+                Text(showToken ? "Hide token option" : "or connect with a \(tokenLabel)")
+                    .font(.caption).foregroundStyle(palette.mutedForeground)
+            }
+            .buttonStyle(.plain)
+            if showToken {
+                Text(tokenHelp).font(.caption2).foregroundStyle(palette.mutedForeground)
+                field(SecureField(tokenLabel, text: $tokenField))
+                Button("Connect with token") {
+                    let t = tokenField; tokenField = ""
+                    Task { await model.connectTracker(provider: provider, token: t) }
+                }
+                .buttonStyle(.bordered).tint(palette.primary).disabled(tokenField.isEmpty)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: 440)
+        .background(palette.secondary.opacity(0.35), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(palette.border))
+    }
+
+    private func oauthButton(_ title: String) -> some View {
+        Button { Task { await model.startOAuth(provider: provider) } } label: {
+            Label(title, systemImage: "link").frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.borderedProminent).tint(palette.primary)
+    }
+
+    private func field<F: View>(_ f: F) -> some View {
+        let styled = f.textFieldStyle(.roundedBorder)
+        #if os(iOS)
+        return styled.textInputAutocapitalization(.never).autocorrectionDisabled()
+        #else
+        return styled
+        #endif
     }
 }

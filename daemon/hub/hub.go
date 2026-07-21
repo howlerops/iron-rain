@@ -893,48 +893,49 @@ func (h *Hub) Serve(ctx context.Context, conn *transport.Conn) error {
 func asyncDispatch(typ string) bool {
 	switch typ {
 	case protocol.TypeSessionCreate, // worktree.Create + Bootstrap (setup hooks) + provider Create
-		protocol.TypeIssueLaunch,        // same startSession path as create
-		protocol.TypeWorktreeDiff,       // git diff
-		protocol.TypeWorktreeRemove,     // provider Stop/Close + git remove/prune
-		protocol.TypeWorktreePR,         // git CommitAll/Push/CreatePR
-		protocol.TypeWorktreeConflicts,  // git per-worktree ChangedFiles
-		protocol.TypeWorkspaceDiff,      // git diff per workspace member
-		protocol.TypeWorkspacePR,        // git commit/push/PR per workspace member
-		protocol.TypeSessionChild,       // provider Create for a scoped sub-agent
-		protocol.TypeIntegrationConnect, // tracker HTTP
-		protocol.TypeIntegrationOAuth,   // tracker HTTP
-		protocol.TypeIssueStates,        // tracker HTTP
-		protocol.TypeIssueDetail,        // tracker HTTP
-		protocol.TypeIssueUpdate,        // tracker HTTP
-		protocol.TypeIssueComment,       // tracker HTTP
-		protocol.TypeIssueCommentEdit,   // tracker HTTP
-		protocol.TypeIssueImage,         // tracker HTTP (image fetch)
-		protocol.TypeSessionPrompt,      // provider prompt (may be network)
-		protocol.TypeApprovalRespond,    // provider Respond (may be network)
-		protocol.TypeSessionAttach,      // provider Attach
-		protocol.TypeSessionStop,        // provider Stop
-		protocol.TypeSessionInterrupt,   // provider Stop (interrupt only)
-		protocol.TypeFSTree,             // disk: dir listing
-		protocol.TypeFSRead,             // disk: file read
-		protocol.TypeFSReadBytes,        // disk: raw bytes (images)
-		protocol.TypeFSWrite,            // disk: file write
-		protocol.TypeFSDiff,             // git diff
-		protocol.TypeFSSearch,           // disk: multi-file search
-		protocol.TypeRunTest,            // run tests/build (subprocess)
-		protocol.TypeHandoffList,        // disk-backed store read
-		protocol.TypeLSPReferences,      // language server: references
-		protocol.TypeLSPRename,          // language server: rename
-		protocol.TypeLSPSymbols,         // language server: document symbols
-		protocol.TypeLSPOpen,            // language server: didOpen
-		protocol.TypeLSPChange,          // language server: didChange
-		protocol.TypeLSPClose,           // language server: didClose
-		protocol.TypeLSPHover,           // language server: hover
-		protocol.TypeLSPDefinition,      // language server: definition
-		protocol.TypeLSPComplete,        // language server: completion
-		protocol.TypeLSPFormat,          // language server: format document
-		protocol.TypeLSPServerInfo,      // language server: install status
-		protocol.TypeLSPInstall,         // language server: install (runs a package manager)
-		protocol.TypeDiscover:           // host scan
+		protocol.TypeIssueLaunch,         // same startSession path as create
+		protocol.TypeWorktreeDiff,        // git diff
+		protocol.TypeWorktreeRemove,      // provider Stop/Close + git remove/prune
+		protocol.TypeWorktreePR,          // git CommitAll/Push/CreatePR
+		protocol.TypeWorktreeConflicts,   // git per-worktree ChangedFiles
+		protocol.TypeWorkspaceDiff,       // git diff per workspace member
+		protocol.TypeWorkspacePR,         // git commit/push/PR per workspace member
+		protocol.TypeSessionChild,        // provider Create for a scoped sub-agent
+		protocol.TypeIntegrationConnect,  // tracker HTTP
+		protocol.TypeIntegrationOAuthApp, // writes integrations.json
+		protocol.TypeIntegrationOAuth,    // tracker HTTP
+		protocol.TypeIssueStates,         // tracker HTTP
+		protocol.TypeIssueDetail,         // tracker HTTP
+		protocol.TypeIssueUpdate,         // tracker HTTP
+		protocol.TypeIssueComment,        // tracker HTTP
+		protocol.TypeIssueCommentEdit,    // tracker HTTP
+		protocol.TypeIssueImage,          // tracker HTTP (image fetch)
+		protocol.TypeSessionPrompt,       // provider prompt (may be network)
+		protocol.TypeApprovalRespond,     // provider Respond (may be network)
+		protocol.TypeSessionAttach,       // provider Attach
+		protocol.TypeSessionStop,         // provider Stop
+		protocol.TypeSessionInterrupt,    // provider Stop (interrupt only)
+		protocol.TypeFSTree,              // disk: dir listing
+		protocol.TypeFSRead,              // disk: file read
+		protocol.TypeFSReadBytes,         // disk: raw bytes (images)
+		protocol.TypeFSWrite,             // disk: file write
+		protocol.TypeFSDiff,              // git diff
+		protocol.TypeFSSearch,            // disk: multi-file search
+		protocol.TypeRunTest,             // run tests/build (subprocess)
+		protocol.TypeHandoffList,         // disk-backed store read
+		protocol.TypeLSPReferences,       // language server: references
+		protocol.TypeLSPRename,           // language server: rename
+		protocol.TypeLSPSymbols,          // language server: document symbols
+		protocol.TypeLSPOpen,             // language server: didOpen
+		protocol.TypeLSPChange,           // language server: didChange
+		protocol.TypeLSPClose,            // language server: didClose
+		protocol.TypeLSPHover,            // language server: hover
+		protocol.TypeLSPDefinition,       // language server: definition
+		protocol.TypeLSPComplete,         // language server: completion
+		protocol.TypeLSPFormat,           // language server: format document
+		protocol.TypeLSPServerInfo,       // language server: install status
+		protocol.TypeLSPInstall,          // language server: install (runs a package manager)
+		protocol.TypeDiscover:            // host scan
 		return true
 	}
 	return false
@@ -1299,11 +1300,29 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: m.Connected()})
 
 	case protocol.TypeIntegrationStatus:
-		var connected []string
+		var connected, oauthApps []string
 		if m := h.issuesMgr(); m != nil {
 			connected = m.Connected()
+			oauthApps = m.OAuthApps()
 		}
-		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: connected})
+		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: connected, OAuthApps: oauthApps})
+
+	case protocol.TypeIntegrationOAuthApp:
+		var req protocol.IntegrationOAuthApp
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad integration.oauthapp")
+			return
+		}
+		m := h.issuesMgr()
+		if m == nil {
+			h.sendErr(conn, env.ID, "integrations not enabled")
+			return
+		}
+		if err := m.SetOAuthApp(req.Provider, req.ClientID, req.ClientSecret); err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: m.Connected(), OAuthApps: m.OAuthApps()})
 
 	case protocol.TypeIntegrationOAuth:
 		var req protocol.IntegrationOAuth
