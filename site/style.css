@@ -145,6 +145,11 @@ section[id] { scroll-margin-top: 80px }
 }
 .brand:hover { opacity: 1; text-decoration: none }
 
+/* The logo is wrapped in <picture> for theme-aware swapping (light icon in light mode, dark in
+   dark). display:contents makes the <picture> transparent to layout so the <img> stays the flex
+   child and every existing .mark / .hero-wolf size + alignment rule applies unchanged. */
+picture { display: contents; }
+
 .mark {
   width: 28px;
   height: 28px;
@@ -367,6 +372,21 @@ figcaption {
 .hero-wordmark {
   font-size: clamp(30px, 5.5vw, 56px);
   line-height: 1;
+}
+
+/* The box-drawing "IRON RAIN" banner. Inherits the gold-gradient fill + Fira Code from .wordmark,
+   but MUST reset letter-spacing to 0 (any tracking breaks the glyph connections) and keep the
+   pre's whitespace. */
+.hero-ascii {
+  margin: 0;
+  white-space: pre;
+  letter-spacing: 0;
+  text-transform: none;
+  line-height: 1.1;
+  font-weight: 700;
+  font-size: clamp(6px, 1.7vw, 15px);
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 @media (max-width: 480px) {
