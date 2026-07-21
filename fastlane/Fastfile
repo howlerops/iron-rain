@@ -299,11 +299,28 @@ platform :ios do
   desc "Build + upload without submitting for external review (internal testing only)."
   lane :beta_internal do
     key = asc_key
-    next_build = latest_testflight_build_number(api_key: key, app_identifier: APP_ID, initial_build_number: 0).to_i + 1
+    next_build = latest_testflight_build_number(
+      api_key: key, app_identifier: APP_ID, initial_build_number: 0,
+    ).to_i + 1
+
+    # Same manual-profile signing as :beta (automatic/cloud signing fails here with
+    # "No profiles found"); the only difference is the internal, no-review upload.
+    profiles = provision(key)
     sh("cd .. && xcodegen generate --spec app/project.yml")
-    build_app(project: XCODEPROJ, scheme: SCHEME, export_method: "app-store",
-              xcargs: signing_xcargs(next_build), output_directory: "build", clean: true)
+    build_app(
+      project: XCODEPROJ,
+      scheme: SCHEME,
+      export_method: "app-store",
+      xcargs: "CURRENT_PROJECT_VERSION=#{next_build}",
+      output_directory: "build",
+      clean: true,
+      export_options: {
+        signingStyle: "manual",
+        provisioningProfiles: profiles,
+      },
+    )
     upload_to_testflight(api_key: key, app_identifier: APP_ID, distribute_external: false,
                          changelog: ENV["CHANGELOG"] || "New Iron Rain internal build.")
+    UI.success("Uploaded build #{next_build} to internal testers (no review).")
   end
 end
