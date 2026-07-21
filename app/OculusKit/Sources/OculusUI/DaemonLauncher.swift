@@ -42,7 +42,10 @@ public final class DaemonLauncher: ObservableObject {
         }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: bin)
-        p.arguments = ["serve", "--secret", randomSecret()]
+        // No --secret: the daemon loads/persists a STABLE secret (~/.oculus/secret) so it survives
+        // restarts/reinstalls and already-paired clients stay authorized. Passing a fresh random
+        // secret each launch was rotating it and breaking the phone pairing on every restart.
+        p.arguments = ["serve"]
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
         p.terminationHandler = { [weak self] _ in
@@ -132,8 +135,5 @@ public final class DaemonLauncher: ObservableObject {
         return res == 0
     }
 
-    private func randomSecret() -> String {
-        (0..<16).map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }.joined()
-    }
 }
 #endif

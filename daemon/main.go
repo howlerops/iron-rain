@@ -101,7 +101,7 @@ func serve(args []string) error {
 	}
 	sec := *secret
 	if sec == "" {
-		sec = randomHex(16)
+		sec = loadOrCreateSecret(secretPath()) // stable across restarts so paired clients stay authorized
 	}
 
 	h := hub.New()
@@ -393,6 +393,32 @@ func integrationsPath() string {
 		return "oculus-integrations.json"
 	}
 	return filepath.Join(home, ".oculus", "integrations.json")
+}
+
+func secretPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "oculusd.secret"
+	}
+	return filepath.Join(home, ".oculus", "secret")
+}
+
+// loadOrCreateSecret returns a stable pairing secret persisted at path, generating + writing one
+// on first run. This keeps the secret constant across daemon restarts/reinstalls so an already
+// paired phone (and the local app) stay authorized — a regenerated secret every start would make
+// every restart reject existing pairings with "unauthorized".
+func loadOrCreateSecret(path string) string {
+	if b, err := os.ReadFile(path); err == nil {
+		if s := strings.TrimSpace(string(b)); s != "" {
+			return s
+		}
+	}
+	s := randomHex(16)
+	if dir := filepath.Dir(path); dir != "." {
+		_ = os.MkdirAll(dir, 0o700)
+	}
+	_ = os.WriteFile(path, []byte(s), 0o600) // 0600: the secret is a credential
+	return s
 }
 
 func dbPath() string {

@@ -73,9 +73,13 @@ public final class DesktopStore: ObservableObject {
             desks.append(local.desktop)
         }
         for d in desks { ensureModel(d) }
-        // macOS: refresh the reachable pairing URL on the local model (tunnels change).
+        // macOS: pairing.json is the source of truth for the LOCAL daemon — refresh the model's
+        // credentials + reachable URL from it so a changed secret/ws (e.g. after a reinstall)
+        // doesn't leave us connecting with a stale cached secret and getting "unauthorized".
         if let local, let m = models.first(where: { $0.id == local.desktop.id }) {
             m.pairingPublicURL = local.publicURL
+            m.secret = local.desktop.secret
+            m.wsURL = local.desktop.wsURL
         }
         save()
         if selectedID == nil { selectedID = models.first?.id }

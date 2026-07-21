@@ -70,8 +70,10 @@ fi
 if daemon_up; then
   ok "a daemon is already running on :6000."
 else
-  secret="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-  nohup "$BIN/oculusd" serve --secret "$secret" >"$HOME/.oculus/oculusd.log" 2>&1 &
+  # No --secret: the daemon persists a STABLE secret (~/.oculus/secret) so re-runs/updates keep
+  # already-paired clients authorized instead of rotating the secret and rejecting them.
+  mkdir -p "$HOME/.oculus"
+  nohup "$BIN/oculusd" serve >"$HOME/.oculus/oculusd.log" 2>&1 &
   sleep 1
   ok "started the daemon (log: ~/.oculus/oculusd.log). Scan the pairing QR it printed there."
 fi
