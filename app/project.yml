@@ -108,6 +108,7 @@ targets:
     info:
       path: Oculus/Info-macOS.plist
       properties:
+        CFBundleName: Iron Rain          # macOS menu-bar/app title (defaults to the target name otherwise)
         CFBundleDisplayName: Iron Rain
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
