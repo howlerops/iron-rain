@@ -55,10 +55,14 @@ jobs:
       - uses: actions/checkout@v4
       - run: brew install xcodegen
       - name: Build Iron Rain.app (ad-hoc; curl installer strips quarantine)
+        env:
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         run: |
+          VERSION="${TAG#v}"   # stamp the release version so the app knows it (update check)
           xcodegen generate --spec app/project.yml
           xcodebuild -project app/Oculus.xcodeproj -scheme Oculus-macOS -configuration Release \
             -derivedDataPath build/mac -destination 'platform=macOS' build \
+            MARKETING_VERSION="$VERSION" \
             CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
           cd build/mac/Build/Products/Release
           cp -R "Oculus-macOS.app" "Iron Rain.app"

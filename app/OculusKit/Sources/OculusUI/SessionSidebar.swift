@@ -82,6 +82,10 @@ struct SessionSidebar: View {
     @State private var filter: SessionFilter = .all
     @State private var renamingSessionID: String?
     @State private var renameText = ""
+    #if os(macOS)
+    @StateObject private var updates = UpdateChecker()
+    @State private var showUpdate = false
+    #endif
 
     static let newSessionTag = "__new__"
 
@@ -130,7 +134,75 @@ struct SessionSidebar: View {
         } message: {
             Text("Give this session a name. Leave blank to reset to its default title.")
         }
+        #if os(macOS)
+        .safeAreaInset(edge: .bottom) {
+            if updates.updateAvailable {
+                updateFooter
+            }
+        }
+        .task { await updates.check() }
+        .sheet(isPresented: $showUpdate) { updateSheet }
+        #endif
     }
+
+    #if os(macOS)
+    /// A subtle "an update is ready" pill pinned to the bottom of the sidebar. Only the
+    /// curl-installed macOS app reaches here (iOS updates via TestFlight/App Store).
+    private var updateFooter: some View {
+        Button { showUpdate = true } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "arrow.down.circle.fill").foregroundStyle(palette.primary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Update available").font(.caption.bold())
+                    if let v = updates.latestVersion {
+                        Text("v\(v) — click to update").font(.caption2).foregroundStyle(palette.mutedForeground)
+                    }
+                }
+                Spacer()
+            }
+            .padding(.horizontal, 12).padding(.vertical, 9)
+            .frame(maxWidth: .infinity)
+            .background(palette.secondary.opacity(0.6))
+            .overlay(Rectangle().frame(height: 1).foregroundStyle(palette.border), alignment: .top)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var updateSheet: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Update Iron Rain").font(.headline)
+                Spacer()
+                Button("Done") { showUpdate = false }.keyboardShortcut(.cancelAction)
+            }
+            Text("You're on v\(updates.currentVersion)\(updates.latestVersion.map { " · latest is v\($0)" } ?? ""). "
+                 + "Re-run the installer to update — it replaces the app in place.")
+                .font(.callout).foregroundStyle(palette.mutedForeground)
+            HStack(spacing: 6) {
+                Text(DaemonLauncher.installCommand)
+                    .font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+                    .lineLimit(1).truncationMode(.middle)
+                    .padding(.horizontal, 8).padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(palette.input, in: RoundedRectangle(cornerRadius: 6))
+                Button {
+                    #if canImport(AppKit)
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(DaemonLauncher.installCommand, forType: .string)
+                    #endif
+                } label: { Image(systemName: "doc.on.doc") }.buttonStyle(.borderless).help("Copy")
+            }
+            HStack {
+                Spacer()
+                Link("View release notes", destination: UpdateChecker.releasesURL)
+                    .font(.caption)
+            }
+        }
+        .padding(18)
+        .frame(minWidth: 460)
+        .background(palette.background)
+    }
+    #endif
 
     /// The sidebar body — a plain session `List`, styled by the system as a sidebar. Search
     /// is on the split view; the Sessions/Issues switch is on the detail toolbar. The window
