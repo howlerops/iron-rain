@@ -311,6 +311,23 @@ func (h *Hub) writeBackStarted(provider, issueID, teamID string) {
 	_ = p.Comment(ctx, issueID, "🤖 Iron Rain started an agent on this issue.")
 }
 
+// writeBackPR closes the issue→worktree→PR loop: when an issue-linked session opens a PR, comment
+// the PR URL back on the ticket (and move it to a review state if the tracker has one). Best-effort.
+func (h *Hub) writeBackPR(provider, issueID, prURL string) {
+	if provider == "" || issueID == "" || prURL == "" {
+		return
+	}
+	m := h.issuesMgr()
+	if m == nil {
+		return
+	}
+	p := m.Provider(provider)
+	if p == nil {
+		return
+	}
+	_ = p.Comment(context.Background(), issueID, "🤖 Iron Rain opened a PR for this issue: "+prURL)
+}
+
 // promptSession sends text (+ optional images) to a session, using the multimodal path
 // when images are present and the session supports it, else falling back to text.
 func promptSession(ctx context.Context, sess agent.Session, text string, images []protocol.ImageAttachment) error {
@@ -1207,6 +1224,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			return
 		}
 		url, _ := worktree.CreatePR(ctx, wtPath, branch, title, req.Body) // gh optional; branch is pushed regardless
+		if url != "" && m.meta.issueID != "" {
+			go h.writeBackPR(m.meta.issueProvider, m.meta.issueID, url) // close the loop on the linked ticket
+		}
 		h.sendOK(conn, env.ID, protocol.WorktreePRResult{SessionID: req.SessionID, Branch: branch, Pushed: true, URL: url})
 
 	case protocol.TypeWorktreeConflicts:
