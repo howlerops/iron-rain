@@ -188,6 +188,10 @@ public struct FSWriteReq: Codable {
     public init(path: String, content: String, baseSha: String) {
         self.path = path; self.content = content; self.baseSha = baseSha
     }
+    // The envelope encoder does NOT convert to snake_case, so multi-word keys need explicit
+    // CodingKeys — without this `baseSha` shipped verbatim, the daemon read "" and treated every
+    // save as a conflict, so the built-in editor could never write an existing file.
+    enum CodingKeys: String, CodingKey { case path, content; case baseSha = "base_sha" }
 }
 
 // MARK: - LSP (editor diagnostics/linting/types/definition)
@@ -337,6 +341,10 @@ public struct FSDiffReq: Codable {
     public var sessionID: String?
     public var path: String?
     public init(sessionID: String? = nil, path: String? = nil) { self.sessionID = sessionID; self.path = path }
+    // Explicit CodingKeys (the envelope encoder isn't snake_case-converting) — otherwise `sessionID`
+    // shipped verbatim, the daemon read "", and a session diff request had neither a session_id nor
+    // a path, so the session-diff view always errored.
+    enum CodingKeys: String, CodingKey { case path; case sessionID = "session_id" }
 }
 public struct FSDiff: Codable {
     public var path: String?
