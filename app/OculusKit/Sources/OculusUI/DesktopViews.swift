@@ -78,6 +78,25 @@ public struct RootView: View {
     /// close/reopen. iOS keeps a bottom TabView, which is the right idiom there.
     @ViewBuilder private func mainSurface(_ model: Model) -> some View {
         #if os(macOS)
+        // No sessions yet → skip the sidebar+chat split entirely and show a single, unmistakable
+        // CTA (or Issues if that mode is selected). The split view returns once a session exists.
+        if model.sessions.isEmpty {
+            Group {
+                if selectedTab == 1 {
+                    IssuesView(model: model, palette: palette, embedded: true) { selectedTab = 0 }
+                } else {
+                    EmptySessionsCTA(palette: palette,
+                                     onNew: { newSessionTakeOver = false; showNewSession = true },
+                                     onTakeOver: { newSessionTakeOver = true; showNewSession = true })
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(palette.background)
+            .toolbar { modeToolbar(model) }
+            .sheet(isPresented: $showNewSession) {
+                NewSessionView(model: model, palette: palette, initialTakeOver: newSessionTakeOver) { showNewSession = false }
+            }
+        } else {
         // NavigationSplitView on macOS 26 ignores the height proposal and reports its own
         // ideal (~1884pt), which the window host then centers — so the sidebar's content
         // hangs above the viewport and can't scroll. A GeometryReader gives us the real
@@ -104,6 +123,7 @@ public struct RootView: View {
             .sheet(isPresented: $showNewSession) {
                 NewSessionView(model: model, palette: palette, initialTakeOver: newSessionTakeOver) { showNewSession = false }
             }
+        }
         }
         #else
         TabView(selection: $selectedTab) {
@@ -146,18 +166,34 @@ public struct RootView: View {
             }
         }
         #if os(macOS)
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                Picker("View", selection: $selectedTab) {
-                    Text("Sessions").tag(0)
-                    Text("Issues").tag(1)
-                    Text("Code").tag(2)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 180)
-            }
+        .toolbar { modeToolbar(model) }
+        // If the open session closes while Code is showing, fall back to Sessions.
+        .onChange(of: model.currentSession?.id) { sid in
+            if selectedTab == 2 && sid == nil && reviewSessionID == nil { selectedTab = 0 }
         }
         #endif
+    }
+
+    #if os(macOS)
+    /// The Sessions/Issues/Code segmented switch (Code only while a session is open — it's a
+    /// per-session view). Shared by the split view and the empty state.
+    @ToolbarContentBuilder private func modeToolbar(_ model: Model) -> some ToolbarContent {
+        ToolbarItem(placement: .principal) {
+            Picker("View", selection: $selectedTab) {
+                Text("Sessions").tag(0)
+                Text("Issues").tag(1)
+                if hasSession(model) {
+                    Text("Code").tag(2)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(width: hasSession(model) ? 210 : 150)
+        }
+    }
+    #endif
+
+    private func hasSession(_ model: Model) -> Bool {
+        model.currentSession != nil || reviewSessionID != nil
     }
 
     private func handleSelection(_ sel: String?, _ model: Model) {
@@ -171,6 +207,40 @@ public struct RootView: View {
         } else if let d = model.discovered.first(where: { $0.sessionID == sel }) {
             Task { await model.attach(d) }
         }
+    }
+}
+
+/// The no-sessions empty state: a single centered CTA (start a session or take over a terminal),
+/// shown instead of the sidebar+chat split so the first action is unmistakable.
+struct EmptySessionsCTA: View {
+    let palette: OculusPalette
+    let onNew: () -> Void
+    let onTakeOver: () -> Void
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Image("WolfMark").resizable().scaledToFit().frame(width: 60, height: 60).opacity(0.9)
+            VStack(spacing: 5) {
+                Text("No sessions yet").font(.title2.bold())
+                Text("Start an agent on one of your projects, or take over a session already running in a terminal.")
+                    .font(.subheadline).foregroundStyle(palette.mutedForeground)
+                    .multilineTextAlignment(.center).frame(maxWidth: 380)
+            }
+            VStack(spacing: 10) {
+                Button(action: onNew) {
+                    Label("New session", systemImage: "plus").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent).tint(palette.primary).controlSize(.large)
+                Button(action: onTakeOver) {
+                    Label("Take over a terminal session", systemImage: "arrow.down.right.circle").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered).tint(palette.primary).controlSize(.large)
+            }
+            .frame(maxWidth: 360)
+            .padding(.top, 4)
+        }
+        .padding(40)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
