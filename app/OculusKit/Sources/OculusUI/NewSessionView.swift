@@ -21,6 +21,7 @@ struct NewSessionView: View {
     @State private var workspaceName = ""
     @State private var terminalSearch = ""
     @State private var scanning = false
+    @State private var showBrowser = false
     @State private var mode: Mode
     #if os(iOS)
     @State private var addPath = ""
@@ -80,6 +81,11 @@ struct NewSessionView: View {
         #endif
         .background(palette.background)
         .task { await model.loadProjects(); await scan() }
+        .sheet(isPresented: $showBrowser) {
+            FolderBrowser(model: model, palette: palette,
+                          onPicked: { added in for p in added { selectedProjects.insert(p.id) } },
+                          onClose: { showBrowser = false })
+        }
     }
 
     // MARK: header / footer
@@ -231,32 +237,43 @@ struct NewSessionView: View {
     }
 
     @ViewBuilder private var addFolderRow: some View {
-        #if os(macOS)
-        Button {
-            if let path = pickFolder() {
-                Task { if let p = await model.addProject(path: path) { selectedProjects.insert(p.id) } }
+        VStack(spacing: 8) {
+            // Primary: browse into a folder and pick several sub-folders at once (e.g. a "projects"
+            // folder → check N repos, each gets its own worktree). Works on iOS + macOS.
+            Button { showBrowser = true } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "folder.badge.plus").foregroundStyle(palette.primary)
+                    Text("Browse folders…").font(.system(size: 13, weight: .medium)).foregroundStyle(palette.primary)
+                    Spacer()
+                    Text("pick several").font(.caption2).foregroundStyle(palette.mutedForeground)
+                }
+                .padding(.horizontal, 10).padding(.vertical, 9)
+                .background(RoundedRectangle(cornerRadius: 8).strokeBorder(palette.primary.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+                .contentShape(Rectangle())
             }
-        } label: {
+            .buttonStyle(.plain)
+
+            #if os(macOS)
+            // Secondary: the native picker (also multi-select — cmd-click several).
+            Button {
+                let paths = pickFolders()
+                guard !paths.isEmpty else { return }
+                Task { for path in paths { if let p = await model.addProject(path: path) { selectedProjects.insert(p.id) } } }
+            } label: {
+                Text("or use the system picker…").font(.caption).foregroundStyle(palette.mutedForeground)
+            }
+            .buttonStyle(.plain)
+            #else
             HStack(spacing: 8) {
-                Image(systemName: "folder.badge.plus").foregroundStyle(palette.primary)
-                Text("Add folder…").font(.system(size: 13, weight: .medium)).foregroundStyle(palette.primary)
-                Spacer()
+                TextField("…or add by path", text: $addPath)
+                    .textFieldStyle(.roundedBorder).autocorrectionDisabled()
+                Button("Add") {
+                    let p = addPath; addPath = ""
+                    Task { if let proj = await model.addProject(path: p) { selectedProjects.insert(proj.id) } }
+                }.disabled(addPath.isEmpty)
             }
-            .padding(.horizontal, 10).padding(.vertical, 9)
-            .background(RoundedRectangle(cornerRadius: 8).strokeBorder(palette.primary.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
-            .contentShape(Rectangle())
+            #endif
         }
-        .buttonStyle(.plain)
-        #else
-        HStack(spacing: 8) {
-            TextField("Add folder by path", text: $addPath)
-                .textFieldStyle(.roundedBorder).autocorrectionDisabled()
-            Button("Add") {
-                let p = addPath; addPath = ""
-                Task { if let proj = await model.addProject(path: p) { selectedProjects.insert(proj.id) } }
-            }.disabled(addPath.isEmpty)
-        }
-        #endif
     }
 
     // MARK: take-over body
@@ -383,13 +400,134 @@ struct NewSessionView: View {
     }
 
     #if os(macOS)
-    private func pickFolder() -> String? {
+    private func pickFolders() -> [String] {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Add Project"
-        return panel.runModal() == .OK ? panel.url?.path : nil
+        panel.allowsMultipleSelection = true // cmd-click several sub-folders at once
+        panel.prompt = "Add"
+        return panel.runModal() == .OK ? panel.urls.map(\.path) : []
     }
     #endif
+}
+
+/// Browse INTO a folder and pick several sub-folders for one session — e.g. open a "projects"
+/// folder, check the repos you want, and each becomes a project (worktree per repo when isolated).
+/// Selections persist across navigation, so you can gather folders from more than one parent.
+struct FolderBrowser: View {
+    @ObservedObject var model: Model
+    let palette: OculusPalette
+    let onPicked: ([Project]) -> Void
+    let onClose: () -> Void
+
+    @State private var listing: ProjectBrowse?
+    @State private var selected: Set<String> = [] // absolute paths
+    @State private var loading = true
+    @State private var adding = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Add folders").font(.system(size: 16, weight: .semibold))
+                Spacer()
+                Button { onClose() } label: {
+                    Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).foregroundStyle(palette.mutedForeground)
+                        .frame(width: 22, height: 22).background(Circle().fill(palette.muted.opacity(0.5)))
+                }.buttonStyle(.plain)
+            }
+            .padding()
+
+            // Path bar with an "up" control.
+            HStack(spacing: 8) {
+                Button { if let p = listing?.parent, !p.isEmpty { Task { await load(p) } } } label: {
+                    Image(systemName: "arrow.up").font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle((listing?.parent ?? "").isEmpty ? palette.mutedForeground : palette.primary)
+                }
+                .buttonStyle(.plain).disabled((listing?.parent ?? "").isEmpty)
+                Text(listing?.path ?? "…").font(.system(size: 12, design: .monospaced))
+                    .lineLimit(1).truncationMode(.head).foregroundStyle(palette.mutedForeground)
+                Spacer()
+            }
+            .padding(.horizontal, 14).padding(.bottom, 8)
+            Divider().overlay(palette.border)
+
+            ScrollView {
+                if loading {
+                    ProgressView().padding(40)
+                } else if let entries = listing?.entries, !entries.isEmpty {
+                    LazyVStack(spacing: 2) {
+                        ForEach(entries) { entry in row(entry) }
+                    }.padding(10)
+                } else {
+                    Text("No sub-folders here.").font(.caption).foregroundStyle(palette.mutedForeground).padding(40)
+                }
+            }
+
+            Divider().overlay(palette.border)
+            HStack {
+                Text("\(selected.count) selected").font(.caption).foregroundStyle(palette.mutedForeground)
+                Spacer()
+                Button("Cancel") { onClose() }.keyboardShortcut(.cancelAction)
+                Button {
+                    Task { await addSelected() }
+                } label: { Text(adding ? "Adding…" : "Add \(selected.count)").frame(minWidth: 56) }
+                    .buttonStyle(.borderedProminent).tint(palette.primary)
+                    .disabled(selected.isEmpty || adding)
+            }
+            .padding()
+        }
+        #if os(macOS)
+        .frame(width: 520, height: 560)
+        #endif
+        .background(palette.background)
+        .task { await load(nil) }
+    }
+
+    private func row(_ e: ProjectDirEntry) -> some View {
+        let sel = selected.contains(e.path)
+        return HStack(spacing: 10) {
+            Image(systemName: sel ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(sel ? palette.primary : palette.mutedForeground)
+            Image(systemName: e.isGitRepo ? "arrow.triangle.branch" : "folder")
+                .font(.system(size: 13)).foregroundStyle(e.isGitRepo ? palette.primary : palette.mutedForeground)
+            Text(e.name).font(.system(size: 13)).foregroundStyle(palette.foreground).lineLimit(1)
+            if e.isGitRepo {
+                Text("git").font(.system(size: 9, weight: .semibold)).foregroundStyle(palette.primary)
+                    .padding(.horizontal, 5).padding(.vertical, 1)
+                    .background(Capsule().fill(palette.primary.opacity(0.14)))
+            }
+            Spacer()
+            // Navigate INTO the folder (browse deeper) — distinct from selecting it.
+            Button { Task { await load(e.path) } } label: {
+                Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(palette.mutedForeground)
+                    .frame(width: 26, height: 26).contentShape(Rectangle())
+            }.buttonStyle(.plain)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 7)
+        .background(RoundedRectangle(cornerRadius: 7).fill(sel ? palette.primary.opacity(0.10) : palette.muted.opacity(0.18)))
+        .contentShape(Rectangle())
+        .onTapGesture { toggle(e.path) } // tapping the row selects; the chevron navigates in
+    }
+
+    private func toggle(_ p: String) {
+        if selected.contains(p) { selected.remove(p) } else { selected.insert(p) }
+    }
+
+    private func load(_ path: String?) async {
+        loading = true
+        let res = await model.browseFolders(path: path)
+        if let res { listing = res }
+        loading = false
+    }
+
+    private func addSelected() async {
+        adding = true
+        var added: [Project] = []
+        for path in selected {
+            if let p = await model.addProject(path: path) { added.append(p) }
+        }
+        adding = false
+        onPicked(added)
+        onClose()
+    }
 }

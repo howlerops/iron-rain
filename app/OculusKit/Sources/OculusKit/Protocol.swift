@@ -18,6 +18,7 @@ public enum MessageType {
     public static let providerList = "provider.list"
     public static let projectList = "project.list"
     public static let projectAdd = "project.add"
+    public static let projectBrowse = "project.browse"
     public static let projectRemove = "project.remove"
     public static let worktreeDiff = "worktree.diff"
     public static let workspaceDiff = "workspace.diff"
@@ -560,6 +561,22 @@ public struct Project: Codable, Identifiable, Hashable {
 public struct ProjectAdd: Codable {
     public var path: String
     public init(path: String) { self.path = path }
+}
+public struct ProjectBrowseReq: Codable {
+    public var path: String?
+    public init(path: String?) { self.path = path }
+}
+public struct ProjectDirEntry: Codable, Identifiable, Hashable {
+    public var name: String
+    public var path: String
+    public var isGitRepo: Bool
+    public var id: String { path }
+    enum CodingKeys: String, CodingKey { case name, path; case isGitRepo = "is_git_repo" }
+}
+public struct ProjectBrowse: Codable {
+    public var path: String
+    public var parent: String?
+    public var entries: [ProjectDirEntry]
 }
 public struct ProjectRef: Codable {
     public var projectID: String

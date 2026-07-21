@@ -778,6 +778,16 @@ public final class Model: ObservableObject {
         }
     }
 
+    /// Lists the subdirectories of `path` (nil = the user's home) for the new-session folder picker,
+    /// so you can browse INTO a folder and select several sub-folders. Returns nil on failure.
+    public func browseFolders(path: String?) async -> ProjectBrowse? {
+        guard client != nil else { return nil }
+        if let resp = try? await request(MessageType.projectBrowse, payload: ProjectBrowseReq(path: path)) {
+            return try? resp.payload(as: ProjectBrowse.self)
+        }
+        return nil
+    }
+
     public func removeProject(id: String) async {
         guard let client else { return }
         if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.projectRemove, payload: ProjectRef(projectID: id)) {
