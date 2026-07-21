@@ -541,12 +541,14 @@ public final class Model: ObservableObject {
     /// looked like "nothing happened"). The provider makes an idle session; the first message
     /// then prompts it. 2+ folders → a multi-root workspace (common ancestor, no worktree).
     public func createSession(provider: String, projectIDs: [String]? = nil, worktree: Bool = false, workspaceName: String? = nil, plan: Bool = false, autonomous: Bool = false) async {
-        guard let client else { return }
-        newSession() // clear the conversation; the created session arrives via the OK/broadcast
+        guard client != nil else { return }
+        newSession() // clear the conversation; the created session replaces it on success
         self.autonomous = autonomous
         let multi = (projectIDs?.count ?? 0) > 1
         do {
-            let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.sessionCreate,
+            // Await the reply so a failure (e.g. the provider's backend is unreachable) surfaces to
+            // the user instead of silently doing nothing. On success the daemon returns the Session.
+            let resp = try await request(MessageType.sessionCreate,
                 payload: SessionCreate(provider: provider,
                                        projectID: multi ? nil : projectIDs?.first,
                                        projectIDs: multi ? projectIDs : nil,
@@ -555,9 +557,14 @@ public final class Model: ObservableObject {
                                        workspaceName: workspaceName,
                                        plan: plan ? true : nil,
                                        autonomous: autonomous ? true : nil))
-            try await client.send(env)
+            let s = try resp.payload(as: Session.self)
+            sessionID = s.id
+            currentSession = s
+            refreshLiveActivity()
+            await loadSessions() // reflect the new session in the sidebar
         } catch {
-            status = "Create failed: \(error.localizedDescription)"
+            status = "Couldn’t start \(provider): \(error.localizedDescription)"
+            statusDetail = "Check that the \(provider) agent is installed and running, or pick another agent."
         }
     }
 
@@ -1200,6 +1207,14 @@ public final class Model: ObservableObject {
                         currentSession = s
                         refreshLiveActivity()
                         Task { await loadSessions() } // reflect the new session in the sidebar
+                    }
+                case MessageType.error:
+                    // An uncorrelated error (a fire-and-forget send the daemon rejected, e.g. a
+                    // session that couldn't start) — surface it instead of silently doing nothing.
+                    if let e = try? env.payload(as: [String: String].self), let m = e["message"] {
+                        status = "Error"
+                        statusDetail = m
+                        busy = false
                     }
                 case MessageType.sessionMessage:
                     if let m = try? env.payload(as: SessionMessage.self) {
