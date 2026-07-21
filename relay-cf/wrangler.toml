@@ -1,0 +1,18 @@
+# Iron Rain relay on Cloudflare — one Durable Object per server_id bridges a daemon (host) and an
+# app (client). Runs at the edge nearest whoever connects, and WebSocket Hibernation makes the
+# always-open idle host connection cost ~nothing. Deploy:  cd relay-cf && npx wrangler deploy
+name = "oculus-relay"
+main = "src/index.ts"
+compatibility_date = "2026-04-07" # enables web_socket_auto_reply_to_close + current DO semantics
+
+[[durable_objects.bindings]]
+name = "RELAY"
+class_name = "RelayDO"
+
+# SQLite-backed DO class (required for the free plan; the bridge itself keeps no storage).
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RelayDO"]
+
+[observability]
+enabled = true
