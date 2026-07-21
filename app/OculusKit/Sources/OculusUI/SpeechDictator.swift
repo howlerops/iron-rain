@@ -25,7 +25,7 @@ final class SpeechDictator: ObservableObject {
         }
     }
 
-    private static func requestMic(_ completion: @escaping (Bool) -> Void) {
+    private static func requestMic(_ completion: @Sendable @escaping (Bool) -> Void) {
         #if os(iOS)
         AVAudioSession.sharedInstance().requestRecordPermission(completion)
         #else

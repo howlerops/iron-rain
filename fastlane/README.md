@@ -29,7 +29,15 @@ Verify the App Store Connect API key authenticates and whether the app exists.
 [bundle exec] fastlane ios bootstrap_app
 ```
 
-Create the app record in App Store Connect (run once).
+Register the bundle id + ensure an External Testers group (run once).
+
+### ios archive_check
+
+```sh
+[bundle exec] fastlane ios archive_check
+```
+
+Validate the release archive builds + signs (no TestFlight) — de-risks `beta`.
 
 ### ios beta
 
@@ -38,6 +46,22 @@ Create the app record in App Store Connect (run once).
 ```
 
 Build the iOS app and upload it to TestFlight (external testers).
+
+### ios distribute
+
+```sh
+[bundle exec] fastlane ios distribute
+```
+
+Distribute the latest ALREADY-uploaded build to External Testers (no rebuild).
+
+### ios submit_external
+
+```sh
+[bundle exec] fastlane ios submit_external
+```
+
+Set Test Information + submit the latest build for external beta review (raw ASC REST).
 
 ### ios beta_internal
 
