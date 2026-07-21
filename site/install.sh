@@ -1,13 +1,13 @@
 #!/bin/sh
 # Iron Rain installer.
-#   curl -fsSL https://howlerops.github.io/oculus/install.sh | sh
+#   curl -fsSL https://howlerops.github.io/iron-rain/install.sh | sh
 #
 # macOS: installs the daemon + the Iron Rain app, then launches the app (which starts the
 # daemon for you — no terminal). Linux/headless: installs the daemon and starts it.
 # Set OCULUS_BIN to change the daemon dir; OCULUS_NO_APP=1 to skip the GUI app.
 set -eu
 
-REPO="${OCULUS_REPO:-howlerops/oculus}"
+REPO="${OCULUS_REPO:-howlerops/iron-rain}"
 BIN="${OCULUS_BIN:-$HOME/.local/bin}"
 REL="https://github.com/$REPO/releases/latest/download"
 

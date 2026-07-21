@@ -35,7 +35,7 @@ Non-goals for v0: cloud/ephemeral agents (Mode-2, later), Android, web, voice, p
 | **Providers** | `Provider` interface. **opencode:** attach to `opencode serve` (HTTP + SSE). **claude-code:** headless `stream-json` + `PreToolUse` hook → daemon callback. Installer detects + configures both. |
 | **Approvals** | First-class in v0. opencode permission `ask` + claude-code `PreToolUse` normalize to one `ApprovalRequest`/`ApprovalResponse(allow|deny, reason?)` → actionable lock-screen push. |
 | **Push** | **Hosted APNs sender by default + self-host BYO-APNs-key** (installer-driven, mirrors the relay). |
-| **License / repo** | **MIT**, monorepo re-initializing **`howlerops/oculus`**. |
+| **License / repo** | **MIT**, monorepo re-initializing **`howlerops/iron-rain`**. |
 
 ## Architecture (decoupled, E2E encrypted)
 ```
@@ -66,7 +66,7 @@ Make Oculus easy to work on long-term with *any* agent (claude-code, opencode, c
   `oculus-protocol`, `oculus-crypto` (Go↔Swift parity), `add-a-provider`, `oculus-relay`,
   `authoring-oculus-skills` (meta).
 
-## Repo layout (`howlerops/oculus`, MIT)
+## Repo layout (`howlerops/iron-rain`, MIT)
 ```
 AGENTS.md  CLAUDE.md  LICENSE  README.md
 app/        # Xcode SwiftUI universal (iOS + macOS)

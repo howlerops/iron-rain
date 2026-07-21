@@ -2,7 +2,7 @@
 
 ## GitHub Pages (site)
 The marketing/support site lives in `site/` and deploys to
-**https://howlerops.github.io/oculus/** via `.github/workflows/pages.yml` on every push to
+**https://howlerops.github.io/iron-rain/** via `.github/workflows/pages.yml` on every push to
 `main` that touches `site/`. Pages source is set to "GitHub Actions".
 
 - `site/index.html` — landing page
@@ -10,8 +10,8 @@ The marketing/support site lives in `site/` and deploys to
 - `site/support.html` — Support page (App Store required URL) + TestFlight instructions
 
 Use these URLs in App Store Connect:
-- Privacy Policy URL: `https://howlerops.github.io/oculus/privacy.html`
-- Support URL: `https://howlerops.github.io/oculus/support.html`
+- Privacy Policy URL: `https://howlerops.github.io/iron-rain/privacy.html`
+- Support URL: `https://howlerops.github.io/iron-rain/support.html`
 
 ## TestFlight (fastlane)
 Auth is via the **App Store Connect API key** — no Apple ID / 2FA. Signing is Xcode-managed

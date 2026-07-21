@@ -21,7 +21,7 @@ public final class DaemonLauncher: ObservableObject {
     private var process: Process?
 
     /// The one-liner that installs the daemon (shown + copyable when it isn't found).
-    public static let installCommand = "curl -fsSL https://howlerops.github.io/oculus/install.sh | sh"
+    public static let installCommand = "curl -fsSL https://howlerops.github.io/iron-rain/install.sh | sh"
     /// How to start it by hand if the app can't (e.g. a sandboxed build can't spawn subprocesses).
     public static let manualCommand = "oculusd serve"
 

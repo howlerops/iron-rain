@@ -12,8 +12,8 @@ public final class UpdateChecker: ObservableObject {
     public let currentVersion: String
 
     /// Where a manual downloader lands; also the update command (reused from DaemonLauncher).
-    public static let releasesURL = URL(string: "https://github.com/howlerops/oculus/releases/latest")!
-    private static let apiURL = URL(string: "https://api.github.com/repos/howlerops/oculus/releases/latest")!
+    public static let releasesURL = URL(string: "https://github.com/howlerops/iron-rain/releases/latest")!
+    private static let apiURL = URL(string: "https://api.github.com/repos/howlerops/iron-rain/releases/latest")!
 
     public init() {
         currentVersion = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.0.0"
