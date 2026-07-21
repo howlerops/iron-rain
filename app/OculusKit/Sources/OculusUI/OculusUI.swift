@@ -7,6 +7,14 @@ import AppKit
 import ActivityKit
 #endif
 
+/// Outcome of one raced connection route: a live client, an explicit daemon refusal, or couldn't
+/// reach it. Sendable so it can be returned from the connection race's child tasks.
+private enum RouteOutcome: Sendable {
+    case connected(OculusClient)
+    case rejected(String)
+    case unreachable
+}
+
 /// Drives one daemon connection: connect, autodetect running sessions, hold a
 /// streaming conversation, and approve/deny tool calls. Built entirely on OculusKit
 /// (the proven, vector-locked client). Shared by the iOS and macOS app targets.
@@ -195,65 +203,66 @@ public final class Model: ObservableObject {
             status = "Invalid daemon public key"
             return
         }
-        // Prefer the shared relay (reachable from anywhere); fall back to the direct LAN URL if the
-        // relay is unreachable or has no host registered for this daemon. server_id = daemon pubkey.
-        var routes: [(url: String, sid: String?)] = []
-        if !relayURL.isEmpty { routes.append((relayURL, daemonPubHex)) }
-        if !wsURL.isEmpty { routes.append((wsURL, nil)) }
+        // Build candidate routes and RACE them: the direct LAN/localhost URL (instant + free when
+        // you're on the same network) plus every shared relay (reachable from anywhere), each with
+        // URL-param registration. First to finish the handshake wins; the rest are cancelled (their
+        // in-flight sockets closed) — so you get LAN latency at home and relay reachability when
+        // away, with no sequential-timeout penalty either way. Relays forward only ciphertext, so
+        // every route is equally end-to-end-secure.
+        var routes: [URL] = []
+        if let u = URL(string: wsURL) { routes.append(u) }                 // direct (LAN / localhost)
+        for r in Self.splitRelays(relayURL) {                              // shared relays (DO, Fly, …)
+            if let u = Self.relayClientURL(r, serverID: daemonPubHex) { routes.append(u) }
+        }
         guard !routes.isEmpty else { status = "No address to connect to"; return }
 
-        var rejected: String?      // the daemon actively refused us (wrong secret / key) — every route will
-        var lastTransport: Error?  // couldn't reach a route (relay down, Mac asleep) — try the next one
-        for route in routes {
-            guard let url = URL(string: route.url) else { continue }
-            let c = OculusClient(url: url)
-            do {
-                try await c.connect(clientPrivate: clientPrivate, daemonPublic: pub, secret: secret, relayServerID: route.sid)
-                client = c
-                connected = true
-                status = "Connected"
-                statusDetail = nil
-                savePairing()
-                Task { await receiveLoop() }
-                // Note: discovery of terminal-owned sessions is on-demand (the Add Session search),
-                // not auto-loaded — the sidebar shows only sessions started/opened in the app.
-                await loadProjects()
-                await loadSessions()
-                await loadIntegrationStatus()
-                await loadIssues()
-                await listProviders() // reflect the daemon's real agent set in the picker
-                await listHandoffs() // seed the handoff index (live updates arrive via handoff.list)
-                // If a session was open when the socket dropped (e.g. the daemon restarted and
-                // forgot its in-memory sessions), re-attach it so its transcript + prompts resume.
-                await reopenCurrentSession()
-                if let token = OculusStore.shared.deviceToken {
-                    await registerDevice(token: token)
+        let priv = clientPrivate, sec = secret
+        var winner: OculusClient?
+        var rejected: String?      // a route reached the daemon and it refused (wrong secret / key)
+        await withTaskGroup(of: RouteOutcome.self) { group in
+            for url in routes {
+                group.addTask {
+                    let c = OculusClient(url: url)
+                    return await withTaskCancellationHandler {
+                        do {
+                            try await c.connect(clientPrivate: priv, daemonPublic: pub, secret: sec)
+                            return .connected(c)
+                        } catch OculusClientError.handshakeRejected(let m) {
+                            c.close(); return .rejected(m)
+                        } catch {
+                            c.close(); return .unreachable
+                        }
+                    } onCancel: {
+                        c.close() // a faster route won — stop this in-flight attempt immediately
+                    }
                 }
-                if let queued = OculusStore.shared.pendingPrompt {
-                    OculusStore.shared.pendingPrompt = nil
-                    await send(queued)
-                }
-                if let decision = OculusStore.shared.pendingDecision, pendingApproval != nil {
-                    OculusStore.shared.pendingDecision = nil
-                    await respond(decision)
-                }
-                // Tapped a notification (agent finished / error / approval) → open that session.
-                if let sid = OculusStore.shared.handoffSessionID {
-                    OculusStore.shared.handoffSessionID = nil
-                    await openSession(sid)
-                }
-                return // connected on this route — done
-            } catch OculusClientError.handshakeRejected(let msg) {
-                // The daemon reached us and refused — another route (LAN vs relay) would refuse too.
-                c.close()
-                rejected = msg
-                break
-            } catch {
-                // Couldn't reach this route (relay down / Mac asleep / bad address) — try the next.
-                c.close()
-                lastTransport = error
-                continue
             }
+            for await outcome in group {
+                switch outcome {
+                case .connected(let c):
+                    if winner == nil {
+                        winner = c
+                        group.cancelAll()  // a route won — abandon the slower ones
+                    } else {
+                        c.close()          // a straggler connected after we already had a winner
+                    }
+                case .rejected(let m):
+                    if rejected == nil { rejected = m }
+                case .unreachable:
+                    break
+                }
+            }
+        }
+
+        if let c = winner {
+            client = c
+            connected = true
+            status = "Connected"
+            statusDetail = nil
+            savePairing()
+            Task { await receiveLoop() }
+            await finishConnect()
+            return
         }
 
         // Every route failed.
@@ -261,11 +270,56 @@ public final class Model: ObservableObject {
         if let rejected {
             statusDetail = rejected.isEmpty ? "Pairing rejected" : "Pairing rejected: \(rejected)"
         } else {
-            statusDetail = (lastTransport as NSError?)?.domain == NSURLErrorDomain
-                ? "Can’t reach this Mac"          // daemon down / wrong address / relay unreachable
-                : "Handshake failed — re-pair?"    // key mismatch / another daemon on the port
+            statusDetail = "Can’t reach this Mac" // daemon down / asleep / all relays unreachable
         }
         scheduleReconnect()
+    }
+
+    /// Post-connection hydration: load projects/sessions/integrations and replay any pending
+    /// notification-driven action. Runs once, after a route wins the race.
+    private func finishConnect() async {
+        // Note: discovery of terminal-owned sessions is on-demand (the Add Session search),
+        // not auto-loaded — the sidebar shows only sessions started/opened in the app.
+        await loadProjects()
+        await loadSessions()
+        await loadIntegrationStatus()
+        await loadIssues()
+        await listProviders() // reflect the daemon's real agent set in the picker
+        await listHandoffs()  // seed the handoff index (live updates arrive via handoff.list)
+        // If a session was open when the socket dropped (e.g. the daemon restarted and forgot its
+        // in-memory sessions), re-attach it so its transcript + prompts resume.
+        await reopenCurrentSession()
+        if let token = OculusStore.shared.deviceToken {
+            await registerDevice(token: token)
+        }
+        if let queued = OculusStore.shared.pendingPrompt {
+            OculusStore.shared.pendingPrompt = nil
+            await send(queued)
+        }
+        if let decision = OculusStore.shared.pendingDecision, pendingApproval != nil {
+            OculusStore.shared.pendingDecision = nil
+            await respond(decision)
+        }
+        // Tapped a notification (agent finished / error / approval) → open that session.
+        if let sid = OculusStore.shared.handoffSessionID {
+            OculusStore.shared.handoffSessionID = nil
+            await openSession(sid)
+        }
+    }
+
+    /// Splits a comma-separated relay list into individual URLs (trimmed; empties dropped).
+    static func splitRelays(_ list: String) -> [String] {
+        list.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+
+    /// Builds a relay client URL carrying the unified registration params (?sid=&role=client).
+    static func relayClientURL(_ base: String, serverID: String) -> URL? {
+        guard var comps = URLComponents(string: base) else { return nil }
+        var items = comps.queryItems ?? []
+        items.append(.init(name: "sid", value: serverID))
+        items.append(.init(name: "role", value: "client"))
+        comps.queryItems = items
+        return comps.url
     }
 
     /// Retries the connection with exponential backoff until it succeeds or the user

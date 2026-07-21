@@ -29,17 +29,12 @@ public actor OculusClient {
     /// 2. derive the channel from static-static ECDH,
     /// 3. prove the pairing secret by sending it *encrypted* (never in the clear),
     /// 4. read the server's encrypted verdict.
-    /// When `relayServerID` is set the socket is a connection to the shared relay (not the daemon
-    /// directly); we register as a client for that server_id first so the relay bridges us to the
-    /// daemon, then the identical E2E handshake runs over the bridge — the relay only forwards
-    /// ciphertext, so this is exactly as secure as a direct LAN connection.
-    public func connect(clientPrivate: Data, daemonPublic: Data, secret: String, relayServerID: String? = nil) async throws {
+    /// Performs the encrypted handshake. When connecting via a relay the URL already carries the
+    /// registration (?sid=&role=client), so the relay bridges us to the daemon before this runs and
+    /// the identical E2E handshake then flows over the bridge — the relay only forwards ciphertext,
+    /// so a relayed connection is exactly as secure as a direct LAN one.
+    public func connect(clientPrivate: Data, daemonPublic: Data, secret: String) async throws {
         task.resume()
-
-        if let sid = relayServerID, !sid.isEmpty {
-            let reg = try JSONSerialization.data(withJSONObject: ["role": "client", "server_id": sid])
-            try await task.send(.data(reg))
-        }
 
         let clientPub = try OculusCrypto.publicKey(fromPrivate: clientPrivate)
         let enc = JSONEncoder()
