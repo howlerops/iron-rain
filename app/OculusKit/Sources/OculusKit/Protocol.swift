@@ -15,6 +15,7 @@ public enum MessageType {
     public static let approvalRespond = "approval.respond"
     public static let discover = "discover.list"
     public static let deviceRegister = "device.register"
+    public static let providerList = "provider.list"
     public static let projectList = "project.list"
     public static let projectAdd = "project.add"
     public static let projectRemove = "project.remove"
@@ -565,6 +566,10 @@ public struct ProjectRef: Codable {
     enum CodingKeys: String, CodingKey { case projectID = "project_id" }
 }
 public struct ProjectList: Codable { public var projects: [Project] }
+public struct ProviderList: Codable {
+    public var providers: [String]
+    public init(providers: [String] = []) { self.providers = providers }
+}
 
 // Worktree finish flow.
 public struct WorktreeRemove: Codable {

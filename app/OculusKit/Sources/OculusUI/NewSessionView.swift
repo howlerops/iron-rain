@@ -39,7 +39,10 @@ struct NewSessionView: View {
         var id: String { rawValue }
     }
 
-    private static let providers = ["opencode", "claude-code", "pi"]
+    // The daemon's actual providers (native + generic CLI agents), falling back to the built-ins
+    // before the list loads. Plan mode is native-only (see planCapable).
+    private var providers: [String] { model.providers.isEmpty ? ["opencode", "claude-code", "pi"] : model.providers }
+    private var planCapable: Bool { provider == "opencode" || provider == "claude-code" }
 
     private var isMulti: Bool { selectedProjects.count > 1 }
     private var singleSelectedProject: Project? {
@@ -119,7 +122,7 @@ struct NewSessionView: View {
                                                   projectIDs: selectedProjects.isEmpty ? nil : Array(selectedProjects),
                                                   worktree: useWorktree && canIsolate,
                                                   workspaceName: workspaceName.isEmpty ? nil : workspaceName,
-                                                  plan: planFirst && provider != "pi",
+                                                  plan: planFirst && planCapable,
                                                   autonomous: autonomous)
                     }
                     onStart()
@@ -133,14 +136,22 @@ struct NewSessionView: View {
 
     // MARK: new-session body
 
+    // Segmented reads well for the few native agents; a menu keeps a longer list (native + generic
+    // CLI agents) from cramming. PickerStyle types differ, so branch in a ViewBuilder.
+    @ViewBuilder private var agentPicker: some View {
+        let picker = Picker("", selection: $provider) {
+            ForEach(providers, id: \.self) { Text($0).tag($0) }
+        }.labelsHidden()
+        if providers.count > 4 {
+            picker.pickerStyle(.menu)
+        } else {
+            picker.pickerStyle(.segmented)
+        }
+    }
+
     private var newContent: some View {
         VStack(alignment: .leading, spacing: 22) {
-            field("Agent") {
-                Picker("", selection: $provider) {
-                    ForEach(Self.providers, id: \.self) { Text($0).tag($0) }
-                }
-                .pickerStyle(.segmented).labelsHidden()
-            }
+            field("Agent") { agentPicker }
 
             field(isMulti ? "Working directory · \(selectedProjects.count) selected" : "Working directory") {
                 VStack(spacing: 5) {
@@ -168,7 +179,7 @@ struct NewSessionView: View {
                     .font(.caption).foregroundStyle(palette.mutedForeground)
             }
 
-            if provider != "pi" { // claude-code + opencode support plan mode natively
+            if planCapable { // only claude-code + opencode support plan mode natively
                 field("Plan first") {
                     Toggle(isOn: $planFirst) {
                         Text("Propose a plan to approve before making changes").font(.system(size: 13))

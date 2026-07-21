@@ -395,6 +395,14 @@ func integrationsPath() string {
 	return filepath.Join(home, ".oculus", "integrations.json")
 }
 
+func agentsPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "oculus-agents.json"
+	}
+	return filepath.Join(home, ".oculus", "agents.json")
+}
+
 func secretPath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {

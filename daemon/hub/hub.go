@@ -641,6 +641,18 @@ func (h *Hub) Register(p agent.Provider) {
 	h.providers[p.Name()] = p
 }
 
+// providerNames returns the registered provider names, sorted, for the app's session picker.
+func (h *Hub) providerNames() []string {
+	h.mu.Lock()
+	names := make([]string, 0, len(h.providers))
+	for name := range h.providers {
+		names = append(names, name)
+	}
+	h.mu.Unlock()
+	sort.Strings(names)
+	return names
+}
+
 // SetDiscoverer installs the host-scan used to answer discover.list requests.
 func (h *Hub) SetDiscoverer(f DiscoverFunc) {
 	h.mu.Lock()
@@ -1039,6 +1051,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		}
 		h.mu.Unlock()
 		h.sendOK(conn, env.ID, protocol.SessionList{Sessions: list})
+
+	case protocol.TypeProviderList:
+		h.sendOK(conn, env.ID, protocol.ProviderList{Providers: h.providerNames()})
 
 	case protocol.TypeProjectList:
 		reg := h.projectRegistry()

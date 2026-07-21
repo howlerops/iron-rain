@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/howlerops/oculus/daemon/agent/claudecode"
+	"github.com/howlerops/oculus/daemon/agent/cli"
 	"github.com/howlerops/oculus/daemon/agent/opencode"
 	"github.com/howlerops/oculus/daemon/agent/pi"
 	"github.com/howlerops/oculus/daemon/discovery"
@@ -26,8 +27,8 @@ type setupMode int
 
 const (
 	setupOff  setupMode = iota // never install
-	setupAsk                    // prompt on a TTY, else skip
-	setupAuto                   // install without asking
+	setupAsk                   // prompt on a TTY, else skip
+	setupAuto                  // install without asking
 )
 
 // enableProviders registers every provider available on the host — a running (or
@@ -60,6 +61,20 @@ func enableProviders(ctx context.Context, h *hub.Hub, opencodeURL, claudeSidecar
 	if piBin != "" {
 		h.Register(pi.New([]string{piBin, "--mode", "rpc"}))
 		enabled = append(enabled, "pi            -> "+piBin+" --mode rpc")
+	}
+
+	// Generic CLI agents: auto-detected known CLIs (codex/gemini/cursor-agent/aider) plus any the
+	// user defines in ~/.oculus/agents.json. Each becomes its own provider so it shows up in the
+	// app's agent picker. The native integrations above are richer, so a native name always wins a
+	// collision.
+	native := map[string]bool{"opencode": true, "claude-code": true, "pi": true}
+	userAgents, _ := cli.Load(agentsPath())
+	for _, cfg := range cli.Merge(cli.Detect(), userAgents) {
+		if native[cfg.Name] {
+			continue
+		}
+		h.Register(cli.NewProvider(cfg))
+		enabled = append(enabled, "cli           -> "+cfg.Name+" ("+cfg.Command+")")
 	}
 
 	return enabled

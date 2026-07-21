@@ -31,6 +31,7 @@ const (
 	TypeApprovalRespond    = "approval.respond"
 	TypeDiscover           = "discover.list"
 	TypeDeviceRegister     = "device.register"
+	TypeProviderList       = "provider.list" // agent providers registered on this daemon
 	TypeProjectList        = "project.list"
 	TypeProjectAdd         = "project.add"
 	TypeProjectRemove      = "project.remove"
@@ -773,6 +774,13 @@ type RunResult struct {
 
 type SessionList struct {
 	Sessions []Session `json:"sessions"`
+}
+
+// ProviderList is the set of agent providers registered on this daemon (opencode, claude-code, pi,
+// plus any generic CLI agents), so the app's new-session picker reflects what's actually available
+// instead of a hardcoded list.
+type ProviderList struct {
+	Providers []string `json:"providers"`
 }
 
 // Discovered is one autodetected agent artifact on the host: a running opencode

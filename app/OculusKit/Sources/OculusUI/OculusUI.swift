@@ -69,6 +69,9 @@ public final class Model: ObservableObject {
     @Published public var oauthURL: URL? // set when an OAuth flow returns an authorize URL to open
     /// Options applied to the NEXT session created (by the first send). Set via newSession(...).
     @Published public var newSessionProvider = "opencode"
+    // Agent providers this daemon actually has (opencode/claude-code/pi + any generic CLI agents),
+    // fetched on connect so the picker reflects reality instead of a hardcoded list.
+    @Published public var providers: [String] = ["opencode", "claude-code", "pi"]
     public var pendingProjectID: String?
     public var pendingProjectIDs: [String]?  // multi-root workspace (multi-repo)
     public var pendingWorktree = false
@@ -189,6 +192,7 @@ public final class Model: ObservableObject {
             await loadSessions()
             await loadIntegrationStatus()
             await loadIssues()
+            await listProviders() // reflect the daemon's real agent set in the picker
             await listHandoffs() // seed the handoff index (live updates arrive via handoff.list)
             // If a session was open when the socket dropped (e.g. the daemon restarted and
             // forgot its in-memory sessions), re-attach it so its transcript + prompts resume.
@@ -457,6 +461,17 @@ public final class Model: ObservableObject {
             try await client.send(env)
         } catch {
             status = "Create failed: \(error.localizedDescription)"
+        }
+    }
+
+    /// Fetches the agent providers this daemon has registered, so the new-session picker shows the
+    /// real set (including generic CLI agents like codex/gemini) instead of a hardcoded default.
+    public func listProviders() async {
+        guard client != nil else { return }
+        if let resp = try? await request(MessageType.providerList, payload: ProviderList()),
+           let pl = try? resp.payload(as: ProviderList.self), !pl.providers.isEmpty {
+            providers = pl.providers
+            if !providers.contains(newSessionProvider) { newSessionProvider = providers.first ?? "opencode" }
         }
     }
 
