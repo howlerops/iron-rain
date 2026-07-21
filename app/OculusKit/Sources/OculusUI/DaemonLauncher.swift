@@ -19,6 +19,7 @@ public final class DaemonLauncher: ObservableObject {
     @Published public private(set) var running = false // a daemon is reachable on :6000
     @Published public private(set) var trouble: Trouble? // set when not running (nil while healthy)
     private var process: Process?
+    private var lastSpawnError = "" // captured daemon stderr (e.g. "bind: address already in use")
 
     /// The one-liner that installs the daemon (shown + copyable when it isn't found).
     public static let installCommand = "curl -fsSL https://howlerops.github.io/iron-rain/install.sh | sh"
@@ -32,14 +33,19 @@ public final class DaemonLauncher: ObservableObject {
     /// Returns whether a daemon is reachable afterwards.
     @discardableResult
     public func ensureRunning() async -> Bool {
-        if isPortOpen(6000) {
+        // Probe /healthz, not a bare TCP connect — so a stale/foreign process squatting :6000 that
+        // ISN'T an Iron Rain daemon doesn't read as "running" (which would leave the app unable to
+        // connect with no explanation).
+        if await daemonHealthy() {
             markRunning("daemon running")
             return true
         }
+        let portHeldByOther = isPortOpen(6000) // something is on :6000 but isn't answering /healthz
         guard let bin = findOculusd() else {
             markTrouble(.notInstalled, "Daemon not found. Install it, then retry.")
             return false
         }
+        lastSpawnError = ""
         let p = Process()
         p.executableURL = URL(fileURLWithPath: bin)
         // --addr 0.0.0.0: bind all interfaces so the pairing QR carries the Mac's LAN IP (reachable
@@ -49,10 +55,14 @@ public final class DaemonLauncher: ObservableObject {
         // launch rotated it and broke the phone pairing).
         p.arguments = ["serve", "--addr", "0.0.0.0:6000"]
         p.standardOutput = FileHandle.nullDevice
-        p.standardError = FileHandle.nullDevice
+        let errPipe = Pipe()
+        p.standardError = errPipe // capture "bind: address already in use" etc. if it exits instantly
         p.terminationHandler = { [weak self] _ in
+            let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             Task { @MainActor in
                 self?.managed = false
+                if !err.isEmpty { self?.lastSpawnError = err }
                 if self?.running == true { self?.markTrouble(.notResponding, "Daemon stopped.") }
             }
         }
@@ -66,13 +76,31 @@ public final class DaemonLauncher: ObservableObject {
                         "Couldn't start the daemon automatically: \(error.localizedDescription)")
             return false
         }
-        // Wait up to ~4s for it to listen (and write pairing.json).
+        // Wait up to ~4s for it to answer /healthz (and write pairing.json).
         for _ in 0..<20 {
-            if isPortOpen(6000) { markRunning("daemon started"); return true }
+            if await daemonHealthy() { markRunning("daemon started"); return true }
             try? await Task.sleep(nanoseconds: 200_000_000)
         }
-        markTrouble(.notResponding, "Daemon didn't come up. Retry, or start it in a terminal.")
-        return isPortOpen(6000)
+        // Didn't come up. A port conflict is the common, confusing case — name it explicitly.
+        let detail = lastSpawnError.isEmpty ? "" : "\n\n\(lastSpawnError.suffix(240))"
+        if portHeldByOther || lastSpawnError.lowercased().contains("address already in use") {
+            markTrouble(.startFailed("port 6000 in use"),
+                        "Port 6000 is already in use by another process, so the daemon couldn't start. Quit whatever is using it (Activity Monitor), then retry.\(detail)")
+        } else {
+            markTrouble(.notResponding, "Daemon didn't come up. Retry, or start it in a terminal.\(detail)")
+        }
+        return false
+    }
+
+    /// True only if an Iron Rain daemon answers /healthz on :6000 (distinguishes our daemon from a
+    /// foreign process that merely holds the port).
+    private func daemonHealthy() async -> Bool {
+        guard let url = URL(string: "http://127.0.0.1:6000/healthz") else { return false }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 1
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              (resp as? HTTPURLResponse)?.statusCode == 200 else { return false }
+        return String(data: data, encoding: .utf8)?.contains("ok") == true
     }
 
     private func markRunning(_ msg: String) {

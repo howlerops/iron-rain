@@ -14,7 +14,8 @@ REL="https://github.com/$REPO/releases/latest/download"
 say() { printf '\033[33m→\033[0m %s\n' "$1"; }
 ok()  { printf '\033[32m✓\033[0m %s\n' "$1"; }
 die() { printf '\033[31mx\033[0m %s\n' "$1" >&2; exit 1; }
-daemon_up() { curl -fsS -m 1 http://127.0.0.1:6000/healthz >/dev/null 2>&1; }
+daemon_up()  { curl -fsS -m 1 http://127.0.0.1:6000/healthz >/dev/null 2>&1; }
+port_pids()  { lsof -tiTCP:6000 -sTCP:LISTEN 2>/dev/null | tr '\n' ' '; }
 
 os="$(uname -s | tr '[:upper:]' '[:lower:]')"
 arch="$(uname -m)"
@@ -47,6 +48,14 @@ if daemon_up; then
   say "stopping the running daemon so the update takes effect…"
   pkill -x oculusd 2>/dev/null || true
   for _ in 1 2 3 4 5; do daemon_up || break; sleep 1; done
+  # pkill -x matches only a process named exactly "oculusd". If something else is still holding
+  # :6000 (a renamed/stale binary, a squatter), free the port by PID — otherwise the new daemon
+  # silently fails to bind and the app keeps talking to the old one.
+  if daemon_up && [ -n "$(port_pids)" ]; then
+    say "port 6000 still held by PID $(port_pids) — freeing it…"
+    kill $(port_pids) 2>/dev/null || true
+    for _ in 1 2 3 4 5; do daemon_up || break; sleep 1; done
+  fi
 fi
 
 # --- 2. The macOS app (which auto-starts the daemon) ---
@@ -68,15 +77,22 @@ fi
 
 # --- 3. Headless / no app: start the daemon directly ---
 if daemon_up; then
-  ok "a daemon is already running on :6000."
-else
-  # --addr 0.0.0.0: bind all interfaces so the pairing QR carries the Mac's LAN IP (reachable from
-  # the phone on the same network), not ws://127.0.0.1. No --secret: the daemon persists a STABLE
-  # secret (~/.oculus/secret) so re-runs/updates keep already-paired clients authorized.
-  mkdir -p "$HOME/.oculus"
-  nohup "$BIN/oculusd" serve --addr 0.0.0.0:6000 >"$HOME/.oculus/oculusd.log" 2>&1 &
-  sleep 1
+  # Still up after we tried to stop + free the port → a process we couldn't stop is squatting :6000.
+  die "port 6000 is in use by another process (PID $(port_pids)) that couldn't be stopped. Stop it, then re-run."
+fi
+# --addr 0.0.0.0: bind all interfaces so the pairing QR carries the Mac's LAN IP (reachable from
+# the phone on the same network), not ws://127.0.0.1. No --secret: the daemon persists a STABLE
+# secret (~/.oculus/secret) so re-runs/updates keep already-paired clients authorized.
+mkdir -p "$HOME/.oculus"
+nohup "$BIN/oculusd" serve --addr 0.0.0.0:6000 >"$HOME/.oculus/oculusd.log" 2>&1 &
+# Verify it actually came up + bound the port — a bind failure ("address already in use") would
+# otherwise just land in the log and the script would falsely report success.
+for _ in 1 2 3 4 5; do daemon_up && break; sleep 1; done
+if daemon_up; then
   ok "started the daemon (log: ~/.oculus/oculusd.log). Scan the pairing QR it printed there."
+else
+  die "the daemon didn't come up. Last lines of ~/.oculus/oculusd.log:
+$(tail -5 "$HOME/.oculus/oculusd.log" 2>/dev/null)"
 fi
 
 case ":$PATH:" in *":$BIN:"*) : ;; *) printf '\033[33m!\033[0m add %s to your PATH: echo '\''export PATH="%s:$PATH"'\'' >> ~/.zshrc\n' "$BIN" "$BIN" ;; esac
