@@ -331,6 +331,7 @@ struct SessionSidebar: View {
             } label: {
                 Image(systemName: filter == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
             }
+            .help("Filter sessions")
             Menu {
                 if model.pairingURL != nil {
                     Button { showPairingQR = true } label: { Label("Pair a phone…", systemImage: "qrcode") }
@@ -347,6 +348,7 @@ struct SessionSidebar: View {
             } label: {
                 Image(systemName: "ellipsis")
             }
+            .help("More options")
             Button { showFleet = true } label: {
                 Image(systemName: "square.grid.2x2")
             }
@@ -354,6 +356,7 @@ struct SessionSidebar: View {
             Button { selection = Self.newSessionTag } label: {
                 Image(systemName: "square.and.pencil")
             }
+            .help("New session")
         }
     }
 

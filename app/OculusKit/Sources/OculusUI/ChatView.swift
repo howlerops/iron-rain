@@ -80,7 +80,7 @@ public struct ChatView: View {
                 ToolbarItem(placement: .automatic) {
                     Button { Task { await model.setAutonomy(!model.autonomous) } } label: {
                         Label(model.autonomous ? "Autonomous on" : "Autonomous off",
-                              systemImage: model.autonomous ? "infinity.circle.fill" : "infinity.circle")
+                              systemImage: model.autonomous ? "bolt.circle.fill" : "bolt.circle")
                     }
                     .tint(model.autonomous ? palette.primary : nil)
                     .help(model.autonomous
@@ -89,13 +89,14 @@ public struct ChatView: View {
                 }
                 ToolbarItem(placement: .automatic) {
                     Button { Task { await model.runTests() } } label: {
-                        Label("Run tests", systemImage: "checkmark.seal")
+                        Label("Run tests", systemImage: "play.fill")
                     }
                     .disabled(model.testRunning)
+                    .help("Run tests")
                 }
                 ToolbarItem(placement: .automatic) {
                     Button { showDelegate = true } label: {
-                        Label("Delegate subtask", systemImage: "arrow.triangle.branch.circle")
+                        Label("Delegate subtask", systemImage: "person.badge.plus")
                     }
                     .help("Spawn a scoped sub-agent for one subtask, seeded from this session's handoff.")
                 }
@@ -105,6 +106,7 @@ public struct ChatView: View {
                     Button { showWorktreePanel = true } label: {
                         Label("Finish worktree", systemImage: "arrow.triangle.branch")
                     }
+                    .help("Finish worktree — review and merge changes")
                 }
             }
             if model.currentSession?.isWorkspace == true {
@@ -113,8 +115,9 @@ public struct ChatView: View {
                         showWorkspace = true
                         Task { await model.workspaceDiff() }
                     } label: {
-                        Label("Review workspace", systemImage: "square.stack.3d.up")
+                        Label("Review workspace", systemImage: "folder.badge.magnifyingglass")
                     }
+                    .help("Review workspace changes across all repos")
                 }
             }
         }
@@ -393,7 +396,7 @@ struct UsageChip: View {
 
     var body: some View {
         HStack(spacing: 5) {
-            Image(systemName: "gauge.with.dots.needle.33percent").font(.caption2)
+            Image(systemName: "dollarsign.circle").font(.caption2)
             Text(String(format: "$%.3f", session.costUSD ?? 0)).font(.caption2.monospacedDigit())
             if let tok = tokenText { Text("· \(tok)").font(.caption2.monospacedDigit()).foregroundStyle(palette.mutedForeground) }
         }

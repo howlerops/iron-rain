@@ -206,6 +206,7 @@ struct Composer: View {
         }
         .buttonStyle(.plain)
         .disabled(!canSend)
+        .help("Send message")
     }
 
     private var micButton: some View {
@@ -217,6 +218,7 @@ struct Composer: View {
                 .foregroundStyle(dictator.isRecording ? palette.primary : palette.mutedForeground)
         }
         .buttonStyle(.plain)
+        .help("Dictate your message")
     }
 
     // Hands-free voice mode: speak your prompt, it auto-sends on a pause, and the agent's reply is
@@ -238,7 +240,7 @@ struct Composer: View {
     private var attachButton: some View {
         #if os(iOS)
         return PhotosPicker(selection: $photoItem, matching: .images) {
-            Image(systemName: "plus").font(.system(size: 17)).foregroundStyle(palette.mutedForeground)
+            Image(systemName: "photo.badge.plus").font(.system(size: 17)).foregroundStyle(palette.mutedForeground)
         }
         .buttonStyle(.plain)
         .onChange(of: photoItem) { item in
@@ -253,9 +255,10 @@ struct Composer: View {
         }
         #else
         return Button { showFileImporter = true } label: {
-            Image(systemName: "plus").font(.system(size: 17)).foregroundStyle(palette.mutedForeground)
+            Image(systemName: "paperclip").font(.system(size: 17)).foregroundStyle(palette.mutedForeground)
         }
         .buttonStyle(.plain)
+        .help("Attach image")
         #endif
     }
 }
