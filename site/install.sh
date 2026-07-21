@@ -39,10 +39,22 @@ else
   ok "built + installed $BIN/oculusd"
 fi
 
+# On an UPDATE, an old daemon is usually still running on :6000. The app (and this script)
+# defer to whatever is listening there, so without this the freshly installed binary never
+# takes over and newer app messages fail against the stale daemon (e.g. "unknown type: …").
+# Stop it so the new binary is (re)started below / by the app.
+if daemon_up; then
+  say "stopping the running daemon so the update takes effect…"
+  pkill -x oculusd 2>/dev/null || true
+  for _ in 1 2 3 4 5; do daemon_up || break; sleep 1; done
+fi
+
 # --- 2. The macOS app (which auto-starts the daemon) ---
 if [ "$os" = "darwin" ] && [ "${OCULUS_NO_APP:-0}" != "1" ]; then
   say "Downloading the Iron Rain app…"
   if curl -fsSL "$REL/IronRain-macos.zip" -o "$tmp/app.zip" 2>/dev/null && ditto -x -k "$tmp/app.zip" "$tmp/app" 2>/dev/null; then
+    osascript -e 'quit app "Iron Rain"' 2>/dev/null || true  # quit a running copy so we can replace + relaunch it
+    sleep 1
     rm -rf "/Applications/Iron Rain.app"
     cp -R "$tmp/app/Iron Rain.app" "/Applications/Iron Rain.app"
     xattr -dr com.apple.quarantine "/Applications/Iron Rain.app" 2>/dev/null || true
