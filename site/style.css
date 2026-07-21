@@ -10,11 +10,19 @@
   --fg:           #f0ece2;
   --muted:        #6e6860;
   --muted-med:    #9a9088;
-  --amber:        #f5a623;
-  --amber-light:  #f7b840;
-  --amber-dim:    rgba(245, 166, 35, 0.12);
-  --amber-border: rgba(245, 166, 35, 0.28);
-  --amber-glow:   rgba(245, 166, 35, 0.07);
+  /* Iron Rain gold palette */
+  --gold:         #c49b21;
+  --gold-bright:  #d4b820;
+  --gold-dark:    #9a7a18;
+  --gold-light:   #d4c066;
+  --gold-soft:    #e8d48b;
+  --gold-gradient: linear-gradient(135deg, #d4c066, #c49b21, #9a7a18);
+  /* Accent aliases — existing rules keep working, now point at gold */
+  --amber:        var(--gold);
+  --amber-light:  var(--gold-bright);
+  --amber-dim:    rgba(196, 155, 33, 0.12);
+  --amber-border: rgba(196, 155, 33, 0.28);
+  --amber-glow:   rgba(196, 155, 33, 0.07);
   --card:         #111013;
   --card-hover:   #181620;
   --border:       #1e1c22;
@@ -24,6 +32,7 @@
   --font-display: 'Instrument Serif', Georgia, 'Times New Roman', serif;
   --font-sans:    'DM Sans', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   --font-mono:    ui-monospace, 'SF Mono', 'Fira Code', Menlo, 'Courier New', monospace;
+  --font-wordmark: 'Fira Code', ui-monospace, 'SF Mono', Menlo, monospace;
 
   --max-w:        1080px;
   --radius:       18px;
@@ -42,8 +51,8 @@
     --card-hover:   #e8e4dc;
     --border:       #ddd9d0;
     --border-sub:   #e8e4dc;
-    --amber-dim:    rgba(245, 166, 35, 0.10);
-    --amber-glow:   rgba(245, 166, 35, 0.05);
+    --amber-dim:    rgba(196, 155, 33, 0.10);
+    --amber-glow:   rgba(196, 155, 33, 0.05);
   }
 }
 
@@ -139,9 +148,7 @@ section[id] { scroll-margin-top: 80px }
 .mark {
   width: 28px;
   height: 28px;
-  border-radius: 7px;
-  object-fit: cover;
-  box-shadow: 0 0 0 1px var(--border);
+  object-fit: contain;
 }
 
 nav { display: flex; align-items: center; gap: 2px }
@@ -240,7 +247,7 @@ nav a:hover { color: var(--fg); background: var(--card); opacity: 1; text-decora
 .btn.primary:hover {
   background: var(--amber-light);
   border-color: var(--amber-light);
-  box-shadow: 0 4px 24px rgba(245,166,35,.32);
+  box-shadow: 0 4px 24px rgba(196,155,33,.32);
   opacity: 1;
 }
 
@@ -249,6 +256,19 @@ nav a:hover { color: var(--fg); background: var(--card); opacity: 1; text-decora
   color: var(--fg);
 }
 .btn.ghost:hover { background: var(--card-hover) }
+
+/* ── Brand wordmark ─────────────────────────────────────────── */
+/* Gold-gradient text clipped to characters. Works on any background. */
+.wordmark {
+  font-family: var(--font-wordmark);
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  background: var(--gold-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
 
 /* ── Shared section components ──────────────────────────────── */
 .section-eyebrow {
@@ -300,7 +320,7 @@ figcaption {
   content: '';
   position: absolute;
   inset: 0;
-  background: radial-gradient(ellipse 900px 600px at 30% -60px, rgba(245,166,35,.07) 0%, transparent 70%);
+  background: radial-gradient(ellipse 900px 600px at 30% -60px, rgba(196,155,33,.07) 0%, transparent 70%);
   pointer-events: none;
 }
 
@@ -325,8 +345,33 @@ figcaption {
   border-radius: 50%;
   background: var(--amber);
   display: inline-block;
-  box-shadow: 0 0 10px rgba(245,166,35,.7);
+  box-shadow: 0 0 10px rgba(196,155,33,.7);
   flex-shrink: 0;
+}
+
+/* Hero brand lockup: wolf icon + large "IRON RAIN" wordmark */
+.hero-lockup {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  margin-bottom: 40px;
+}
+
+.hero-wolf {
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.hero-wordmark {
+  font-size: clamp(30px, 5.5vw, 56px);
+  line-height: 1;
+}
+
+@media (max-width: 480px) {
+  .hero-lockup { gap: 14px; margin-bottom: 28px }
+  .hero-wolf   { width: 44px; height: 44px }
 }
 
 .hero-h1 {
@@ -489,9 +534,9 @@ figcaption {
 
 .cap-card--highlight {
   border-color: var(--amber-border);
-  background: linear-gradient(140deg, var(--card) 55%, rgba(245,166,35,.05) 100%);
+  background: linear-gradient(140deg, var(--card) 55%, rgba(196,155,33,.05) 100%);
 }
-.cap-card--highlight:hover { border-color: rgba(245,166,35,.45) }
+.cap-card--highlight:hover { border-color: rgba(196,155,33,.45) }
 
 .cap-body { padding: 28px 28px 22px; flex: 1 }
 
@@ -857,7 +902,7 @@ pre.cmd code {
   font-size: 15px;
   color: var(--muted-med);
 }
-.footer-brand .mark { width: 24px; height: 24px; border-radius: 6px }
+.footer-brand .mark { width: 24px; height: 24px; }
 .footer-brand strong { color: var(--fg) }
 
 .footer-links {
