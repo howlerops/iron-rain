@@ -29,6 +29,17 @@ public struct RootView: View {
                 loadingScreen
             } else if store.isEmpty {
                 DesktopOnboardView(store: store, palette: palette)
+                #if os(macOS)
+                    .safeAreaInset(edge: .top) {
+                        if launcher.trouble != nil {
+                            DaemonStatusBanner(launcher: launcher, palette: palette) {
+                                await launcher.ensureRunning()
+                                await store.bootstrap()
+                            }
+                            .padding(.horizontal, 20).padding(.top, 14)
+                        }
+                    }
+                #endif
             } else if let model = store.active {
                 mainSurface(model)
             }
@@ -238,3 +249,73 @@ struct DesktopOnboardView: View {
         .sheet(isPresented: $showAdd) { AddDesktopView(store: store, palette: palette) { showAdd = false } }
     }
 }
+
+#if os(macOS)
+/// Surfaces the local daemon's health on the first screen: what went wrong, an actionable fix
+/// (install command, or the manual `oculusd serve` when a sandboxed app can't spawn it), and a
+/// one-tap retry that re-attempts the start and re-bootstraps the connection.
+struct DaemonStatusBanner: View {
+    @ObservedObject var launcher: DaemonLauncher
+    let palette: OculusPalette
+    let onRetry: () async -> Void
+    @State private var retrying = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: launcher.running ? "bolt.fill" : "bolt.slash.fill")
+                    .foregroundStyle(launcher.running ? .green : .orange)
+                Text(launcher.running ? "Local daemon" : "Local daemon isn't running")
+                    .font(.callout.bold())
+                Spacer()
+                Button {
+                    guard !retrying else { return }
+                    retrying = true
+                    Task { await onRetry(); retrying = false }
+                } label: {
+                    if retrying { ProgressView().controlSize(.small) }
+                    else { Text(launcher.running ? "Recheck" : "Start daemon") }
+                }
+                .buttonStyle(.borderedProminent).tint(palette.primary)
+                .disabled(retrying)
+            }
+            Text(launcher.status).font(.caption).foregroundStyle(palette.mutedForeground)
+            if let t = launcher.trouble { troubleHelp(t) }
+        }
+        .padding(12)
+        .background(palette.secondary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.border))
+    }
+
+    @ViewBuilder private func troubleHelp(_ t: DaemonLauncher.Trouble) -> some View {
+        switch t {
+        case .notInstalled:
+            commandRow("Install it, then Start daemon:", DaemonLauncher.installCommand)
+        case .startFailed, .notResponding:
+            commandRow("Or start it yourself in Terminal:", DaemonLauncher.manualCommand)
+        }
+    }
+
+    private func commandRow(_ label: String, _ cmd: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label).font(.caption).foregroundStyle(palette.mutedForeground)
+            HStack(spacing: 6) {
+                Text(cmd).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+                    .lineLimit(1).truncationMode(.middle)
+                    .padding(.horizontal, 8).padding(.vertical, 5)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(palette.input, in: RoundedRectangle(cornerRadius: 6))
+                Button { copyCommand(cmd) } label: { Image(systemName: "doc.on.doc") }
+                    .buttonStyle(.borderless).help("Copy")
+            }
+        }
+    }
+
+    private func copyCommand(_ cmd: String) {
+        #if canImport(AppKit)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(cmd, forType: .string)
+        #endif
+    }
+}
+#endif

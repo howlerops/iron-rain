@@ -7,22 +7,37 @@ import Foundation
 /// via ~/.oculus/pairing.json.
 @MainActor
 public final class DaemonLauncher: ObservableObject {
+    /// Why the daemon isn't up — drives the actionable guidance on the first screen.
+    public enum Trouble: Equatable {
+        case notInstalled   // no oculusd binary found → show the install command
+        case startFailed(String) // spawning it errored (e.g. a sandboxed app can't exec it)
+        case notResponding  // spawned/looked for it but nothing is listening on 6000
+    }
+
     @Published public private(set) var status = "checking…"
     @Published public private(set) var managed = false // true if WE started the daemon
+    @Published public private(set) var running = false // a daemon is reachable on :6000
+    @Published public private(set) var trouble: Trouble? // set when not running (nil while healthy)
     private var process: Process?
+
+    /// The one-liner that installs the daemon (shown + copyable when it isn't found).
+    public static let installCommand = "curl -fsSL https://howlerops.github.io/oculus/install.sh | sh"
+    /// How to start it by hand if the app can't (e.g. a sandboxed build can't spawn subprocesses).
+    public static let manualCommand = "oculusd serve"
 
     public init() {}
 
-    /// Ensures a local daemon is running, waiting briefly for it to come up. Safe to call
-    /// once at launch. Returns whether a daemon is reachable afterwards.
+    /// Ensures a local daemon is running, waiting briefly for it to come up. Safe to call at
+    /// launch AND to re-invoke as a "retry" — it re-checks the port first, so it's idempotent.
+    /// Returns whether a daemon is reachable afterwards.
     @discardableResult
     public func ensureRunning() async -> Bool {
         if isPortOpen(6000) {
-            status = "daemon running"
+            markRunning("daemon running")
             return true
         }
         guard let bin = findOculusd() else {
-            status = "install the daemon: curl -fsSL https://howlerops.github.io/oculus/install.sh | sh"
+            markTrouble(.notInstalled, "Daemon not found. Install it, then retry.")
             return false
         }
         let p = Process()
@@ -31,29 +46,47 @@ public final class DaemonLauncher: ObservableObject {
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
         p.terminationHandler = { [weak self] _ in
-            Task { @MainActor in self?.managed = false; self?.status = "daemon stopped" }
+            Task { @MainActor in
+                self?.managed = false
+                if self?.running == true { self?.markTrouble(.notResponding, "Daemon stopped.") }
+            }
         }
         do {
             try p.run()
             process = p
             managed = true
         } catch {
-            status = "couldn't start daemon: \(error.localizedDescription)"
+            // A hardened/sandboxed app can't exec an external binary — surface the manual path.
+            markTrouble(.startFailed(error.localizedDescription),
+                        "Couldn't start the daemon automatically: \(error.localizedDescription)")
             return false
         }
         // Wait up to ~4s for it to listen (and write pairing.json).
         for _ in 0..<20 {
-            if isPortOpen(6000) { status = "daemon started"; return true }
+            if isPortOpen(6000) { markRunning("daemon started"); return true }
             try? await Task.sleep(nanoseconds: 200_000_000)
         }
-        status = "daemon starting…"
+        markTrouble(.notResponding, "Daemon didn't come up. Retry, or start it in a terminal.")
         return isPortOpen(6000)
+    }
+
+    private func markRunning(_ msg: String) {
+        running = true
+        trouble = nil
+        status = msg
+    }
+
+    private func markTrouble(_ t: Trouble, _ msg: String) {
+        running = false
+        trouble = t
+        status = msg
     }
 
     public func stop() {
         process?.terminate()
         process = nil
         managed = false
+        running = false
         status = "stopped"
     }
 
