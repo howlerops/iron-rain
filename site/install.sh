@@ -70,10 +70,11 @@ fi
 if daemon_up; then
   ok "a daemon is already running on :6000."
 else
-  # No --secret: the daemon persists a STABLE secret (~/.oculus/secret) so re-runs/updates keep
-  # already-paired clients authorized instead of rotating the secret and rejecting them.
+  # --addr 0.0.0.0: bind all interfaces so the pairing QR carries the Mac's LAN IP (reachable from
+  # the phone on the same network), not ws://127.0.0.1. No --secret: the daemon persists a STABLE
+  # secret (~/.oculus/secret) so re-runs/updates keep already-paired clients authorized.
   mkdir -p "$HOME/.oculus"
-  nohup "$BIN/oculusd" serve >"$HOME/.oculus/oculusd.log" 2>&1 &
+  nohup "$BIN/oculusd" serve --addr 0.0.0.0:6000 >"$HOME/.oculus/oculusd.log" 2>&1 &
   sleep 1
   ok "started the daemon (log: ~/.oculus/oculusd.log). Scan the pairing QR it printed there."
 fi

@@ -42,10 +42,12 @@ public final class DaemonLauncher: ObservableObject {
         }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: bin)
+        // --addr 0.0.0.0: bind all interfaces so the pairing QR carries the Mac's LAN IP (reachable
+        // from the phone on the same network) instead of ws://127.0.0.1, which the phone can't dial.
         // No --secret: the daemon loads/persists a STABLE secret (~/.oculus/secret) so it survives
-        // restarts/reinstalls and already-paired clients stay authorized. Passing a fresh random
-        // secret each launch was rotating it and breaking the phone pairing on every restart.
-        p.arguments = ["serve"]
+        // restarts/reinstalls and already-paired clients stay authorized (a fresh random secret each
+        // launch rotated it and broke the phone pairing).
+        p.arguments = ["serve", "--addr", "0.0.0.0:6000"]
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
         p.terminationHandler = { [weak self] _ in
