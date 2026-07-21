@@ -238,31 +238,110 @@ public struct IssuesView: View {
 
     private var connectScreen: some View {
         ScrollView {
-            VStack(spacing: 20) {
-                Image(systemName: "checklist").font(.system(size: 44)).foregroundStyle(palette.primary)
-                Text("Connect your issue tracker").font(.title2.bold())
-                Text("See your assigned issues and launch agents on them — a worktree per ticket, its PR linked back automatically.")
-                    .font(.subheadline).foregroundStyle(palette.mutedForeground)
-                    .multilineTextAlignment(.center).padding(.horizontal, 28)
+            VStack(spacing: 0) {
+                connectHero
+                    .padding(.vertical, 40)
+
                 if let err = model.trackerError {
-                    Label(err, systemImage: "exclamationmark.triangle.fill").font(.caption)
-                        .foregroundStyle(.orange).multilineTextAlignment(.center).padding(.horizontal, 24)
+                    trackerErrorBanner(err)
+                        .padding(.bottom, 16)
                 }
-                TrackerConnectCard(model: model, provider: "linear", displayName: "Linear",
-                                   systemImage: "link", palette: palette,
-                                   tokenLabel: "API key",
-                                   tokenHelp: "Linear → Settings → Security & access → Personal API keys.",
-                                   setupHelp: "Create an OAuth app at linear.app/settings/api, then paste its Client ID + Secret here.")
-                TrackerConnectCard(model: model, provider: "jira", displayName: "Jira",
-                                   systemImage: "square.stack.3d.up", palette: palette,
-                                   tokenLabel: "site|email|token",
-                                   tokenHelp: "Paste as https://you.atlassian.net|you@co.com|apitoken (id.atlassian.com → API tokens).",
-                                   setupHelp: "Create an OAuth 2.0 (3LO) app at developer.atlassian.com/console. Callback: http://127.0.0.1:6900/oauth/jira/callback. Scopes: read:jira-work, write:jira-work, read:jira-user, offline_access. Then paste its Client ID + Secret here.")
+
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 300, maximum: 460), spacing: 16)],
+                    spacing: 16
+                ) {
+                    TrackerConnectCard(
+                        model: model,
+                        provider: "linear",
+                        displayName: "Linear",
+                        systemImage: "checklist",
+                        palette: palette,
+                        tokenLabel: "API key",
+                        tokenHelp: "Linear → Settings → Security & access → Personal API keys.",
+                        setupHelp: "Create an OAuth app at linear.app/settings/api, then paste its Client ID + Secret here."
+                    )
+                    TrackerConnectCard(
+                        model: model,
+                        provider: "jira",
+                        displayName: "Jira",
+                        systemImage: "square.stack.3d.up",
+                        palette: palette,
+                        tokenLabel: "site|email|token",
+                        tokenHelp: "Paste as https://you.atlassian.net|you@co.com|apitoken (id.atlassian.com → API tokens).",
+                        setupHelp: "Create an OAuth 2.0 (3LO) app at developer.atlassian.com/console. Callback: http://127.0.0.1:6900/oauth/jira/callback. Scopes: read:jira-work, write:jira-work, read:jira-user, offline_access. Then paste its Client ID + Secret here."
+                    )
+                }
+                .frame(maxWidth: 960)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 40)
             }
-            .padding(.vertical, 28)
             .frame(maxWidth: .infinity)
         }
         .task { await model.loadIntegrationStatus() }
+    }
+
+    /// Composed SF Symbol illustration + headline/subtitle for the empty state.
+    private var connectHero: some View {
+        VStack(spacing: 20) {
+            ZStack {
+                Circle()
+                    .fill(palette.primary.opacity(0.06))
+                    .frame(width: 108, height: 108)
+                Circle()
+                    .fill(palette.primary.opacity(0.10))
+                    .frame(width: 78, height: 78)
+                Image(systemName: "checklist")
+                    .font(.system(size: 38, weight: .semibold))
+                    .foregroundStyle(palette.primary)
+                Image(systemName: "arrow.triangle.branch")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(palette.primary.opacity(0.65))
+                    .offset(x: 28, y: -22)
+                Image(systemName: "play.circle.fill")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(palette.primary.opacity(0.55))
+                    .offset(x: -26, y: 24)
+            }
+            .frame(width: 108, height: 108)
+
+            VStack(spacing: 8) {
+                Text("Connect your issue tracker")
+                    .font(.title2.bold())
+                    .foregroundStyle(palette.foreground)
+                Text("See your assigned issues and launch agents on them —\na worktree per ticket, its PR linked back automatically.")
+                    .font(.subheadline)
+                    .foregroundStyle(palette.mutedForeground)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .padding(.horizontal, 32)
+    }
+
+    /// Intentionally styled error banner with a left accent bar.
+    private func trackerErrorBanner(_ err: String) -> some View {
+        HStack(spacing: 0) {
+            Rectangle()
+                .fill(Color.orange.opacity(0.85))
+                .frame(width: 3)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                Text(err)
+                    .font(.callout)
+                    .foregroundStyle(palette.foreground)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxWidth: 560, alignment: .leading)
+        .background(Color.orange.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.orange.opacity(0.22)))
+        .padding(.horizontal, 20)
     }
 
     // MARK: kanban
@@ -431,55 +510,166 @@ struct TrackerConnectCard: View {
     private var connected: Bool { model.connectedTrackers.contains(provider) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: systemImage).foregroundStyle(palette.primary)
-                Text(displayName).font(.headline)
+        VStack(alignment: .leading, spacing: 0) {
+            // Card header: icon badge, tracker name, connected pill
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(palette.accent.opacity(0.7))
+                        .frame(width: 44, height: 44)
+                    Image(systemName: systemImage)
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(palette.primary)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(displayName)
+                        .font(.headline)
+                        .foregroundStyle(palette.foreground)
+                    Text("Issue tracker")
+                        .font(.caption)
+                        .foregroundStyle(palette.mutedForeground)
+                }
                 Spacer()
                 if connected {
                     Label("Connected", systemImage: "checkmark.circle.fill")
-                        .font(.caption).foregroundStyle(.green)
+                        .font(.caption.bold())
+                        .foregroundStyle(.green)
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(Color.green.opacity(0.1), in: Capsule())
                 }
             }
+            .padding(16)
 
-            if configured {
-                oauthButton("Connect with \(displayName)")
-            } else if addingApp {
-                Text(setupHelp).font(.caption2).foregroundStyle(palette.mutedForeground)
-                field(TextField("Client ID", text: $clientID))
-                field(SecureField("Client secret", text: $clientSecret))
+            Divider().overlay(palette.border)
+
+            // Primary connect section — switches between OAuth button, setup form, or setup CTA
+            VStack(alignment: .leading, spacing: 12) {
+                if configured {
+                    oauthButton("Connect with \(displayName)")
+                } else if addingApp {
+                    oauthSetupForm
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                } else {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Button {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) { addingApp = true }
+                        } label: {
+                            Label("Set up \(displayName) OAuth", systemImage: "lock.open")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(palette.primary)
+
+                        Text("Recommended. Connect via OAuth after registering an OAuth app on \(displayName)'s developer portal.")
+                            .font(.caption)
+                            .foregroundStyle(palette.mutedForeground)
+                    }
+                    .transition(.opacity)
+                }
+            }
+            .padding(16)
+
+            Divider().overlay(palette.border.opacity(0.5))
+
+            // Token fallback — visually subordinate, progressive disclosure
+            VStack(alignment: .leading, spacing: 0) {
                 Button {
-                    let cid = clientID, sec = clientSecret
-                    Task { await model.setOAuthApp(provider: provider, clientID: cid, clientSecret: sec) }
-                } label: { Text("Save & connect").frame(maxWidth: .infinity) }
-                .buttonStyle(.borderedProminent).tint(palette.primary)
-                .disabled(clientID.isEmpty || clientSecret.isEmpty)
-            } else {
-                Button { addingApp = true } label: {
-                    Label("Set up \(displayName) OAuth", systemImage: "link").frame(maxWidth: .infinity)
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) { showToken.toggle() }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: showToken ? "chevron.down" : "chevron.right")
+                            .font(.caption2.bold())
+                            .frame(width: 12)
+                        Text(showToken ? "Hide token option" : "or connect with a \(tokenLabel)")
+                            .font(.caption)
+                    }
+                    .foregroundStyle(palette.mutedForeground)
                 }
-                .buttonStyle(.borderedProminent).tint(palette.primary)
-            }
+                .buttonStyle(.plain)
+                .padding(16)
 
-            Button { withAnimation { showToken.toggle() } } label: {
-                Text(showToken ? "Hide token option" : "or connect with a \(tokenLabel)")
-                    .font(.caption).foregroundStyle(palette.mutedForeground)
-            }
-            .buttonStyle(.plain)
-            if showToken {
-                Text(tokenHelp).font(.caption2).foregroundStyle(palette.mutedForeground)
-                field(SecureField(tokenLabel, text: $tokenField))
-                Button("Connect with token") {
-                    let t = tokenField; tokenField = ""
-                    Task { await model.connectTracker(provider: provider, token: t) }
+                if showToken {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(alignment: .top, spacing: 6) {
+                            Image(systemName: "key.fill")
+                                .font(.caption2)
+                                .foregroundStyle(palette.mutedForeground)
+                            Text(tokenHelp)
+                                .font(.caption2)
+                                .foregroundStyle(palette.mutedForeground)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .padding(10)
+                        .background(palette.secondary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+
+                        field(SecureField(tokenLabel, text: $tokenField))
+
+                        Button {
+                            let t = tokenField; tokenField = ""
+                            Task { await model.connectTracker(provider: provider, token: t) }
+                        } label: {
+                            Text("Connect with token").frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(palette.primary)
+                        .disabled(tokenField.isEmpty)
+                    }
+                    .padding(.horizontal, 16).padding(.bottom, 16)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
                 }
-                .buttonStyle(.bordered).tint(palette.primary).disabled(tokenField.isEmpty)
             }
         }
-        .padding(16)
-        .frame(maxWidth: 440)
-        .background(palette.secondary.opacity(0.35), in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(palette.border))
+        .frame(maxWidth: 460, alignment: .leading)
+        .background(palette.card)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(palette.border))
+    }
+
+    /// Inline OAuth app credential form (client_id + secret) with setup instructions and a cancel affordance.
+    private var oauthSetupForm: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("OAuth app credentials")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(palette.foreground)
+                Spacer()
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) {
+                        addingApp = false; clientID = ""; clientSecret = ""
+                    }
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.callout)
+                        .foregroundStyle(palette.mutedForeground)
+                }
+                .buttonStyle(.plain)
+            }
+
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "info.circle")
+                    .font(.caption2)
+                    .foregroundStyle(palette.primary)
+                Text(setupHelp)
+                    .font(.caption2)
+                    .foregroundStyle(palette.mutedForeground)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(10)
+            .background(palette.secondary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+
+            field(TextField("Client ID", text: $clientID))
+            field(SecureField("Client secret", text: $clientSecret))
+
+            Button {
+                let cid = clientID, sec = clientSecret
+                Task { await model.setOAuthApp(provider: provider, clientID: cid, clientSecret: sec) }
+            } label: {
+                Text("Save & connect").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(palette.primary)
+            .disabled(clientID.isEmpty || clientSecret.isEmpty)
+        }
     }
 
     private func oauthButton(_ title: String) -> some View {
