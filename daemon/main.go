@@ -34,12 +34,17 @@ import (
 	"github.com/howlerops/oculus/daemon/project"
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/push"
+	"github.com/howlerops/oculus/daemon/relay"
 	"github.com/howlerops/oculus/daemon/server"
 	"github.com/howlerops/oculus/daemon/slack"
 	"github.com/howlerops/oculus/daemon/store"
 )
 
 const version = "0.0.0-dev"
+
+// defaultRelayURL is the shared HowlerOps relay every daemon connects to by default so the app can
+// reach it from anywhere (off-LAN) with zero setup. Override with --relay (or "" for LAN-only).
+const defaultRelayURL = "wss://oculus-relay-howlerops.fly.dev/ws"
 
 func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "serve" {
@@ -93,6 +98,7 @@ func serve(args []string) error {
 	publicURL := fs.String("public-url", "", "reachable base ws/wss URL for the pairing QR (e.g. wss://x.ngrok-free.app); default derives a LAN URL from --addr")
 	name := fs.String("name", "", "human name for this desktop shown in the app (default: hostname)")
 	slackWebhook := fs.String("slack-webhook", "", "Slack Incoming Webhook URL to mirror agent events to a channel (or set it in ~/.oculus/slack.json)")
+	relayURL := fs.String("relay", defaultRelayURL, "relay ws URL for remote access from anywhere (empty = LAN-only). Default is the shared HowlerOps relay.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -180,6 +186,14 @@ func serve(args []string) error {
 		return presented == sec
 	})
 
+	// Remote access: keep a host registration on the shared relay so the app can reach this daemon
+	// from anywhere (off-LAN) with zero port-forwarding. The relay only forwards ciphertext — the
+	// same end-to-end-encrypted session runs over it. The relay server_id is the daemon pubkey, so
+	// pairing needs nothing extra beyond the relay URL (the app already has `pub`).
+	if *relayURL != "" {
+		go relayHost(*relayURL, hex.EncodeToString(kp.Public()), srv)
+	}
+
 	mux := http.NewServeMux()
 	mux.Handle("/ws", srv.Handler())
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
@@ -237,16 +251,41 @@ func serve(args []string) error {
 	}
 	pubURL := wsPublicURL(*publicURL, *addr)
 	fmt.Printf("  desktop name:   %s\n", desktopName)
-	printPairing(pubURL, hex.EncodeToString(kp.Public()), sec, desktopName)
+	if *relayURL != "" {
+		fmt.Printf("  relay:          %s  (remote access from anywhere)\n", *relayURL)
+	}
+	printPairing(pubURL, hex.EncodeToString(kp.Public()), sec, desktopName, *relayURL)
 	// Drop a local pairing file so an app on THIS machine (the macOS app) can
 	// auto-discover + connect with zero config, and show a QR (using the reachable
 	// public URL) to pair a phone. 0600, same-user only.
-	writeLocalPairing(localWSURL(*addr), pubURL, hex.EncodeToString(kp.Public()), sec, desktopName)
+	writeLocalPairing(localWSURL(*addr), pubURL, hex.EncodeToString(kp.Public()), sec, desktopName, *relayURL)
 	// ReadHeaderTimeout bounds header-slowloris on the plain HTTP routes
 	// (/healthz, /oauth/linear/callback) when exposed via --public-url. Leave
 	// Write/Idle timeouts unset so long-lived /ws WebSocket upgrades aren't cut off.
 	httpSrv := &http.Server{Addr: *addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	return httpSrv.ListenAndServe()
+}
+
+// relayHost keeps a single host registration on the shared relay so the app can bridge to this
+// daemon from anywhere. relay.ServeHost registers, waits for one client, serves it (blocking until
+// that client disconnects), then returns — so we loop to re-register for the next client. A quick
+// return means the relay was unreachable (down / network), so we back off; a long-lived return
+// means we served a real session, so we re-register promptly. Traffic stays end-to-end encrypted.
+func relayHost(relayURL, serverID string, srv *server.Server) {
+	ctx := context.Background()
+	backoff := time.Second
+	for {
+		start := time.Now()
+		_ = relay.ServeHost(ctx, relayURL, serverID, srv.ServeConn)
+		if time.Since(start) > 5*time.Second {
+			backoff = time.Second // served a client (or waited on one) — re-register immediately
+			continue
+		}
+		time.Sleep(backoff) // relay unreachable — retry with capped exponential backoff
+		if backoff < 30*time.Second {
+			backoff *= 2
+		}
+	}
 }
 
 // localWSURL is the loopback ws URL for a same-machine app.
@@ -261,7 +300,7 @@ func localWSURL(addr string) string {
 // writeLocalPairing writes ~/.oculus/pairing.json for the local app to read.
 // ws is the loopback URL the local app connects to; publicWS is the reachable URL
 // encoded into the QR shown to a phone.
-func writeLocalPairing(wsURL, publicWS, pub, secret, name string) {
+func writeLocalPairing(wsURL, publicWS, pub, secret, name, relay string) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return
@@ -270,14 +309,14 @@ func writeLocalPairing(wsURL, publicWS, pub, secret, name string) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return
 	}
-	_ = os.WriteFile(filepath.Join(dir, "pairing.json"), pairingJSON(wsURL, publicWS, pub, secret, name), 0o600)
+	_ = os.WriteFile(filepath.Join(dir, "pairing.json"), pairingJSON(wsURL, publicWS, pub, secret, name, relay), 0o600)
 }
 
 // pairingJSON is the ~/.oculus/pairing.json body the local app reads (name lets it label
 // this desktop). Pure for testing.
-func pairingJSON(wsURL, publicWS, pub, secret, name string) []byte {
+func pairingJSON(wsURL, publicWS, pub, secret, name, relay string) []byte {
 	data, _ := json.Marshal(map[string]string{
-		"ws": wsURL, "public": publicWS, "pub": pub, "secret": secret, "name": name,
+		"ws": wsURL, "public": publicWS, "pub": pub, "secret": secret, "name": name, "relay": relay,
 	})
 	return data
 }
@@ -319,19 +358,24 @@ func lanIP() string {
 }
 
 // buildPairURL builds the oculus://pair deep link the QR encodes. name lets the app
-// label this desktop (for grouping multiple paired Macs).
-func buildPairURL(wsURL, pubHex, secret, name string) string {
+// label this desktop (for grouping multiple paired Macs). relay, when set, lets the app
+// reach this daemon from anywhere via the shared relay (server_id = pub); the app prefers
+// the relay and falls back to the LAN ws URL.
+func buildPairURL(wsURL, pubHex, secret, name, relay string) string {
 	u := fmt.Sprintf("oculus://pair?ws=%s&pub=%s&secret=%s",
 		url.QueryEscape(wsURL), pubHex, url.QueryEscape(secret))
 	if name != "" {
 		u += "&name=" + url.QueryEscape(name)
 	}
+	if relay != "" {
+		u += "&relay=" + url.QueryEscape(relay)
+	}
 	return u
 }
 
 // printPairing prints the oculus:// pairing URL and a scannable QR to the terminal.
-func printPairing(wsURL, pubHex, secret, name string) {
-	pairURL := buildPairURL(wsURL, pubHex, secret, name)
+func printPairing(wsURL, pubHex, secret, name, relay string) {
+	pairURL := buildPairURL(wsURL, pubHex, secret, name, relay)
 	fmt.Printf("\n  pair from your phone — scan this QR (Oculus app → Scan QR):\n\n")
 	qrterminal.GenerateWithConfig(pairURL, qrterminal.Config{
 		Level: qrterminal.L, Writer: os.Stdout, HalfBlocks: true,

@@ -31,8 +31,8 @@ func TestLoadOrCreateSecret_StableAcrossRestarts(t *testing.T) {
 }
 
 func TestBuildPairURL_IncludesName(t *testing.T) {
-	u := buildPairURL("wss://x.example/ws", "abcd", "s3cret", "Jacob's MBP")
-	for _, want := range []string{"oculus://pair?", "ws=wss", "pub=abcd", "secret=s3cret", "name=Jacob"} {
+	u := buildPairURL("wss://x.example/ws", "abcd", "s3cret", "Jacob's MBP", "wss://relay.example/ws")
+	for _, want := range []string{"oculus://pair?", "ws=wss", "pub=abcd", "secret=s3cret", "name=Jacob", "relay=wss"} {
 		if !strings.Contains(u, want) {
 			t.Errorf("pair URL %q missing %q", u, want)
 		}
@@ -41,18 +41,22 @@ func TestBuildPairURL_IncludesName(t *testing.T) {
 	if strings.Contains(u, "Jacob's MBP") {
 		t.Errorf("name not URL-escaped in %q", u)
 	}
-	// No name -> no name param.
-	if strings.Contains(buildPairURL("ws://x/ws", "p", "s", ""), "name=") {
+	// No name / no relay -> no such param.
+	bare := buildPairURL("ws://x/ws", "p", "s", "", "")
+	if strings.Contains(bare, "name=") {
 		t.Error("empty name should not add a name param")
+	}
+	if strings.Contains(bare, "relay=") {
+		t.Error("empty relay should not add a relay param")
 	}
 }
 
 func TestPairingJSON_IncludesName(t *testing.T) {
 	var m map[string]string
-	if err := json.Unmarshal(pairingJSON("ws://local/ws", "wss://pub/ws", "pub", "sec", "Studio"), &m); err != nil {
+	if err := json.Unmarshal(pairingJSON("ws://local/ws", "wss://pub/ws", "pub", "sec", "Studio", "wss://relay/ws"), &m); err != nil {
 		t.Fatal(err)
 	}
-	for k, want := range map[string]string{"ws": "ws://local/ws", "public": "wss://pub/ws", "pub": "pub", "secret": "sec", "name": "Studio"} {
+	for k, want := range map[string]string{"ws": "ws://local/ws", "public": "wss://pub/ws", "pub": "pub", "secret": "sec", "name": "Studio", "relay": "wss://relay/ws"} {
 		if m[k] != want {
 			t.Errorf("pairing.json[%q] = %q, want %q", k, m[k], want)
 		}
