@@ -281,12 +281,26 @@ func (s *session) readLoop(body io.ReadCloser) {
 // session is closed. Returns (stream, true) on success, (nil, false) if the session ended.
 func (s *session) reconnectEvents() (io.ReadCloser, bool) {
 	backoff := 500 * time.Millisecond
+	start := time.Now()
+	warned := false
 	for {
 		if s.ctx.Err() != nil {
 			return nil, false
 		}
 		if body, err := s.openEvents(s.ctx); err == nil {
+			if warned { // recovered — clear the error state back to running
+				s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{
+					SessionID: s.id, Status: protocol.StatusRunning, Detail: "opencode reconnected"}})
+			}
 			return body, true
+		}
+		// Don't retry forever in silence: if the backend stays unreachable, surface the session as
+		// errored once (the app/session.list then shows "error" instead of a phantom "running"),
+		// while still retrying so it self-heals if opencode comes back.
+		if !warned && time.Since(start) > 20*time.Second {
+			warned = true
+			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{
+				SessionID: s.id, Status: protocol.StatusError, Detail: "opencode backend unreachable"}})
 		}
 		select {
 		case <-s.ctx.Done():

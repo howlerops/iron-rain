@@ -140,11 +140,15 @@ func (m *managedSession) info() protocol.Session {
 	label := m.meta.label
 	inTok, outTok, cost := m.inTok, m.outTok, m.costUSD
 	isWorkspace := len(m.meta.members) > 0
+	status := m.lastStatus
 	m.mu.Unlock()
+	if status == "" {
+		status = protocol.StatusRunning // freshly created — no status event yet
+	}
 	return protocol.Session{
 		ID:            m.sess.ID(),
 		Provider:      m.sess.Provider(),
-		Status:        protocol.StatusRunning,
+		Status:        status, // real last status (idle/error/awaiting_approval), not a hardcoded "running"
 		Name:          label,
 		ProjectID:     m.meta.projectID,
 		Cwd:           m.meta.cwd,
