@@ -34,6 +34,7 @@ const (
 	TypeProviderList        = "provider.list" // agent providers registered on this daemon
 	TypeProjectList         = "project.list"
 	TypeProjectAdd          = "project.add"
+	TypeProjectBrowse       = "project.browse"
 	TypeProjectRemove       = "project.remove"
 	TypeWorktreeDiff        = "worktree.diff"        // request the diff of a worktree session
 	TypeWorktreeRemove      = "worktree.remove"      // stop a worktree session + remove its worktree
@@ -150,6 +151,27 @@ type Project struct {
 
 type ProjectAdd struct {
 	Path string `json:"path"`
+}
+
+// ProjectBrowseReq lists the immediate subdirectories of Path (empty = the user's home directory)
+// for the new-session folder picker — so you can browse INTO a folder and pick several sub-folders.
+type ProjectBrowseReq struct {
+	Path string `json:"path,omitempty"`
+}
+
+// ProjectDirEntry is one browsable subdirectory.
+type ProjectDirEntry struct {
+	Name      string `json:"name"`
+	Path      string `json:"path"`
+	IsGitRepo bool   `json:"is_git_repo"`
+}
+
+// ProjectBrowse is the result of project.browse: the listed directory, its parent (for "up"), and
+// the subdirectories within it.
+type ProjectBrowse struct {
+	Path    string            `json:"path"`
+	Parent  string            `json:"parent,omitempty"`
+	Entries []ProjectDirEntry `json:"entries"`
 }
 
 type ProjectRef struct {

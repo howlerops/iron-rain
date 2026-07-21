@@ -915,6 +915,7 @@ func asyncDispatch(typ string) bool {
 		protocol.TypeSessionAttach,       // provider Attach
 		protocol.TypeSessionStop,         // provider Stop
 		protocol.TypeSessionInterrupt,    // provider Stop (interrupt only)
+		protocol.TypeProjectBrowse,       // disk: dir listing for the folder picker
 		protocol.TypeFSTree,              // disk: dir listing
 		protocol.TypeFSRead,              // disk: file read
 		protocol.TypeFSReadBytes,         // disk: raw bytes (images)
@@ -1119,6 +1120,20 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			return
 		}
 		h.sendOK(conn, env.ID, toProtoProject(p))
+
+	case protocol.TypeProjectBrowse:
+		var req protocol.ProjectBrowseReq
+		_ = env.Unmarshal(&req)
+		res, err := project.Browse(req.Path)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		entries := make([]protocol.ProjectDirEntry, 0, len(res.Entries))
+		for _, e := range res.Entries {
+			entries = append(entries, protocol.ProjectDirEntry{Name: e.Name, Path: e.Path, IsGitRepo: e.IsGitRepo})
+		}
+		h.sendOK(conn, env.ID, protocol.ProjectBrowse{Path: res.Path, Parent: res.Parent, Entries: entries})
 
 	case protocol.TypeProjectRemove:
 		var req protocol.ProjectRef

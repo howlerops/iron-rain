@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -55,6 +56,81 @@ func Load(path string) (*Registry, error) {
 		return nil, fmt.Errorf("project registry %s: %w", path, err)
 	}
 	return r, nil
+}
+
+// DirEntry is one browsable subdirectory returned by Browse (for the new-session folder picker).
+type DirEntry struct {
+	Name      string `json:"name"`
+	Path      string `json:"path"` // absolute
+	IsGitRepo bool   `json:"is_git_repo"`
+}
+
+// BrowseResult is the immediate subdirectories of a directory, for the folder picker.
+type BrowseResult struct {
+	Path    string     `json:"path"`             // the directory that was listed (absolute)
+	Parent  string     `json:"parent,omitempty"` // its parent, for "up" navigation ("" at fs root)
+	Entries []DirEntry `json:"entries"`
+}
+
+// Browse lists the immediate subdirectories of dir (defaulting to the user's home directory when
+// empty), flagging which are git repos so a session can select several and worktree each. It is a
+// read-only listing used by the new-session picker to browse INTO a folder and pick sub-folders —
+// distinct from the session-scoped fs.tree. Hidden (dot-prefixed) directories are skipped.
+func Browse(dir string) (BrowseResult, error) {
+	if strings.TrimSpace(dir) == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return BrowseResult{}, err
+		}
+		dir = home
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return BrowseResult{}, err
+	}
+	abs = filepath.Clean(abs)
+	if fi, err := os.Stat(abs); err != nil {
+		return BrowseResult{}, err
+	} else if !fi.IsDir() {
+		return BrowseResult{}, fmt.Errorf("%s is not a directory", abs)
+	}
+
+	ents, err := os.ReadDir(abs)
+	if err != nil {
+		return BrowseResult{}, err
+	}
+	out := make([]DirEntry, 0, len(ents))
+	for _, e := range ents {
+		name := e.Name()
+		if strings.HasPrefix(name, ".") { // skip hidden
+			continue
+		}
+		p := filepath.Join(abs, name)
+		if !e.IsDir() {
+			// Include symlinks that resolve to a directory (common for project folders).
+			if e.Type()&os.ModeSymlink == 0 {
+				continue
+			}
+			if fi, err := os.Stat(p); err != nil || !fi.IsDir() {
+				continue
+			}
+		}
+		out = append(out, DirEntry{Name: name, Path: p, IsGitRepo: isGitRepo(p)})
+	}
+	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name) })
+
+	parent := filepath.Dir(abs)
+	if parent == abs { // at the filesystem root
+		parent = ""
+	}
+	return BrowseResult{Path: abs, Parent: parent, Entries: out}, nil
+}
+
+// isGitRepo reports whether dir contains a .git entry (repo dir or gitfile) — a fast check for the
+// picker; the exact branch is resolved later by Add.
+func isGitRepo(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, ".git"))
+	return err == nil
 }
 
 // Add registers dir explicitly via the Projects UI (source "manual"). Idempotent by
