@@ -1,0 +1,26 @@
+# Iron Rain relay — a stateless ciphertext forwarder that bridges the app to a daemon from anywhere.
+# Deploy:  cd daemon && fly deploy --config fly.relay.toml --dockerfile Dockerfile.relay
+app = "oculus-relay-howlerops"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile.relay"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # The relay holds long-lived host/client WebSocket connections, so it must stay up.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/healthz"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

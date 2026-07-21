@@ -1,0 +1,15 @@
+# Build + run the Iron Rain relay (a tiny stateless byte-forwarder). Build context = daemon/.
+#   fly deploy --config fly.relay.toml --dockerfile Dockerfile.relay
+FROM golang:1.26-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /oculus-relay ./cmd/oculus-relay
+
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates
+COPY --from=build /oculus-relay /usr/local/bin/oculus-relay
+ENV PORT=8080
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/oculus-relay"]

@@ -40,3 +40,7 @@ fastlane/report.xml
 fastlane/*.log
 fastlane/test_output/
 build/
+
+# built relay binaries (use go run / fly build)
+/daemon/oculus-relay
+/daemon/oculus-relay-e2e

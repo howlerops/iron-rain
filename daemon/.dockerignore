@@ -1,0 +1,12 @@
+# The relay image only needs Go source. Keep the build context tiny — the sidecar's
+# node_modules alone is ~270MB and is never compiled into the relay.
+**/node_modules
+**/*.log
+**/.git
+**/.DS_Store
+Dockerfile.relay
+fly.relay.toml
+oculusd
+oculusd-new
+build/
+dist/
