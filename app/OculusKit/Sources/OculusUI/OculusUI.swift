@@ -582,13 +582,17 @@ public final class Model: ObservableObject {
     }
 
     /// Begins a Linear OAuth flow; the daemon returns an authorize URL to open in a browser.
-    public func startLinearOAuth() async {
+    /// Begins an OAuth flow for a tracker (linear/jira). The daemon replies with an authorize URL,
+    /// which the receive loop surfaces via `oauthURL` for the view to open.
+    public func startOAuth(provider: String) async {
         guard let client else { return }
         if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.integrationOAuth,
-                                          payload: IntegrationOAuth(provider: "linear")) {
+                                          payload: IntegrationOAuth(provider: provider)) {
             try? await client.send(env)
         }
     }
+
+    public func startLinearOAuth() async { await startOAuth(provider: "linear") }
 
     public func loadIntegrationStatus() async {
         guard let client else { return }

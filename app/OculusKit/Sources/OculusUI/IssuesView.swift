@@ -12,6 +12,7 @@ public struct IssuesView: View {
     var embedded = false // macOS: rendered inside a NavigationSplitView detail (no own nav/toolbar)
     @State private var kanban = true
     @State private var token = ""
+    @State private var jiraToken = ""
     @State private var launching: Issue?
     @State private var selectedIssue: Issue?
     @State private var searchText = ""
@@ -238,35 +239,70 @@ public struct IssuesView: View {
     // MARK: connect
 
     private var connectScreen: some View {
-        VStack(spacing: 16) {
-            Spacer()
-            Image(systemName: "checklist").font(.system(size: 48)).foregroundStyle(palette.primary)
-            Text("Connect Linear").font(.title2.bold())
-            Text("Paste a Linear API key (Settings → Security & access → Personal API keys) to see your assigned issues and launch agents on them.")
-                .font(.subheadline).foregroundStyle(palette.mutedForeground)
-                .multilineTextAlignment(.center).padding(.horizontal, 28)
-            Button {
-                Task { await model.startLinearOAuth() }
-            } label: {
-                Label("Connect with Linear", systemImage: "link").frame(maxWidth: 360)
-            }
-            .buttonStyle(.borderedProminent).tint(palette.primary)
+        ScrollView {
+            VStack(spacing: 22) {
+                Image(systemName: "checklist").font(.system(size: 44)).foregroundStyle(palette.primary)
+                Text("Connect your issue tracker").font(.title2.bold())
+                Text("See your assigned issues and launch agents on them — a worktree per ticket, its PR linked back automatically.")
+                    .font(.subheadline).foregroundStyle(palette.mutedForeground)
+                    .multilineTextAlignment(.center).padding(.horizontal, 28)
 
-            Text("or paste a key").font(.caption2).foregroundStyle(palette.mutedForeground)
-            SecureField("Linear API key", text: $token)
-                .textFieldStyle(.roundedBorder).frame(maxWidth: 360)
-                #if os(iOS)
-                .textInputAutocapitalization(.never).autocorrectionDisabled()
-                #endif
-            Button("Connect with key") {
-                let t = token; token = ""
-                Task { await model.connectTracker(provider: "linear", token: t) }
+                // Linear
+                trackerCard(name: "Linear", systemImage: "link") {
+                    Button { Task { await model.startOAuth(provider: "linear") } } label: {
+                        Label("Connect with Linear", systemImage: "link").frame(maxWidth: 340)
+                    }
+                    .buttonStyle(.borderedProminent).tint(palette.primary)
+                    Text("or paste an API key (Settings → Security & access → Personal API keys)")
+                        .font(.caption2).foregroundStyle(palette.mutedForeground).multilineTextAlignment(.center)
+                    SecureField("Linear API key", text: $token)
+                        .textFieldStyle(.roundedBorder).frame(maxWidth: 340)
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        #endif
+                    Button("Connect with key") {
+                        let t = token; token = ""
+                        Task { await model.connectTracker(provider: "linear", token: t) }
+                    }
+                    .buttonStyle(.bordered).tint(palette.primary).disabled(token.isEmpty)
+                }
+
+                // Jira (Atlassian OAuth 2.0 3LO)
+                trackerCard(name: "Jira", systemImage: "square.stack.3d.up") {
+                    Button { Task { await model.startOAuth(provider: "jira") } } label: {
+                        Label("Connect with Jira", systemImage: "link").frame(maxWidth: 340)
+                    }
+                    .buttonStyle(.borderedProminent).tint(palette.primary)
+                    Text("Opens Atlassian to authorize. (Needs the OAuth app's client_id/secret in the daemon's ~/.oculus/integrations.json.)")
+                        .font(.caption2).foregroundStyle(palette.mutedForeground).multilineTextAlignment(.center)
+                    Text("or paste an API token as  site|email|token")
+                        .font(.caption2).foregroundStyle(palette.mutedForeground).multilineTextAlignment(.center)
+                    SecureField("https://you.atlassian.net|you@co.com|token", text: $jiraToken)
+                        .textFieldStyle(.roundedBorder).frame(maxWidth: 340)
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        #endif
+                    Button("Connect with token") {
+                        let t = jiraToken; jiraToken = ""
+                        Task { await model.connectTracker(provider: "jira", token: t) }
+                    }
+                    .buttonStyle(.bordered).tint(palette.primary).disabled(jiraToken.isEmpty)
+                }
             }
-            .buttonStyle(.bordered).tint(palette.primary)
-            .disabled(token.isEmpty)
-            Spacer()
+            .padding(.vertical, 28)
+            .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder private func trackerCard<Content: View>(name: String, systemImage: String, @ViewBuilder _ content: () -> Content) -> some View {
+        VStack(spacing: 10) {
+            Label(name, systemImage: systemImage).font(.headline)
+            content()
+        }
+        .padding(18)
+        .frame(maxWidth: 400)
+        .background(palette.secondary.opacity(0.35), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(palette.border))
     }
 
     // MARK: kanban

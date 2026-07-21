@@ -52,19 +52,38 @@ func NewManager(path string, onUpdate func([]Issue)) *Manager {
 		if token == "" {
 			continue
 		}
-		if p, err := newAdapter(name, token); err == nil {
+		if p, err := m.newAdapter(name, token); err == nil {
 			m.providers[name] = p
 		}
 	}
 	return m
 }
 
-func newAdapter(name, token string) (Provider, error) {
+func (m *Manager) newAdapter(name, token string) (Provider, error) {
 	switch name {
 	case "linear":
 		return NewLinear(token), nil
 	case "jira":
-		// token = "https://site.atlassian.net|email|apitoken"
+		// OAuth: "oauth|cloudid|access|refresh". Basic: "site|email|apitoken".
+		if strings.HasPrefix(token, "oauth|") {
+			parts := strings.SplitN(token, "|", 4)
+			if len(parts) != 4 {
+				return nil, fmt.Errorf("jira oauth token must be oauth|cloudid|access|refresh")
+			}
+			cloudID := parts[1]
+			m.mu.Lock()
+			clientID, clientSecret := m.cfg.Jira.ClientID, m.cfg.Jira.ClientSecret
+			m.mu.Unlock()
+			// Persist rotated tokens so the next start (and the next refresh) has the current pair.
+			onRefresh := func(access, refresh string) {
+				m.mu.Lock()
+				m.cfg.Jira.Token = strings.Join([]string{"oauth", cloudID, access, refresh}, "|")
+				cfg := m.cfg
+				m.mu.Unlock()
+				m.save(cfg)
+			}
+			return NewJiraOAuth(cloudID, parts[2], parts[3], clientID, clientSecret, onRefresh), nil
+		}
 		parts := strings.SplitN(token, "|", 3)
 		if len(parts) != 3 {
 			return nil, fmt.Errorf("jira token must be site|email|apitoken")
@@ -77,7 +96,7 @@ func newAdapter(name, token string) (Provider, error) {
 
 // Connect sets a provider's token, persists it, creates the adapter, and refreshes.
 func (m *Manager) Connect(ctx context.Context, name, token string) error {
-	p, err := newAdapter(name, token)
+	p, err := m.newAdapter(name, token)
 	if err != nil {
 		return err
 	}

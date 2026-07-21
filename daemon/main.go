@@ -133,9 +133,10 @@ func serve(args []string) error {
 	}
 	issuesMgr.StartPolling(context.Background(), 60*time.Second)
 	// The OAuth callback is served on a browser-safe loopback port (not the daemon's
-	// possibly-blocked WS port), so the redirect URI Linear sends the browser to loads.
-	oauthRedirect := issues.OAuthRedirectURI(net.JoinHostPort("127.0.0.1", *oauthPort))
-	h.SetOAuthRedirect(oauthRedirect)
+	// possibly-blocked WS port), so the redirect URI the tracker sends the browser to loads.
+	// Each provider gets its own /oauth/{provider}/callback path.
+	oauthAddr := net.JoinHostPort("127.0.0.1", *oauthPort)
+	h.SetOAuthAddr(oauthAddr)
 	h.SetAttacherFactory(func(provider, url string) agent.Attacher {
 		if provider == "opencode" && url != "" {
 			return opencode.New(url)
@@ -182,25 +183,30 @@ func serve(args []string) error {
 	mux := http.NewServeMux()
 	mux.Handle("/ws", srv.Handler())
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
-	// Loopback OAuth callback for tracker connect (Linear). The redirect URI must be
-	// registered on the Linear OAuth app. It is served both on the main mux (reachable via
+	// Loopback OAuth callback for tracker connect (Linear + Jira). The redirect URI must be
+	// registered on each provider's OAuth app. It is served both on the main mux (reachable via
 	// --public-url tunnels) and on a dedicated browser-safe loopback port below, since the
 	// local browser can't load the daemon's WS port when it's a browser-restricted one (6000).
-	oauthCallback := func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		code, state := r.URL.Query().Get("code"), r.URL.Query().Get("state")
-		if err := issuesMgr.OAuthCallback(r.Context(), code, state, oauthRedirect); err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprintf(w, "<h2>Linear connection failed</h2><p>%s</p>", err.Error())
-			return
+	oauthCallback := func(provider string) http.HandlerFunc {
+		redirect := issues.OAuthRedirectURI(oauthAddr, provider)
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			code, state := r.URL.Query().Get("code"), r.URL.Query().Get("state")
+			if err := issuesMgr.OAuthCallback(r.Context(), code, state, redirect); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				fmt.Fprintf(w, "<h2>%s connection failed</h2><p>%s</p>", provider, err.Error())
+				return
+			}
+			fmt.Fprintf(w, "<h2>Iron Rain connected to %s ✓</h2><p>You can close this tab and return to the app.</p>", provider)
 		}
-		fmt.Fprint(w, "<h2>Iron Rain connected to Linear ✓</h2><p>You can close this tab and return to the app.</p>")
 	}
-	mux.HandleFunc("/oauth/linear/callback", oauthCallback)
+	mux.HandleFunc("/oauth/linear/callback", oauthCallback("linear"))
+	mux.HandleFunc("/oauth/jira/callback", oauthCallback("jira"))
 	// Dedicated browser-safe loopback listener for the OAuth callback.
 	if *oauthPort != "" {
 		oauthMux := http.NewServeMux()
-		oauthMux.HandleFunc("/oauth/linear/callback", oauthCallback)
+		oauthMux.HandleFunc("/oauth/linear/callback", oauthCallback("linear"))
+		oauthMux.HandleFunc("/oauth/jira/callback", oauthCallback("jira"))
 		oauthSrv := &http.Server{Addr: net.JoinHostPort("127.0.0.1", *oauthPort), Handler: oauthMux, ReadHeaderTimeout: 10 * time.Second}
 		go func() {
 			if err := oauthSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -213,7 +219,7 @@ func serve(args []string) error {
 	fmt.Printf("  listening:      ws://%s/ws\n", *addr)
 	fmt.Printf("  daemon pubkey:  %s\n", hex.EncodeToString(kp.Public()))
 	fmt.Printf("  pairing secret: %s\n", sec)
-	fmt.Printf("  oauth redirect: %s  (register this on your Linear OAuth app)\n", oauthRedirect)
+	fmt.Printf("  oauth redirect: %s  (register /oauth/linear/callback + /oauth/jira/callback on your OAuth apps)\n", oauthAddr)
 	for _, pv := range providers {
 		fmt.Printf("  provider:       %s\n", pv)
 	}

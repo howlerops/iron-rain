@@ -18,33 +18,46 @@ const (
 	linearTokenURL     = "https://api.linear.app/oauth/token"
 )
 
+// Atlassian (Jira) OAuth 2.0 3LO endpoints (developer.atlassian.com/cloud/jira/platform/oauth-2-3lo-apps).
+const (
+	jiraAuthorizeURL = "https://auth.atlassian.com/authorize"
+	jiraTokenURL     = "https://auth.atlassian.com/oauth/token"
+	jiraResourcesURL = "https://api.atlassian.com/oauth/token/accessible-resources"
+)
+
 // linearScopes grant read + write (issue updates + comments) as the authorizing USER.
-// NOTE: the app:assignable/app:mentionable scopes + actor=application (agent identity) are
-// mutually exclusive with the broad `write` scope — mixing them yields Linear's "scopes
-// requested are not valid for this actor mode" error. User-actor read+write is the reliable
-// path for a personal connection; app-actor would require the Linear OAuth app to be
-// configured as an application with assignable/mentionable enabled.
 var linearScopes = []string{"read", "write"}
 
-// OAuthRedirectURI is the daemon's loopback callback; register it on the Linear OAuth app.
-func OAuthRedirectURI(addrPort string) string {
-	return "http://" + addrPort + "/oauth/linear/callback"
+// jiraScopes: read/write issues + read users, plus offline_access to get a refresh token
+// (Atlassian access tokens expire in ~1h, so without this the connection would die hourly).
+var jiraScopes = []string{"read:jira-work", "write:jira-work", "read:jira-user", "offline_access"}
+
+// OAuthRedirectURI is the daemon's loopback callback for a provider; register it on that
+// provider's OAuth app (e.g. /oauth/linear/callback, /oauth/jira/callback).
+func OAuthRedirectURI(addrPort, provider string) string {
+	return "http://" + addrPort + "/oauth/" + provider + "/callback"
 }
 
-// OAuthStart begins a Linear OAuth flow: returns the authorize URL and records the state.
+// OAuthStart begins a provider's OAuth flow: returns the authorize URL and records the state.
 // Requires the OAuth app's client_id in the saved config (from ~/.oculus/integrations.json).
 func (m *Manager) OAuthStart(provider, redirectURI string) (string, error) {
-	if provider != "linear" {
-		return "", fmt.Errorf("oauth not supported for %q", provider)
-	}
 	m.mu.Lock()
-	clientID := m.cfg.Linear.ClientID
 	if m.pending == nil {
 		m.pending = map[string]string{}
 	}
+	var clientID string
+	switch provider {
+	case "linear":
+		clientID = m.cfg.Linear.ClientID
+	case "jira":
+		clientID = m.cfg.Jira.ClientID
+	default:
+		m.mu.Unlock()
+		return "", fmt.Errorf("oauth not supported for %q", provider)
+	}
 	m.mu.Unlock()
 	if clientID == "" {
-		return "", fmt.Errorf("no Linear OAuth client_id configured")
+		return "", fmt.Errorf("no %s OAuth client_id configured (add it in ~/.oculus/integrations.json)", provider)
 	}
 	state := randState()
 	m.mu.Lock()
@@ -55,11 +68,20 @@ func (m *Manager) OAuthStart(provider, redirectURI string) (string, error) {
 	q.Set("client_id", clientID)
 	q.Set("redirect_uri", redirectURI)
 	q.Set("response_type", "code")
-	q.Set("scope", strings.Join(linearScopes, ","))
 	q.Set("state", state)
-	// actor defaults to "user" — act on behalf of the authorizing user. (actor=application
-	// requires app-only scopes and rejects the `write` scope; see linearScopes note.)
-	return linearAuthorizeURL + "?" + q.Encode(), nil
+	switch provider {
+	case "linear":
+		q.Set("scope", strings.Join(linearScopes, ","))
+		// actor defaults to "user" — act on behalf of the authorizing user. (actor=application
+		// requires app-only scopes and rejects the `write` scope.)
+		return linearAuthorizeURL + "?" + q.Encode(), nil
+	case "jira":
+		q.Set("scope", strings.Join(jiraScopes, " ")) // Atlassian uses space-delimited scopes
+		q.Set("audience", "api.atlassian.com")
+		q.Set("prompt", "consent") // required to (re)issue a refresh token
+		return jiraAuthorizeURL + "?" + q.Encode(), nil
+	}
+	return "", fmt.Errorf("oauth not supported for %q", provider)
 }
 
 // OAuthCallback exchanges the authorization code for an access token and connects.
@@ -67,40 +89,132 @@ func (m *Manager) OAuthCallback(ctx context.Context, code, state, redirectURI st
 	m.mu.Lock()
 	provider := m.pending[state]
 	delete(m.pending, state)
-	clientID := m.cfg.Linear.ClientID
-	clientSecret := m.cfg.Linear.ClientSecret
 	m.mu.Unlock()
 	if provider == "" {
 		return fmt.Errorf("unknown or expired oauth state")
 	}
+	switch provider {
+	case "linear":
+		return m.linearCallback(ctx, code, redirectURI)
+	case "jira":
+		return m.jiraCallback(ctx, code, redirectURI)
+	}
+	return fmt.Errorf("oauth not supported for %q", provider)
+}
 
-	form := url.Values{}
-	form.Set("grant_type", "authorization_code")
-	form.Set("code", code)
-	form.Set("redirect_uri", redirectURI)
-	form.Set("client_id", clientID)
-	form.Set("client_secret", clientSecret)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, linearTokenURL, strings.NewReader(form.Encode()))
+func (m *Manager) linearCallback(ctx context.Context, code, redirectURI string) error {
+	m.mu.Lock()
+	clientID, clientSecret := m.cfg.Linear.ClientID, m.cfg.Linear.ClientSecret
+	m.mu.Unlock()
+	tok, err := exchangeCode(ctx, linearTokenURL, url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"redirect_uri":  {redirectURI},
+		"client_id":     {clientID},
+		"client_secret": {clientSecret},
+	})
 	if err != nil {
 		return err
+	}
+	if tok.AccessToken == "" {
+		return fmt.Errorf("linear token exchange returned no access_token")
+	}
+	return m.Connect(ctx, "linear", tok.AccessToken)
+}
+
+func (m *Manager) jiraCallback(ctx context.Context, code, redirectURI string) error {
+	m.mu.Lock()
+	clientID, clientSecret := m.cfg.Jira.ClientID, m.cfg.Jira.ClientSecret
+	m.mu.Unlock()
+	tok, err := exchangeCode(ctx, jiraTokenURL, url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"redirect_uri":  {redirectURI},
+		"client_id":     {clientID},
+		"client_secret": {clientSecret},
+	})
+	if err != nil {
+		return err
+	}
+	if tok.AccessToken == "" {
+		return fmt.Errorf("jira token exchange returned no access_token")
+	}
+	// Resolve the Jira site (cloudid) the token can access — OAuth API calls go to
+	// https://api.atlassian.com/ex/jira/{cloudid}/rest/... rather than the site URL.
+	cloudID, err := jiraCloudID(ctx, tok.AccessToken)
+	if err != nil {
+		return err
+	}
+	// Persisted token format: oauth|cloudid|access|refresh (see newAdapter).
+	composite := strings.Join([]string{"oauth", cloudID, tok.AccessToken, tok.RefreshToken}, "|")
+	return m.Connect(ctx, "jira", composite)
+}
+
+// oauthToken is the subset of a token response we use.
+type oauthToken struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+}
+
+// exchangeCode POSTs an OAuth token request (form-encoded) and decodes the token response.
+func exchangeCode(ctx context.Context, tokenURL string, form url.Values) (oauthToken, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return oauthToken{}, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	client := &http.Client{Timeout: 30 * time.Second} // never let a stuck token exchange hang
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return oauthToken{}, err
 	}
 	defer drainClose(resp.Body)
-	var tok struct {
-		AccessToken string `json:"access_token"`
-	}
+	var tok oauthToken
 	if err := json.NewDecoder(resp.Body).Decode(&tok); err != nil {
-		return err
+		return oauthToken{}, err
 	}
-	if tok.AccessToken == "" {
-		return fmt.Errorf("linear token exchange returned no access_token (HTTP %s)", resp.Status)
+	return tok, nil
+}
+
+// jiraCloudID returns the first Jira site (cloudid) the access token can reach.
+func jiraCloudID(ctx context.Context, accessToken string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, jiraResourcesURL, nil)
+	if err != nil {
+		return "", err
 	}
-	return m.Connect(ctx, provider, tok.AccessToken)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer drainClose(resp.Body)
+	var resources []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&resources); err != nil {
+		return "", err
+	}
+	if len(resources) == 0 {
+		return "", fmt.Errorf("jira: the token has access to no sites (grant the app access to a Jira site)")
+	}
+	return resources[0].ID, nil
+}
+
+// refreshJiraToken exchanges a refresh token for a fresh access (+ rotated refresh) token.
+// Atlassian rotates refresh tokens, so the caller MUST persist the new refresh token.
+func refreshJiraToken(ctx context.Context, clientID, clientSecret, refreshToken string) (oauthToken, error) {
+	if clientID == "" || clientSecret == "" || refreshToken == "" {
+		return oauthToken{}, fmt.Errorf("jira: cannot refresh (missing client creds or refresh token)")
+	}
+	return exchangeCode(ctx, jiraTokenURL, url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refreshToken},
+		"client_id":     {clientID},
+		"client_secret": {clientSecret},
+	})
 }
 
 func randState() string {

@@ -9,19 +9,35 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
-// Jira is a Provider backed by Jira Cloud REST v3, authenticated with an API token
-// (Basic email:token). It fits behind the same interface as Linear.
+// Jira is a Provider backed by Jira Cloud REST v3. Two auth modes:
+//   - Basic: an API token (email:token) against the site URL (id.atlassian.com → API tokens).
+//   - OAuth: a Bearer access token against https://api.atlassian.com/ex/jira/{cloudid}; the
+//     access token is auto-refreshed on a 401 using the stored refresh token.
+//
+// It fits behind the same interface as Linear.
 type Jira struct {
-	base string // https://your-site.atlassian.net
-	auth string // "Basic <base64(email:token)>"
+	base string // site URL (basic) or https://api.atlassian.com/ex/jira/{cloudid} (oauth)
 	http *http.Client
+
+	mu   sync.Mutex // guards auth/tokens (an OAuth token can rotate under concurrent calls)
+	auth string     // "Basic ..." or "Bearer ..."
+
+	// OAuth refresh state (empty for basic-auth connections):
+	oauth        bool
+	clientID     string
+	clientSecret string
+	cloudID      string
+	accessToken  string
+	refreshToken string
+	onRefresh    func(access, refresh string) // persist rotated tokens
 }
 
-// NewJira builds a Jira adapter. site is the Atlassian base URL, email + apiToken are the
-// user's credentials (id.atlassian.com → API tokens).
+// NewJira builds a Basic-auth Jira adapter. site is the Atlassian base URL, email + apiToken are
+// the user's credentials (id.atlassian.com → API tokens).
 func NewJira(site, email, apiToken string) *Jira {
 	site = strings.TrimRight(site, "/")
 	return &Jira{
@@ -31,9 +47,53 @@ func NewJira(site, email, apiToken string) *Jira {
 	}
 }
 
+// NewJiraOAuth builds an OAuth Jira adapter for a specific site (cloudid). It refreshes the access
+// token on a 401 and calls onRefresh with the new (access, refresh) so the caller can persist them
+// (Atlassian rotates refresh tokens).
+func NewJiraOAuth(cloudID, accessToken, refreshToken, clientID, clientSecret string, onRefresh func(access, refresh string)) *Jira {
+	return &Jira{
+		base:         "https://api.atlassian.com/ex/jira/" + cloudID,
+		auth:         "Bearer " + accessToken,
+		http:         &http.Client{Timeout: 30 * time.Second},
+		oauth:        true,
+		clientID:     clientID,
+		clientSecret: clientSecret,
+		cloudID:      cloudID,
+		accessToken:  accessToken,
+		refreshToken: refreshToken,
+		onRefresh:    onRefresh,
+	}
+}
+
 func (j *Jira) Name() string { return "jira" }
 
 func (j *Jira) do(ctx context.Context, method, path string, body any, out any) error {
+	resp, err := j.send(ctx, method, path, body)
+	if err != nil {
+		return err
+	}
+	// OAuth access tokens expire (~1h) → a 401 means "refresh and retry once".
+	if j.oauth && resp.StatusCode == http.StatusUnauthorized {
+		drainClose(resp.Body)
+		if rerr := j.refresh(ctx); rerr != nil {
+			return rerr
+		}
+		if resp, err = j.send(ctx, method, path, body); err != nil {
+			return err
+		}
+	}
+	defer drainClose(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("jira %s %s: HTTP %s", method, path, resp.Status)
+	}
+	if out != nil {
+		return json.NewDecoder(resp.Body).Decode(out)
+	}
+	return nil
+}
+
+// send issues one request with the current auth header (re-marshals body so it can be retried).
+func (j *Jira) send(ctx context.Context, method, path string, body any) (*http.Response, error) {
 	var rdr *bytes.Reader
 	if body != nil {
 		b, _ := json.Marshal(body)
@@ -43,21 +103,39 @@ func (j *Jira) do(ctx context.Context, method, path string, body any, out any) e
 	}
 	req, err := http.NewRequestWithContext(ctx, method, j.base+path, rdr)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	req.Header.Set("Authorization", j.auth)
+	j.mu.Lock()
+	auth := j.auth
+	j.mu.Unlock()
+	req.Header.Set("Authorization", auth)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	resp, err := j.http.Do(req)
+	return j.http.Do(req)
+}
+
+// refresh swaps the refresh token for a fresh access (+ rotated refresh) token and persists it.
+func (j *Jira) refresh(ctx context.Context) error {
+	j.mu.Lock()
+	clientID, clientSecret, refreshTok := j.clientID, j.clientSecret, j.refreshToken
+	j.mu.Unlock()
+	tok, err := refreshJiraToken(ctx, clientID, clientSecret, refreshTok)
 	if err != nil {
 		return err
 	}
-	defer drainClose(resp.Body)
-	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("jira %s %s: HTTP %s", method, path, resp.Status)
+	if tok.AccessToken == "" {
+		return fmt.Errorf("jira: token refresh returned no access_token")
 	}
-	if out != nil {
-		return json.NewDecoder(resp.Body).Decode(out)
+	j.mu.Lock()
+	j.accessToken = tok.AccessToken
+	j.auth = "Bearer " + tok.AccessToken
+	if tok.RefreshToken != "" {
+		j.refreshToken = tok.RefreshToken // Atlassian rotates refresh tokens
+	}
+	onRefresh, newRefresh := j.onRefresh, j.refreshToken
+	j.mu.Unlock()
+	if onRefresh != nil {
+		onRefresh(tok.AccessToken, newRefresh)
 	}
 	return nil
 }
