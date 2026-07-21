@@ -19,8 +19,8 @@ public struct ConnectView: View {
         VStack(spacing: 20) {
             Spacer()
             Image("WolfMark").resizable().scaledToFit().frame(width: 72, height: 72)
-            VStack(spacing: 4) {
-                Text("Iron Rain").font(.largeTitle.bold())
+            VStack(spacing: 8) {
+                IronRainWordmark(size: 30)
                 Text("Pair with your Mac's Iron Rain daemon")
                     .font(.subheadline).foregroundStyle(palette.mutedForeground)
             }

@@ -303,7 +303,7 @@ struct DesktopOnboardView: View {
         VStack(spacing: 20) {
             Spacer()
             Image("WolfMark").resizable().scaledToFit().frame(width: 72, height: 72)
-            Text("Iron Rain").font(.largeTitle.bold())
+            IronRainWordmark(size: 30)
             Text("Pair with your Mac's Iron Rain daemon to get started.")
                 .font(.subheadline).foregroundStyle(palette.mutedForeground)
                 .multilineTextAlignment(.center).padding(.horizontal, 32)
