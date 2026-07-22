@@ -21,6 +21,7 @@ import (
 	"github.com/howlerops/oculus/daemon/fsaccess"
 	"github.com/howlerops/oculus/daemon/issues"
 	"github.com/howlerops/oculus/daemon/lsp"
+	"github.com/howlerops/oculus/daemon/commands"
 	"github.com/howlerops/oculus/daemon/project"
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/push"
@@ -916,6 +917,7 @@ func asyncDispatch(typ string) bool {
 		protocol.TypeSessionStop,         // provider Stop
 		protocol.TypeSessionInterrupt,    // provider Stop (interrupt only)
 		protocol.TypeProjectBrowse,       // disk: dir listing for the folder picker
+		protocol.TypeCommandList,         // disk: scans .claude/commands for the slash palette
 		protocol.TypeFSTree,              // disk: dir listing
 		protocol.TypeFSRead,              // disk: file read
 		protocol.TypeFSReadBytes,         // disk: raw bytes (images)
@@ -1134,6 +1136,21 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			entries = append(entries, protocol.ProjectDirEntry{Name: e.Name, Path: e.Path, IsGitRepo: e.IsGitRepo})
 		}
 		h.sendOK(conn, env.ID, protocol.ProjectBrowse{Path: res.Path, Parent: res.Parent, Entries: entries})
+
+	case protocol.TypeCommandList:
+		var req protocol.CommandListReq
+		_ = env.Unmarshal(&req)
+		provider, cwd := "", ""
+		if m := h.managed(req.SessionID); m != nil {
+			provider = m.sess.Provider()
+			cwd = m.meta.cwd
+		}
+		cmds := commands.List(provider, cwd)
+		out := make([]protocol.SlashCommand, 0, len(cmds))
+		for _, c := range cmds {
+			out = append(out, protocol.SlashCommand{Name: c.Name, Description: c.Description, Source: c.Source})
+		}
+		h.sendOK(conn, env.ID, protocol.CommandList{Commands: out})
 
 	case protocol.TypeProjectRemove:
 		var req protocol.ProjectRef

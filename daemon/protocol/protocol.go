@@ -20,6 +20,7 @@ const (
 	TypeSessionGet          = "session.get"
 	TypeSessionCreate       = "session.create"
 	TypeSessionPrompt       = "session.prompt"
+	TypeCommandList         = "command.list"
 	TypeSessionStop         = "session.stop"
 	TypeSessionInterrupt    = "session.interrupt" // stop the current turn, keep the session
 	TypeSessionAutonomy     = "session.autonomy"  // toggle/re-arm heartbeat supervision
@@ -151,6 +152,23 @@ type Project struct {
 
 type ProjectAdd struct {
 	Path string `json:"path"`
+}
+
+// CommandListReq asks for the slash commands available to a session's agent (for the "/" palette).
+type CommandListReq struct {
+	SessionID string `json:"session_id"`
+}
+
+// SlashCommand is one agent slash command offered in the composer palette.
+type SlashCommand struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Source      string `json:"source,omitempty"` // "builtin" or "custom"
+}
+
+// CommandList is the result of command.list.
+type CommandList struct {
+	Commands []SlashCommand `json:"commands"`
 }
 
 // ProjectBrowseReq lists the immediate subdirectories of Path (empty = the user's home directory)
