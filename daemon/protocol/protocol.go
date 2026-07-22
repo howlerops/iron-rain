@@ -164,6 +164,7 @@ type SlashCommand struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 	Source      string `json:"source,omitempty"` // "builtin" or "custom"
+	Prefix      string `json:"prefix,omitempty"` // "/" (default) or "$" (codex skills)
 }
 
 // CommandList is the result of command.list.

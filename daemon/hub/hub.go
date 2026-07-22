@@ -1148,7 +1148,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		cmds := commands.List(provider, cwd)
 		out := make([]protocol.SlashCommand, 0, len(cmds))
 		for _, c := range cmds {
-			out = append(out, protocol.SlashCommand{Name: c.Name, Description: c.Description, Source: c.Source})
+			out = append(out, protocol.SlashCommand{Name: c.Name, Description: c.Description, Source: c.Source, Prefix: c.Prefix})
 		}
 		h.sendOK(conn, env.ID, protocol.CommandList{Commands: out})
 

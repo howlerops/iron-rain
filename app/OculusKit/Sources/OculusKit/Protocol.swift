@@ -584,8 +584,10 @@ public struct SlashCommand: Codable, Identifiable, Hashable {
     public var name: String
     public var description: String?
     public var source: String?
-    public var id: String { name }
+    public var prefix: String?          // "/" (default) or "$" (codex skills)
+    public var id: String { (prefix ?? "/") + name }
     public var isCustom: Bool { source == "custom" }
+    public var glyph: String { prefix ?? "/" }
 }
 public struct CommandList: Codable { public var commands: [SlashCommand] }
 public struct ProjectDirEntry: Codable, Identifiable, Hashable {

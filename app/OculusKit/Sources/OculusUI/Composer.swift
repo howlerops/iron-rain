@@ -28,11 +28,15 @@ struct Composer: View {
     @State private var showFileImporter = false
     #endif
 
-    /// The "/" command palette is active while the draft is a single "/token" (no space yet).
+    /// The command palette is active while the draft is a single "/token" or "$token" (no space
+    /// yet). It filters to commands with the matching prefix — so codex "$" skills and "/" commands
+    /// each appear under their own trigger.
     private var commandMatches: [SlashCommand] {
-        guard draft.hasPrefix("/"), !draft.dropFirst().contains(" "), !model.commands.isEmpty else { return [] }
+        guard let first = draft.first, first == "/" || first == "$",
+              !draft.dropFirst().contains(" "), !model.commands.isEmpty else { return [] }
+        let prefix = String(first)
         let q = draft.dropFirst().lowercased()
-        return q.isEmpty ? model.commands : model.commands.filter { $0.name.lowercased().hasPrefix(q) }
+        return model.commands.filter { ($0.prefix ?? "/") == prefix && (q.isEmpty || $0.name.lowercased().hasPrefix(q)) }
     }
 
     var body: some View {
@@ -112,11 +116,11 @@ struct Composer: View {
             VStack(spacing: 0) {
                 ForEach(commandMatches) { cmd in
                     Button {
-                        draft = "/\(cmd.name) "
+                        draft = "\(cmd.glyph)\(cmd.name) "
                         focused = true
                     } label: {
                         HStack(spacing: 8) {
-                            Text("/\(cmd.name)")
+                            Text("\(cmd.glyph)\(cmd.name)")
                                 .font(.system(size: 13, weight: .semibold, design: .monospaced))
                                 .foregroundStyle(palette.primary)
                             if let d = cmd.description, !d.isEmpty {
