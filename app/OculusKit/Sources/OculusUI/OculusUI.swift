@@ -592,7 +592,17 @@ public final class Model: ObservableObject {
     /// detail immediately — rather than only stashing options until the first message (which
     /// looked like "nothing happened"). The provider makes an idle session; the first message
     /// then prompts it. 2+ folders → a multi-root workspace (common ancestor, no worktree).
-    public func createSession(provider: String, projectIDs: [String]? = nil, worktree: Bool = false, workspaceName: String? = nil, plan: Bool = false, autonomous: Bool = false) async {
+    /// Fetches the models a provider offers (for the New Session picker), without a live session.
+    public func providerModels(_ provider: String) async -> (models: [ModelInfo], editable: Bool) {
+        guard client != nil else { return ([], false) }
+        if let resp = try? await request(MessageType.modelList, payload: ModelListReq(provider: provider)),
+           let ml = try? resp.payload(as: ModelList.self) {
+            return (ml.models, ml.editable)
+        }
+        return ([], false)
+    }
+
+    public func createSession(provider: String, projectIDs: [String]? = nil, worktree: Bool = false, workspaceName: String? = nil, plan: Bool = false, autonomous: Bool = false, model: String? = nil, modelProvider: String? = nil) async {
         guard client != nil else { return }
         startingProvider = provider
         startingSession = true // skeleton loading overlay + UI lock until the session is ready
@@ -614,7 +624,9 @@ public final class Model: ObservableObject {
                                        worktree: worktree ? true : nil,
                                        workspaceName: workspaceName,
                                        plan: plan ? true : nil,
-                                       autonomous: autonomous ? true : nil))
+                                       autonomous: autonomous ? true : nil,
+                                       model: model,
+                                       modelProvider: modelProvider))
             let s = try resp.payload(as: Session.self)
             sessionID = s.id
             currentSession = s

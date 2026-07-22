@@ -23,6 +23,8 @@ struct NewSessionView: View {
     @State private var scanning = false
     @State private var showBrowser = false
     @State private var showManageAgents = false
+    @State private var models: [ModelInfo] = []   // models for the chosen provider (empty = none)
+    @State private var selectedModel = ""          // "" = provider default
     @State private var mode: Mode
     #if os(iOS)
     @State private var addPath = ""
@@ -83,6 +85,12 @@ struct NewSessionView: View {
         .task(id: model.providers) {
             if !model.providers.isEmpty, !model.providers.contains(provider) { provider = model.providers.first ?? provider }
         }
+        .task(id: provider) {
+            // Load the chosen provider's models for the picker; reset the selection to its default.
+            selectedModel = ""
+            let r = await model.providerModels(provider)
+            models = r.editable ? r.models : []
+        }
         .sheet(isPresented: $showManageAgents) { ManageAgentsView(model: model, palette: palette) }
         .sheet(isPresented: $showBrowser) {
             FolderBrowser(model: model, palette: palette,
@@ -127,12 +135,15 @@ struct NewSessionView: View {
             if mode == .new {
                 Button {
                     Task {
+                        let chosen = models.first { $0.id == selectedModel }
                         await model.createSession(provider: provider,
                                                   projectIDs: selectedProjects.isEmpty ? nil : Array(selectedProjects),
                                                   worktree: useWorktree && canIsolate,
                                                   workspaceName: workspaceName.isEmpty ? nil : workspaceName,
                                                   plan: planFirst && planCapable,
-                                                  autonomous: autonomous)
+                                                  autonomous: autonomous,
+                                                  model: selectedModel.isEmpty ? nil : selectedModel,
+                                                  modelProvider: chosen?.provider)
                     }
                     onStart()
                 } label: { Text("Start").frame(minWidth: 52) }
@@ -178,7 +189,17 @@ struct NewSessionView: View {
 
     private var newContent: some View {
         VStack(alignment: .leading, spacing: 22) {
-            field("Agent") { agentPicker }
+            field("Agent") {
+                agentPicker
+                if !models.isEmpty {
+                    Picker("Model", selection: $selectedModel) {
+                        Text("Default").tag("")
+                        ForEach(models) { m in Text(m.name).tag(m.id) }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+                }
+            }
 
             field(isMulti ? "Working directory · \(selectedProjects.count) selected" : "Working directory") {
                 VStack(spacing: 5) {
