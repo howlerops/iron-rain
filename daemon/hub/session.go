@@ -88,6 +88,11 @@ type sessionMeta struct {
 	// for single-repo/shared sessions. Drives the fs guard, session file tree, and workspace.diff.
 	members []worktree.Member
 
+	// Explicit code-view roots — the exact folders the user picked. Set for multi-repo SHARED
+	// sessions (cwd is their common ancestor, which must NOT expose sibling folders). When set,
+	// sessionRoots returns these instead of cwd. Empty = derive from members/cwd.
+	roots []string
+
 	// Scoped child session: the parent it was delegated from + the subtask it owns. Empty for
 	// top-level sessions. Lets the app group children under their parent and label them.
 	parentID string

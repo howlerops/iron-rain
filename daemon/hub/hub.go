@@ -163,6 +163,9 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 			}
 			cwd = anc
 			meta.workspaceName = fmt.Sprintf("%d repos", len(paths))
+			// The agent runs in the common ancestor, but the code view must show ONLY the picked
+			// folders — not their siblings under that ancestor.
+			meta.roots = append([]string(nil), paths...)
 		}
 	}
 	if req.ProjectID != "" {
@@ -2481,6 +2484,9 @@ func (h *Hub) sessionRoots(sessionID string) []string {
 	m := h.sessions[sessionID]
 	if m == nil || m.meta.cwd == "" {
 		return nil
+	}
+	if len(m.meta.roots) > 0 {
+		return append([]string(nil), m.meta.roots...) // explicit picked folders (shared multi-repo)
 	}
 	if len(m.meta.members) > 0 {
 		// A cross-repo workspace: the file tree spans each member repo's worktree (the layout dir
