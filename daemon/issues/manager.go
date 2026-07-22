@@ -32,14 +32,20 @@ type Manager struct {
 	path      string
 	cfg       Config
 	providers map[string]Provider
-	cache     []Issue
-	onUpdate  func([]Issue)
-	pending   map[string]string // oauth state -> provider
+	cache      []Issue
+	onUpdate   func([]Issue)
+	pending    map[string]string // oauth state -> provider
+	authErrors map[string]string // provider -> last token-refresh error (drives the "reconnect" pill)
+}
+
+// TokenRefresher is a provider whose OAuth token can be proactively refreshed (Jira).
+type TokenRefresher interface {
+	RefreshToken(ctx context.Context) error
 }
 
 // NewManager loads config from path and reconnects any provider that has a saved token.
 func NewManager(path string, onUpdate func([]Issue)) *Manager {
-	m := &Manager{path: path, providers: map[string]Provider{}, onUpdate: onUpdate}
+	m := &Manager{path: path, providers: map[string]Provider{}, onUpdate: onUpdate, authErrors: map[string]string{}}
 	if data, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(data, &m.cfg)
 	}
@@ -303,6 +309,77 @@ func (m *Manager) StartPolling(ctx context.Context, interval time.Duration) {
 			}
 		}
 	}()
+}
+
+// StartTokenRefresh proactively refreshes OAuth tokens on a ticker (call once). This keeps the
+// connection alive (access tokens expire ~hourly; the refresh token would otherwise lapse) AND
+// detects when the OAuth has died — a failed refresh records an auth error surfaced to the app so
+// it can show a "reconnect" pill.
+func (m *Manager) StartTokenRefresh(ctx context.Context, interval time.Duration) {
+	go func() {
+		m.refreshTokens(ctx) // once at start — catch an already-dead token immediately
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				m.refreshTokens(ctx)
+			}
+		}
+	}()
+}
+
+func (m *Manager) refreshTokens(ctx context.Context) {
+	m.mu.Lock()
+	provs := make(map[string]Provider, len(m.providers))
+	for n, p := range m.providers {
+		provs[n] = p
+	}
+	m.mu.Unlock()
+
+	changed := false
+	for name, p := range provs {
+		r, ok := p.(TokenRefresher)
+		if !ok {
+			continue
+		}
+		err := r.RefreshToken(ctx)
+		m.mu.Lock()
+		prev, had := m.authErrors[name]
+		if err != nil {
+			msg := err.Error()
+			if !had || prev != msg {
+				m.authErrors[name] = msg
+				changed = true
+			}
+		} else if had {
+			delete(m.authErrors, name)
+			changed = true
+		}
+		m.mu.Unlock()
+	}
+	if changed {
+		m.mu.Lock()
+		cache := m.cache
+		m.mu.Unlock()
+		if m.onUpdate != nil {
+			m.onUpdate(cache) // re-broadcast issues + integration.status (now carrying the auth error)
+		}
+	}
+}
+
+// AuthErrors returns the providers whose OAuth token refresh is currently failing (needs reconnect).
+func (m *Manager) AuthErrors() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, 0, len(m.authErrors))
+	for n := range m.authErrors {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // save writes cfg to disk. It takes cfg by value (not m.cfg) so callers can

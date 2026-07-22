@@ -407,7 +407,7 @@ func (h *Hub) SetIssues(m *issues.Manager) {
 func (h *Hub) BroadcastIssues(in []issues.Issue) {
 	h.broadcast(protocol.TypeIssueList, protocol.IssueList{Issues: toProtoIssues(in)})
 	if m := h.issuesMgr(); m != nil {
-		h.broadcast(protocol.TypeIntegrationStatus, protocol.IntegrationStatus{Connected: m.Connected()})
+		h.broadcast(protocol.TypeIntegrationStatus, protocol.IntegrationStatus{Connected: m.Connected(), AuthErrors: m.AuthErrors()})
 	}
 }
 
@@ -1332,12 +1332,13 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: m.Connected()})
 
 	case protocol.TypeIntegrationStatus:
-		var connected, oauthApps []string
+		var connected, oauthApps, authErrors []string
 		if m := h.issuesMgr(); m != nil {
 			connected = m.Connected()
 			oauthApps = m.OAuthApps()
+			authErrors = m.AuthErrors()
 		}
-		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: connected, OAuthApps: oauthApps})
+		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: connected, OAuthApps: oauthApps, AuthErrors: authErrors})
 
 	case protocol.TypeIntegrationOAuthApp:
 		var req protocol.IntegrationOAuthApp
@@ -1354,7 +1355,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, err.Error())
 			return
 		}
-		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: m.Connected(), OAuthApps: m.OAuthApps()})
+		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: m.Connected(), OAuthApps: m.OAuthApps(), AuthErrors: m.AuthErrors()})
 
 	case protocol.TypeIntegrationOAuth:
 		var req protocol.IntegrationOAuth

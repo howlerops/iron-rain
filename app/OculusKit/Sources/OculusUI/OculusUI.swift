@@ -95,6 +95,8 @@ public final class Model: ObservableObject {
     // Trackers that have an OAuth app configured (client_id present) — drives whether the connect
     // screen shows the OAuth button or asks for the OAuth app credentials.
     @Published public var oauthApps: [String] = []
+    /// Connected trackers whose OAuth token refresh is failing — drives a "reconnect" pill.
+    @Published public var trackerAuthErrors: [String] = []
     // Last tracker-connect/OAuth error, surfaced on the connect screen.
     @Published public var trackerError: String?
     @Published public var oauthURL: URL? // set when an OAuth flow returns an authorize URL to open
@@ -763,6 +765,7 @@ public final class Model: ObservableObject {
             if let st = try? resp.payload(as: IntegrationStatus.self) {
                 connectedTrackers = st.connected
                 oauthApps = st.oauthApps ?? []
+                trackerAuthErrors = st.authErrors ?? []
             }
             await startOAuth(provider: provider)
         } catch {
@@ -1271,6 +1274,7 @@ public final class Model: ObservableObject {
                     } else if keys.contains("connected"), let st = try? env.payload(as: IntegrationStatus.self) {
                         connectedTrackers = st.connected
                         oauthApps = st.oauthApps ?? []
+                        trackerAuthErrors = st.authErrors ?? []
                     } else if keys.contains("issues"), let il = try? env.payload(as: IssueList.self) {
                         issues = il.issues
                     } else if keys.contains("url"), keys.contains("provider"), let oa = try? env.payload(as: IntegrationOAuth.self), let u = oa.url, let url = URL(string: u) {
@@ -1370,6 +1374,7 @@ public final class Model: ObservableObject {
                     if let st = try? env.payload(as: IntegrationStatus.self) {
                         connectedTrackers = st.connected
                         oauthApps = st.oauthApps ?? []
+                        trackerAuthErrors = st.authErrors ?? []
                     }
                 case MessageType.lspDiagnostics: // language server published diagnostics for a file
                     if let d = try? env.payload(as: LSPDiagnostics.self) {

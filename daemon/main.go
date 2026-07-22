@@ -142,6 +142,8 @@ func serve(args []string) error {
 		go func() { _ = issuesMgr.Refresh(context.Background()) }() // initial fetch
 	}
 	issuesMgr.StartPolling(context.Background(), 60*time.Second)
+	// Keep OAuth (Jira) alive + detect when it dies, so the app can prompt a reconnect.
+	issuesMgr.StartTokenRefresh(context.Background(), 40*time.Minute)
 	// The OAuth callback is served on a browser-safe loopback port (not the daemon's
 	// possibly-blocked WS port), so the redirect URI the tracker sends the browser to loads.
 	// Each provider gets its own /oauth/{provider}/callback path.

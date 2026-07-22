@@ -682,7 +682,8 @@ public struct IntegrationConnect: Codable {
 public struct IntegrationStatus: Codable {
     public var connected: [String]
     public var oauthApps: [String]?   // providers with an OAuth app configured
-    enum CodingKeys: String, CodingKey { case connected; case oauthApps = "oauth_apps" }
+    public var authErrors: [String]?  // connected providers whose OAuth refresh is failing (need reconnect)
+    enum CodingKeys: String, CodingKey { case connected; case oauthApps = "oauth_apps"; case authErrors = "auth_errors" }
 }
 public struct IntegrationOAuth: Codable {
     public var provider: String; public var url: String?

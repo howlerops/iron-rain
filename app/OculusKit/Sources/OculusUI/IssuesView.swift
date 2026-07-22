@@ -138,9 +138,29 @@ public struct IssuesView: View {
             connectScreen
         } else {
             VStack(spacing: 0) {
+                if !model.trackerAuthErrors.isEmpty { authErrorBanner }
                 filterBar
                 if kanban { board } else { table }
             }
+        }
+    }
+
+    /// A pill shown when a tracker's OAuth has expired/failed, so you can reconnect in one tap.
+    private var authErrorBanner: some View {
+        ForEach(model.trackerAuthErrors, id: \.self) { provider in
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                Text("\(provider == "jira" ? "Jira" : provider.capitalized) needs reconnecting — its access expired.")
+                    .font(.callout).foregroundStyle(palette.foreground)
+                Spacer()
+                Button { Task { await model.startOAuth(provider: provider) } } label: {
+                    Text("Reconnect").font(.callout.weight(.semibold))
+                }
+                .buttonStyle(.borderedProminent).tint(palette.primary)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .background(Color.orange.opacity(0.12))
+            .overlay(Rectangle().frame(height: 1).foregroundStyle(Color.orange.opacity(0.3)), alignment: .bottom)
         }
     }
 

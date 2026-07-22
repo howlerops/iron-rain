@@ -114,6 +114,18 @@ func (j *Jira) send(ctx context.Context, method, path string, body any) (*http.R
 	return j.http.Do(req)
 }
 
+// RefreshToken proactively refreshes the OAuth access token (keeps the connection alive and rotates
+// the refresh token so it doesn't lapse), for the periodic token-refresh cron. No-op for basic auth.
+func (j *Jira) RefreshToken(ctx context.Context) error {
+	j.mu.Lock()
+	isOAuth := j.oauth
+	j.mu.Unlock()
+	if !isOAuth {
+		return nil
+	}
+	return j.refresh(ctx)
+}
+
 // refresh swaps the refresh token for a fresh access (+ rotated refresh) token and persists it.
 func (j *Jira) refresh(ctx context.Context) error {
 	j.mu.Lock()

@@ -277,8 +277,9 @@ type IntegrationConnect struct {
 }
 
 type IntegrationStatus struct {
-	Connected []string `json:"connected"`            // provider names currently connected
-	OAuthApps []string `json:"oauth_apps,omitempty"` // providers with an OAuth app configured (client_id present)
+	Connected  []string `json:"connected"`             // provider names currently connected
+	OAuthApps  []string `json:"oauth_apps,omitempty"`  // providers with an OAuth app configured (client_id present)
+	AuthErrors []string `json:"auth_errors,omitempty"` // connected providers whose OAuth refresh is failing (need reconnect)
 }
 
 type IntegrationOAuth struct {
