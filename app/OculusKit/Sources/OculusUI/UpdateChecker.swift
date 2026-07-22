@@ -60,7 +60,12 @@ public final class UpdateChecker: ObservableObject {
         defer { installing = false }
         do {
             installPhase = "Downloading update…"
-            var req = URLRequest(url: Self.appZipURL); req.timeoutInterval = 120
+            // Prefer the version-pinned asset URL (valid the instant the release is published with
+            // its assets) over latest/download (whose pointer can lag briefly after a release).
+            let assetURL: URL = latestVersion.flatMap {
+                URL(string: "https://github.com/howlerops/iron-rain/releases/download/v\($0)/IronRain-macos.zip")
+            } ?? Self.appZipURL
+            var req = URLRequest(url: assetURL); req.timeoutInterval = 120
             let (zipURL, resp) = try await URLSession.shared.download(for: req)
             guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw UpdateError.msg("Download failed.") }
 

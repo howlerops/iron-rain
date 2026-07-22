@@ -43,15 +43,21 @@ jobs:
           git tag "${{ inputs.tag }}" || true
           git push origin "${{ inputs.tag }}" || true
 
+      # Create the release as a DRAFT with the daemon binaries. It stays a draft (so it is NOT
+      # "latest" and the curl installer / in-app update check can't see it yet) until the macos-app
+      # job attaches IronRain-macos.zip and publishes it. This closes the window where the release
+      # was already "latest" but the macOS app zip wasn't attached — the "app download unavailable"
+      # / failed-update race.
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           files: dist/*
           generate_release_notes: true
+          draft: true
 
   macos-app:
-    # Wait for the release job to CREATE the GitHub release first, so this job only UPDATES it with
-    # the app zip. Running both in parallel raced on release creation ("tag already exists").
+    # Attaches the macOS app zip to the drafted release, then PUBLISHES it (draft: false) — so the
+    # release only becomes "latest" once every asset (daemon + macOS) is present.
     needs: release
     runs-on: macos-15
     steps:
@@ -74,3 +80,5 @@ jobs:
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
           files: IronRain-macos.zip
+          draft: false        # publish now that ALL assets (daemon + macOS zip) are attached
+          make_latest: "true"
