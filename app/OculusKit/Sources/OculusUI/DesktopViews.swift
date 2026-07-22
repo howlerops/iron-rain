@@ -308,6 +308,7 @@ public struct RootView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(palette.background)
             .toolbar { modeToolbar(model) }
+            .toolbarBackground(.visible, for: .windowToolbar) // unified flat bar (see detailPane)
             .sheet(isPresented: $showNewSession) {
                 NewSessionView(model: model, palette: palette, initialTakeOver: newSessionTakeOver) { showNewSession = false }
             }
@@ -398,6 +399,11 @@ public struct RootView: View {
         .background(palette.background)
         #if os(macOS)
         .toolbar { modeToolbar(model) }
+        // Flat, cohesive: force the toolbar's material to always show as ONE continuous bar
+        // (the native unified-titlebar look, sharing the window's sidebar material) instead of
+        // macOS 26's floating glass pills hovering over the clear titlebar — which read as a
+        // detached "floating nav bar" clashing with the flat content beneath.
+        .toolbarBackground(.visible, for: .windowToolbar)
         // If the open session closes while Code is showing, fall back to Sessions.
         .onChange(of: model.currentSession?.id) { sid in
             if selectedTab == 2 && sid == nil && reviewSessionID == nil { selectedTab = 0 }

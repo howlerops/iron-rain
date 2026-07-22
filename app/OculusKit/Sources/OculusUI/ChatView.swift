@@ -687,7 +687,23 @@ struct ChatMarkdownView: View {
             }
     }
 
+    // Parsing markdown is not cheap, and `body` re-runs whenever LazyVStack re-lays a row —
+    // which happens constantly while scrolling a long transcript. Without memoization, every
+    // scroll frame re-parses every visible message, producing the "chunky" scroll. Cache the
+    // built AttributedString by message text so an unchanged (finished) message is O(1) on
+    // re-layout; a streaming message still re-parses each flush (its text actually changed).
+    private static var cache: [String: AttributedString] = [:]
+    private static let cacheLimit = 256
+
     private func attributed() -> AttributedString {
+        if let hit = Self.cache[text] { return hit }
+        let out = build()
+        if Self.cache.count >= Self.cacheLimit { Self.cache.removeAll(keepingCapacity: true) }
+        Self.cache[text] = out
+        return out
+    }
+
+    private func build() -> AttributedString {
         var out = AttributedString()
         let blocks = MarkdownParser.parse(text)
         for (i, b) in blocks.enumerated() {
