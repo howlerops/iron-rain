@@ -26,6 +26,7 @@ struct Composer: View {
     @State private var photoItem: PhotosPickerItem?
     #else
     @State private var showFileImporter = false
+    @State private var showPhotoPicker = false
     #endif
 
     /// The command palette is active while the draft is a single "/token" or "$token" (no space
@@ -45,6 +46,7 @@ struct Composer: View {
             Divider().overlay(palette.border)
             VStack(alignment: .leading, spacing: 10) {
                 if !model.pendingImages.isEmpty { attachmentChips }
+                if !model.pendingFiles.isEmpty { fileChips }
                 messageField
 
                 HStack(spacing: 14) {
@@ -89,17 +91,34 @@ struct Composer: View {
         }
         .onDisappear { voice.stop() }
         .onChange(of: model.pendingImages) { _ in refreshThumbs() }
-        #if os(macOS)
-        .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.image]) { result in
-            if case let .success(url) = result {
-                let scoped = url.startAccessingSecurityScopedResource()
-                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                if let data = try? Data(contentsOf: url), let jpeg = toJPEG(data) {
-                    model.attachImage(mime: "image/jpeg", data: jpeg)
-                }
-            }
+        .fileImporter(isPresented: $showFileImporter, allowedContentTypes: Self.attachTypes, allowsMultipleSelection: true) { result in
+            if case let .success(urls) = result { for u in urls { handlePickedFile(u) } }
         }
-        #endif
+    }
+
+    /// Images plus common document types (PDF, Word, RTF, Markdown, text, JSON, CSV, source).
+    static let attachTypes: [UTType] = {
+        var t: [UTType] = [.image, .pdf, .plainText, .text, .rtf, .json, .commaSeparatedText, .sourceCode, .html]
+        for id in ["org.openxmlformats.wordprocessingml.document", "com.microsoft.word.doc",
+                   "net.daringfireball.markdown", "public.markdown"] {
+            if let u = UTType(id) { t.append(u) }
+        }
+        return t
+    }()
+
+    /// Attach a picked file: images go through the image path; everything else has its text
+    /// extracted (PDF/Word/RTF/Markdown/text/…) and attached as a document.
+    private func handlePickedFile(_ url: URL) {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let imageExts: Set<String> = ["png", "jpg", "jpeg", "gif", "heic", "heif", "webp", "bmp", "tiff"]
+        if imageExts.contains(url.pathExtension.lowercased()) {
+            if let data = try? Data(contentsOf: url), let jpeg = toJPEG(data) {
+                model.attachImage(mime: "image/jpeg", data: jpeg)
+            }
+        } else if let text = extractDocumentText(from: url) {
+            model.attachFile(name: url.lastPathComponent, text: text)
+        }
     }
 
     /// Autocomplete of the agent's slash commands (built-in + custom), shown above the input when
@@ -166,7 +185,7 @@ struct Composer: View {
     }
 
     private var canSend: Bool {
-        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.pendingImages.isEmpty
+        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.pendingImages.isEmpty || !model.pendingFiles.isEmpty
     }
 
     private var attachmentChips: some View {
@@ -316,12 +335,35 @@ struct Composer: View {
         .help("Voice mode — talk to the agent hands-free")
     }
 
+    /// Chips for attached documents (name + remove), mirroring the image thumbnails.
+    private var fileChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(model.pendingFiles, id: \.self) { f in
+                    HStack(spacing: 5) {
+                        Image(systemName: "doc.text").font(.caption2)
+                        Text(f.name).font(.caption2).lineLimit(1)
+                        Button { model.pendingFiles.removeAll { $0 == f } } label: {
+                            Image(systemName: "xmark.circle.fill").font(.caption2)
+                        }.buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
+                    }
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(Capsule().fill(palette.muted.opacity(0.5)))
+                    .foregroundStyle(palette.foreground)
+                }
+            }
+        }
+    }
+
     private var attachButton: some View {
         #if os(iOS)
-        return PhotosPicker(selection: $photoItem, matching: .images) {
-            Image(systemName: "photo.badge.plus").font(.system(size: 17)).foregroundStyle(palette.mutedForeground)
+        return Menu {
+            Button { showPhotoPicker = true } label: { Label("Photo…", systemImage: "photo") }
+            Button { showFileImporter = true } label: { Label("File…", systemImage: "doc") }
+        } label: {
+            Image(systemName: "paperclip").font(.system(size: 17)).foregroundStyle(palette.mutedForeground)
         }
-        .buttonStyle(.plain)
+        .photosPicker(isPresented: $showPhotoPicker, selection: $photoItem, matching: .images)
         .onChange(of: photoItem) { item in
             guard let item else { return }
             Task {
@@ -337,7 +379,7 @@ struct Composer: View {
             Image(systemName: "paperclip").font(.system(size: 17)).foregroundStyle(palette.mutedForeground)
         }
         .buttonStyle(.plain)
-        .help("Attach image")
+        .help("Attach an image or document")
         #endif
     }
 }

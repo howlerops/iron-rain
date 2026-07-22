@@ -1,9 +1,39 @@
 import SwiftUI
+import PDFKit
 #if canImport(AppKit)
 import AppKit
 #elseif canImport(UIKit)
 import UIKit
 #endif
+
+/// A document attached to the next prompt — its extracted plain text, sent as a fenced block so
+/// every provider sees the content (no per-adapter file handling needed).
+public struct FileAttachment: Hashable {
+    public let name: String
+    public let text: String
+    public init(name: String, text: String) { self.name = name; self.text = text }
+}
+
+/// Extracts plain text from a document URL: PDFKit for PDFs, NSAttributedString for docx/rtf/doc/
+/// odt/html, and UTF-8 (lossy fallback) for text/markdown/json/csv/source. Returns nil if nothing
+/// readable came out.
+func extractDocumentText(from url: URL) -> String? {
+    let ext = url.pathExtension.lowercased()
+    if ext == "pdf" {
+        if let doc = PDFDocument(url: url), let s = doc.string, !s.isEmpty { return s }
+        return nil
+    }
+    let rich: Set<String> = ["docx", "doc", "rtf", "rtfd", "odt", "html", "htm", "webarchive"]
+    if rich.contains(ext) {
+        if let a = try? NSAttributedString(url: url, options: [:], documentAttributes: nil), !a.string.isEmpty {
+            return a.string
+        }
+        return nil
+    }
+    if let s = try? String(contentsOf: url, encoding: .utf8), !s.isEmpty { return s }
+    if let d = try? Data(contentsOf: url) { return String(decoding: d, as: UTF8.self) }
+    return nil
+}
 
 /// A scrollable, auto-growing multiline chat input backed by the platform text view (NSTextView /
 /// UITextView) so it does what SwiftUI's TextField can't: it SCROLLS once it hits the max height

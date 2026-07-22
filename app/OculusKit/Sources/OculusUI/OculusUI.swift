@@ -85,6 +85,7 @@ public final class Model: ObservableObject {
     @Published public var workspacePRRunning = false
     @Published public var conflicts: [FileConflict] = [] // files shared with other worktrees
     @Published public var pendingImages: [ImageAttachment] = [] // attached, sent with the next prompt
+    @Published public var pendingFiles: [FileAttachment] = []    // document attachments (text extracted)
 
     // Trackers (Linear/Jira).
     @Published public var issues: [Issue] = []
@@ -411,13 +412,24 @@ public final class Model: ObservableObject {
     /// Sends a user turn: creates the session on the first message, then follow-ups
     /// go to the same session (a real multi-turn conversation).
     public func send(_ text: String) async {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let imgs = pendingImages
-        guard (!trimmed.isEmpty || !imgs.isEmpty), let client else { return }
-        let shown = trimmed.isEmpty ? "🖼️ \(imgs.count) image\(imgs.count == 1 ? "" : "s")" : trimmed
+        let files = pendingFiles
+        guard (!trimmed.isEmpty || !imgs.isEmpty || !files.isEmpty), let client else { return }
+        // Document attachments ride along as fenced text blocks so every provider sees their content.
+        let shownBody = trimmed
+        if !files.isEmpty {
+            let blocks = files.map { "Attached file: \($0.name)\n```\n\($0.text)\n```" }.joined(separator: "\n\n")
+            trimmed = trimmed.isEmpty ? blocks : blocks + "\n\n" + trimmed
+        }
+        var badges: [String] = []
+        if !imgs.isEmpty { badges.append("🖼️ \(imgs.count) image\(imgs.count == 1 ? "" : "s")") }
+        if !files.isEmpty { badges.append("📎 \(files.count) file\(files.count == 1 ? "" : "s")") }
+        let shown = shownBody.isEmpty ? badges.joined(separator: "  ") : shownBody
         messages.append(ChatMessage(role: .user, text: shown))
         busy = true
         pendingImages = []
+        pendingFiles = []
         if let sid = sessionID {
             await deliverPrompt(sessionID: sid, text: trimmed, images: imgs, allowReattach: true)
         } else {
@@ -557,6 +569,13 @@ public final class Model: ObservableObject {
     /// Adds an image to be sent with the next prompt (converted to base64).
     public func attachImage(mime: String, data: Data) {
         pendingImages.append(ImageAttachment(mime: mime, data: data.base64EncodedString()))
+    }
+
+    /// Attaches a document (its extracted text) to send with the next prompt.
+    public func attachFile(name: String, text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        pendingFiles.append(FileAttachment(name: name, text: trimmed))
     }
 
     /// Attaches to an existing session discovered on the host: loads its history and
