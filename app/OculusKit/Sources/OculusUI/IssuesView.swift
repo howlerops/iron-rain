@@ -1,6 +1,20 @@
 import SwiftUI
 import OculusKit
 
+/// A saved issue view — a named preset of the search + priority/assignee/cycle filters, so you can
+/// jump to "My high-priority bugs" etc. Persisted on the Model.
+public struct SavedIssueFilter: Codable, Identifiable, Hashable {
+    public var id: String
+    public var name: String
+    public var search: String
+    public var priority: Int?
+    public var assignee: String?
+    public var cycle: String?
+    public init(id: String = UUID().uuidString, name: String, search: String = "", priority: Int? = nil, assignee: String? = nil, cycle: String? = nil) {
+        self.id = id; self.name = name; self.search = search; self.priority = priority; self.assignee = assignee; self.cycle = cycle
+    }
+}
+
 /// The Linear-like ticket surface: connect a tracker, see assigned issues in a kanban or
 /// table, and start an agent on a ticket. A first-class top-level screen (its own stack on
 /// iPhone). onLaunched switches to the Sessions tab after launching.
@@ -17,6 +31,9 @@ public struct IssuesView: View {
     @State private var priorityFilter: Int?     // nil = any
     @State private var assigneeFilter: String?  // nil = any
     @State private var cycleFilter: String?     // nil = any; "__none__" = not in a cycle; else cycle id
+    @State private var showHidden = false       // reveal hidden tickets (to unhide)
+    @State private var savingView = false       // "save current filters as a view" dialog
+    @State private var newViewName = ""
     @Environment(\.openURL) private var openURL
 
     public init(model: Model, palette: OculusPalette, embedded: Bool = false, onLaunched: @escaping () -> Void = {}) {
@@ -133,6 +150,8 @@ public struct IssuesView: View {
     private var filteredIssues: [Issue] {
         let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return model.issues.filter { i in
+            // Hidden tickets are excluded everywhere unless you toggle "show hidden" to unhide them.
+            if model.hiddenIssueIDs.contains(i.id) && !showHidden { return false }
             if !q.isEmpty {
                 let hay = "\(i.key) \(i.title) \(i.body ?? "")".lowercased()
                 if !hay.contains(q) { return false }
@@ -145,6 +164,17 @@ public struct IssuesView: View {
             }
             return true
         }
+    }
+
+    private var hiddenCount: Int { model.issues.filter { model.hiddenIssueIDs.contains($0.id) }.count }
+
+    private func applySavedFilter(_ f: SavedIssueFilter) {
+        searchText = f.search; priorityFilter = f.priority; assigneeFilter = f.assignee; cycleFilter = f.cycle
+    }
+
+    /// True when the current filters exactly match a saved view (so we can highlight it).
+    private func matchesCurrent(_ f: SavedIssueFilter) -> Bool {
+        f.search == searchText && f.priority == priorityFilter && f.assignee == assigneeFilter && f.cycle == cycleFilter
     }
 
     private var availableCycles: [(id: String, label: String)] {
@@ -208,6 +238,14 @@ public struct IssuesView: View {
                         }
                     }
                 }
+                if hiddenCount > 0 {
+                    Divider()
+                    Button { showHidden.toggle() } label: {
+                        Label(showHidden ? "Hide hidden tickets" : "Show hidden (\(hiddenCount))",
+                              systemImage: showHidden ? "eye" : "eye.slash")
+                    }
+                    Button("Unhide all", role: .destructive) { model.unhideAllIssues(); showHidden = false }
+                }
                 if activeFilterCount > 0 { Divider(); Button("Clear filters", role: .destructive) { clearFilters() } }
             } label: {
                 Label(activeFilterCount == 0 ? "Filter" : "Filter (\(activeFilterCount))",
@@ -216,8 +254,40 @@ public struct IssuesView: View {
             }
             .menuStyle(.borderlessButton).fixedSize()
             .foregroundStyle(activeFilterCount == 0 ? palette.mutedForeground : palette.primary)
+
+            // Saved views: named filter presets.
+            Menu {
+                if model.savedIssueFilters.isEmpty {
+                    Text("No saved views yet")
+                } else {
+                    ForEach(model.savedIssueFilters) { f in
+                        Button { applySavedFilter(f) } label: { filterRow(f.name, matchesCurrent(f)) }
+                    }
+                    Menu("Delete view") {
+                        ForEach(model.savedIssueFilters) { f in
+                            Button(f.name, role: .destructive) { model.deleteSavedIssueFilter(f.id) }
+                        }
+                    }
+                }
+                Divider()
+                Button { newViewName = ""; savingView = true } label: { Label("Save current as view…", systemImage: "plus") }
+            } label: {
+                Label("Views", systemImage: "square.stack.3d.up").font(.callout)
+            }
+            .menuStyle(.borderlessButton).fixedSize()
+            .foregroundStyle(palette.mutedForeground)
         }
         .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 6)
+        .alert("Save view", isPresented: $savingView) {
+            TextField("View name", text: $newViewName)
+            Button("Save") {
+                let name = newViewName.trimmingCharacters(in: .whitespaces)
+                guard !name.isEmpty else { return }
+                model.addSavedIssueFilter(SavedIssueFilter(name: name, search: searchText,
+                                                           priority: priorityFilter, assignee: assigneeFilter, cycle: cycleFilter))
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { Text("Save the current search + filters as a named view.") }
     }
 
     private func filterRow(_ text: String, _ on: Bool) -> some View {
@@ -418,7 +488,22 @@ public struct IssuesView: View {
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(selectedIssue?.id == issue.id ? palette.primary : palette.border))
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .contentShape(Rectangle())
+        .opacity(model.hiddenIssueIDs.contains(issue.id) ? 0.5 : 1) // dim while revealed via "show hidden"
         .onTapGesture { selectedIssue = issue }
+        .contextMenu { issueRowMenu(issue) }
+    }
+
+    /// Right-click / long-press actions on a ticket — start an agent, hide/unhide, open externally.
+    @ViewBuilder private func issueRowMenu(_ issue: Issue) -> some View {
+        Button { launching = issue } label: { Label("Start agent", systemImage: "play.circle") }
+        if model.hiddenIssueIDs.contains(issue.id) {
+            Button { model.unhideIssue(issue.id) } label: { Label("Unhide", systemImage: "eye") }
+        } else {
+            Button { model.hideIssue(issue.id) } label: { Label("Hide ticket", systemImage: "eye.slash") }
+        }
+        if let url = issue.url, let u = URL(string: url) {
+            Button { openURL(u) } label: { Label("Open in \(issue.provider == "jira" ? "Jira" : "Linear")", systemImage: "arrow.up.right.square") }
+        }
     }
 
     private func priorityDot(_ p: Int) -> some View {
@@ -445,8 +530,19 @@ public struct IssuesView: View {
                 Button { launching = issue } label: { Image(systemName: "play.circle.fill") }
                     .buttonStyle(.plain).foregroundStyle(palette.primary)
             }
+            .opacity(model.hiddenIssueIDs.contains(issue.id) ? 0.5 : 1)
             .contentShape(Rectangle())
             .onTapGesture { selectedIssue = issue }
+            .contextMenu { issueRowMenu(issue) }
+            #if os(iOS)
+            .swipeActions(edge: .trailing) {
+                if model.hiddenIssueIDs.contains(issue.id) {
+                    Button { model.unhideIssue(issue.id) } label: { Label("Unhide", systemImage: "eye") }.tint(.gray)
+                } else {
+                    Button { model.hideIssue(issue.id) } label: { Label("Hide", systemImage: "eye.slash") }.tint(.gray)
+                }
+            }
+            #endif
         }
     }
 }

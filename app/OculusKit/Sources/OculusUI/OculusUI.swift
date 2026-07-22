@@ -88,6 +88,9 @@ public final class Model: ObservableObject {
 
     // Trackers (Linear/Jira).
     @Published public var issues: [Issue] = []
+    /// Saved issue views (named filter presets) + tickets the user has hidden. Persisted locally.
+    @Published public var savedIssueFilters: [SavedIssueFilter] = []
+    @Published public var hiddenIssueIDs: Set<String> = []
     @Published public var connectedTrackers: [String] = []
     // Trackers that have an OAuth app configured (client_id present) — drives whether the connect
     // screen shows the OAuth button or asks for the OAuth app credentials.
@@ -130,7 +133,29 @@ public final class Model: ObservableObject {
         daemonPubHex = defaults.string(forKey: Keys.pub) ?? ""
         secret = defaults.string(forKey: Keys.secret) ?? ""
         relayURL = defaults.string(forKey: Keys.relay) ?? ""
+        loadIssuePrefs()
     }
+
+    // MARK: saved issue views + hidden tickets
+
+    private enum IssuePrefKeys { static let filters = "oculus.issueFilters", hidden = "oculus.hiddenIssues" }
+
+    private func loadIssuePrefs() {
+        if let d = defaults.data(forKey: IssuePrefKeys.filters),
+           let f = try? JSONDecoder().decode([SavedIssueFilter].self, from: d) { savedIssueFilters = f }
+        if let h = defaults.stringArray(forKey: IssuePrefKeys.hidden) { hiddenIssueIDs = Set(h) }
+    }
+
+    private func persistIssuePrefs() {
+        if let d = try? JSONEncoder().encode(savedIssueFilters) { defaults.set(d, forKey: IssuePrefKeys.filters) }
+        defaults.set(Array(hiddenIssueIDs), forKey: IssuePrefKeys.hidden)
+    }
+
+    public func hideIssue(_ id: String) { hiddenIssueIDs.insert(id); persistIssuePrefs() }
+    public func unhideIssue(_ id: String) { hiddenIssueIDs.remove(id); persistIssuePrefs() }
+    public func unhideAllIssues() { hiddenIssueIDs.removeAll(); persistIssuePrefs() }
+    public func addSavedIssueFilter(_ f: SavedIssueFilter) { savedIssueFilters.append(f); persistIssuePrefs() }
+    public func deleteSavedIssueFilter(_ id: String) { savedIssueFilters.removeAll { $0.id == id }; persistIssuePrefs() }
 
     /// A managed connection owned by a DesktopStore (persistence handled by the store).
     public convenience init(name: String, wsURL: String, daemonPubHex: String, secret: String, relay: String = "") {
