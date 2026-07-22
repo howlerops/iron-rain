@@ -89,12 +89,86 @@ struct SessionSkeleton: View {
     }
 }
 
+#if os(macOS)
+/// Shows the "Update available" pill (bottom) + details sheet for the curl-installed macOS app,
+/// wherever it's attached — so it appears in BOTH the empty state and the session split view.
+/// `forceCheck` (from a Settings "Check for updates" action) triggers a check + opens the sheet.
+struct SoftwareUpdateModifier: ViewModifier {
+    let palette: OculusPalette
+    @Binding var forceCheck: Bool
+    @StateObject private var updates = UpdateChecker()
+    @State private var showSheet = false
+
+    func body(content: Content) -> some View {
+        content
+            .safeAreaInset(edge: .bottom) {
+                if updates.updateAvailable {
+                    Button { showSheet = true } label: {
+                        HStack(spacing: 7) {
+                            Image(systemName: "arrow.down.circle.fill").foregroundStyle(palette.primary)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("Update available").font(.caption.bold())
+                                if let v = updates.latestVersion {
+                                    Text("v\(v) — click to update").font(.caption2).foregroundStyle(palette.mutedForeground)
+                                }
+                            }
+                            Spacer()
+                        }
+                        .padding(.horizontal, 12).padding(.vertical, 9)
+                        .frame(maxWidth: .infinity)
+                        .background(palette.secondary.opacity(0.6))
+                        .overlay(Rectangle().frame(height: 1).foregroundStyle(palette.border), alignment: .top)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .sheet(isPresented: $showSheet) { updateSheet }
+            .task { await updates.check() }
+            .onChange(of: forceCheck) { go in
+                guard go else { return }
+                Task { await updates.check(); showSheet = true; forceCheck = false }
+            }
+    }
+
+    private var updateSheet: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Update Iron Rain").font(.headline)
+                Spacer()
+                Button("Done") { showSheet = false }.keyboardShortcut(.cancelAction)
+            }
+            Text(updates.updateAvailable
+                 ? "You're on v\(updates.currentVersion) · latest is v\(updates.latestVersion ?? "?"). Re-run the installer to update — it replaces the app in place."
+                 : "You're on v\(updates.currentVersion)\(updates.latestVersion.map { ", the latest release. (v\($0))" } ?? "."). You're up to date.")
+                .font(.callout).foregroundStyle(palette.mutedForeground)
+            HStack(spacing: 6) {
+                Text(DaemonLauncher.installCommand)
+                    .font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+                    .lineLimit(1).truncationMode(.middle)
+                    .padding(.horizontal, 8).padding(.vertical, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(palette.input, in: RoundedRectangle(cornerRadius: 6))
+                Button {
+                    #if canImport(AppKit)
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(DaemonLauncher.installCommand, forType: .string)
+                    #endif
+                } label: { Image(systemName: "doc.on.doc") }.buttonStyle(.borderless).help("Copy")
+            }
+            HStack { Spacer(); Link("View release notes", destination: UpdateChecker.releasesURL).font(.caption) }
+        }
+        .padding(18).frame(minWidth: 460).background(palette.background)
+    }
+}
+#endif
+
 public struct RootView: View {
     @ObservedObject var store: DesktopStore
     @Environment(\.colorScheme) private var scheme
     private var palette: OculusPalette { .current(scheme) }
     @State private var selection: String?
     @State private var showSessionDetail = false // iOS: pushes ChatView when a session opens
+    @State private var checkForUpdates = false   // macOS: Settings → "Check for updates" trigger
     @State private var showNewSession = false
     @State private var newSessionTakeOver = false
     @State private var selectedTab = 0
@@ -130,6 +204,9 @@ public struct RootView: View {
                 mainSurface(model)
                     .modifier(SessionStartingOverlay(model: model, palette: palette))
                     .modifier(ActionErrorAlert(model: model))
+                    #if os(macOS)
+                    .modifier(SoftwareUpdateModifier(palette: palette, forceCheck: $checkForUpdates))
+                    #endif
             }
         }
         // CRITICAL: force the surface to FILL the window instead of sizing to the split
@@ -194,7 +271,8 @@ public struct RootView: View {
             NavigationSplitView {
                 SessionSidebar(store: store, model: model, selection: $selection, searchText: $searchText,
                                onReview: { sid in reviewSessionID = sid; selectedTab = 2 },
-                               onTakeOver: { newSessionTakeOver = true; showNewSession = true })
+                               onTakeOver: { newSessionTakeOver = true; showNewSession = true },
+                               onCheckForUpdates: { checkForUpdates = true })
                     .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 340)
             } detail: {
                 detailPane(model)
