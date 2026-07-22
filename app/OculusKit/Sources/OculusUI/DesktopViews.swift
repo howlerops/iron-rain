@@ -389,6 +389,11 @@ public struct RootView: View {
                 ChatView(model: model)
             }
         }
+        // Stable identity per tab + a solid backing: switching the detail between IssuesView and
+        // ChatView changes the view TYPE, which the macOS NavigationSplitView detail could leave
+        // blank (white) without a distinct id; the background guarantees it's never bare white.
+        .id(selectedTab)
+        .background(palette.background)
         #if os(macOS)
         .toolbar { modeToolbar(model) }
         // If the open session closes while Code is showing, fall back to Sessions.

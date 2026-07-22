@@ -952,6 +952,9 @@ public final class Model: ObservableObject {
     /// Observes an existing hub-managed session (replays its transcript, then live).
     public func openSession(_ id: String) async {
         guard let client else { return }
+        // Already the open session → no-op. Re-running the full clear+resubscribe (e.g. when you
+        // click the active row again) briefly wiped messages/currentSession and blanked the detail.
+        if id == currentSession?.id, !messages.isEmpty { return }
         messages.removeAll()
         todos = []
         pendingApproval = nil
