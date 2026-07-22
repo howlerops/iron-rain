@@ -1,5 +1,11 @@
 #if os(macOS)
 import Foundation
+import AppKit
+
+enum UpdateError: Error {
+    case msg(String)
+    var message: String { if case let .msg(m) = self { return m }; return "Update failed." }
+}
 
 /// Self-update check for the curl-installed macOS app (which doesn't get TestFlight/App Store
 /// updates). It compares this build's version against the latest GitHub release and flags when a
@@ -9,11 +15,17 @@ import Foundation
 public final class UpdateChecker: ObservableObject {
     @Published public private(set) var latestVersion: String?
     @Published public private(set) var updateAvailable = false
+    // Self-update progress (macOS in-place update, mirroring install.sh).
+    @Published public private(set) var installing = false
+    @Published public private(set) var installPhase = ""
+    @Published public var installError: String?
     public let currentVersion: String
 
     /// Where a manual downloader lands; also the update command (reused from DaemonLauncher).
     public static let releasesURL = URL(string: "https://github.com/howlerops/iron-rain/releases/latest")!
     private static let apiURL = URL(string: "https://api.github.com/repos/howlerops/iron-rain/releases/latest")!
+    /// Stable URL that always resolves to the newest release's macOS app zip.
+    private static let appZipURL = URL(string: "https://github.com/howlerops/iron-rain/releases/latest/download/IronRain-macos.zip")!
 
     public init() {
         currentVersion = (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0.0.0"
@@ -36,6 +48,80 @@ public final class UpdateChecker: ObservableObject {
         latestVersion = latest
         updateAvailable = Self.isNewer(latest, than: Self.normalize(currentVersion))
         #endif
+    }
+
+    /// Downloads the latest macOS app zip and swaps this bundle in place, then relaunches — the
+    /// in-app equivalent of re-running install.sh. The final swap runs in a small detached script
+    /// that waits for THIS process to quit (you can't overwrite a running bundle), so the app
+    /// terminates itself at the end. Only meaningful for the curl-installed app; harmless otherwise.
+    public func installAndRelaunch() async {
+        guard !installing else { return }
+        installing = true; installError = nil
+        defer { installing = false }
+        do {
+            installPhase = "Downloading update…"
+            var req = URLRequest(url: Self.appZipURL); req.timeoutInterval = 120
+            let (zipURL, resp) = try await URLSession.shared.download(for: req)
+            guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw UpdateError.msg("Download failed.") }
+
+            installPhase = "Preparing…"
+            let work = FileManager.default.temporaryDirectory.appendingPathComponent("ironrain-update-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
+            let zipDst = work.appendingPathComponent("IronRain-macos.zip")
+            try FileManager.default.moveItem(at: zipURL, to: zipDst)
+
+            let extractDir = work.appendingPathComponent("extract")
+            try run("/usr/bin/ditto", ["-x", "-k", zipDst.path, extractDir.path])
+            guard let newApp = try FileManager.default.contentsOfDirectory(at: extractDir, includingPropertiesForKeys: nil)
+                .first(where: { $0.pathExtension == "app" }) else { throw UpdateError.msg("Update package looked empty.") }
+
+            let dest = Bundle.main.bundleURL.path            // where THIS app runs (e.g. /Applications/Iron Rain.app)
+            // Pre-flight: the swap writes into the app's parent dir — bail early (before quitting) if
+            // it isn't writable, so the user sees guidance instead of the old version relaunching.
+            let parent = Bundle.main.bundleURL.deletingLastPathComponent().path
+            guard FileManager.default.isWritableFile(atPath: parent) else {
+                throw UpdateError.msg("Can't write to \(parent). Use the manual command below (it'll prompt for your password if needed).")
+            }
+            let pid = ProcessInfo.processInfo.processIdentifier
+
+            // Detached swap: wait for us to quit, copy the new bundle alongside, atomically replace,
+            // strip quarantine (like the installer), relaunch. Copy-then-swap so a failed copy never
+            // destroys the installed app.
+            let script = """
+            #!/bin/sh
+            PID="$1"; SRC="$2"; DEST="$3"
+            while kill -0 "$PID" 2>/dev/null; do sleep 0.2; done
+            sleep 0.4
+            rm -rf "$DEST.new"
+            if ! /usr/bin/ditto "$SRC" "$DEST.new"; then open "$DEST"; exit 1; fi
+            rm -rf "$DEST"
+            mv "$DEST.new" "$DEST" || { open "$DEST.new"; exit 1; }
+            /usr/bin/xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
+            open "$DEST"
+            """
+            let scriptURL = work.appendingPathComponent("apply-update.sh")
+            try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+
+            installPhase = "Installing & relaunching…"
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/bin/sh")
+            p.arguments = [scriptURL.path, String(pid), newApp.path, dest]
+            try p.run() // survives our termination; it waits on our PID then swaps + reopens
+
+            // Give the helper a beat to start watching, then quit so it can replace the bundle.
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            NSApplication.shared.terminate(nil)
+        } catch {
+            installError = (error as? UpdateError)?.message ?? error.localizedDescription
+        }
+    }
+
+    private func run(_ tool: String, _ args: [String]) throws {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: tool)
+        p.arguments = args
+        try p.run(); p.waitUntilExit()
+        if p.terminationStatus != 0 { throw UpdateError.msg("\(tool) failed (\(p.terminationStatus)).") }
     }
 
     /// Strips a leading "v" and any pre-release suffix ("0.2.0-rc1" → "0.2.0").

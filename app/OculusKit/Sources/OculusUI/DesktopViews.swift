@@ -135,26 +135,52 @@ struct SoftwareUpdateModifier: ViewModifier {
             HStack {
                 Text("Update Iron Rain").font(.headline)
                 Spacer()
-                Button("Done") { showSheet = false }.keyboardShortcut(.cancelAction)
+                Button("Done") { showSheet = false }.keyboardShortcut(.cancelAction).disabled(updates.installing)
             }
             Text(updates.updateAvailable
-                 ? "You're on v\(updates.currentVersion) · latest is v\(updates.latestVersion ?? "?"). Re-run the installer to update — it replaces the app in place."
+                 ? "You're on v\(updates.currentVersion) · latest is v\(updates.latestVersion ?? "?"). Update installs the new version and relaunches the app for you."
                  : "You're on v\(updates.currentVersion)\(updates.latestVersion.map { ", the latest release. (v\($0))" } ?? "."). You're up to date.")
                 .font(.callout).foregroundStyle(palette.mutedForeground)
-            HStack(spacing: 6) {
-                Text(DaemonLauncher.installCommand)
-                    .font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
-                    .lineLimit(1).truncationMode(.middle)
-                    .padding(.horizontal, 8).padding(.vertical, 6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(palette.input, in: RoundedRectangle(cornerRadius: 6))
-                Button {
-                    #if canImport(AppKit)
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(DaemonLauncher.installCommand, forType: .string)
-                    #endif
-                } label: { Image(systemName: "doc.on.doc") }.buttonStyle(.borderless).help("Copy")
+
+            if updates.updateAvailable {
+                if updates.installing {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(updates.installPhase).font(.callout).foregroundStyle(palette.mutedForeground)
+                    }
+                } else {
+                    Button {
+                        Task { await updates.installAndRelaunch() }
+                    } label: {
+                        Label("Update & Relaunch", systemImage: "arrow.down.circle.fill").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent).tint(palette.primary).controlSize(.large)
+                }
+                if let err = updates.installError {
+                    Text(err).font(.caption).foregroundStyle(.red)
+                }
             }
+
+            // Manual fallback (offline, restricted /Applications, or if the in-app update fails).
+            DisclosureGroup("Update manually instead") {
+                HStack(spacing: 6) {
+                    Text(DaemonLauncher.installCommand)
+                        .font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+                        .lineLimit(1).truncationMode(.middle)
+                        .padding(.horizontal, 8).padding(.vertical, 6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(palette.input, in: RoundedRectangle(cornerRadius: 6))
+                    Button {
+                        #if canImport(AppKit)
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(DaemonLauncher.installCommand, forType: .string)
+                        #endif
+                    } label: { Image(systemName: "doc.on.doc") }.buttonStyle(.borderless).help("Copy")
+                }
+                .padding(.top, 4)
+            }
+            .font(.caption)
+
             HStack { Spacer(); Link("View release notes", destination: UpdateChecker.releasesURL).font(.caption) }
         }
         .padding(18).frame(minWidth: 460).background(palette.background)
