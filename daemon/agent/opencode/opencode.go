@@ -637,7 +637,7 @@ func (s *session) sendParts(parts []map[string]any) error {
 	go func() {
 		if err := s.p.postJSON(ctx, withDir("/session/"+s.id+"/message", s.dir), body, nil); err != nil && ctx.Err() == nil {
 			log.Printf("opencode: POST message sid=%s failed: %v", s.id, err)
-			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusError}})
+			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusError, Detail: "opencode: " + err.Error()}})
 		}
 	}()
 	return nil

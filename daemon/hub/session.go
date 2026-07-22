@@ -55,6 +55,7 @@ type managedSession struct {
 	lastHandoffMtime int64           // mtime of the handoff file at last index (skip re-index if unchanged)
 	model            string          // active model id ("" = provider default)
 	modelProvider    string          // sub-provider/backend for the model
+	pendingContext   string          // one-shot note prepended to the FIRST user prompt (multi-repo layout)
 }
 
 // subscriber owns one client's outbound queue plus the writer goroutine that drains it.

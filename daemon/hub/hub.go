@@ -125,6 +125,7 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 	// coordinated multi-PR finish. Shared (isolate=false) → run in the common ancestor in place.
 	// One selection falls through to the normal single-project path.
 	multiRepo := false
+	var multiRepoNote string // seeded into the first prompt so the agent knows the workspace's repos
 	if len(req.ProjectIDs) == 1 && req.ProjectID == "" {
 		req.ProjectID = req.ProjectIDs[0]
 	} else if len(req.ProjectIDs) > 1 {
@@ -166,6 +167,23 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 			// The agent runs in the common ancestor, but the code view must show ONLY the picked
 			// folders — not their siblings under that ancestor.
 			meta.roots = append([]string(nil), paths...)
+		}
+		// Tell the agent, on its first turn, exactly which repos this workspace spans and where they
+		// are — otherwise (especially a shared common-ancestor cwd) it can't tell the target repos
+		// from their siblings and reports it "can't find the repos".
+		var lines []string
+		if isolate {
+			for _, mem := range meta.members {
+				lines = append(lines, "- "+filepath.Base(mem.Path)+"  ("+mem.Path+")")
+			}
+		} else {
+			for _, pth := range paths {
+				lines = append(lines, "- "+filepath.Base(pth)+"  ("+pth+")")
+			}
+		}
+		if len(lines) > 0 {
+			multiRepoNote = fmt.Sprintf("[Workspace] This session spans %d repositories. Your working directory is %s. The repositories are:\n%s\nWork across them as needed — refer to each by the absolute path shown.\n\n",
+				len(lines), cwd, strings.Join(lines, "\n"))
 		}
 	}
 	if req.ProjectID != "" {
@@ -224,6 +242,12 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 	if len(req.Images) > 0 {
 		createPrompt = ""
 	}
+	// If this session is created WITH a first prompt (issue launch, loops, etc.), fold the workspace
+	// note in now and don't repeat it on later turns; otherwise it rides the first user send below.
+	if multiRepoNote != "" && createPrompt != "" {
+		createPrompt = multiRepoNote + createPrompt
+		multiRepoNote = ""
+	}
 	var sess agent.Session
 	var err error
 	if req.Plan {
@@ -239,7 +263,12 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 		return nil, err
 	}
 	if len(req.Images) > 0 {
-		_ = promptSession(ctx, sess, req.Prompt, req.Images)
+		text := req.Prompt
+		if multiRepoNote != "" {
+			text = multiRepoNote + text
+			multiRepoNote = ""
+		}
+		_ = promptSession(ctx, sess, text, req.Images)
 	}
 	if req.Model != "" {
 		if setter, ok := sess.(agent.ModelSetter); ok {
@@ -247,11 +276,12 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 		}
 	}
 	ms := h.addSession(sess, meta)
+	ms.mu.Lock()
 	if req.Model != "" {
-		ms.mu.Lock()
 		ms.model, ms.modelProvider = req.Model, req.ModelProvider
-		ms.mu.Unlock()
 	}
+	ms.pendingContext = multiRepoNote
+	ms.mu.Unlock()
 	return ms, nil
 }
 
@@ -2070,7 +2100,16 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, "no such session")
 			return
 		}
-		if err := promptSession(ctx, m.sess, req.Text, req.Images); err != nil {
+		text := req.Text
+		// One-shot: prepend the workspace note (which repos + where) to the FIRST user turn of a
+		// multi-repo session, so the agent knows where the repos are.
+		m.mu.Lock()
+		if m.pendingContext != "" {
+			text = m.pendingContext + text
+			m.pendingContext = ""
+		}
+		m.mu.Unlock()
+		if err := promptSession(ctx, m.sess, text, req.Images); err != nil {
 			h.sendErr(conn, env.ID, err.Error())
 			return
 		}

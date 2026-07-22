@@ -307,14 +307,11 @@ struct MessageRow: View {
                     .textSelection(.enabled)
             }
         case .assistant:
-            // While STREAMING, render plain text — parsing markdown on every token re-parses the
-            // whole growing message (the perf/scroll jank). Once the turn ENDS (streaming=false),
-            // parse it once into proper markdown (headings, lists, fenced code, emphasis, links).
-            if message.streaming {
-                Text(message.text.isEmpty ? "…" : message.text)
-                    .font(.body)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
+            // Render markdown LIVE as it streams (not raw-until-done) — so headings/lists/code/
+            // emphasis appear as they arrive and there's no plain→markdown "jump" at the end.
+            // Streaming text is coalesced every ~60ms upstream, so this parses ~16×/s, not per token.
+            if message.text.isEmpty && message.streaming {
+                Text("…").font(.body).frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 ChatMarkdownView(text: message.text, palette: palette)
                     .textSelection(.enabled)
