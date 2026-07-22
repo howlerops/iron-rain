@@ -46,6 +46,9 @@ public final class Model: ObservableObject {
     /// seconds). Drives a skeleton loading overlay that locks the surface until it's ready.
     @Published public var startingSession = false
     @Published public var startingProvider = ""
+    /// The active session's agent slash commands (built-in + custom from .claude/commands), for the
+    /// composer's "/" palette. Loaded per session.
+    @Published public var commands: [SlashCommand] = []
     @Published public var messages: [ChatMessage] = []
     @Published public var sessionID: String?
     @Published public var currentSession: Session? // metadata (project/worktree/branch) of the active session
@@ -578,6 +581,7 @@ public final class Model: ObservableObject {
             currentSession = s
             refreshLiveActivity()
             await loadSessions() // reflect the new session in the sidebar
+            await loadCommands(sessionID: s.id) // populate the "/" palette for this agent
         } catch {
             // Surface prominently: the New Session sheet has already dismissed, so status text alone
             // is invisible while connected — actionError drives an alert on the main surface.
@@ -778,6 +782,19 @@ public final class Model: ObservableObject {
         lastDiff = nil
         if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.sessionSubscribe, payload: SessionRef(sessionID: id)) {
             try? await client.send(env)
+        }
+        await loadCommands(sessionID: id)
+    }
+
+    /// Loads the agent's slash commands (built-in + custom from .claude/commands) for the composer's
+    /// "/" palette. Scoped to the session's provider + working directory.
+    public func loadCommands(sessionID sid: String) async {
+        guard client != nil else { commands = []; return }
+        if let resp = try? await request(MessageType.commandList, payload: CommandListReq(sessionID: sid)),
+           let cl = try? resp.payload(as: CommandList.self) {
+            commands = cl.commands
+        } else {
+            commands = []
         }
     }
 

@@ -28,8 +28,16 @@ struct Composer: View {
     @State private var showFileImporter = false
     #endif
 
+    /// The "/" command palette is active while the draft is a single "/token" (no space yet).
+    private var commandMatches: [SlashCommand] {
+        guard draft.hasPrefix("/"), !draft.dropFirst().contains(" "), !model.commands.isEmpty else { return [] }
+        let q = draft.dropFirst().lowercased()
+        return q.isEmpty ? model.commands : model.commands.filter { $0.name.lowercased().hasPrefix(q) }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
+            if !commandMatches.isEmpty { commandPalette }
             Divider().overlay(palette.border)
             VStack(alignment: .leading, spacing: 10) {
                 if !model.pendingImages.isEmpty { attachmentChips }
@@ -95,6 +103,47 @@ struct Composer: View {
             }
         }
         #endif
+    }
+
+    /// Autocomplete of the agent's slash commands (built-in + custom), shown above the input when
+    /// the draft begins with "/". Tapping inserts "/name " so you can add args, then send.
+    private var commandPalette: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                ForEach(commandMatches) { cmd in
+                    Button {
+                        draft = "/\(cmd.name) "
+                        focused = true
+                    } label: {
+                        HStack(spacing: 8) {
+                            Text("/\(cmd.name)")
+                                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(palette.primary)
+                            if let d = cmd.description, !d.isEmpty {
+                                Text(d).font(.caption).foregroundStyle(palette.mutedForeground).lineLimit(1)
+                            }
+                            Spacer(minLength: 6)
+                            if cmd.isCustom {
+                                Text("custom").font(.system(size: 9, weight: .semibold)).foregroundStyle(palette.mutedForeground)
+                                    .padding(.horizontal, 5).padding(.vertical, 1)
+                                    .background(Capsule().fill(palette.muted.opacity(0.45)))
+                            }
+                        }
+                        .padding(.horizontal, 14).padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    if cmd.id != commandMatches.last?.id { Divider().overlay(palette.border.opacity(0.5)) }
+                }
+            }
+        }
+        .frame(maxHeight: 220)
+        .background(palette.input)
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(palette.border))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .padding(.horizontal, 12)
+        .padding(.bottom, 6)
     }
 
     private func submit() {

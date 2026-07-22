@@ -19,6 +19,7 @@ public enum MessageType {
     public static let projectList = "project.list"
     public static let projectAdd = "project.add"
     public static let projectBrowse = "project.browse"
+    public static let commandList = "command.list"
     public static let projectRemove = "project.remove"
     public static let worktreeDiff = "worktree.diff"
     public static let workspaceDiff = "workspace.diff"
@@ -574,6 +575,19 @@ public struct ProjectBrowseReq: Codable {
     public var path: String?
     public init(path: String?) { self.path = path }
 }
+public struct CommandListReq: Codable {
+    public var sessionID: String
+    public init(sessionID: String) { self.sessionID = sessionID }
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id" } // envelope encoder isn't snake_case
+}
+public struct SlashCommand: Codable, Identifiable, Hashable {
+    public var name: String
+    public var description: String?
+    public var source: String?
+    public var id: String { name }
+    public var isCustom: Bool { source == "custom" }
+}
+public struct CommandList: Codable { public var commands: [SlashCommand] }
 public struct ProjectDirEntry: Codable, Identifiable, Hashable {
     public var name: String
     public var path: String
