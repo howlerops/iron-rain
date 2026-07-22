@@ -35,6 +35,35 @@ func Detect() []Config {
 	return out
 }
 
+// Builtins returns the well-known agent configs (whether or not installed), so callers can label a
+// registered agent as an auto-detected built-in vs a user-defined custom one.
+func Builtins() []Config { return append([]Config(nil), builtins...) }
+
+// Available reports whether a command resolves on PATH (or is an absolute/relative path that exists).
+func Available(command string) bool {
+	if command == "" {
+		return false
+	}
+	_, err := exec.LookPath(command)
+	return err == nil
+}
+
+// Save writes the user-defined agents to path as a JSON array (0600). Entries with an empty name or
+// command are dropped. Writing an empty slice leaves a valid empty array.
+func Save(path string, cfgs []Config) error {
+	out := make([]Config, 0, len(cfgs))
+	for _, c := range cfgs {
+		if c.Name != "" && c.Command != "" {
+			out = append(out, c)
+		}
+	}
+	data, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o600)
+}
+
 // Load reads user-defined agents from a JSON array at path. A missing file is not an error (returns
 // nil). Entries with an empty name or command are skipped.
 func Load(path string) ([]Config, error) {

@@ -37,6 +37,10 @@ const (
 	TypeDiscover            = "discover.list"
 	TypeDeviceRegister      = "device.register"
 	TypeProviderList        = "provider.list" // agent providers registered on this daemon
+	TypeAgentList           = "agent.list"    // full agent roster (native + detected + custom)
+	TypeAgentUpsert         = "agent.upsert"  // add/edit a custom CLI agent (persisted, live)
+	TypeAgentDelete         = "agent.delete"  // remove a custom CLI agent
+	TypeAgentVisible        = "agent.visible" // show/hide an agent in the session pickers
 	TypeProjectList         = "project.list"
 	TypeProjectAdd          = "project.add"
 	TypeProjectBrowse       = "project.browse"
@@ -891,6 +895,48 @@ type SessionList struct {
 // instead of a hardcoded list.
 type ProviderList struct {
 	Providers []string `json:"providers"`
+}
+
+// AgentInfo describes one agent in the roster. Kind is "native" (rich integrations: opencode/
+// claude-code/pi — not editable), "detected" (a well-known CLI auto-found on PATH), or "custom"
+// (user-defined in ~/.oculus/agents.json — editable/removable). Available means its command
+// currently resolves on PATH.
+type AgentInfo struct {
+	Name       string   `json:"name"`
+	Kind       string   `json:"kind"`
+	Available  bool     `json:"available"`
+	Editable   bool     `json:"editable"`
+	Hidden     bool     `json:"hidden"` // user hid it from the session pickers (still runnable)
+	Command    string   `json:"command,omitempty"`
+	Args       []string `json:"args,omitempty"`
+	ResumeArgs []string `json:"resume_args,omitempty"`
+}
+
+// AgentList is the full agent roster returned by agent.list.
+type AgentList struct {
+	Agents []AgentInfo `json:"agents"`
+}
+
+// AgentUpsert adds or edits a custom CLI agent. Args templates may contain {prompt} and {cwd};
+// ResumeArgs (optional) is used after the first turn for agents that support session continuity.
+type AgentUpsert struct {
+	Name       string            `json:"name"`
+	Command    string            `json:"command"`
+	Args       []string          `json:"args,omitempty"`
+	ResumeArgs []string          `json:"resume_args,omitempty"`
+	Env        map[string]string `json:"env,omitempty"`
+}
+
+// AgentRef references a custom agent by name (delete).
+type AgentRef struct {
+	Name string `json:"name"`
+}
+
+// AgentVisible shows or hides an agent in the session pickers (any kind). A hidden agent stays
+// registered and runnable — it just doesn't clutter the default picker.
+type AgentVisible struct {
+	Name    string `json:"name"`
+	Visible bool   `json:"visible"`
 }
 
 // Discovered is one autodetected agent artifact on the host: a running opencode

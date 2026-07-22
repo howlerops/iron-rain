@@ -170,6 +170,7 @@ public struct RootView: View {
     @State private var showSessionDetail = false // iOS: pushes ChatView when a session opens
     @State private var checkForUpdates = false   // macOS: Settings → "Check for updates" trigger
     @State private var showLoops = false         // Loops (recurring autonomous workflows) sheet
+    @State private var showAgents = false        // Agents (provider registration) sheet
     @State private var showNewSession = false
     @State private var newSessionTakeOver = false
     @State private var selectedTab = 0
@@ -217,6 +218,7 @@ public struct RootView: View {
                                   },
                                   onClose: { showLoops = false })
                     }
+                    .sheet(isPresented: $showAgents) { ManageAgentsView(model: model, palette: palette) }
             }
         }
         // CRITICAL: force the surface to FILL the window instead of sizing to the split
@@ -283,7 +285,8 @@ public struct RootView: View {
                                onReview: { sid in reviewSessionID = sid; selectedTab = 2 },
                                onTakeOver: { newSessionTakeOver = true; showNewSession = true },
                                onCheckForUpdates: { checkForUpdates = true },
-                               onOpenLoops: { showLoops = true })
+                               onOpenLoops: { showLoops = true },
+                               onOpenAgents: { showAgents = true })
                     .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 340)
             } detail: {
                 detailPane(model)
@@ -310,7 +313,8 @@ public struct RootView: View {
         TabView(selection: $selectedTab) {
             NavigationStack {
                 SessionSidebar(store: store, model: model, selection: $selection, searchText: $searchText,
-                               onOpenLoops: { showLoops = true })
+                               onOpenLoops: { showLoops = true },
+                               onOpenAgents: { showAgents = true })
                     .navigationDestination(isPresented: $showSessionDetail) {
                         ChatView(model: model)
                     }

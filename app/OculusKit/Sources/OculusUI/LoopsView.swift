@@ -188,7 +188,6 @@ struct LoopEditor: View {
         _draft = State(initialValue: initial)
     }
 
-    private var providers: [String] { model.providers.isEmpty ? ["opencode", "claude-code", "pi"] : model.providers }
     private var isTask: Bool { draft.kind == "task" }
 
     var body: some View {
@@ -259,7 +258,7 @@ struct LoopEditor: View {
                 }
 
                 Section("Run") {
-                    Picker("Agent", selection: $draft.provider) { ForEach(providers, id: \.self) { Text($0).tag($0) } }
+                    AgentPicker(model: model, selection: $draft.provider, palette: palette)
                     Toggle("Isolate in a worktree", isOn: $draft.worktree)
                     Toggle("Plan first (approve before building)", isOn: $draft.plan)
                     Stepper("Max concurrent: \(draft.maxConcurrent)", value: $draft.maxConcurrent, in: 1...5)

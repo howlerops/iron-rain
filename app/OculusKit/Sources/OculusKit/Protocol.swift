@@ -16,6 +16,10 @@ public enum MessageType {
     public static let discover = "discover.list"
     public static let deviceRegister = "device.register"
     public static let providerList = "provider.list"
+    public static let agentList = "agent.list"
+    public static let agentUpsert = "agent.upsert"
+    public static let agentDelete = "agent.delete"
+    public static let agentVisible = "agent.visible"
     public static let projectList = "project.list"
     public static let projectAdd = "project.add"
     public static let projectBrowse = "project.browse"
@@ -694,6 +698,62 @@ public struct ProjectList: Codable { public var projects: [Project] }
 public struct ProviderList: Codable {
     public var providers: [String]
     public init(providers: [String] = []) { self.providers = providers }
+}
+
+/// One agent in the roster. `kind` is "native" (opencode/claude-code/pi — not editable), "detected"
+/// (a well-known CLI auto-found on PATH), or "custom" (user-defined — editable/removable).
+public struct AgentInfo: Codable, Identifiable, Hashable {
+    public var name: String
+    public var kind: String
+    public var available: Bool
+    public var editable: Bool
+    public var hidden: Bool
+    public var command: String
+    public var args: [String]
+    public var resumeArgs: [String]
+    public var id: String { name }
+    public init(name: String = "", kind: String = "custom", available: Bool = false, editable: Bool = true,
+                hidden: Bool = false, command: String = "", args: [String] = [], resumeArgs: [String] = []) {
+        self.name = name; self.kind = kind; self.available = available; self.editable = editable
+        self.hidden = hidden; self.command = command; self.args = args; self.resumeArgs = resumeArgs
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? "custom"
+        available = try c.decodeIfPresent(Bool.self, forKey: .available) ?? false
+        editable = try c.decodeIfPresent(Bool.self, forKey: .editable) ?? false
+        hidden = try c.decodeIfPresent(Bool.self, forKey: .hidden) ?? false
+        command = try c.decodeIfPresent(String.self, forKey: .command) ?? ""
+        args = try c.decodeIfPresent([String].self, forKey: .args) ?? []
+        resumeArgs = try c.decodeIfPresent([String].self, forKey: .resumeArgs) ?? []
+    }
+    enum CodingKeys: String, CodingKey {
+        case name, kind, available, editable, hidden, command, args
+        case resumeArgs = "resume_args"
+    }
+}
+public struct AgentList: Codable { public var agents: [AgentInfo] }
+
+/// Add/edit a custom CLI agent. Args templates may contain {prompt} and {cwd}.
+public struct AgentUpsert: Codable {
+    public var name: String
+    public var command: String
+    public var args: [String]
+    public var resumeArgs: [String]?
+    public init(name: String, command: String, args: [String] = [], resumeArgs: [String]? = nil) {
+        self.name = name; self.command = command; self.args = args; self.resumeArgs = resumeArgs
+    }
+    enum CodingKeys: String, CodingKey { case name, command, args; case resumeArgs = "resume_args" }
+}
+public struct AgentRef: Codable {
+    public var name: String
+    public init(name: String) { self.name = name }
+}
+public struct AgentVisible: Codable {
+    public var name: String
+    public var visible: Bool
+    public init(name: String, visible: Bool) { self.name = name; self.visible = visible }
 }
 
 // Worktree finish flow.

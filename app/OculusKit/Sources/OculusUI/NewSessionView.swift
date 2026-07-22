@@ -22,6 +22,7 @@ struct NewSessionView: View {
     @State private var terminalSearch = ""
     @State private var scanning = false
     @State private var showBrowser = false
+    @State private var showManageAgents = false
     @State private var mode: Mode
     #if os(iOS)
     @State private var addPath = ""
@@ -40,9 +41,7 @@ struct NewSessionView: View {
         var id: String { rawValue }
     }
 
-    // The daemon's actual providers (native + generic CLI agents), falling back to the built-ins
-    // before the list loads. Plan mode is native-only (see planCapable).
-    private var providers: [String] { model.providers.isEmpty ? ["opencode", "claude-code", "pi"] : model.providers }
+    // Plan mode is native-only (see planCapable).
     private var planCapable: Bool { provider == "opencode" || provider == "claude-code" }
 
     private var isMulti: Bool { selectedProjects.count > 1 }
@@ -81,6 +80,10 @@ struct NewSessionView: View {
         #endif
         .background(palette.background)
         .task { await model.loadProjects(); await scan() }
+        .task(id: model.providers) {
+            if !model.providers.isEmpty, !model.providers.contains(provider) { provider = model.providers.first ?? provider }
+        }
+        .sheet(isPresented: $showManageAgents) { ManageAgentsView(model: model, palette: palette) }
         .sheet(isPresented: $showBrowser) {
             FolderBrowser(model: model, palette: palette,
                           onPicked: { added in for p in added { selectedProjects.insert(p.id) } },
@@ -145,13 +148,31 @@ struct NewSessionView: View {
     // Segmented reads well for the few native agents; a menu keeps a longer list (native + generic
     // CLI agents) from cramming. PickerStyle types differ, so branch in a ViewBuilder.
     @ViewBuilder private var agentPicker: some View {
-        let picker = Picker("", selection: $provider) {
-            ForEach(providers, id: \.self) { Text($0).tag($0) }
-        }.labelsHidden()
-        if providers.count > 4 {
-            picker.pickerStyle(.menu)
+        if !model.providersLoaded && model.providers.isEmpty {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Finding agents…").font(.caption).foregroundStyle(palette.mutedForeground)
+                Spacer()
+            }
+        } else if model.providers.isEmpty {
+            Button { showManageAgents = true } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
+                    Text("No agents found — add one").foregroundStyle(palette.foreground)
+                    Spacer()
+                    Text("Add").font(.caption.weight(.semibold)).foregroundStyle(palette.primary)
+                }.contentShape(Rectangle())
+            }.buttonStyle(.plain)
         } else {
-            picker.pickerStyle(.segmented)
+            VStack(alignment: .leading, spacing: 6) {
+                let picker = Picker("", selection: $provider) {
+                    ForEach(model.providers, id: \.self) { Text($0).tag($0) }
+                }.labelsHidden()
+                if model.providers.count > 4 { picker.pickerStyle(.menu) } else { picker.pickerStyle(.segmented) }
+                Button { showManageAgents = true } label: {
+                    Label("Manage agents…", systemImage: "slider.horizontal.3").font(.caption)
+                }.buttonStyle(.plain).foregroundStyle(palette.primary)
+            }
         }
     }
 

@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/howlerops/oculus/daemon/agent"
+	"github.com/howlerops/oculus/daemon/agent/cli"
 	"github.com/howlerops/oculus/daemon/fsaccess"
 	"github.com/howlerops/oculus/daemon/issues"
 	"github.com/howlerops/oculus/daemon/loops"
@@ -52,6 +54,9 @@ type Hub struct {
 	autoProjects  bool                           // auto-register projects from active agents' cwds
 	issues        *issues.Manager                // optional: connected trackers (Linear/Jira)
 	loopEngine    *loops.Engine                  // optional: recurring autonomous ticket workflows
+	agentsPath    string                         // path to ~/.oculus/agents.json (custom CLI agents)
+	agentHidePath string                         // path to ~/.oculus/agent-visibility.json (hidden names)
+	agentHidden   map[string]bool                // agent names hidden from the session pickers
 	oauthAddr     string                         // loopback host:port for tracker OAuth callbacks (per-provider path)
 	worktreeBase  string                         // base dir for worktrees ("" = worktree.DefaultBase)
 	reservedPorts map[int]bool                   // ports handed to worktree setup hooks (collision-free)
@@ -829,11 +834,149 @@ func (h *Hub) Register(p agent.Provider) {
 	h.providers[p.Name()] = p
 }
 
-// providerNames returns the registered provider names, sorted, for the app's session picker.
+// Unregister removes a provider by name (used when a custom agent is deleted).
+func (h *Hub) Unregister(name string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.providers, name)
+}
+
+// SetAgentsPath records where custom CLI agents (~/.oculus/agents.json) and picker-visibility
+// prefs (~/.oculus/agent-visibility.json) are persisted, enabling the agent.* management endpoints.
+func (h *Hub) SetAgentsPath(agents, visibility string) {
+	hidden := loadHiddenSet(visibility)
+	h.mu.Lock()
+	h.agentsPath = agents
+	h.agentHidePath = visibility
+	h.agentHidden = hidden
+	h.mu.Unlock()
+}
+
+func loadHiddenSet(path string) map[string]bool {
+	out := map[string]bool{}
+	if path == "" {
+		return out
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return out
+	}
+	var names []string
+	if json.Unmarshal(data, &names) == nil {
+		for _, n := range names {
+			out[n] = true
+		}
+	}
+	return out
+}
+
+// saveHiddenSet writes the current hidden-name set (caller holds no lock). 0600.
+func (h *Hub) saveHiddenSet() {
+	h.mu.Lock()
+	path := h.agentHidePath
+	names := make([]string, 0, len(h.agentHidden))
+	for n, on := range h.agentHidden {
+		if on {
+			names = append(names, n)
+		}
+	}
+	h.mu.Unlock()
+	if path == "" {
+		return
+	}
+	sort.Strings(names)
+	if data, err := json.MarshalIndent(names, "", "  "); err == nil {
+		_ = os.WriteFile(path, data, 0o600)
+	}
+}
+
+// nativeAgents are the rich first-class integrations — not editable/removable as "custom" agents.
+var nativeAgents = map[string]bool{"opencode": true, "claude-code": true, "pi": true}
+
+// agentList builds the full agent roster: every registered provider plus any user-defined agent
+// whose command isn't currently on PATH (so it's still visible/editable), classified by kind.
+func (h *Hub) agentList() protocol.AgentList {
+	h.mu.Lock()
+	registered := make(map[string]bool, len(h.providers))
+	for n := range h.providers {
+		registered[n] = true
+	}
+	path := h.agentsPath
+	h.mu.Unlock()
+
+	userCfgs, _ := cli.Load(path)
+	userByName := make(map[string]cli.Config, len(userCfgs))
+	for _, c := range userCfgs {
+		userByName[c.Name] = c
+	}
+	builtinByName := map[string]cli.Config{}
+	for _, c := range cli.Builtins() {
+		builtinByName[c.Name] = c
+	}
+
+	names := map[string]bool{}
+	for n := range registered {
+		names[n] = true
+	}
+	for n := range userByName {
+		names[n] = true // include user agents even if their command isn't installed
+	}
+
+	h.mu.Lock()
+	hidden := make(map[string]bool, len(h.agentHidden))
+	for n, on := range h.agentHidden {
+		hidden[n] = on
+	}
+	h.mu.Unlock()
+
+	out := make([]protocol.AgentInfo, 0, len(names))
+	for name := range names {
+		info := protocol.AgentInfo{Name: name, Available: registered[name], Hidden: hidden[name]}
+		switch {
+		case nativeAgents[name]:
+			info.Kind = "native"
+		case userByName[name].Name != "":
+			c := userByName[name]
+			info.Kind = "custom"
+			info.Editable = true
+			info.Command, info.Args, info.ResumeArgs = c.Command, c.Args, c.ResumeArgs
+			if !info.Available {
+				info.Available = cli.Available(c.Command)
+			}
+		default:
+			info.Kind = "detected"
+			if c, ok := builtinByName[name]; ok {
+				info.Command, info.Args = c.Command, c.Args
+			}
+		}
+		out = append(out, info)
+	}
+	// Stable order: native, detected, custom; then by name.
+	rank := map[string]int{"native": 0, "detected": 1, "custom": 2}
+	sort.Slice(out, func(i, j int) bool {
+		if rank[out[i].Kind] != rank[out[j].Kind] {
+			return rank[out[i].Kind] < rank[out[j].Kind]
+		}
+		return out[i].Name < out[j].Name
+	})
+	return protocol.AgentList{Agents: out}
+}
+
+// broadcastProviders pushes the updated provider set to every client (after an agent add/remove).
+func (h *Hub) broadcastProviders() {
+	h.broadcast(protocol.TypeProviderList, protocol.ProviderList{Providers: h.providerNames()})
+}
+
+// providerNames returns the VISIBLE registered provider names, sorted, for the app's session picker.
+// Agents the user hid are omitted here (they stay in h.providers and remain runnable) so the picker
+// stays short; the full roster is available via agent.list.
 func (h *Hub) providerNames() []string {
 	h.mu.Lock()
 	names := make([]string, 0, len(h.providers))
 	for name := range h.providers {
+		if h.agentHidden[name] {
+			continue
+		}
 		names = append(names, name)
 	}
 	h.mu.Unlock()
@@ -1089,6 +1232,10 @@ func asyncDispatch(typ string) bool {
 		protocol.TypeLoopUpsert,          // disk: persists loop config (+ may spawn a session)
 		protocol.TypeLoopDelete,          // disk: persists loop config
 		protocol.TypeLoopSetEnabled,      // disk: persists loop config
+		protocol.TypeAgentList,           // disk: reads ~/.oculus/agents.json
+		protocol.TypeAgentUpsert,         // disk: persists a custom agent
+		protocol.TypeAgentDelete,         // disk: persists a custom agent
+		protocol.TypeAgentVisible,        // disk: persists picker visibility
 		protocol.TypeFSTree,              // disk: dir listing
 		protocol.TypeFSRead,              // disk: file read
 		protocol.TypeFSReadBytes,         // disk: raw bytes (images)
@@ -1267,6 +1414,114 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 
 	case protocol.TypeProviderList:
 		h.sendOK(conn, env.ID, protocol.ProviderList{Providers: h.providerNames()})
+
+	case protocol.TypeAgentList:
+		h.sendOK(conn, env.ID, h.agentList())
+
+	case protocol.TypeAgentUpsert:
+		var in protocol.AgentUpsert
+		if err := env.Unmarshal(&in); err != nil {
+			h.sendErr(conn, env.ID, "bad agent")
+			return
+		}
+		in.Name = strings.TrimSpace(in.Name)
+		in.Command = strings.TrimSpace(in.Command)
+		if in.Name == "" || in.Command == "" {
+			h.sendErr(conn, env.ID, "agent needs a name and a command")
+			return
+		}
+		if nativeAgents[in.Name] {
+			h.sendErr(conn, env.ID, "'"+in.Name+"' is a built-in agent and can't be overridden")
+			return
+		}
+		h.mu.Lock()
+		path := h.agentsPath
+		h.mu.Unlock()
+		if path == "" {
+			h.sendErr(conn, env.ID, "custom agents not enabled")
+			return
+		}
+		cfg := cli.Config{Name: in.Name, Command: in.Command, Args: in.Args, ResumeArgs: in.ResumeArgs, Env: in.Env}
+		if len(cfg.Args) == 0 {
+			cfg.Args = []string{"{prompt}"} // sane default: pass the prompt as the sole arg
+		}
+		existing, _ := cli.Load(path)
+		replaced := false
+		for i := range existing {
+			if existing[i].Name == cfg.Name {
+				existing[i] = cfg
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			existing = append(existing, cfg)
+		}
+		if err := cli.Save(path, existing); err != nil {
+			h.sendErr(conn, env.ID, "save agents: "+err.Error())
+			return
+		}
+		h.Register(cli.NewProvider(cfg)) // live: shows up in provider.list immediately
+		h.broadcastProviders()
+		h.sendOK(conn, env.ID, h.agentList())
+
+	case protocol.TypeAgentDelete:
+		var ref protocol.AgentRef
+		if err := env.Unmarshal(&ref); err != nil || strings.TrimSpace(ref.Name) == "" {
+			h.sendErr(conn, env.ID, "bad agent ref")
+			return
+		}
+		if nativeAgents[ref.Name] {
+			h.sendErr(conn, env.ID, "can't remove a built-in agent")
+			return
+		}
+		h.mu.Lock()
+		path := h.agentsPath
+		h.mu.Unlock()
+		existing, _ := cli.Load(path)
+		kept := existing[:0]
+		for _, c := range existing {
+			if c.Name != ref.Name {
+				kept = append(kept, c)
+			}
+		}
+		if err := cli.Save(path, kept); err != nil {
+			h.sendErr(conn, env.ID, "save agents: "+err.Error())
+			return
+		}
+		h.Unregister(ref.Name)
+		h.mu.Lock()
+		delete(h.agentHidden, ref.Name)
+		h.mu.Unlock()
+		h.saveHiddenSet()
+		// If the removed name shadowed an auto-detected built-in that's still installed, restore it.
+		for _, b := range cli.Builtins() {
+			if b.Name == ref.Name && cli.Available(b.Command) {
+				h.Register(cli.NewProvider(b))
+			}
+		}
+		h.broadcastProviders()
+		h.sendOK(conn, env.ID, h.agentList())
+
+	case protocol.TypeAgentVisible:
+		var v protocol.AgentVisible
+		if err := env.Unmarshal(&v); err != nil || strings.TrimSpace(v.Name) == "" {
+			h.sendErr(conn, env.ID, "bad visibility request")
+			return
+		}
+		h.mu.Lock()
+		if h.agentHidden == nil {
+			h.agentHidden = map[string]bool{}
+		}
+		if v.Visible {
+			delete(h.agentHidden, v.Name)
+		} else {
+			h.agentHidden[v.Name] = true
+		}
+		h.mu.Unlock()
+		h.saveHiddenSet()
+		h.broadcastProviders() // pickers refresh to the new visible set
+		h.sendOK(conn, env.ID, h.agentList())
 
 	case protocol.TypeProjectList:
 		reg := h.projectRegistry()

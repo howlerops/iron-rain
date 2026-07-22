@@ -106,8 +106,12 @@ public final class Model: ObservableObject {
     /// Options applied to the NEXT session created (by the first send). Set via newSession(...).
     @Published public var newSessionProvider = "opencode"
     // Agent providers this daemon actually has (opencode/claude-code/pi + any generic CLI agents),
-    // fetched on connect so the picker reflects reality instead of a hardcoded list.
-    @Published public var providers: [String] = ["opencode", "claude-code", "pi"]
+    // fetched on connect so the picker reflects reality instead of a hardcoded list. Starts empty
+    // with providersLoaded=false so pickers can show a loader rather than a fake default.
+    @Published public var providers: [String] = []
+    @Published public var providersLoaded = false
+    // Full agent roster (native + detected + custom) for the "Manage agents" screen.
+    @Published public var agents: [AgentInfo] = []
     public var pendingProjectID: String?
     public var pendingProjectIDs: [String]?  // multi-root workspace (multi-repo)
     public var pendingWorktree = false
@@ -627,10 +631,70 @@ public final class Model: ObservableObject {
     /// real set (including generic CLI agents like codex/gemini) instead of a hardcoded default.
     public func listProviders() async {
         guard client != nil else { return }
+        defer { providersLoaded = true }
         if let resp = try? await request(MessageType.providerList, payload: ProviderList()),
-           let pl = try? resp.payload(as: ProviderList.self), !pl.providers.isEmpty {
-            providers = pl.providers
-            if !providers.contains(newSessionProvider) { newSessionProvider = providers.first ?? "opencode" }
+           let pl = try? resp.payload(as: ProviderList.self) {
+            applyProviders(pl.providers)
+        }
+    }
+
+    /// Adopt a provider set (from a request reply or an unsolicited provider.list broadcast) and keep
+    /// the default selection valid.
+    func applyProviders(_ list: [String]) {
+        providers = list
+        if let first = list.first, !list.contains(newSessionProvider) { newSessionProvider = first }
+    }
+
+    /// Full agent roster for the management UI.
+    public func loadAgents() async {
+        guard client != nil else { return }
+        if let resp = try? await request(MessageType.agentList, payload: Optional<Int>.none),
+           let al = try? resp.payload(as: AgentList.self) {
+            agents = al.agents
+        }
+    }
+
+    /// Add or edit a custom CLI agent; the daemon persists it, registers it live, and returns the
+    /// updated roster. Returns an error message on failure (nil on success).
+    @discardableResult
+    public func upsertAgent(_ a: AgentUpsert) async -> String? {
+        guard client != nil else { return "Not connected" }
+        do {
+            let resp = try await request(MessageType.agentUpsert, payload: a)
+            if let al = try? resp.payload(as: AgentList.self) { agents = al.agents }
+            await listProviders()
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    /// Show or hide an agent in the session pickers (any kind). The daemon persists it and pushes
+    /// the new visible set to every client.
+    @discardableResult
+    public func setAgentVisible(_ name: String, _ visible: Bool) async -> String? {
+        guard client != nil else { return "Not connected" }
+        do {
+            let resp = try await request(MessageType.agentVisible, payload: AgentVisible(name: name, visible: visible))
+            if let al = try? resp.payload(as: AgentList.self) { agents = al.agents }
+            await listProviders()
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    /// Remove a custom CLI agent.
+    @discardableResult
+    public func deleteAgent(_ name: String) async -> String? {
+        guard client != nil else { return "Not connected" }
+        do {
+            let resp = try await request(MessageType.agentDelete, payload: AgentRef(name: name))
+            if let al = try? resp.payload(as: AgentList.self) { agents = al.agents }
+            await listProviders()
+            return nil
+        } catch {
+            return error.localizedDescription
         }
     }
 
@@ -1430,6 +1494,8 @@ public final class Model: ObservableObject {
                     }
                 case MessageType.loopList: // a loop config changed or a run started
                     if let ll = try? env.payload(as: LoopList.self) { loops = ll.loops; loopRuns = ll.runs }
+                case MessageType.providerList: // pushed after a custom agent is added/removed
+                    if let pl = try? env.payload(as: ProviderList.self) { applyProviders(pl.providers); providersLoaded = true }
                 case MessageType.runOutput: // streamed line from a test/build run
                     if let o = try? env.payload(as: RunOutput.self), o.sessionID == sessionID {
                         testOutput.append(o.line)

@@ -82,6 +82,7 @@ struct SessionSidebar: View {
     var onCheckForUpdates: (() -> Void)? = nil
     /// Opens the Loops (recurring autonomous workflows) sheet.
     var onOpenLoops: (() -> Void)? = nil
+    var onOpenAgents: (() -> Void)? = nil
     @AppStorage("oculus.appearance") private var appearance: Appearance = .system
     @State private var filter: SessionFilter = .all
     @State private var renamingSessionID: String?
@@ -274,6 +275,9 @@ struct SessionSidebar: View {
                 Button { Task { await model.discover() } } label: { Label("Refresh sessions", systemImage: "arrow.clockwise") }
                 if let onOpenLoops {
                     Button { onOpenLoops() } label: { Label("Loops…", systemImage: "arrow.triangle.2.circlepath") }
+                }
+                if let onOpenAgents {
+                    Button { onOpenAgents() } label: { Label("Agents…", systemImage: "cpu") }
                 }
                 Picker(selection: $appearance) {
                     ForEach(Appearance.allCases) { a in
