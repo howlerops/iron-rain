@@ -254,9 +254,13 @@ func (m *Manager) FetchImage(ctx context.Context, provider, url string) (string,
 // Refresh pulls assigned issues from every provider, merges, caches, and notifies.
 func (m *Manager) Refresh(ctx context.Context) error {
 	m.mu.Lock()
-	provs := make([]Provider, 0, len(m.providers))
-	for _, p := range m.providers {
-		provs = append(provs, p)
+	type named struct {
+		name string
+		p    Provider
+	}
+	provs := make([]named, 0, len(m.providers))
+	for name, p := range m.providers {
+		provs = append(provs, named{name, p})
 	}
 	m.mu.Unlock()
 
@@ -264,28 +268,41 @@ func (m *Manager) Refresh(ctx context.Context) error {
 	// host, so fetch them concurrently and merge the results.
 	var merged []Issue
 	var firstErr error
+	errs := map[string]string{}
 	var wg sync.WaitGroup
 	var rmu sync.Mutex
-	for _, p := range provs {
+	for _, np := range provs {
 		wg.Add(1)
-		go func(p Provider) {
+		go func(name string, p Provider) {
 			defer wg.Done()
 			got, err := p.ListAssigned(ctx)
 			rmu.Lock()
 			defer rmu.Unlock()
 			if err != nil {
+				// Surface the failure so a "connected but nothing loading" tracker shows WHY
+				// (e.g. an expired token or a bad cloud id) via the reconnect pill, instead of
+				// silently swallowing it here — the poll discards Refresh's returned error.
+				errs[name] = name + ": " + err.Error()
 				if firstErr == nil {
 					firstErr = err
 				}
 				return
 			}
 			merged = append(merged, got...)
-		}(p)
+		}(np.name, np.p)
 	}
 	wg.Wait()
 	m.mu.Lock()
 	m.cache = merged
 	cb := m.onUpdate
+	// Record fetch failures; clear the error for any provider that fetched cleanly this round.
+	for _, np := range provs {
+		if msg, bad := errs[np.name]; bad {
+			m.authErrors[np.name] = msg
+		} else {
+			delete(m.authErrors, np.name)
+		}
+	}
 	m.mu.Unlock()
 	if cb != nil {
 		cb(merged)
