@@ -269,7 +269,9 @@ func combine(
 			items = append(items, protocol.Discovered{
 				Provider: "opencode", Kind: protocol.KindSession,
 				URL: s.URL, SessionID: sess.ID, Title: sess.Title, UpdatedAt: sess.UpdatedAt,
-				Live: true, // it lives on a running opencode server — attach = live shared session
+				// "Live" = ACTUALLY active recently, not merely present on a running server — otherwise
+				// every stale session reads as live. Attaching works regardless; this is just the hint.
+				Live: sess.UpdatedAt > 0 && time.Now().Unix()-sess.UpdatedAt < 300,
 			})
 		}
 	}
