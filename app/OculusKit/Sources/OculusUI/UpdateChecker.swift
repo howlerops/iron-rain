@@ -86,31 +86,46 @@ public final class UpdateChecker: ObservableObject {
 
             // Detached swap: wait for us to quit, copy the new bundle alongside, atomically replace,
             // strip quarantine (like the installer), relaunch. Copy-then-swap so a failed copy never
-            // destroys the installed app.
+            // destroys the installed app. Every step logs so a failure is diagnosable.
             let script = """
             #!/bin/sh
             PID="$1"; SRC="$2"; DEST="$3"
-            while kill -0 "$PID" 2>/dev/null; do sleep 0.2; done
-            sleep 0.4
+            echo "[$(date)] update: waiting for pid $PID to quit"
+            n=0; while kill -0 "$PID" 2>/dev/null; do sleep 0.2; n=$((n+1)); [ $n -gt 300 ] && break; done
+            sleep 0.5
+            echo "[$(date)] update: copying $SRC -> $DEST.new"
             rm -rf "$DEST.new"
-            if ! /usr/bin/ditto "$SRC" "$DEST.new"; then open "$DEST"; exit 1; fi
+            if ! /usr/bin/ditto "$SRC" "$DEST.new"; then echo "update: ditto FAILED"; open "$DEST"; exit 1; fi
+            echo "[$(date)] update: replacing $DEST"
             rm -rf "$DEST"
-            mv "$DEST.new" "$DEST" || { open "$DEST.new"; exit 1; }
+            if ! mv "$DEST.new" "$DEST"; then echo "update: mv FAILED"; open "$DEST.new"; exit 1; fi
             /usr/bin/xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
-            open "$DEST"
+            echo "[$(date)] update: relaunching $DEST"
+            open "$DEST" && echo "update: done" || echo "update: open FAILED"
             """
             let scriptURL = work.appendingPathComponent("apply-update.sh")
             try script.write(to: scriptURL, atomically: true, encoding: .utf8)
 
             installPhase = "Installing & relaunching…"
+            // Detach via nohup (immune to SIGHUP when we exit) and pass the script + args as an ARRAY
+            // — no shell string, so paths with spaces ("Iron Rain.app") can't break. Redirect the
+            // helper's output to a persistent log the user can share if anything goes wrong.
+            let logPath = NSHomeDirectory() + "/Library/Logs/IronRain-update.log"
+            FileManager.default.createFile(atPath: logPath, contents: nil)
             let p = Process()
-            p.executableURL = URL(fileURLWithPath: "/bin/sh")
-            p.arguments = [scriptURL.path, String(pid), newApp.path, dest]
-            try p.run() // survives our termination; it waits on our PID then swaps + reopens
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/nohup")
+            p.arguments = ["/bin/sh", scriptURL.path, String(pid), newApp.path, dest]
+            if let logFH = try? FileHandle(forWritingTo: URL(fileURLWithPath: logPath)) {
+                p.standardOutput = logFH
+                p.standardError = logFH
+            }
+            try p.run() // survives our termination; waits on our PID then swaps + reopens
 
-            // Give the helper a beat to start watching, then quit so it can replace the bundle.
-            try? await Task.sleep(nanoseconds: 400_000_000)
+            try? await Task.sleep(nanoseconds: 300_000_000)
             NSApplication.shared.terminate(nil)
+            // Backstop: if a stalled termination keeps us alive, exit hard so the helper can proceed.
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            exit(0)
         } catch {
             installError = (error as? UpdateError)?.message ?? error.localizedDescription
         }
