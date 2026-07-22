@@ -22,11 +22,10 @@ struct Composer: View {
     /// Decoded thumbnails, memoized by each attachment's base64 payload so the
     /// image is decoded once (not on every keystroke that re-evaluates `body`).
     @State private var thumbCache: [String: Image] = [:]
+    @State private var showFileImporter = false // both platforms: attach documents
+    @State private var showPhotoPicker = false  // iOS: photo library
     #if os(iOS)
     @State private var photoItem: PhotosPickerItem?
-    #else
-    @State private var showFileImporter = false
-    @State private var showPhotoPicker = false
     #endif
 
     /// The command palette is active while the draft is a single "/token" or "$token" (no space
