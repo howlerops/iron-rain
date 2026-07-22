@@ -215,10 +215,20 @@ public struct ChatView: View {
                 }
                 .padding(16)
             }
-            .onChange(of: model.messages.count) { _ in withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } }
+            .onChange(of: model.messages.count) { _ in scrollToBottom(proxy) }
             .onChange(of: model.messages.last?.text) { _ in proxy.scrollTo("bottom", anchor: .bottom) }
-            .onChange(of: model.pendingApproval) { _ in withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } }
+            .onChange(of: model.pendingApproval) { _ in scrollToBottom(proxy) }
+            .onAppear { scrollToBottom(proxy) }
         }
+    }
+
+    /// Reliable scroll-to-bottom for a LazyVStack: the first call scrolls to an ESTIMATED position
+    /// (off-screen rows have no measured height, so in a long chat it lands short — the "scrolls up
+    /// halfway" bug); a second pass after the layout settles (rows near the bottom are now rendered)
+    /// corrects it. No animation — animating to a wrong estimate is what looked like scrolling up.
+    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+        proxy.scrollTo("bottom", anchor: .bottom)
+        DispatchQueue.main.async { proxy.scrollTo("bottom", anchor: .bottom) }
     }
 
     private static let starters = ["Explain this project", "Find and fix a bug", "Review my changes"]
