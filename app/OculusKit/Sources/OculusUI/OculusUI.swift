@@ -618,9 +618,19 @@ public final class Model: ObservableObject {
             let s = try resp.payload(as: Session.self)
             sessionID = s.id
             currentSession = s
+            // Optimistically place it in the sidebar NOW so the empty-state → split transition
+            // happens synchronously with currentSession set. Otherwise the fire-and-forget
+            // session.list broadcast can land after `startingSession` clears, leaving the empty
+            // CTA (or a split whose detail races currentSession) until the user reopens it.
+            if !sessions.contains(where: { $0.id == s.id }) { sessions.insert(s, at: 0) }
             refreshLiveActivity()
-            await loadSessions() // reflect the new session in the sidebar
+            // Subscribe so the fresh session streams events immediately (not only after the first send).
+            if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.sessionSubscribe, payload: SessionRef(sessionID: s.id)) {
+                try? await client?.send(env)
+            }
+            await loadSessions() // reconcile with the daemon's authoritative list
             await loadCommands(sessionID: s.id) // populate the "/" palette for this agent
+            await loadModels(sessionID: s.id)   // populate the header model picker
         } catch {
             // Surface prominently: the New Session sheet has already dismissed, so status text alone
             // is invisible while connected — actionError drives an alert on the main surface.
