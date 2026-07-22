@@ -169,6 +169,7 @@ public struct RootView: View {
     @State private var selection: String?
     @State private var showSessionDetail = false // iOS: pushes ChatView when a session opens
     @State private var checkForUpdates = false   // macOS: Settings → "Check for updates" trigger
+    @State private var showLoops = false         // Loops (recurring autonomous workflows) sheet
     @State private var showNewSession = false
     @State private var newSessionTakeOver = false
     @State private var selectedTab = 0
@@ -207,6 +208,15 @@ public struct RootView: View {
                     #if os(macOS)
                     .modifier(SoftwareUpdateModifier(palette: palette, forceCheck: $checkForUpdates))
                     #endif
+                    .sheet(isPresented: $showLoops) {
+                        LoopsView(model: model, palette: palette,
+                                  onOpenSession: { sid in
+                                      showLoops = false
+                                      Task { await model.openSession(sid) }
+                                      showSessionDetail = true
+                                  },
+                                  onClose: { showLoops = false })
+                    }
             }
         }
         // CRITICAL: force the surface to FILL the window instead of sizing to the split
@@ -272,7 +282,8 @@ public struct RootView: View {
                 SessionSidebar(store: store, model: model, selection: $selection, searchText: $searchText,
                                onReview: { sid in reviewSessionID = sid; selectedTab = 2 },
                                onTakeOver: { newSessionTakeOver = true; showNewSession = true },
-                               onCheckForUpdates: { checkForUpdates = true })
+                               onCheckForUpdates: { checkForUpdates = true },
+                               onOpenLoops: { showLoops = true })
                     .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 340)
             } detail: {
                 detailPane(model)
@@ -298,7 +309,8 @@ public struct RootView: View {
         // both a row tap (handleSelection) and a freshly-created session (onChange of currentSession).
         TabView(selection: $selectedTab) {
             NavigationStack {
-                SessionSidebar(store: store, model: model, selection: $selection, searchText: $searchText)
+                SessionSidebar(store: store, model: model, selection: $selection, searchText: $searchText,
+                               onOpenLoops: { showLoops = true })
                     .navigationDestination(isPresented: $showSessionDetail) {
                         ChatView(model: model)
                     }

@@ -80,6 +80,8 @@ struct SessionSidebar: View {
     var onTakeOver: (() -> Void)? = nil
     /// macOS: Settings → "Check for updates". The banner (RootView-level) owns the actual check.
     var onCheckForUpdates: (() -> Void)? = nil
+    /// Opens the Loops (recurring autonomous workflows) sheet.
+    var onOpenLoops: (() -> Void)? = nil
     @AppStorage("oculus.appearance") private var appearance: Appearance = .system
     @State private var filter: SessionFilter = .all
     @State private var renamingSessionID: String?
@@ -270,6 +272,9 @@ struct SessionSidebar: View {
                     Button { showPairingQR = true } label: { Label("Pair a phone…", systemImage: "qrcode") }
                 }
                 Button { Task { await model.discover() } } label: { Label("Refresh sessions", systemImage: "arrow.clockwise") }
+                if let onOpenLoops {
+                    Button { onOpenLoops() } label: { Label("Loops…", systemImage: "arrow.triangle.2.circlepath") }
+                }
                 Picker(selection: $appearance) {
                     ForEach(Appearance.allCases) { a in
                         Label(a.label, systemImage: a.symbol).tag(a)

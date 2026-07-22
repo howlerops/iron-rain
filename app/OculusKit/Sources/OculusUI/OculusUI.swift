@@ -97,6 +97,9 @@ public final class Model: ObservableObject {
     @Published public var oauthApps: [String] = []
     /// Connected trackers whose OAuth token refresh is failing — drives a "reconnect" pill.
     @Published public var trackerAuthErrors: [String] = []
+    /// Recurring autonomous workflows ("loops") + their run history.
+    @Published public var loops: [Loop] = []
+    @Published public var loopRuns: [LoopRun] = []
     // Last tracker-connect/OAuth error, surfaced on the connect screen.
     @Published public var trackerError: String?
     @Published public var oauthURL: URL? // set when an OAuth flow returns an authorize URL to open
@@ -324,6 +327,7 @@ public final class Model: ObservableObject {
         await loadIssues()
         await listProviders() // reflect the daemon's real agent set in the picker
         await listHandoffs()  // seed the handoff index (live updates arrive via handoff.list)
+        await loadLoops()     // recurring autonomous workflows
         // If a session was open when the socket dropped (e.g. the daemon restarted and forgot its
         // in-memory sessions), re-attach it so its transcript + prompts resume.
         await reopenCurrentSession()
@@ -851,6 +855,29 @@ public final class Model: ObservableObject {
             return try? resp.payload(as: ProjectBrowse.self)
         }
         return nil
+    }
+
+    // MARK: loops (recurring autonomous workflows)
+
+    public func loadLoops() async {
+        guard client != nil else { return }
+        if let resp = try? await request(MessageType.loopList, payload: Optional<Int>.none),
+           let ll = try? resp.payload(as: LoopList.self) { loops = ll.loops; loopRuns = ll.runs }
+    }
+    public func upsertLoop(_ l: Loop) async {
+        guard client != nil else { return }
+        _ = try? await request(MessageType.loopUpsert, payload: l)
+        await loadLoops()
+    }
+    public func deleteLoop(_ id: String) async {
+        guard client != nil else { return }
+        if let resp = try? await request(MessageType.loopDelete, payload: LoopRef(id: id)),
+           let ll = try? resp.payload(as: LoopList.self) { loops = ll.loops; loopRuns = ll.runs }
+    }
+    public func setLoopEnabled(_ id: String, _ on: Bool) async {
+        guard client != nil else { return }
+        if let resp = try? await request(MessageType.loopSetEnabled, payload: LoopSetEnabled(id: id, enabled: on)),
+           let ll = try? resp.payload(as: LoopList.self) { loops = ll.loops; loopRuns = ll.runs }
     }
 
     public func removeProject(id: String) async {
@@ -1401,6 +1428,8 @@ public final class Model: ObservableObject {
                     if let hl = try? env.payload(as: HandoffList.self) {
                         handoffs = hl.handoffs
                     }
+                case MessageType.loopList: // a loop config changed or a run started
+                    if let ll = try? env.payload(as: LoopList.self) { loops = ll.loops; loopRuns = ll.runs }
                 case MessageType.runOutput: // streamed line from a test/build run
                     if let o = try? env.payload(as: RunOutput.self), o.sessionID == sessionID {
                         testOutput.append(o.line)

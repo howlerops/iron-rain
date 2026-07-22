@@ -20,6 +20,10 @@ public enum MessageType {
     public static let projectAdd = "project.add"
     public static let projectBrowse = "project.browse"
     public static let commandList = "command.list"
+    public static let loopList = "loop.list"
+    public static let loopUpsert = "loop.upsert"
+    public static let loopDelete = "loop.delete"
+    public static let loopSetEnabled = "loop.enabled"
     public static let projectRemove = "project.remove"
     public static let worktreeDiff = "worktree.diff"
     public static let workspaceDiff = "workspace.diff"
@@ -590,6 +594,52 @@ public struct SlashCommand: Codable, Identifiable, Hashable {
     public var glyph: String { prefix ?? "/" }
 }
 public struct CommandList: Codable { public var commands: [SlashCommand] }
+
+/// A recurring autonomous workflow: watch a tracker for new tickets in a category and start an
+/// agent on each.
+public struct Loop: Codable, Identifiable, Hashable {
+    public var id: String
+    public var name: String
+    public var enabled: Bool
+    public var provider: String
+    public var projectID: String
+    public var triggerCategory: String
+    public var tracker: String?
+    public var worktree: Bool
+    public var plan: Bool
+    public var budgetUSD: Double
+    public var maxConcurrent: Int
+    public init(id: String = "", name: String = "", enabled: Bool = true, provider: String = "opencode",
+                projectID: String = "", triggerCategory: String = "todo", tracker: String? = nil,
+                worktree: Bool = true, plan: Bool = true, budgetUSD: Double = 5, maxConcurrent: Int = 1) {
+        self.id = id; self.name = name; self.enabled = enabled; self.provider = provider; self.projectID = projectID
+        self.triggerCategory = triggerCategory; self.tracker = tracker; self.worktree = worktree; self.plan = plan
+        self.budgetUSD = budgetUSD; self.maxConcurrent = maxConcurrent
+    }
+    enum CodingKeys: String, CodingKey {
+        case id, name, enabled, provider, tracker, worktree, plan
+        case projectID = "project_id", triggerCategory = "trigger_category", budgetUSD = "budget_usd", maxConcurrent = "max_concurrent"
+    }
+}
+public struct LoopRun: Codable, Identifiable, Hashable {
+    public var loopID: String
+    public var issueKey: String
+    public var issueTitle: String
+    public var sessionID: String
+    public var status: String
+    public var startedAt: Int
+    public var id: String { loopID + issueKey + sessionID }
+    enum CodingKeys: String, CodingKey {
+        case status
+        case loopID = "loop_id", issueKey = "issue_key", issueTitle = "issue_title", sessionID = "session_id", startedAt = "started_at"
+    }
+}
+public struct LoopList: Codable { public var loops: [Loop]; public var runs: [LoopRun] }
+public struct LoopRef: Codable { public var id: String; public init(id: String) { self.id = id } }
+public struct LoopSetEnabled: Codable {
+    public var id: String; public var enabled: Bool
+    public init(id: String, enabled: Bool) { self.id = id; self.enabled = enabled }
+}
 public struct ProjectDirEntry: Codable, Identifiable, Hashable {
     public var name: String
     public var path: String
