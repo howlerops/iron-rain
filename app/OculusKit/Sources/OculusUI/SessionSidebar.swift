@@ -290,10 +290,13 @@ struct SessionSidebar: View {
     /// full-blue system highlight.
     @ViewBuilder private func rowSelectionBackground(_ selected: Bool) -> some View {
         if selected {
+            // strokeBorder (not stroke) draws the border INSIDE the shape, so its outer half doesn't
+            // spill past the row bounds and get clipped by the List cell (the "clipped border" on
+            // mobile). Keep the glow subtle so it doesn't clip either.
             RoundedRectangle(cornerRadius: 8)
                 .fill(palette.primary.opacity(scheme == .dark ? 0.18 : 0.12))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(palette.primary.opacity(0.28)))
-                .shadow(color: palette.primary.opacity(scheme == .dark ? 0.25 : 0.14), radius: 3, y: 1)
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(palette.primary.opacity(0.30), lineWidth: 1))
+                .shadow(color: palette.primary.opacity(scheme == .dark ? 0.18 : 0.10), radius: 2, y: 1)
         } else {
             Color.clear
         }

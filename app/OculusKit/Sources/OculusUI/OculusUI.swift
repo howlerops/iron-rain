@@ -42,6 +42,10 @@ public final class Model: ObservableObject {
     /// that couldn't start). Drives an alert on the main surface — status text alone is invisible
     /// once the triggering sheet has dismissed.
     @Published public var actionError: String?
+    /// True while a session is being created (worktree setup + provider spin-up can take a few
+    /// seconds). Drives a skeleton loading overlay that locks the surface until it's ready.
+    @Published public var startingSession = false
+    @Published public var startingProvider = ""
     @Published public var messages: [ChatMessage] = []
     @Published public var sessionID: String?
     @Published public var currentSession: Session? // metadata (project/worktree/branch) of the active session
@@ -548,6 +552,9 @@ public final class Model: ObservableObject {
     /// then prompts it. 2+ folders → a multi-root workspace (common ancestor, no worktree).
     public func createSession(provider: String, projectIDs: [String]? = nil, worktree: Bool = false, workspaceName: String? = nil, plan: Bool = false, autonomous: Bool = false) async {
         guard client != nil else { return }
+        startingProvider = provider
+        startingSession = true // skeleton loading overlay + UI lock until the session is ready
+        defer { startingSession = false }
         newSession() // clear the conversation; the created session replaces it on success
         self.autonomous = autonomous
         let multi = (projectIDs?.count ?? 0) > 1

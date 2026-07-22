@@ -21,11 +21,80 @@ struct ActionErrorAlert: ViewModifier {
     }
 }
 
+/// Skeleton loading overlay shown while a session is being created (worktree setup + provider
+/// spin-up can take a few seconds). It covers and LOCKS the surface so no half-ready UI is
+/// interactive and the wait has clear feedback.
+struct SessionStartingOverlay: ViewModifier {
+    @ObservedObject var model: Model
+    let palette: OculusPalette
+    func body(content: Content) -> some View {
+        content
+            .overlay {
+                if model.startingSession {
+                    SessionSkeleton(provider: model.startingProvider, palette: palette)
+                        .transition(.opacity)
+                }
+            }
+            .animation(.easeInOut(duration: 0.2), value: model.startingSession)
+    }
+}
+
+/// A pulsing chat skeleton + "Starting <provider>…" status. Fills the surface and swallows input.
+struct SessionSkeleton: View {
+    let provider: String
+    let palette: OculusPalette
+    @State private var pulse = false
+    private let rows: [(w: CGFloat, mine: Bool)] = [(0.62, false), (0.42, true), (0.80, false), (0.34, true), (0.70, false), (0.5, false)]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            GeometryReader { geo in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        ForEach(Array(rows.enumerated()), id: \.offset) { _, r in
+                            bubble(width: max(90, geo.size.width * r.w - 40), mine: r.mine)
+                        }
+                    }
+                    .padding(20)
+                }
+                .disabled(true)
+            }
+            Divider().overlay(palette.border)
+            HStack(spacing: 10) {
+                ProgressView()
+                Text("Starting \(provider.isEmpty ? "session" : provider)…")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(palette.mutedForeground)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 18)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(palette.background)
+        .contentShape(Rectangle())
+        .onTapGesture {} // absorb taps — locks the surface while starting
+        .onAppear {
+            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { pulse = true }
+        }
+    }
+
+    private func bubble(width: CGFloat, mine: Bool) -> some View {
+        HStack(spacing: 0) {
+            if mine { Spacer(minLength: 0) }
+            RoundedRectangle(cornerRadius: 14)
+                .fill(palette.muted.opacity(pulse ? 0.55 : 0.28))
+                .frame(width: width, height: 46)
+            if !mine { Spacer(minLength: 0) }
+        }
+    }
+}
+
 public struct RootView: View {
     @ObservedObject var store: DesktopStore
     @Environment(\.colorScheme) private var scheme
     private var palette: OculusPalette { .current(scheme) }
     @State private var selection: String?
+    @State private var showSessionDetail = false // iOS: pushes ChatView when a session opens
     @State private var showNewSession = false
     @State private var newSessionTakeOver = false
     @State private var selectedTab = 0
@@ -59,6 +128,7 @@ public struct RootView: View {
                 #endif
             } else if let model = store.active {
                 mainSurface(model)
+                    .modifier(SessionStartingOverlay(model: model, palette: palette))
                     .modifier(ActionErrorAlert(model: model))
             }
         }
@@ -144,14 +214,20 @@ public struct RootView: View {
         }
         }
         #else
+        // iPhone is compact: a NavigationStack that PUSHES the chat when a session opens. (A
+        // NavigationSplitView only navigates via a List(selection:), but the sidebar rows are
+        // custom buttons, so tapping did nothing.) Push is driven by showSessionDetail, set from
+        // both a row tap (handleSelection) and a freshly-created session (onChange of currentSession).
         TabView(selection: $selectedTab) {
-            NavigationSplitView {
+            NavigationStack {
                 SessionSidebar(store: store, model: model, selection: $selection, searchText: $searchText)
-                    .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 340)
-            } detail: {
-                ChatView(model: model)
+                    .navigationDestination(isPresented: $showSessionDetail) {
+                        ChatView(model: model)
+                    }
             }
             .onChange(of: selection) { handleSelection($0, model) }
+            .onChange(of: model.currentSession?.id) { if $0 != nil { showSessionDetail = true } }
+            .onChange(of: model.startingSession) { if $0 { showSessionDetail = false } } // show the skeleton on the list, push when ready
             .sheet(isPresented: $showNewSession) {
                 NewSessionView(model: model, palette: palette, initialTakeOver: newSessionTakeOver) { showNewSession = false }
             }
@@ -222,8 +298,12 @@ public struct RootView: View {
             selection = nil
         } else if model.sessions.contains(where: { $0.id == sel }) {
             Task { await model.openSession(sel) }
+            showSessionDetail = true // iOS: push the chat
+            selection = nil          // reset so tapping the SAME session again re-triggers
         } else if let d = model.discovered.first(where: { $0.sessionID == sel }) {
             Task { await model.attach(d) }
+            showSessionDetail = true
+            selection = nil
         }
     }
 }
