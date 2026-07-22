@@ -76,6 +76,23 @@ public struct ChatView: View {
                     .help("The agent saved its progress to a handoff file. Tap to view.")
                 }
             }
+            if model.sessionID != nil, model.modelEditable, !model.sessionModels.isEmpty {
+                ToolbarItem(placement: .automatic) {
+                    Menu {
+                        ForEach(model.sessionModels) { m in
+                            Button { Task { await model.setSessionModel(m) } } label: {
+                                if model.currentModel == m.id { Label(m.name, systemImage: "checkmark") } else { Text(m.name) }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "cpu").font(.caption2)
+                            Text(currentModelLabel).font(.caption).lineLimit(1)
+                        }
+                    }
+                    .help("Model for this session")
+                }
+            }
             if model.sessionID != nil {
                 ToolbarItem(placement: .automatic) {
                     Button { Task { await model.setAutonomy(!model.autonomous) } } label: {
@@ -179,6 +196,12 @@ public struct ChatView: View {
     }
 
     private static let starters = ["Explain this project", "Find and fix a bug", "Review my changes"]
+
+    /// Compact label for the model menu — the model id (e.g. "gpt-5.4"), or "Model" if unset.
+    private var currentModelLabel: String {
+        if let cur = model.currentModel, !cur.isEmpty { return cur }
+        return "Model"
+    }
 
     /// A clear "tests" glyph where available; a safe fallback on iOS 16 / macOS 13.
     static var runTestsSymbol: String {

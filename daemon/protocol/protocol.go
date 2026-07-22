@@ -40,7 +40,9 @@ const (
 	TypeAgentList           = "agent.list"    // full agent roster (native + detected + custom)
 	TypeAgentUpsert         = "agent.upsert"  // add/edit a custom CLI agent (persisted, live)
 	TypeAgentDelete         = "agent.delete"  // remove a custom CLI agent
-	TypeAgentVisible        = "agent.visible" // show/hide an agent in the session pickers
+	TypeAgentVisible        = "agent.visible"    // show/hide an agent in the session pickers
+	TypeModelList           = "model.list"       // list a provider's available models
+	TypeSessionSetModel     = "session.set_model" // switch a live session's model
 	TypeProjectList         = "project.list"
 	TypeProjectAdd          = "project.add"
 	TypeProjectBrowse       = "project.browse"
@@ -146,6 +148,8 @@ type SessionCreate struct {
 	Autonomous    bool              `json:"autonomous,omitempty"`     // let the heartbeat nudge it to keep going
 	MaxNudges     int               `json:"max_nudges,omitempty"`     // give-up bound for auto-nudging (0 = default)
 	BudgetUSD     float64           `json:"budget_usd,omitempty"`     // cost ceiling for auto-nudging (0 = default)
+	Model         string            `json:"model,omitempty"`          // model id to run with ("" = provider default)
+	ModelProvider string            `json:"model_provider,omitempty"` // sub-provider/backend for the model (opencode needs it)
 }
 
 // Project is a registered folder sessions can be spawned in (mirrors project.Project).
@@ -788,6 +792,8 @@ type Session struct {
 	Port          int    `json:"port,omitempty"`           // port a setup hook assigned to this worktree
 	IssueKey      string `json:"issue_key,omitempty"`      // the ticket this session works (e.g. ENG-42)
 	IssueID       string `json:"issue_id,omitempty"`
+	Model         string `json:"model,omitempty"`          // active model id ("" = provider default)
+	ModelProvider string `json:"model_provider,omitempty"` // sub-provider/backend for the model
 	UpdatedAt     int64  `json:"updated_at,omitempty"` // unix seconds of last activity (0 = unknown)
 	// Cumulative token/cost usage for the session (surfaced as a meter; 0 = unknown).
 	InputTokens  int     `json:"input_tokens,omitempty"`
@@ -895,6 +901,35 @@ type SessionList struct {
 // instead of a hardcoded list.
 type ProviderList struct {
 	Providers []string `json:"providers"`
+}
+
+// ModelInfo is one selectable model for a provider. Provider is the sub-provider/backend
+// (e.g. "openai", "anthropic") that opencode needs alongside the model id; "" for providers that
+// take a bare model string (claude-code).
+type ModelInfo struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Provider string `json:"provider,omitempty"`
+}
+
+// ModelListReq asks for the models available to a provider (or a live session's provider).
+type ModelListReq struct {
+	Provider  string `json:"provider,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+}
+
+// ModelList is a provider's selectable models. Current is the active model id (if known).
+type ModelList struct {
+	Models   []ModelInfo `json:"models"`
+	Current  string      `json:"current,omitempty"`
+	Editable bool        `json:"editable"` // whether the app can switch it (false = agent-managed)
+}
+
+// SessionSetModel switches a running session's model.
+type SessionSetModel struct {
+	SessionID string `json:"session_id"`
+	Model     string `json:"model"`
+	Provider  string `json:"provider,omitempty"`
 }
 
 // AgentInfo describes one agent in the roster. Kind is "native" (rich integrations: opencode/

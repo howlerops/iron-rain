@@ -13,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -72,6 +73,45 @@ func (p *Provider) List(ctx context.Context) ([]protocol.Session, error) {
 			UpdatedAt: s.Time.Updated / 1000, // millis -> seconds
 		})
 	}
+	return out, nil
+}
+
+// Models lists every model opencode has configured, across its providers (GET /config/providers),
+// so the app can offer a picker. The model id must be paired with its providerID when sent.
+func (p *Provider) Models(ctx context.Context) ([]protocol.ModelInfo, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/config/providers", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := p.unary.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var raw struct {
+		Providers []struct {
+			ID     string `json:"id"`
+			Name   string `json:"name"`
+			Models map[string]struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"models"`
+		} `json:"providers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return nil, err
+	}
+	var out []protocol.ModelInfo
+	for _, pr := range raw.Providers {
+		for _, m := range pr.Models {
+			name := m.Name
+			if name == "" {
+				name = m.ID
+			}
+			out = append(out, protocol.ModelInfo{ID: m.ID, Name: pr.Name + " · " + name, Provider: pr.ID})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
 }
 
@@ -209,6 +249,10 @@ type session struct {
 	cancel    context.CancelFunc
 	closeOnce sync.Once
 	done      chan struct{}
+
+	modelMu       sync.Mutex // guards the selected model (set from the hub, read in sendParts)
+	modelID       string
+	modelProvider string
 
 	// populated in the (single) readEvents goroutine — no mutex needed.
 	msgRoles    map[string]string // messageID -> role (from message.updated)
@@ -564,11 +608,28 @@ func (s *session) PromptImages(_ context.Context, text string, images []protocol
 
 // sendParts fires a message with the given parts asynchronously (opencode's POST blocks
 // until the turn yields, so we drive progress from SSE — see the note above).
+// SetModel selects the model for subsequent turns (opencode takes it per message).
+func (s *session) SetModel(provider, model string) error {
+	s.modelMu.Lock()
+	s.modelProvider, s.modelID = provider, model
+	s.modelMu.Unlock()
+	return nil
+}
+
 func (s *session) sendParts(parts []map[string]any) error {
 	body := map[string]any{"parts": parts}
 	if s.agent != "" {
 		body["agent"] = s.agent // e.g. "plan" — gate edits/bash on approval
 	}
+	s.modelMu.Lock()
+	if s.modelID != "" {
+		m := map[string]any{"modelID": s.modelID}
+		if s.modelProvider != "" {
+			m["providerID"] = s.modelProvider
+		}
+		body["model"] = m
+	}
+	s.modelMu.Unlock()
 	ctx := s.ctx
 	if ctx == nil {
 		ctx = context.Background()

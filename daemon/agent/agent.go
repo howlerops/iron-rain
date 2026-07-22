@@ -65,3 +65,15 @@ type PlanCreator interface {
 type ImagePrompter interface {
 	PromptImages(ctx context.Context, text string, images []protocol.ImageAttachment) error
 }
+
+// ModelLister is an optional Provider capability: report the models the user can pick from.
+// Providers that don't implement it are treated as agent-managed (no picker).
+type ModelLister interface {
+	Models(ctx context.Context) ([]protocol.ModelInfo, error)
+}
+
+// ModelSetter is an optional Session capability: switch the model used for subsequent turns.
+// provider is the sub-provider/backend (e.g. "openai"); "" when the model id stands alone.
+type ModelSetter interface {
+	SetModel(provider, model string) error
+}

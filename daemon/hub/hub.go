@@ -238,7 +238,18 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 	if len(req.Images) > 0 {
 		_ = promptSession(ctx, sess, req.Prompt, req.Images)
 	}
-	return h.addSession(sess, meta), nil
+	if req.Model != "" {
+		if setter, ok := sess.(agent.ModelSetter); ok {
+			_ = setter.SetModel(req.ModelProvider, req.Model)
+		}
+	}
+	ms := h.addSession(sess, meta)
+	if req.Model != "" {
+		ms.mu.Lock()
+		ms.model, ms.modelProvider = req.Model, req.ModelProvider
+		ms.mu.Unlock()
+	}
+	return ms, nil
 }
 
 // handleIssueLaunch launches an agent on a ticket: a worktree session on the issue's
@@ -1236,6 +1247,8 @@ func asyncDispatch(typ string) bool {
 		protocol.TypeAgentUpsert,         // disk: persists a custom agent
 		protocol.TypeAgentDelete,         // disk: persists a custom agent
 		protocol.TypeAgentVisible,        // disk: persists picker visibility
+		protocol.TypeModelList,           // network: queries the provider for models
+		protocol.TypeSessionSetModel,     // network: switches a session's model
 		protocol.TypeFSTree,              // disk: dir listing
 		protocol.TypeFSRead,              // disk: file read
 		protocol.TypeFSReadBytes,         // disk: raw bytes (images)
@@ -1414,6 +1427,63 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 
 	case protocol.TypeProviderList:
 		h.sendOK(conn, env.ID, protocol.ProviderList{Providers: h.providerNames()})
+
+	case protocol.TypeModelList:
+		var req protocol.ModelListReq
+		_ = env.Unmarshal(&req)
+		providerName := req.Provider
+		current := ""
+		if req.SessionID != "" {
+			if m := h.managed(req.SessionID); m != nil {
+				providerName = m.sess.Provider()
+				m.mu.Lock()
+				current = m.model
+				m.mu.Unlock()
+			}
+		}
+		h.mu.Lock()
+		p := h.providers[providerName]
+		h.mu.Unlock()
+		lister, ok := p.(agent.ModelLister)
+		if !ok {
+			// Provider doesn't expose models — agent-managed. Empty + not editable.
+			h.sendOK(conn, env.ID, protocol.ModelList{Editable: false})
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		models, err := lister.Models(ctx)
+		cancel()
+		if err != nil {
+			h.sendErr(conn, env.ID, "list models: "+err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, protocol.ModelList{Models: models, Current: current, Editable: true})
+
+	case protocol.TypeSessionSetModel:
+		var req protocol.SessionSetModel
+		if err := env.Unmarshal(&req); err != nil || req.SessionID == "" {
+			h.sendErr(conn, env.ID, "bad set-model")
+			return
+		}
+		m := h.managed(req.SessionID)
+		if m == nil {
+			h.sendErr(conn, env.ID, "session not found")
+			return
+		}
+		setter, ok := m.sess.(agent.ModelSetter)
+		if !ok {
+			h.sendErr(conn, env.ID, "this agent's model can't be switched here")
+			return
+		}
+		if err := setter.SetModel(req.Provider, req.Model); err != nil {
+			h.sendErr(conn, env.ID, "set model: "+err.Error())
+			return
+		}
+		m.mu.Lock()
+		m.model, m.modelProvider = req.Model, req.Provider
+		m.mu.Unlock()
+		h.broadcastSessionList() // reflect the new model on the session everywhere
+		h.sendOK(conn, env.ID, protocol.SessionSetModel{SessionID: req.SessionID, Model: req.Model, Provider: req.Provider})
 
 	case protocol.TypeAgentList:
 		h.sendOK(conn, env.ID, h.agentList())

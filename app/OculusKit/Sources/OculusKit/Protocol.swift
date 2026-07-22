@@ -20,6 +20,8 @@ public enum MessageType {
     public static let agentUpsert = "agent.upsert"
     public static let agentDelete = "agent.delete"
     public static let agentVisible = "agent.visible"
+    public static let modelList = "model.list"
+    public static let sessionSetModel = "session.set_model"
     public static let projectList = "project.list"
     public static let projectAdd = "project.add"
     public static let projectBrowse = "project.browse"
@@ -122,16 +124,19 @@ public struct SessionCreate: Codable {
     public var autonomous: Bool?
     public var maxNudges: Int?
     public var budgetUSD: Double?
-    public init(provider: String, cwd: String? = nil, projectID: String? = nil, projectIDs: [String]? = nil, prompt: String? = nil, images: [ImageAttachment]? = nil, worktree: Bool? = nil, workspaceName: String? = nil, plan: Bool? = nil, autonomous: Bool? = nil, maxNudges: Int? = nil, budgetUSD: Double? = nil) {
-        self.provider = provider; self.cwd = cwd; self.projectID = projectID; self.projectIDs = projectIDs; self.prompt = prompt; self.images = images; self.worktree = worktree; self.workspaceName = workspaceName; self.plan = plan; self.autonomous = autonomous; self.maxNudges = maxNudges; self.budgetUSD = budgetUSD
+    public var model: String?
+    public var modelProvider: String?
+    public init(provider: String, cwd: String? = nil, projectID: String? = nil, projectIDs: [String]? = nil, prompt: String? = nil, images: [ImageAttachment]? = nil, worktree: Bool? = nil, workspaceName: String? = nil, plan: Bool? = nil, autonomous: Bool? = nil, maxNudges: Int? = nil, budgetUSD: Double? = nil, model: String? = nil, modelProvider: String? = nil) {
+        self.provider = provider; self.cwd = cwd; self.projectID = projectID; self.projectIDs = projectIDs; self.prompt = prompt; self.images = images; self.worktree = worktree; self.workspaceName = workspaceName; self.plan = plan; self.autonomous = autonomous; self.maxNudges = maxNudges; self.budgetUSD = budgetUSD; self.model = model; self.modelProvider = modelProvider
     }
     enum CodingKeys: String, CodingKey {
-        case provider, cwd, prompt, images, worktree, plan, autonomous
+        case provider, cwd, prompt, images, worktree, plan, autonomous, model
         case projectID = "project_id"
         case projectIDs = "project_ids"
         case workspaceName = "workspace_name"
         case maxNudges = "max_nudges"
         case budgetUSD = "budget_usd"
+        case modelProvider = "model_provider"
     }
 }
 public struct SessionRef: Codable {
@@ -427,12 +432,14 @@ public struct Session: Codable, Identifiable {
     public var port: Int?
     public var issueKey: String?
     public var issueID: String?
+    public var model: String?          // active model id ("" = provider default)
+    public var modelProvider: String?  // sub-provider/backend for the model
     public var updatedAt: Int? // unix seconds of last activity
     public var inputTokens: Int?
     public var outputTokens: Int?
     public var costUSD: Double?
     enum CodingKeys: String, CodingKey {
-        case id, provider, status, title, name, cwd, branch, port
+        case id, provider, status, title, name, cwd, branch, port, model
         case projectID = "project_id"
         case workspaceName = "workspace_name"
         case isWorkspace = "is_workspace"
@@ -440,6 +447,7 @@ public struct Session: Codable, Identifiable {
         case subtask
         case issueKey = "issue_key"
         case issueID = "issue_id"
+        case modelProvider = "model_provider"
         case updatedAt = "updated_at"
         case inputTokens = "input_tokens"
         case outputTokens = "output_tokens"
@@ -754,6 +762,54 @@ public struct AgentVisible: Codable {
     public var name: String
     public var visible: Bool
     public init(name: String, visible: Bool) { self.name = name; self.visible = visible }
+}
+
+/// One selectable model for a provider. `provider` is the sub-provider/backend opencode pairs with
+/// the model id; empty for providers that take a bare model string.
+public struct ModelInfo: Codable, Identifiable, Hashable {
+    public var id: String
+    public var name: String
+    public var provider: String
+    public init(id: String = "", name: String = "", provider: String = "") {
+        self.id = id; self.name = name; self.provider = provider
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? id
+        provider = try c.decodeIfPresent(String.self, forKey: .provider) ?? ""
+    }
+    enum CodingKeys: String, CodingKey { case id, name, provider }
+}
+public struct ModelListReq: Codable {
+    public var provider: String?
+    public var sessionID: String?
+    public init(provider: String? = nil, sessionID: String? = nil) { self.provider = provider; self.sessionID = sessionID }
+    enum CodingKeys: String, CodingKey { case provider; case sessionID = "session_id" }
+}
+public struct ModelList: Codable {
+    public var models: [ModelInfo]
+    public var current: String?
+    public var editable: Bool
+    public init(models: [ModelInfo] = [], current: String? = nil, editable: Bool = false) {
+        self.models = models; self.current = current; self.editable = editable
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        models = try c.decodeIfPresent([ModelInfo].self, forKey: .models) ?? []
+        current = try c.decodeIfPresent(String.self, forKey: .current)
+        editable = try c.decodeIfPresent(Bool.self, forKey: .editable) ?? false
+    }
+    enum CodingKeys: String, CodingKey { case models, current, editable }
+}
+public struct SessionSetModel: Codable {
+    public var sessionID: String
+    public var model: String
+    public var provider: String?
+    public init(sessionID: String, model: String, provider: String? = nil) {
+        self.sessionID = sessionID; self.model = model; self.provider = provider
+    }
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case model, provider }
 }
 
 // Worktree finish flow.

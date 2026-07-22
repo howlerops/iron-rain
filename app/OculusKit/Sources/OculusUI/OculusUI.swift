@@ -112,6 +112,10 @@ public final class Model: ObservableObject {
     @Published public var providersLoaded = false
     // Full agent roster (native + detected + custom) for the "Manage agents" screen.
     @Published public var agents: [AgentInfo] = []
+    // Models available to the CURRENT session's provider (for the chat-header model picker).
+    @Published public var sessionModels: [ModelInfo] = []
+    @Published public var modelEditable = false
+    @Published public var currentModel: String?
     public var pendingProjectID: String?
     public var pendingProjectIDs: [String]?  // multi-root workspace (multi-repo)
     public var pendingWorktree = false
@@ -669,6 +673,33 @@ public final class Model: ObservableObject {
         }
     }
 
+    /// Loads the models available to the current session's provider (for the header picker).
+    /// Clears to non-editable if the provider is agent-managed (e.g. pi, generic CLI).
+    public func loadModels(sessionID override: String? = nil) async {
+        guard client != nil, let sid = override ?? sessionID else { sessionModels = []; modelEditable = false; return }
+        if let resp = try? await request(MessageType.modelList, payload: ModelListReq(sessionID: sid)),
+           let ml = try? resp.payload(as: ModelList.self) {
+            sessionModels = ml.models
+            modelEditable = ml.editable
+            currentModel = ml.current?.isEmpty == false ? ml.current : currentSession?.model
+        } else {
+            sessionModels = []; modelEditable = false
+        }
+    }
+
+    /// Switches the current session's model.
+    @discardableResult
+    public func setSessionModel(_ m: ModelInfo) async -> String? {
+        guard client != nil, let sid = sessionID else { return "No session" }
+        do {
+            _ = try await request(MessageType.sessionSetModel, payload: SessionSetModel(sessionID: sid, model: m.id, provider: m.provider))
+            currentModel = m.id
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
     /// Show or hide an agent in the session pickers (any kind). The daemon persists it and pushes
     /// the new visible set to every client.
     @discardableResult
@@ -880,6 +911,7 @@ public final class Model: ObservableObject {
             try? await client.send(env)
         }
         await loadCommands(sessionID: id)
+        await loadModels(sessionID: id)
     }
 
     /// Loads the agent's slash commands (built-in + custom from .claude/commands) for the composer's

@@ -53,6 +53,8 @@ type managedSession struct {
 	maxNudges        int             // give-up bound (0 = default)
 	budgetUSD        float64         // cost ceiling for autonomous nudging (0 = default)
 	lastHandoffMtime int64           // mtime of the handoff file at last index (skip re-index if unchanged)
+	model            string          // active model id ("" = provider default)
+	modelProvider    string          // sub-provider/backend for the model
 }
 
 // subscriber owns one client's outbound queue plus the writer goroutine that drains it.
@@ -141,6 +143,7 @@ func (m *managedSession) info() protocol.Session {
 	inTok, outTok, cost := m.inTok, m.outTok, m.costUSD
 	isWorkspace := len(m.meta.members) > 0
 	status := m.lastStatus
+	model, modelProvider := m.model, m.modelProvider
 	m.mu.Unlock()
 	if status == "" {
 		status = protocol.StatusRunning // freshly created — no status event yet
@@ -160,6 +163,8 @@ func (m *managedSession) info() protocol.Session {
 		Port:          m.meta.port,
 		IssueKey:      m.meta.issueKey,
 		IssueID:       m.meta.issueID,
+		Model:         model,
+		ModelProvider: modelProvider,
 		UpdatedAt:     updated,
 		InputTokens:   inTok,
 		OutputTokens:  outTok,
