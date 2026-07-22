@@ -50,6 +50,9 @@ jobs:
           generate_release_notes: true
 
   macos-app:
+    # Wait for the release job to CREATE the GitHub release first, so this job only UPDATES it with
+    # the app zip. Running both in parallel raced on release creation ("tag already exists").
+    needs: release
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
