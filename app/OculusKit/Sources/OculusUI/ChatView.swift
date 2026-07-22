@@ -195,9 +195,9 @@ public struct ChatView: View {
         .buttonStyle(.plain)
     }
 
-    private var transcript: some View {
+    @ViewBuilder private var transcript: some View {
         ScrollViewReader { proxy in
-            ScrollView {
+            let content = ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     ForEach(model.messages) { msg in
                         MessageRow(message: msg, palette: palette)
@@ -215,20 +215,19 @@ public struct ChatView: View {
                 }
                 .padding(16)
             }
-            .onChange(of: model.messages.count) { _ in scrollToBottom(proxy) }
-            .onChange(of: model.messages.last?.text) { _ in proxy.scrollTo("bottom", anchor: .bottom) }
-            .onChange(of: model.pendingApproval) { _ in scrollToBottom(proxy) }
-            .onAppear { scrollToBottom(proxy) }
+            if #available(macOS 14.0, iOS 17.0, *) {
+                // Native bottom anchoring: follows new content while you're at the bottom, and stays
+                // put — smoothly — when you scroll up to read history. No manual scroll-to churn (the
+                // per-token scrollTo was what fought you and overshot into blank space).
+                content.defaultScrollAnchor(.bottom)
+            } else {
+                // Older OS: jump to bottom only when a NEW message arrives (not per streaming token),
+                // so it doesn't yank you back while you're scrolling up.
+                content
+                    .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
+                    .onChange(of: model.messages.count) { _ in proxy.scrollTo("bottom", anchor: .bottom) }
+            }
         }
-    }
-
-    /// Reliable scroll-to-bottom for a LazyVStack: the first call scrolls to an ESTIMATED position
-    /// (off-screen rows have no measured height, so in a long chat it lands short — the "scrolls up
-    /// halfway" bug); a second pass after the layout settles (rows near the bottom are now rendered)
-    /// corrects it. No animation — animating to a wrong estimate is what looked like scrolling up.
-    private func scrollToBottom(_ proxy: ScrollViewProxy) {
-        proxy.scrollTo("bottom", anchor: .bottom)
-        DispatchQueue.main.async { proxy.scrollTo("bottom", anchor: .bottom) }
     }
 
     private static let starters = ["Explain this project", "Find and fix a bug", "Review my changes"]
