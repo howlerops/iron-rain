@@ -21,6 +21,10 @@ const (
 	TypeSessionCreate       = "session.create"
 	TypeSessionPrompt       = "session.prompt"
 	TypeCommandList         = "command.list"
+	TypeLoopList            = "loop.list"
+	TypeLoopUpsert          = "loop.upsert"
+	TypeLoopDelete          = "loop.delete"
+	TypeLoopSetEnabled      = "loop.enabled"
 	TypeSessionStop         = "session.stop"
 	TypeSessionInterrupt    = "session.interrupt" // stop the current turn, keep the session
 	TypeSessionAutonomy     = "session.autonomy"  // toggle/re-arm heartbeat supervision
@@ -152,6 +156,49 @@ type Project struct {
 
 type ProjectAdd struct {
 	Path string `json:"path"`
+}
+
+// Loop is a recurring autonomous workflow: watch a tracker for new tickets in a category and start
+// an agent on each.
+type Loop struct {
+	ID              string  `json:"id"`
+	Name            string  `json:"name"`
+	Enabled         bool    `json:"enabled"`
+	Provider        string  `json:"provider"`
+	ProjectID       string  `json:"project_id"`
+	TriggerCategory string  `json:"trigger_category"`
+	Tracker         string  `json:"tracker,omitempty"`
+	Worktree        bool    `json:"worktree"`
+	Plan            bool    `json:"plan"`
+	BudgetUSD       float64 `json:"budget_usd"`
+	MaxConcurrent   int     `json:"max_concurrent"`
+}
+
+// LoopRun is one execution of a loop (a ticket that got an agent).
+type LoopRun struct {
+	LoopID     string `json:"loop_id"`
+	IssueKey   string `json:"issue_key"`
+	IssueTitle string `json:"issue_title"`
+	SessionID  string `json:"session_id"`
+	Status     string `json:"status"`
+	StartedAt  int64  `json:"started_at"`
+}
+
+// LoopList is the full loop config + run history.
+type LoopList struct {
+	Loops []Loop    `json:"loops"`
+	Runs  []LoopRun `json:"runs"`
+}
+
+// LoopRef references a loop by id (delete).
+type LoopRef struct {
+	ID string `json:"id"`
+}
+
+// LoopSetEnabled toggles a loop.
+type LoopSetEnabled struct {
+	ID      string `json:"id"`
+	Enabled bool   `json:"enabled"`
 }
 
 // CommandListReq asks for the slash commands available to a session's agent (for the "/" palette).

@@ -138,6 +138,7 @@ func serve(args []string) error {
 	// Trackers (Linear/Jira): load saved tokens, connect, and poll every 60s.
 	issuesMgr := issues.NewManager(integrationsPath(), h.BroadcastIssues)
 	h.SetIssues(issuesMgr)
+	h.EnableLoops(loopsPath()) // recurring autonomous ticket workflows
 	if len(issuesMgr.Connected()) > 0 {
 		go func() { _ = issuesMgr.Refresh(context.Background()) }() // initial fetch
 	}
@@ -478,6 +479,14 @@ func integrationsPath() string {
 		return "oculus-integrations.json"
 	}
 	return filepath.Join(home, ".oculus", "integrations.json")
+}
+
+func loopsPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "oculus-loops.json"
+	}
+	return filepath.Join(home, ".oculus", "loops.json")
 }
 
 func slackWebhookPath() string {

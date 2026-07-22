@@ -20,6 +20,7 @@ import (
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/fsaccess"
 	"github.com/howlerops/oculus/daemon/issues"
+	"github.com/howlerops/oculus/daemon/loops"
 	"github.com/howlerops/oculus/daemon/lsp"
 	"github.com/howlerops/oculus/daemon/commands"
 	"github.com/howlerops/oculus/daemon/project"
@@ -50,6 +51,7 @@ type Hub struct {
 	projects      *project.Registry              // optional: registered folders sessions spawn in
 	autoProjects  bool                           // auto-register projects from active agents' cwds
 	issues        *issues.Manager                // optional: connected trackers (Linear/Jira)
+	loopEngine    *loops.Engine                  // optional: recurring autonomous ticket workflows
 	oauthAddr     string                         // loopback host:port for tracker OAuth callbacks (per-provider path)
 	worktreeBase  string                         // base dir for worktrees ("" = worktree.DefaultBase)
 	reservedPorts map[int]bool                   // ports handed to worktree setup hooks (collision-free)
@@ -409,6 +411,105 @@ func (h *Hub) BroadcastIssues(in []issues.Issue) {
 	if m := h.issuesMgr(); m != nil {
 		h.broadcast(protocol.TypeIntegrationStatus, protocol.IntegrationStatus{Connected: m.Connected(), AuthErrors: m.AuthErrors()})
 	}
+	// Feed the loop engine so it can start agents on newly-appearing tickets.
+	h.mu.Lock()
+	eng := h.loopEngine
+	h.mu.Unlock()
+	if eng != nil {
+		conv := make([]loops.Issue, 0, len(in))
+		for _, i := range in {
+			conv = append(conv, loops.Issue{Key: i.Key, Title: i.Title, Category: i.Category, Provider: i.Provider})
+		}
+		eng.OnIssues(conv)
+	}
+}
+
+// EnableLoops turns on recurring autonomous ticket workflows, persisted at path. Each new matching
+// ticket gets an autonomous agent session (worktree + optional plan mode), like a hands-free
+// issue.launch. Call once at startup.
+func (h *Hub) EnableLoops(path string) {
+	eng := loops.New(path, h.spawnLoopRun, h.broadcastLoops)
+	h.mu.Lock()
+	h.loopEngine = eng
+	h.mu.Unlock()
+}
+
+func (h *Hub) loops() *loops.Engine {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.loopEngine
+}
+
+// spawnLoopRun starts an autonomous agent on a ticket for a loop (the engine's injected spawn).
+func (h *Hub) spawnLoopRun(lp loops.Loop, iss loops.Issue) (string, error) {
+	var full *issues.Issue
+	if m := h.issuesMgr(); m != nil {
+		for _, i := range m.Issues() {
+			if i.Key == iss.Key {
+				cp := i
+				full = &cp
+				break
+			}
+		}
+	}
+	branch := "loop/" + iss.Key
+	prompt := fmt.Sprintf("You are running autonomously as part of a loop. Work on ticket %s — %s.\nPlan the approach first, then implement it end to end and open a PR when done.", iss.Key, iss.Title)
+	meta := sessionMeta{issueKey: iss.Key}
+	if full != nil {
+		prompt = fmt.Sprintf("You are running autonomously as part of a loop. Work on %s — %s\n\n%s\n\n%s\n\nPlan the approach first, then implement it end to end and open a PR when done.", full.Key, full.Title, full.Body, full.URL)
+		meta = sessionMeta{issueID: full.ID, issueKey: full.Key, issueProvider: full.Provider}
+		if full.BranchName != "" {
+			branch = full.BranchName
+		}
+	}
+	create := protocol.SessionCreate{
+		Provider: lp.Provider, ProjectID: lp.ProjectID, Prompt: prompt,
+		Worktree: lp.Worktree, Plan: lp.Plan, Autonomous: true, BudgetUSD: lp.BudgetUSD, WorkspaceName: branch,
+	}
+	ms, err := h.startSession(context.Background(), create, meta)
+	if err != nil {
+		return "", err
+	}
+	ms.mu.Lock()
+	ms.autonomous = true
+	ms.budgetUSD = lp.BudgetUSD
+	ms.mu.Unlock()
+	if full != nil {
+		go h.writeBackStarted(full.Provider, full.ID, full.TeamID)
+	}
+	go ms.run()
+	return ms.sess.ID(), nil
+}
+
+func (h *Hub) broadcastLoops() {
+	eng := h.loops()
+	if eng == nil {
+		return
+	}
+	h.broadcast(protocol.TypeLoopList, protocol.LoopList{Loops: toProtoLoops(eng.List()), Runs: toProtoRuns(eng.Runs())})
+}
+
+func toProtoLoops(in []loops.Loop) []protocol.Loop {
+	out := make([]protocol.Loop, 0, len(in))
+	for _, l := range in {
+		out = append(out, protocol.Loop{
+			ID: l.ID, Name: l.Name, Enabled: l.Enabled, Provider: l.Provider, ProjectID: l.ProjectID,
+			TriggerCategory: l.TriggerCategory, Tracker: l.Tracker, Worktree: l.Worktree, Plan: l.Plan,
+			BudgetUSD: l.BudgetUSD, MaxConcurrent: l.MaxConcurrent,
+		})
+	}
+	return out
+}
+
+func toProtoRuns(in []loops.Run) []protocol.LoopRun {
+	out := make([]protocol.LoopRun, 0, len(in))
+	for _, r := range in {
+		out = append(out, protocol.LoopRun{
+			LoopID: r.LoopID, IssueKey: r.IssueKey, IssueTitle: r.IssueTitle,
+			SessionID: r.SessionID, Status: r.Status, StartedAt: r.StartedAt,
+		})
+	}
+	return out
 }
 
 // SetOAuthAddr sets the loopback host:port used to build per-provider tracker OAuth callback URLs.
@@ -918,6 +1019,9 @@ func asyncDispatch(typ string) bool {
 		protocol.TypeSessionInterrupt,    // provider Stop (interrupt only)
 		protocol.TypeProjectBrowse,       // disk: dir listing for the folder picker
 		protocol.TypeCommandList,         // disk: scans .claude/commands for the slash palette
+		protocol.TypeLoopUpsert,          // disk: persists loop config (+ may spawn a session)
+		protocol.TypeLoopDelete,          // disk: persists loop config
+		protocol.TypeLoopSetEnabled,      // disk: persists loop config
 		protocol.TypeFSTree,              // disk: dir listing
 		protocol.TypeFSRead,              // disk: file read
 		protocol.TypeFSReadBytes,         // disk: raw bytes (images)
@@ -1151,6 +1255,57 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			out = append(out, protocol.SlashCommand{Name: c.Name, Description: c.Description, Source: c.Source, Prefix: c.Prefix})
 		}
 		h.sendOK(conn, env.ID, protocol.CommandList{Commands: out})
+
+	case protocol.TypeLoopList:
+		eng := h.loops()
+		if eng == nil {
+			h.sendErr(conn, env.ID, "loops not enabled")
+			return
+		}
+		h.sendOK(conn, env.ID, protocol.LoopList{Loops: toProtoLoops(eng.List()), Runs: toProtoRuns(eng.Runs())})
+
+	case protocol.TypeLoopUpsert:
+		eng := h.loops()
+		if eng == nil {
+			h.sendErr(conn, env.ID, "loops not enabled")
+			return
+		}
+		var l protocol.Loop
+		if err := env.Unmarshal(&l); err != nil {
+			h.sendErr(conn, env.ID, "bad loop")
+			return
+		}
+		if l.ID == "" {
+			l.ID = "loop_" + randToken()
+		}
+		saved := eng.Upsert(loops.Loop{
+			ID: l.ID, Name: l.Name, Enabled: l.Enabled, Provider: l.Provider, ProjectID: l.ProjectID,
+			TriggerCategory: l.TriggerCategory, Tracker: l.Tracker, Worktree: l.Worktree, Plan: l.Plan,
+			BudgetUSD: l.BudgetUSD, MaxConcurrent: l.MaxConcurrent,
+		})
+		h.sendOK(conn, env.ID, toProtoLoops([]loops.Loop{saved})[0])
+
+	case protocol.TypeLoopDelete:
+		eng := h.loops()
+		if eng == nil {
+			h.sendErr(conn, env.ID, "loops not enabled")
+			return
+		}
+		var req protocol.LoopRef
+		_ = env.Unmarshal(&req)
+		eng.Delete(req.ID)
+		h.sendOK(conn, env.ID, protocol.LoopList{Loops: toProtoLoops(eng.List()), Runs: toProtoRuns(eng.Runs())})
+
+	case protocol.TypeLoopSetEnabled:
+		eng := h.loops()
+		if eng == nil {
+			h.sendErr(conn, env.ID, "loops not enabled")
+			return
+		}
+		var req protocol.LoopSetEnabled
+		_ = env.Unmarshal(&req)
+		eng.SetEnabled(req.ID, req.Enabled)
+		h.sendOK(conn, env.ID, protocol.LoopList{Loops: toProtoLoops(eng.List()), Runs: toProtoRuns(eng.Runs())})
 
 	case protocol.TypeProjectRemove:
 		var req protocol.ProjectRef
