@@ -78,6 +78,9 @@ public final class DesktopStore: ObservableObject {
             desks.append(local.desktop)
         }
         for d in desks { ensureModel(d) }
+        // End any Live Activities orphaned by a previous launch so none linger in the Dynamic
+        // Island (they're re-created on demand when an agent is actually working).
+        models.first?.clearStaleLiveActivities()
         // macOS: pairing.json is the source of truth for the LOCAL daemon — refresh the model's
         // credentials + reachable URL from it so a changed secret/ws (e.g. after a reinstall)
         // doesn't leave us connecting with a stale cached secret and getting "unauthorized".

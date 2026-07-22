@@ -52,9 +52,9 @@ public final class Model: ObservableObject {
     @Published public var messages: [ChatMessage] = []
     @Published public var sessionID: String?
     @Published public var currentSession: Session? // metadata (project/worktree/branch) of the active session
-    @Published public var pendingApproval: ApprovalRequest?
+    @Published public var pendingApproval: ApprovalRequest? { didSet { refreshLiveActivity() } }
     @Published public var discovered: [Discovered] = []
-    @Published public var busy = false // agent is producing output
+    @Published public var busy = false { didSet { refreshLiveActivity() } } // agent is producing output; drives the Live Activity
     @Published public var activity: String? // current step, e.g. "running bash"
     @Published public var pairingPublicURL: String? // reachable URL for the phone-pairing QR
     /// Live LSP diagnostics keyed by file path (editor underlines + the problems list).
@@ -1401,6 +1401,20 @@ public final class Model: ObservableObject {
     // MARK: live activity
 
     /// Starts/updates/ends the session Live Activity to match current state.
+    /// Ends any Live Activities left over from a previous launch (e.g. the app was killed while an
+    /// activity was showing), so none linger in the Dynamic Island. A new one is created on demand
+    /// when an agent is actually working.
+    func clearStaleLiveActivities() {
+        #if os(iOS)
+        if #available(iOS 16.1, *) {
+            for act in Activity<OculusActivityAttributes>.activities {
+                Task { await act.end(dismissalPolicy: .immediate) }
+            }
+            liveActivity = nil
+        }
+        #endif
+    }
+
     func refreshLiveActivity(ended: Bool = false) {
         #if os(iOS)
         if #available(iOS 16.1, *) {
@@ -1411,7 +1425,16 @@ public final class Model: ObservableObject {
                 liveActivity = nil
                 return
             }
-            guard ActivityAuthorizationInfo().areActivitiesEnabled, let sid = sessionID else { return }
+            // The activity is meaningful only while the agent is WORKING or an approval is pending.
+            // When idle/done (or no session) end it so it doesn't linger in the Dynamic Island.
+            guard ActivityAuthorizationInfo().areActivitiesEnabled, let sid = sessionID,
+                  busy || pendingApproval != nil else {
+                if let act = liveActivity as? Activity<OculusActivityAttributes> {
+                    Task { await act.end(dismissalPolicy: .immediate) }
+                }
+                liveActivity = nil
+                return
+            }
             let state = OculusActivityAttributes.ContentState(
                 status: status, tool: pendingApproval?.tool, awaitingApproval: pendingApproval != nil
             )

@@ -57,6 +57,7 @@ struct Composer: View {
 
                 HStack(spacing: 14) {
                     attachButton
+                    if !model.commands.isEmpty { slashButton }
                     micButton
                     voiceButton
                     if dictator.isRecording {
@@ -260,6 +261,24 @@ struct Composer: View {
         .buttonStyle(.plain)
         .disabled(!canSend)
         .help("Send message")
+    }
+
+    /// Opens the slash-command palette — especially handy on iPhone where "type /" isn't obvious.
+    private var slashButton: some View {
+        Button {
+            if draft.isEmpty {
+                draft = "/"
+            } else if !draft.hasPrefix("/") && !draft.hasPrefix("$") {
+                draft = "/" + draft
+            }
+            focused = true
+        } label: {
+            Image(systemName: "slash.circle")
+                .font(.system(size: 17))
+                .foregroundStyle(commandMatches.isEmpty ? palette.mutedForeground : palette.primary)
+        }
+        .buttonStyle(.plain)
+        .help("Slash commands")
     }
 
     private var micButton: some View {
