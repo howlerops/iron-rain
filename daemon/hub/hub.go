@@ -432,6 +432,8 @@ func (h *Hub) EnableLoops(path string) {
 	h.mu.Lock()
 	h.loopEngine = eng
 	h.mu.Unlock()
+	// Task-kind loops fire on a schedule; ticket-kind loops fire from the issue poll (OnIssues).
+	eng.StartScheduler(context.Background(), 60*time.Second)
 }
 
 func (h *Hub) loops() *loops.Engine {
@@ -440,8 +442,44 @@ func (h *Hub) loops() *loops.Engine {
 	return h.loopEngine
 }
 
-// spawnLoopRun starts an autonomous agent on a ticket for a loop (the engine's injected spawn).
-func (h *Hub) spawnLoopRun(lp loops.Loop, iss loops.Issue) (string, error) {
+// spawnLoopRun starts an autonomous agent for a loop (the engine's injected spawn). iss is nil for a
+// task-kind loop (a scheduled custom job that leans on the agent's MCP tools); non-nil for a ticket
+// loop (one new tracker ticket → one session). Both cover one or more repos via the loop's Repos().
+func (h *Hub) spawnLoopRun(lp loops.Loop, iss *loops.Issue) (string, error) {
+	// Resolve the loop's target repos into a single ProjectID or a multi-root workspace.
+	repos := lp.Repos()
+	var projectID string
+	var projectIDs []string
+	switch {
+	case len(repos) == 1:
+		projectID = repos[0]
+	case len(repos) > 1:
+		projectIDs = repos
+	}
+
+	// Task loop: no ticket — run the recurring custom prompt. The agent uses whatever tools it has
+	// (including MCP servers — GitHub, trackers, code search) to do the job (find bugs → file issues →
+	// fix, review PRs, etc.).
+	if iss == nil {
+		branch := "loop/" + sanitizeBranch(lp.Name)
+		prompt := fmt.Sprintf("You are running autonomously as a recurring loop named %q.\n\nYour standing job:\n%s\n\nUse every tool available to you — including any MCP tools (GitHub, issue trackers, code search, package/security scanners) — to carry this out end to end. When you make concrete code changes, open a PR. When you discover work worth tracking, file issues in the connected tracker. Report a short summary of what you did.", lp.Name, lp.Prompt)
+		create := protocol.SessionCreate{
+			Provider: lp.Provider, ProjectID: projectID, ProjectIDs: projectIDs, Prompt: prompt,
+			Worktree: lp.Worktree, Plan: lp.Plan, Autonomous: true, BudgetUSD: lp.BudgetUSD, WorkspaceName: branch,
+		}
+		ms, err := h.startSession(context.Background(), create, sessionMeta{})
+		if err != nil {
+			return "", err
+		}
+		ms.mu.Lock()
+		ms.autonomous = true
+		ms.budgetUSD = lp.BudgetUSD
+		ms.mu.Unlock()
+		go ms.run()
+		return ms.sess.ID(), nil
+	}
+
+	// Ticket loop: work a single new tracker ticket, like a hands-free issue.launch.
 	var full *issues.Issue
 	if m := h.issuesMgr(); m != nil {
 		for _, i := range m.Issues() {
@@ -463,7 +501,7 @@ func (h *Hub) spawnLoopRun(lp loops.Loop, iss loops.Issue) (string, error) {
 		}
 	}
 	create := protocol.SessionCreate{
-		Provider: lp.Provider, ProjectID: lp.ProjectID, Prompt: prompt,
+		Provider: lp.Provider, ProjectID: projectID, ProjectIDs: projectIDs, Prompt: prompt,
 		Worktree: lp.Worktree, Plan: lp.Plan, Autonomous: true, BudgetUSD: lp.BudgetUSD, WorkspaceName: branch,
 	}
 	ms, err := h.startSession(context.Background(), create, meta)
@@ -481,6 +519,32 @@ func (h *Hub) spawnLoopRun(lp loops.Loop, iss loops.Issue) (string, error) {
 	return ms.sess.ID(), nil
 }
 
+// sanitizeBranch turns a loop name into a git-branch-safe slug.
+func sanitizeBranch(s string) string {
+	out := make([]rune, 0, len(s))
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			out = append(out, r)
+		case r >= 'A' && r <= 'Z':
+			out = append(out, r+('a'-'A'))
+		case r == ' ' || r == '-' || r == '_' || r == '/':
+			out = append(out, '-')
+		}
+	}
+	s = string(out)
+	for len(s) > 0 && s[0] == '-' {
+		s = s[1:]
+	}
+	for len(s) > 0 && s[len(s)-1] == '-' {
+		s = s[:len(s)-1]
+	}
+	if s == "" {
+		s = "task"
+	}
+	return s
+}
+
 func (h *Hub) broadcastLoops() {
 	eng := h.loops()
 	if eng == nil {
@@ -493,8 +557,11 @@ func toProtoLoops(in []loops.Loop) []protocol.Loop {
 	out := make([]protocol.Loop, 0, len(in))
 	for _, l := range in {
 		out = append(out, protocol.Loop{
-			ID: l.ID, Name: l.Name, Enabled: l.Enabled, Provider: l.Provider, ProjectID: l.ProjectID,
-			TriggerCategory: l.TriggerCategory, Tracker: l.Tracker, Worktree: l.Worktree, Plan: l.Plan,
+			ID: l.ID, Name: l.Name, Enabled: l.Enabled, Provider: l.Provider, Kind: l.Kind,
+			ProjectID: l.ProjectID, ProjectIDs: l.ProjectIDs,
+			TriggerCategory: l.TriggerCategory, Tracker: l.Tracker,
+			Prompt: l.Prompt, IntervalMinutes: l.IntervalMinutes, LastRun: l.LastRun,
+			Worktree: l.Worktree, Plan: l.Plan,
 			BudgetUSD: l.BudgetUSD, MaxConcurrent: l.MaxConcurrent,
 		})
 	}
@@ -1279,8 +1346,11 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			l.ID = "loop_" + randToken()
 		}
 		saved := eng.Upsert(loops.Loop{
-			ID: l.ID, Name: l.Name, Enabled: l.Enabled, Provider: l.Provider, ProjectID: l.ProjectID,
-			TriggerCategory: l.TriggerCategory, Tracker: l.Tracker, Worktree: l.Worktree, Plan: l.Plan,
+			ID: l.ID, Name: l.Name, Enabled: l.Enabled, Provider: l.Provider, Kind: l.Kind,
+			ProjectID: l.ProjectID, ProjectIDs: l.ProjectIDs,
+			TriggerCategory: l.TriggerCategory, Tracker: l.Tracker,
+			Prompt: l.Prompt, IntervalMinutes: l.IntervalMinutes,
+			Worktree: l.Worktree, Plan: l.Plan,
 			BudgetUSD: l.BudgetUSD, MaxConcurrent: l.MaxConcurrent,
 		})
 		h.sendOK(conn, env.ID, toProtoLoops([]loops.Loop{saved})[0])

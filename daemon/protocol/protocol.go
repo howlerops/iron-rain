@@ -161,17 +161,28 @@ type ProjectAdd struct {
 // Loop is a recurring autonomous workflow: watch a tracker for new tickets in a category and start
 // an agent on each.
 type Loop struct {
-	ID              string  `json:"id"`
-	Name            string  `json:"name"`
-	Enabled         bool    `json:"enabled"`
-	Provider        string  `json:"provider"`
-	ProjectID       string  `json:"project_id"`
-	TriggerCategory string  `json:"trigger_category"`
-	Tracker         string  `json:"tracker,omitempty"`
-	Worktree        bool    `json:"worktree"`
-	Plan            bool    `json:"plan"`
-	BudgetUSD       float64 `json:"budget_usd"`
-	MaxConcurrent   int     `json:"max_concurrent"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Enabled  bool   `json:"enabled"`
+	Provider string `json:"provider"`
+	Kind     string `json:"kind"` // "ticket" (default) | "task"
+
+	ProjectID  string   `json:"project_id,omitempty"`  // legacy single repo
+	ProjectIDs []string `json:"project_ids,omitempty"` // one or more repos
+
+	// ticket kind:
+	TriggerCategory string `json:"trigger_category,omitempty"`
+	Tracker         string `json:"tracker,omitempty"`
+
+	// task kind:
+	Prompt          string `json:"prompt,omitempty"`
+	IntervalMinutes int    `json:"interval_minutes,omitempty"`
+	LastRun         int64  `json:"last_run,omitempty"`
+
+	Worktree      bool    `json:"worktree"`
+	Plan          bool    `json:"plan"`
+	BudgetUSD     float64 `json:"budget_usd"`
+	MaxConcurrent int     `json:"max_concurrent"`
 }
 
 // LoopRun is one execution of a loop (a ticket that got an agent).

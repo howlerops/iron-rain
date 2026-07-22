@@ -602,23 +602,56 @@ public struct Loop: Codable, Identifiable, Hashable {
     public var name: String
     public var enabled: Bool
     public var provider: String
-    public var projectID: String
+    public var kind: String            // "ticket" (default) | "task"
+    public var projectID: String       // legacy single repo
+    public var projectIDs: [String]    // one or more repos (multi-root)
     public var triggerCategory: String
     public var tracker: String?
+    public var prompt: String          // task kind: the recurring job
+    public var intervalMinutes: Int    // task kind: schedule between runs
+    public var lastRun: Int            // task kind: unix seconds of last run (read-only)
     public var worktree: Bool
     public var plan: Bool
     public var budgetUSD: Double
     public var maxConcurrent: Int
     public init(id: String = "", name: String = "", enabled: Bool = true, provider: String = "opencode",
-                projectID: String = "", triggerCategory: String = "todo", tracker: String? = nil,
+                kind: String = "ticket", projectID: String = "", projectIDs: [String] = [],
+                triggerCategory: String = "todo", tracker: String? = nil,
+                prompt: String = "", intervalMinutes: Int = 360, lastRun: Int = 0,
                 worktree: Bool = true, plan: Bool = true, budgetUSD: Double = 5, maxConcurrent: Int = 1) {
-        self.id = id; self.name = name; self.enabled = enabled; self.provider = provider; self.projectID = projectID
-        self.triggerCategory = triggerCategory; self.tracker = tracker; self.worktree = worktree; self.plan = plan
+        self.id = id; self.name = name; self.enabled = enabled; self.provider = provider; self.kind = kind
+        self.projectID = projectID; self.projectIDs = projectIDs
+        self.triggerCategory = triggerCategory; self.tracker = tracker
+        self.prompt = prompt; self.intervalMinutes = intervalMinutes; self.lastRun = lastRun
+        self.worktree = worktree; self.plan = plan
         self.budgetUSD = budgetUSD; self.maxConcurrent = maxConcurrent
     }
+    // Effective repo list (migrates the legacy single field).
+    public var repos: [String] { projectIDs.isEmpty ? (projectID.isEmpty ? [] : [projectID]) : projectIDs }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        provider = try c.decodeIfPresent(String.self, forKey: .provider) ?? "opencode"
+        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? "ticket"
+        projectID = try c.decodeIfPresent(String.self, forKey: .projectID) ?? ""
+        projectIDs = try c.decodeIfPresent([String].self, forKey: .projectIDs) ?? []
+        triggerCategory = try c.decodeIfPresent(String.self, forKey: .triggerCategory) ?? "todo"
+        tracker = try c.decodeIfPresent(String.self, forKey: .tracker)
+        prompt = try c.decodeIfPresent(String.self, forKey: .prompt) ?? ""
+        intervalMinutes = try c.decodeIfPresent(Int.self, forKey: .intervalMinutes) ?? 360
+        lastRun = try c.decodeIfPresent(Int.self, forKey: .lastRun) ?? 0
+        worktree = try c.decodeIfPresent(Bool.self, forKey: .worktree) ?? true
+        plan = try c.decodeIfPresent(Bool.self, forKey: .plan) ?? true
+        budgetUSD = try c.decodeIfPresent(Double.self, forKey: .budgetUSD) ?? 5
+        maxConcurrent = try c.decodeIfPresent(Int.self, forKey: .maxConcurrent) ?? 1
+    }
     enum CodingKeys: String, CodingKey {
-        case id, name, enabled, provider, tracker, worktree, plan
-        case projectID = "project_id", triggerCategory = "trigger_category", budgetUSD = "budget_usd", maxConcurrent = "max_concurrent"
+        case id, name, enabled, provider, kind, tracker, prompt, worktree, plan
+        case projectID = "project_id", projectIDs = "project_ids"
+        case triggerCategory = "trigger_category", intervalMinutes = "interval_minutes", lastRun = "last_run"
+        case budgetUSD = "budget_usd", maxConcurrent = "max_concurrent"
     }
 }
 public struct LoopRun: Codable, Identifiable, Hashable {
