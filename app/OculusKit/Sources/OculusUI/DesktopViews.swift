@@ -188,6 +188,10 @@ struct SoftwareUpdateModifier: ViewModifier {
 }
 #endif
 
+/// The one shared sheet slot for the Loops / Agents panels (kept to a single `.sheet` so they
+/// don't collide with the New Session sheet).
+private enum PanelSheet: Int, Identifiable { case loops, agents; var id: Int { rawValue } }
+
 public struct RootView: View {
     @ObservedObject var store: DesktopStore
     @Environment(\.colorScheme) private var scheme
@@ -195,8 +199,9 @@ public struct RootView: View {
     @State private var selection: String?
     @State private var showSessionDetail = false // iOS: pushes ChatView when a session opens
     @State private var checkForUpdates = false   // macOS: Settings → "Check for updates" trigger
-    @State private var showLoops = false         // Loops (recurring autonomous workflows) sheet
-    @State private var showAgents = false        // Agents (provider registration) sheet
+    // Loops + Agents share ONE sheet slot — stacking two .sheet modifiers on the same view breaks
+    // SwiftUI's sheet presentation (it silently killed the New Session sheet after the first session).
+    @State private var panel: PanelSheet?
     @State private var showNewSession = false
     @State private var newSessionTakeOver = false
     @State private var selectedTab = 0
@@ -235,16 +240,20 @@ public struct RootView: View {
                     #if os(macOS)
                     .modifier(SoftwareUpdateModifier(palette: palette, forceCheck: $checkForUpdates))
                     #endif
-                    .sheet(isPresented: $showLoops) {
-                        LoopsView(model: model, palette: palette,
-                                  onOpenSession: { sid in
-                                      showLoops = false
-                                      Task { await model.openSession(sid) }
-                                      showSessionDetail = true
-                                  },
-                                  onClose: { showLoops = false })
+                    .sheet(item: $panel) { which in
+                        switch which {
+                        case .loops:
+                            LoopsView(model: model, palette: palette,
+                                      onOpenSession: { sid in
+                                          panel = nil
+                                          Task { await model.openSession(sid) }
+                                          showSessionDetail = true
+                                      },
+                                      onClose: { panel = nil })
+                        case .agents:
+                            ManageAgentsView(model: model, palette: palette)
+                        }
                     }
-                    .sheet(isPresented: $showAgents) { ManageAgentsView(model: model, palette: palette) }
             }
         }
         // CRITICAL: force the surface to FILL the window instead of sizing to the split
@@ -312,8 +321,8 @@ public struct RootView: View {
                                onReview: { sid in reviewSessionID = sid; selectedTab = 2 },
                                onTakeOver: { newSessionTakeOver = true; showNewSession = true },
                                onCheckForUpdates: { checkForUpdates = true },
-                               onOpenLoops: { showLoops = true },
-                               onOpenAgents: { showAgents = true })
+                               onOpenLoops: { panel = .loops },
+                               onOpenAgents: { panel = .agents })
                     .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 340)
             } detail: {
                 detailPane(model)
@@ -340,8 +349,8 @@ public struct RootView: View {
         TabView(selection: $selectedTab) {
             NavigationStack {
                 SessionSidebar(store: store, model: model, selection: $selection, searchText: $searchText,
-                               onOpenLoops: { showLoops = true },
-                               onOpenAgents: { showAgents = true })
+                               onOpenLoops: { panel = .loops },
+                               onOpenAgents: { panel = .agents })
                     .navigationDestination(isPresented: $showSessionDetail) {
                         ChatView(model: model)
                     }
