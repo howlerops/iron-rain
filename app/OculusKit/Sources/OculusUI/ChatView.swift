@@ -277,6 +277,7 @@ public struct ChatView: View {
     private var statusLabel: String {
         if model.pendingApproval != nil { return "awaiting approval" }
         if model.busy { return "working…" }
+        if model.status == SessionStatusValue.error || model.status == "errored" { return "Error" }
         return model.status
     }
 

@@ -1518,6 +1518,16 @@ public final class Model: ObservableObject {
                             pendingApproval = nil; busy = false; activity = nil; finalizeStreaming()
                         case SessionStatusValue.awaitingApproval:
                             busy = false
+                        case SessionStatusValue.error, "errored":
+                            // An errored session isn't "working": stop the spinner, keep the reason
+                            // (statusDetail) AND put it in the transcript so it's actually readable —
+                            // it was previously only flashed as transient `activity` next to the dots.
+                            busy = false; pendingApproval = nil; activity = nil; finalizeStreaming()
+                            let reason = (ss.detail?.isEmpty == false) ? ss.detail! : "The agent reported an error."
+                            statusDetail = reason
+                            if messages.last?.text != "⚠️ \(reason)" {
+                                messages.append(ChatMessage(role: .system, text: "⚠️ \(reason)"))
+                            }
                         default:
                             busy = true
                             // NOTE: do NOT clear pendingApproval here — with parallel tool
