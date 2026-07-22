@@ -10,14 +10,14 @@ import (
 )
 
 func TestSubstitute(t *testing.T) {
-	// {prompt} + {cwd} expand in place.
-	got := substitute([]string{"exec", "--cwd", "{cwd}", "{prompt}"}, "fix the bug", "/repo")
-	want := []string{"exec", "--cwd", "/repo", "fix the bug"}
+	// {prompt} + {cwd} + {model} expand in place.
+	got := substitute([]string{"--model", "{model}", "--cwd", "{cwd}", "{prompt}"}, "fix the bug", "/repo", "gpt-5")
+	want := []string{"--model", "gpt-5", "--cwd", "/repo", "fix the bug"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("substitute = %v, want %v", got, want)
 	}
 	// No {prompt} token → prompt appended as the last arg.
-	got = substitute([]string{"exec"}, "hello", "/repo")
+	got = substitute([]string{"exec"}, "hello", "/repo", "")
 	if len(got) != 2 || got[1] != "hello" {
 		t.Errorf("substitute (append) = %v, want [exec hello]", got)
 	}

@@ -68,6 +68,10 @@ function canUseTool(toolName, input) {
   return new Promise((resolve) => approvals.set(id, { resolve, input }));
 }
 
+// The active query handle (set once the session loop starts), so a mid-session model switch can
+// call query.setModel(). Null until the loop begins.
+let currentQuery = null;
+
 // --- daemon -> sidecar commands ---
 createInterface({ input: process.stdin }).on("line", (line) => {
   line = line.trim();
@@ -103,6 +107,11 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   } else if (m.t === "stop") {
     ended = true;
     pushInput(null);
+  } else if (m.t === "model") {
+    // Switch the model for subsequent turns (SDK setModel accepts an alias like "opus" or a full id).
+    if (currentQuery && m.text) {
+      try { currentQuery.setModel(String(m.text)); } catch {}
+    }
   }
 });
 
@@ -113,6 +122,7 @@ const options = {
   includePartialMessages: true,
   canUseTool,
 };
+if (process.env.OCULUS_MODEL) options.model = process.env.OCULUS_MODEL; // create-time model
 if (mode === "attach" && sessionLabel) {
   // Take-over = resume the session's full history but FORK it into a fresh id. Claude Code
   // has no live multi-client attach for plain sessions, and two writers on one session id
@@ -125,7 +135,8 @@ if (mode === "attach" && sessionLabel) {
 send({ t: "session", id: sessionLabel });
 
 try {
-  for await (const message of query({ prompt: inputGen(), options })) {
+  currentQuery = query({ prompt: inputGen(), options });
+  for await (const message of currentQuery) {
     switch (message.type) {
       case "system":
         if (message.subtype === "init" && message.session_id) {

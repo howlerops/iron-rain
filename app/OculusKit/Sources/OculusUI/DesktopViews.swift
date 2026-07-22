@@ -256,7 +256,8 @@ public struct RootView: View {
         .background(palette.background.ignoresSafeArea())
         .foregroundStyle(palette.foreground)
         .tint(palette.primary)
-        .preferredColorScheme(appearance.colorScheme)
+        // Appearance override is applied at the scene root (OculusMain) so it switches the whole
+        // window — sheets + toolbar — atomically. `appearance` here only drives the picker binding.
         .task {
             #if os(macOS)
             await launcher.ensureRunning() // start the local daemon (no terminal) if needed

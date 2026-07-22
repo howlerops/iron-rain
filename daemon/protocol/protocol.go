@@ -945,6 +945,7 @@ type AgentInfo struct {
 	Command    string   `json:"command,omitempty"`
 	Args       []string `json:"args,omitempty"`
 	ResumeArgs []string `json:"resume_args,omitempty"`
+	Models     []string `json:"models,omitempty"` // configured model names (custom CLI agents)
 }
 
 // AgentList is the full agent roster returned by agent.list.
@@ -960,6 +961,7 @@ type AgentUpsert struct {
 	Args       []string          `json:"args,omitempty"`
 	ResumeArgs []string          `json:"resume_args,omitempty"`
 	Env        map[string]string `json:"env,omitempty"`
+	Models     []string          `json:"models,omitempty"` // model names for the picker (use {model} in Args)
 }
 
 // AgentRef references a custom agent by name (delete).

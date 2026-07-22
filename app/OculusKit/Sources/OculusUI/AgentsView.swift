@@ -158,6 +158,7 @@ struct CustomAgentEditor: View {
     @State private var name: String
     @State private var command: String
     @State private var argsText: String
+    @State private var modelsText: String
     private let isNew: Bool
 
     init(model: Model, palette: OculusPalette, agent: AgentInfo?, onError: @escaping (String?) -> Void) {
@@ -166,11 +167,17 @@ struct CustomAgentEditor: View {
         _name = State(initialValue: agent?.name ?? "")
         _command = State(initialValue: agent?.command ?? "")
         _argsText = State(initialValue: (agent?.args ?? []).joined(separator: " "))
+        _modelsText = State(initialValue: (agent?.models ?? []).joined(separator: ", "))
     }
 
-    // Split on whitespace, but keep {prompt}/{cwd} tokens intact.
+    // Split on whitespace, but keep {prompt}/{cwd}/{model} tokens intact.
     private var parsedArgs: [String] {
         argsText.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" }).map(String.init)
+    }
+    // Model names split on comma or newline (they can contain spaces/slashes).
+    private var parsedModels: [String] {
+        modelsText.split(whereSeparator: { $0 == "," || $0 == "\n" })
+            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     }
 
     var body: some View {
@@ -202,7 +209,16 @@ struct CustomAgentEditor: View {
                             }
                         }
                     }
-                    Text("`{prompt}` is replaced with your message and `{cwd}` with the working directory. If you omit `{prompt}`, the message is appended as the last argument.")
+                    Text("`{prompt}` is replaced with your message, `{cwd}` with the working directory, and `{model}` with the chosen model. If you omit `{prompt}`, the message is appended as the last argument.")
+                        .font(.caption2).foregroundStyle(palette.mutedForeground)
+                }
+                Section("Models (optional)") {
+                    TextField("e.g.  gpt-5, o3, gemini-2.5-pro", text: $modelsText, axis: .vertical)
+                        .lineLimit(1...2)
+                        #if os(iOS)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        #endif
+                    Text("Comma-separated model names. They appear in the chat-header picker; put `{model}` in the arguments above to pass the chosen one.")
                         .font(.caption2).foregroundStyle(palette.mutedForeground)
                 }
                 Section {
@@ -220,7 +236,8 @@ struct CustomAgentEditor: View {
                     Button("Save") {
                         let a = AgentUpsert(name: name.trimmingCharacters(in: .whitespaces),
                                             command: command.trimmingCharacters(in: .whitespaces),
-                                            args: parsedArgs)
+                                            args: parsedArgs,
+                                            models: parsedModels.isEmpty ? nil : parsedModels)
                         Task {
                             let err = await model.upsertAgent(a)
                             if let err { onError(err) } else { dismiss() }

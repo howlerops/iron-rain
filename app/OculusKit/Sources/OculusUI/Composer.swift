@@ -45,15 +45,7 @@ struct Composer: View {
             Divider().overlay(palette.border)
             VStack(alignment: .leading, spacing: 10) {
                 if !model.pendingImages.isEmpty { attachmentChips }
-                TextField("Message the agent…", text: $draft, axis: .vertical)
-                    .lineLimit(1...8)
-                    .textFieldStyle(.plain)
-                    .font(.body)
-                    .focused($focused)
-                    #if os(iOS)
-                    .textInputAutocapitalization(.sentences)
-                    #endif
-                    .onSubmit { submit() }
+                messageField
 
                 HStack(spacing: 14) {
                     attachButton
@@ -151,7 +143,33 @@ struct Composer: View {
         .padding(.bottom, 6)
     }
 
+    /// The message input. Enter sends; Shift+Enter inserts a newline (multiline up to 8 rows). Uses
+    /// onKeyPress where available (macOS 14 / iOS 17) so Shift+Enter can be distinguished from Enter;
+    /// older OSes fall back to onSubmit (Enter sends, no soft-newline).
+    @ViewBuilder private var messageField: some View {
+        let field = TextField("Message the agent…", text: $draft, axis: .vertical)
+            .lineLimit(1...8)
+            .textFieldStyle(.plain)
+            .font(.body)
+            .focused($focused)
+        #if os(iOS)
+        let base = field.textInputAutocapitalization(.sentences)
+        #else
+        let base = field
+        #endif
+        if #available(macOS 14.0, iOS 17.0, *) {
+            base.onKeyPress(keys: [.return]) { press in
+                if press.modifiers.contains(.shift) { return .ignored } // Shift+Enter → newline
+                if canSend { submit() }
+                return .handled                                         // Enter → send, swallow newline
+            }
+        } else {
+            base.onSubmit { submit() }
+        }
+    }
+
     private func submit() {
+        guard canSend else { return }
         let text = draft
         draft = ""
         if dictator.isRecording { dictator.stop() }

@@ -63,6 +63,16 @@ func (p *Provider) CreatePlan(ctx context.Context, cwd, prompt string) (agent.Se
 	return p.start(ctx, cwd, "cc_"+randID(), "create", prompt, true)
 }
 
+// Models offers the Claude model aliases the Agent SDK accepts. Aliases resolve to the latest of
+// each tier, so they stay valid across model refreshes without hardcoding dated ids.
+func (p *Provider) Models(ctx context.Context) ([]protocol.ModelInfo, error) {
+	return []protocol.ModelInfo{
+		{ID: "opus", Name: "Claude Opus"},
+		{ID: "sonnet", Name: "Claude Sonnet"},
+		{ID: "haiku", Name: "Claude Haiku"},
+	}, nil
+}
+
 // Attach resumes an existing claude-code session by id, running in its original cwd so the
 // resumed session's tool calls (edits, bash) target the right project (the SDK's resume runs
 // as a fresh process in the given directory, not the session's recorded one).
@@ -201,6 +211,9 @@ func (s *session) Respond(_ context.Context, approvalID, decision string) error 
 }
 
 func (s *session) Stop(_ context.Context) error { return s.send(inMsg{T: "stop"}) }
+
+// SetModel switches the model via the SDK's setModel (provider is unused — Claude ids stand alone).
+func (s *session) SetModel(_, model string) error { return s.send(inMsg{T: "model", Text: model}) }
 
 func (s *session) Close() error {
 	s.closeOnce.Do(func() {

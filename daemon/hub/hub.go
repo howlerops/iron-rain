@@ -950,7 +950,7 @@ func (h *Hub) agentList() protocol.AgentList {
 			c := userByName[name]
 			info.Kind = "custom"
 			info.Editable = true
-			info.Command, info.Args, info.ResumeArgs = c.Command, c.Args, c.ResumeArgs
+			info.Command, info.Args, info.ResumeArgs, info.Models = c.Command, c.Args, c.ResumeArgs, c.Models
 			if !info.Available {
 				info.Available = cli.Available(c.Command)
 			}
@@ -1511,7 +1511,10 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, "custom agents not enabled")
 			return
 		}
-		cfg := cli.Config{Name: in.Name, Command: in.Command, Args: in.Args, ResumeArgs: in.ResumeArgs, Env: in.Env}
+		cfg := cli.Config{Name: in.Name, Command: in.Command, Args: in.Args, ResumeArgs: in.ResumeArgs, Env: in.Env, Models: in.Models}
+		if len(cfg.Models) > 0 && cfg.Model == "" {
+			cfg.Model = cfg.Models[0] // default selection
+		}
 		if len(cfg.Args) == 0 {
 			cfg.Args = []string{"{prompt}"} // sane default: pass the prompt as the sole arg
 		}

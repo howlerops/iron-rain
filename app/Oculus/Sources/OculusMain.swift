@@ -8,6 +8,10 @@ import OculusUI
 @main
 struct OculusMain: App {
     @StateObject private var store = DesktopStore()
+    // Appearance override lives at the SCENE root so the whole window — including sheets and the
+    // AppKit-bridged toolbar — switches theme atomically. Applying it mid-tree (in RootView) let
+    // sheets/toolbar lag a render, mixing old and new palette colors on a theme swap.
+    @AppStorage("oculus.appearance") private var appearance: Appearance = .system
     #if os(iOS)
     @UIApplicationDelegateAdaptor(PushDelegate.self) private var pushDelegate
     #endif
@@ -18,6 +22,7 @@ struct OculusMain: App {
                 #if os(macOS)
                 .frame(minWidth: 520, minHeight: 420)
                 #endif
+                .preferredColorScheme(appearance.colorScheme)
         }
         #if os(macOS)
         .defaultSize(width: 1180, height: 760)
@@ -29,7 +34,7 @@ struct OculusMain: App {
 
         #if os(macOS)
         MenuBarExtra {
-            MenuBarView(store: store)
+            MenuBarView(store: store).preferredColorScheme(appearance.colorScheme)
         } label: {
             Image(systemName: store.active?.menuBarSymbol ?? "bolt.horizontal.circle")
         }

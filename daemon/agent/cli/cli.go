@@ -31,6 +31,10 @@ type Config struct {
 	Args       []string          `json:"args"`
 	ResumeArgs []string          `json:"resume_args,omitempty"`
 	Env        map[string]string `json:"env,omitempty"`
+	// Models lists the model names offered for this agent (the picker); put {model} in Args to
+	// substitute the chosen one (e.g. "--model {model}"). Model is the default selection.
+	Models []string `json:"models,omitempty"`
+	Model  string   `json:"model,omitempty"`
 }
 
 // Provider adapts one Config to the agent.Provider interface.
@@ -43,6 +47,16 @@ func NewProvider(cfg Config) *Provider { return &Provider{cfg: cfg} }
 func (p *Provider) Name() string                                     { return p.cfg.Name }
 func (p *Provider) List(context.Context) ([]protocol.Session, error) { return nil, nil }
 
+// Models returns the model names configured for this agent (empty = no picker). Put {model} in the
+// agent's Args to have the chosen one substituted per turn.
+func (p *Provider) Models(context.Context) ([]protocol.ModelInfo, error) {
+	out := make([]protocol.ModelInfo, 0, len(p.cfg.Models))
+	for _, m := range p.cfg.Models {
+		out = append(out, protocol.ModelInfo{ID: m, Name: m})
+	}
+	return out, nil
+}
+
 func (p *Provider) Create(_ context.Context, cwd, prompt string) (agent.Session, error) {
 	if p.cfg.Command == "" {
 		return nil, fmt.Errorf("cli agent %q: no command configured", p.cfg.Name)
@@ -54,6 +68,7 @@ func (p *Provider) Create(_ context.Context, cwd, prompt string) (agent.Session,
 		id:     p.cfg.Name + "_" + randID(),
 		cfg:    p.cfg,
 		cwd:    cwd,
+		model:  p.cfg.Model,
 		events: make(chan agent.Event, 64),
 		out:    make(chan agent.Event, 64),
 		done:   make(chan struct{}),
@@ -78,11 +93,20 @@ type session struct {
 	turns     int
 	cancel    context.CancelFunc // cancels the in-flight turn (Stop)
 	closeOnce sync.Once
+	model     string // selected model, substituted for {model} in Args (guarded by mu)
 }
 
 func (s *session) ID() string                 { return s.id }
 func (s *session) Provider() string           { return s.cfg.Name }
 func (s *session) Events() <-chan agent.Event { return s.events }
+
+// SetModel selects the model substituted for {model} in subsequent turns (provider unused).
+func (s *session) SetModel(_, model string) error {
+	s.mu.Lock()
+	s.model = model
+	s.mu.Unlock()
+	return nil
+}
 
 // pump is the single owner/sender of the events channel: it forwards turn output and closes events
 // exactly once when the session ends, so the hub's run() loop exits cleanly and no turn goroutine
@@ -131,10 +155,11 @@ func (s *session) startTurn(text string) {
 	}
 	s.turns++
 	s.running = true
+	model := s.model
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
 	s.mu.Unlock()
-	go s.runTurn(ctx, substitute(tmpl, text, s.cwd))
+	go s.runTurn(ctx, substitute(tmpl, text, s.cwd, model))
 }
 
 func (s *session) runTurn(ctx context.Context, argv []string) {
@@ -216,7 +241,7 @@ func (s *session) Close() error {
 
 // substitute expands {prompt}/{cwd} in the arg template. If no arg contains {prompt}, the prompt is
 // appended as the final argument (so a bare command like `["exec"]` still receives it).
-func substitute(tmpl []string, prompt, cwd string) []string {
+func substitute(tmpl []string, prompt, cwd, model string) []string {
 	out := make([]string, 0, len(tmpl)+1)
 	sawPrompt := false
 	for _, a := range tmpl {
@@ -225,6 +250,7 @@ func substitute(tmpl []string, prompt, cwd string) []string {
 		}
 		a = strings.ReplaceAll(a, "{prompt}", prompt)
 		a = strings.ReplaceAll(a, "{cwd}", cwd)
+		a = strings.ReplaceAll(a, "{model}", model)
 		out = append(out, a)
 	}
 	if !sawPrompt {

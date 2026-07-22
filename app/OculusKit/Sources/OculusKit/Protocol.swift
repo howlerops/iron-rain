@@ -719,11 +719,12 @@ public struct AgentInfo: Codable, Identifiable, Hashable {
     public var command: String
     public var args: [String]
     public var resumeArgs: [String]
+    public var models: [String]
     public var id: String { name }
     public init(name: String = "", kind: String = "custom", available: Bool = false, editable: Bool = true,
-                hidden: Bool = false, command: String = "", args: [String] = [], resumeArgs: [String] = []) {
+                hidden: Bool = false, command: String = "", args: [String] = [], resumeArgs: [String] = [], models: [String] = []) {
         self.name = name; self.kind = kind; self.available = available; self.editable = editable
-        self.hidden = hidden; self.command = command; self.args = args; self.resumeArgs = resumeArgs
+        self.hidden = hidden; self.command = command; self.args = args; self.resumeArgs = resumeArgs; self.models = models
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -735,9 +736,10 @@ public struct AgentInfo: Codable, Identifiable, Hashable {
         command = try c.decodeIfPresent(String.self, forKey: .command) ?? ""
         args = try c.decodeIfPresent([String].self, forKey: .args) ?? []
         resumeArgs = try c.decodeIfPresent([String].self, forKey: .resumeArgs) ?? []
+        models = try c.decodeIfPresent([String].self, forKey: .models) ?? []
     }
     enum CodingKeys: String, CodingKey {
-        case name, kind, available, editable, hidden, command, args
+        case name, kind, available, editable, hidden, command, args, models
         case resumeArgs = "resume_args"
     }
 }
@@ -749,10 +751,11 @@ public struct AgentUpsert: Codable {
     public var command: String
     public var args: [String]
     public var resumeArgs: [String]?
-    public init(name: String, command: String, args: [String] = [], resumeArgs: [String]? = nil) {
-        self.name = name; self.command = command; self.args = args; self.resumeArgs = resumeArgs
+    public var models: [String]?
+    public init(name: String, command: String, args: [String] = [], resumeArgs: [String]? = nil, models: [String]? = nil) {
+        self.name = name; self.command = command; self.args = args; self.resumeArgs = resumeArgs; self.models = models
     }
-    enum CodingKeys: String, CodingKey { case name, command, args; case resumeArgs = "resume_args" }
+    enum CodingKeys: String, CodingKey { case name, command, args, models; case resumeArgs = "resume_args" }
 }
 public struct AgentRef: Codable {
     public var name: String
