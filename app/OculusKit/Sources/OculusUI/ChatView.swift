@@ -89,16 +89,16 @@ public struct ChatView: View {
                 }
                 ToolbarItem(placement: .automatic) {
                     Button { Task { await model.runTests() } } label: {
-                        Label("Run tests", systemImage: "play.fill")
+                        Label("Run tests", systemImage: Self.runTestsSymbol)
                     }
                     .disabled(model.testRunning)
                     .help("Run tests")
                 }
                 ToolbarItem(placement: .automatic) {
                     Button { showDelegate = true } label: {
-                        Label("Delegate subtask", systemImage: "person.badge.plus")
+                        Label("Delegate subtask", systemImage: "arrowshape.turn.up.right")
                     }
-                    .help("Spawn a scoped sub-agent for one subtask, seeded from this session's handoff.")
+                    .help("Delegate a subtask — spawn a scoped sub-agent, seeded from this session's handoff.")
                 }
             }
             if isWorktreeSession {
@@ -179,6 +179,12 @@ public struct ChatView: View {
     }
 
     private static let starters = ["Explain this project", "Find and fix a bug", "Review my changes"]
+
+    /// A clear "tests" glyph where available; a safe fallback on iOS 16 / macOS 13.
+    static var runTestsSymbol: String {
+        if #available(iOS 17.0, macOS 14.0, *) { return "testtube.2" }
+        return "checkmark.seal.fill"
+    }
 
     private var emptyState: some View {
         VStack(spacing: 14) {
