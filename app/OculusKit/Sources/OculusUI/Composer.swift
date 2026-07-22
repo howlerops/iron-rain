@@ -143,28 +143,17 @@ struct Composer: View {
         .padding(.bottom, 6)
     }
 
-    /// The message input. Enter sends; Shift+Enter inserts a newline (multiline up to 8 rows). Uses
-    /// onKeyPress where available (macOS 14 / iOS 17) so Shift+Enter can be distinguished from Enter;
-    /// older OSes fall back to onSubmit (Enter sends, no soft-newline).
+    /// The message input: a scrollable, auto-growing multiline editor (ComposerTextView) so long
+    /// messages stay editable (it scrolls past ~8 lines) and Enter/Shift+Enter behave reliably —
+    /// Enter sends, Shift+Enter inserts a newline. A SwiftUI overlay draws the placeholder.
     @ViewBuilder private var messageField: some View {
-        let field = TextField("Message the agent…", text: $draft, axis: .vertical)
-            .lineLimit(1...8)
-            .textFieldStyle(.plain)
-            .font(.body)
-            .focused($focused)
-        #if os(iOS)
-        let base = field.textInputAutocapitalization(.sentences)
-        #else
-        let base = field
-        #endif
-        if #available(macOS 14.0, iOS 17.0, *) {
-            base.onKeyPress(keys: [.return]) { press in
-                if press.modifiers.contains(.shift) { return .ignored } // Shift+Enter → newline
-                if canSend { submit() }
-                return .handled                                         // Enter → send, swallow newline
+        ZStack(alignment: .topLeading) {
+            if draft.isEmpty {
+                Text("Message the agent…")
+                    .font(.body).foregroundStyle(palette.mutedForeground)
+                    .padding(.top, 7).padding(.leading, 2).allowsHitTesting(false)
             }
-        } else {
-            base.onSubmit { submit() }
+            ComposerTextView(text: $draft, maxHeight: 160) { submit() }
         }
     }
 
