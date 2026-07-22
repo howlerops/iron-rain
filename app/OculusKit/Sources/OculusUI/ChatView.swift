@@ -19,6 +19,7 @@ public struct ChatView: View {
     private var palette: OculusPalette { .current(scheme) }
 
     @State private var draft = ""
+    @State private var anchorTask: Task<Void, Never>?
     @State private var showWorktreePanel = false
     @State private var showHandoff = false
     @State private var showWorkspace = false
@@ -215,18 +216,35 @@ public struct ChatView: View {
                 }
                 .padding(16)
             }
-            if #available(macOS 14.0, iOS 17.0, *) {
-                // Native bottom anchoring: follows new content while you're at the bottom, and stays
-                // put — smoothly — when you scroll up. `.id(sessionID)` rebuilds the ScrollView when
-                // you switch sessions, so it re-anchors to the newly-loaded session's latest message
-                // instead of staying scrolled where the previous session was.
-                content.defaultScrollAnchor(.bottom).id(model.sessionID ?? "none")
-            } else {
-                content
-                    .id(model.sessionID ?? "none")
-                    .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
-                    .onChange(of: model.messages.count) { _ in proxy.scrollTo("bottom", anchor: .bottom) }
+            Group {
+                if #available(macOS 14.0, iOS 17.0, *) {
+                    // Native bottom anchoring keeps the view pinned as a message streams (text grows
+                    // within the last row — no count change). But it does NOT cover the initial load:
+                    // `.id(sessionID)` builds a fresh EMPTY ScrollView, the bottom anchor lands on that
+                    // empty content, then history arrives as a burst of appends AFTER — pushing content
+                    // down while the scroll stays at the (empty) top, so you open at the first message.
+                    content.defaultScrollAnchor(.bottom).id(model.sessionID ?? "none")
+                } else {
+                    content.id(model.sessionID ?? "none")
+                }
             }
+            // Re-pin to the bottom once the history burst settles. Non-animated (`anchor:` set with no
+            // `withAnimation`) so it lands instantly — no visible scroll/jump. Debounced so a burst of
+            // appends coalesces into one pin at the end; keyed on count (a new turn), not text deltas.
+            .onAppear { anchorBottom(proxy) }
+            .onChange(of: model.sessionID) { _ in anchorBottom(proxy) }
+            .onChange(of: model.messages.count) { _ in anchorBottom(proxy) }
+        }
+    }
+
+    /// Instantly (no animation) re-pins the transcript to its last message once appends settle.
+    /// Fixes "opens at the first message" without any visible scrolling.
+    private func anchorBottom(_ proxy: ScrollViewProxy) {
+        anchorTask?.cancel()
+        anchorTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 90_000_000) // 90ms quiet → the load/turn burst has settled
+            guard !Task.isCancelled else { return }
+            proxy.scrollTo("bottom", anchor: .bottom) // no withAnimation → instant, no jump
         }
     }
 
