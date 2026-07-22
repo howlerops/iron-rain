@@ -576,7 +576,9 @@ struct LaunchIssueSheet: View {
 
     @State private var projectID: String?
     @State private var agent = "opencode"
-    private static let agents = ["opencode", "claude-code", "pi"]
+    // Show the daemon's real registered agent set (opencode/claude-code/pi + any installed CLI
+    // agents: codex/gemini/cursor-agent/aider + user-defined), not a hardcoded subset.
+    private var agents: [String] { model.providers.isEmpty ? ["opencode", "claude-code", "pi"] : model.providers }
 
     var body: some View {
         NavigationStack {
@@ -591,7 +593,7 @@ struct LaunchIssueSheet: View {
                         ForEach(model.projects) { p in Text(p.name).tag(String?.some(p.id)) }
                     }
                     Picker("Agent", selection: $agent) {
-                        ForEach(Self.agents, id: \.self) { Text($0).tag($0) }
+                        ForEach(agents, id: \.self) { Text($0).tag($0) }
                     }
                 }
             }
@@ -606,7 +608,10 @@ struct LaunchIssueSheet: View {
                 }
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { onDone(false) } }
             }
-            .task { await model.loadProjects() }
+            .task {
+                await model.loadProjects()
+                if !agents.contains(agent) { agent = agents.first ?? agent }
+            }
         }
     }
 }
