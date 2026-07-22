@@ -3,6 +3,12 @@ import OculusKit
 #if os(iOS)
 import PhotosUI
 #endif
+#if canImport(AppKit)
+import AppKit
+#endif
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// The session conversation surface: a streaming message list with an inline
 /// approval card and a sticky composer (attach · voice · send). Sparse, dark,
@@ -654,64 +660,61 @@ struct ChatMarkdownView: View {
     let text: String
     let palette: OculusPalette
 
+    // ONE Text built from a single AttributedString — so a selection can span the whole message
+    // (across paragraphs, lists, and code), not just one line. `.textSelection` then copies any
+    // chunk. Formatting is carried by per-run fonts (headings, monospace code, bold/italic/links).
     var body: some View {
+        Text(attributed())
+            .foregroundStyle(palette.foreground)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .textSelection(.enabled)
+            .contextMenu {
+                Button { copyAll() } label: { Label("Copy message", systemImage: "doc.on.doc") }
+            }
+    }
+
+    private func attributed() -> AttributedString {
+        var out = AttributedString()
         let blocks = MarkdownParser.parse(text)
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(blocks.enumerated()), id: \.offset) { _, b in blockView(b) }
+        for (i, b) in blocks.enumerated() {
+            if i > 0 { out += AttributedString("\n") } // blank line between blocks
+            switch b {
+            case .heading(let level, let t):
+                var a = inline(t); a.font = headingFont(level).bold()
+                out += a + AttributedString("\n")
+            case .paragraph(let t):
+                var a = inline(t); a.font = .body
+                out += a + AttributedString("\n")
+            case .bullet(let items):
+                for it in items { var a = inline(it); a.font = .body; out += AttributedString("•  ") + a + AttributedString("\n") }
+            case .ordered(let items):
+                for (idx, it) in items.enumerated() { var a = inline(it); a.font = .body; out += AttributedString("\(idx + 1).  ") + a + AttributedString("\n") }
+            case .code(let c):
+                var a = AttributedString(c); a.font = .system(.callout, design: .monospaced)
+                out += a + AttributedString("\n")
+            case .image(let alt, let url):
+                var a = AttributedString(alt.isEmpty ? url : alt)
+                if let u = URL(string: url) { a.link = u; a.foregroundColor = palette.primary }
+                out += a + AttributedString("\n")
+            case .rule:
+                out += AttributedString("──────────\n")
+            }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        return out
     }
 
-    @ViewBuilder private func blockView(_ b: MarkdownBlock) -> some View {
-        switch b {
-        case .heading(let level, let t):
-            inline(t).font(headingFont(level)).bold().padding(.top, level <= 2 ? 4 : 0)
-        case .paragraph(let t):
-            inline(t).font(.body).foregroundStyle(palette.foreground).fixedSize(horizontal: false, vertical: true)
-        case .bullet(let items):
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(Array(items.enumerated()), id: \.offset) { _, it in
-                    HStack(alignment: .top, spacing: 8) {
-                        Text("•").foregroundStyle(palette.mutedForeground)
-                        inline(it).font(.body).fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-        case .ordered(let items):
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(Array(items.enumerated()), id: \.offset) { idx, it in
-                    HStack(alignment: .top, spacing: 8) {
-                        Text("\(idx + 1).").foregroundStyle(palette.mutedForeground).monospacedDigit()
-                        inline(it).font(.body).fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-        case .code(let c):
-            ScrollView(.horizontal, showsIndicators: false) {
-                Text(c).font(.system(.callout, design: .monospaced)).textSelection(.enabled)
-                    .padding(10).frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .background(palette.muted.opacity(0.3)).clipShape(RoundedRectangle(cornerRadius: 8))
-        case .image(let alt, let url):
-            if let u = URL(string: url) {
-                Link(destination: u) { Label(alt.isEmpty ? "Image" : alt, systemImage: "photo").font(.callout) }
-                    .foregroundStyle(palette.primary)
-            } else {
-                inline(alt).font(.body)
-            }
-        case .rule:
-            Divider().overlay(palette.border)
-        }
-    }
-
-    private func inline(_ s: String) -> Text {
-        if let attr = try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
-            return Text(attr)
-        }
-        return Text(s)
+    private func inline(_ s: String) -> AttributedString {
+        (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(s)
     }
     private func headingFont(_ l: Int) -> Font {
         switch l { case 1: return .title2; case 2: return .title3; case 3: return .headline; default: return .subheadline }
+    }
+    private func copyAll() {
+        #if canImport(AppKit)
+        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
+        #elseif canImport(UIKit)
+        UIPasteboard.general.string = text
+        #endif
     }
 }
 
