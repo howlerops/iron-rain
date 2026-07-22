@@ -92,8 +92,12 @@ public final class DesktopStore: ObservableObject {
         }
         save()
         if selectedID == nil { selectedID = models.first?.id }
-        await connectAll()
+        // Reveal the surface immediately and connect in the BACKGROUND. Previously bootstrap awaited
+        // connectAll before flipping didBootstrap, so a single hung handshake (e.g. the daemon still
+        // holding the pre-update client's socket right after a self-update relaunch) left the app on
+        // the loading spinner forever. The real surface shows per-desktop connection status instead.
         didBootstrap = true
+        Task { await connectAll() }
     }
 
     public func connectAll() async {

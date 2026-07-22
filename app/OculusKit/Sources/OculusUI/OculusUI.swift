@@ -36,6 +36,7 @@ public final class Model: ObservableObject {
     public var id: String { daemonPubHex }
 
     @Published public var connected = false
+    @Published public var connecting = false // a connect/handshake attempt is in flight (not an error)
     @Published public var status = "Not connected"
     @Published public var statusDetail: String? // human reason when not connected (unreachable, wrong secret, key mismatch)
     /// A prominent, dismissable error for a user action that failed while connected (e.g. a session
@@ -253,6 +254,9 @@ public final class Model: ObservableObject {
             status = "Invalid daemon public key"
             return
         }
+        connecting = true
+        status = "Connecting…"
+        defer { connecting = false }
         // Build candidate routes and RACE them: the direct LAN/localhost URL (instant + free when
         // you're on the same network) plus every shared relay (reachable from anywhere), each with
         // URL-param registration. First to finish the handshake wins; the rest are cancelled (their

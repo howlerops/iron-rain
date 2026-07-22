@@ -154,13 +154,21 @@ struct SessionSidebar: View {
         // the session.
         List {
             if !model.connected {
-                HStack(spacing: 5) {
-                    Circle().fill(Color.red).frame(width: 6, height: 6)
-                    Text(model.statusDetail ?? model.status)
+                HStack(spacing: 6) {
+                    if model.connecting {
+                        ProgressView().controlSize(.mini)          // in progress — not an error
+                    } else {
+                        Circle().fill(Color.red).frame(width: 6, height: 6) // actually failed/offline
+                    }
+                    Text(model.connecting ? "Connecting…" : (model.statusDetail ?? model.status))
                         .font(.system(size: 11))
                         .foregroundStyle(palette.mutedForeground)
                         .lineLimit(1)
                     Spacer()
+                    if !model.connecting {
+                        Button("Retry") { Task { await model.connect() } }
+                            .font(.system(size: 11)).buttonStyle(.plain).foregroundStyle(palette.primary)
+                    }
                 }
                 .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
