@@ -284,14 +284,18 @@ struct MessageRow: View {
                     .textSelection(.enabled)
             }
         case .assistant:
-            // Render runtime agent output as plain text. Wrapping it in
-            // LocalizedStringKey forced Markdown/AttributedString parsing of the
-            // whole (growing) message on every streaming token, and misread text
-            // containing %, %@, or other format specifiers.
-            Text(message.text.isEmpty ? "…" : message.text)
-                .font(.system(.body, design: message.text.contains("```") ? .monospaced : .default))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
+            // While STREAMING, render plain text — parsing markdown on every token re-parses the
+            // whole growing message (the perf/scroll jank). Once the turn ENDS (streaming=false),
+            // parse it once into proper markdown (headings, lists, fenced code, emphasis, links).
+            if message.streaming {
+                Text(message.text.isEmpty ? "…" : message.text)
+                    .font(.body)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            } else {
+                ChatMarkdownView(text: message.text, palette: palette)
+                    .textSelection(.enabled)
+            }
         case .thinking:
             HStack(alignment: .top, spacing: 6) {
                 Image(systemName: "brain").font(.caption2).padding(.top, 2)
@@ -640,6 +644,74 @@ struct SubAgentsStrip: View {
         case "done": return "done"
         default: return s
         }
+    }
+}
+
+/// Renders a finished agent message as markdown (reusing MarkdownParser): headings, bullet/ordered
+/// lists, fenced code blocks (scrollable), inline emphasis/code/links, and rules. Parsed once when
+/// the turn ends — streaming messages stay plain (see MessageRow) to keep typing smooth.
+struct ChatMarkdownView: View {
+    let text: String
+    let palette: OculusPalette
+
+    var body: some View {
+        let blocks = MarkdownParser.parse(text)
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(blocks.enumerated()), id: \.offset) { _, b in blockView(b) }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder private func blockView(_ b: MarkdownBlock) -> some View {
+        switch b {
+        case .heading(let level, let t):
+            inline(t).font(headingFont(level)).bold().padding(.top, level <= 2 ? 4 : 0)
+        case .paragraph(let t):
+            inline(t).font(.body).foregroundStyle(palette.foreground).fixedSize(horizontal: false, vertical: true)
+        case .bullet(let items):
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(Array(items.enumerated()), id: \.offset) { _, it in
+                    HStack(alignment: .top, spacing: 8) {
+                        Text("•").foregroundStyle(palette.mutedForeground)
+                        inline(it).font(.body).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        case .ordered(let items):
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(Array(items.enumerated()), id: \.offset) { idx, it in
+                    HStack(alignment: .top, spacing: 8) {
+                        Text("\(idx + 1).").foregroundStyle(palette.mutedForeground).monospacedDigit()
+                        inline(it).font(.body).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        case .code(let c):
+            ScrollView(.horizontal, showsIndicators: false) {
+                Text(c).font(.system(.callout, design: .monospaced)).textSelection(.enabled)
+                    .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .background(palette.muted.opacity(0.3)).clipShape(RoundedRectangle(cornerRadius: 8))
+        case .image(let alt, let url):
+            if let u = URL(string: url) {
+                Link(destination: u) { Label(alt.isEmpty ? "Image" : alt, systemImage: "photo").font(.callout) }
+                    .foregroundStyle(palette.primary)
+            } else {
+                inline(alt).font(.body)
+            }
+        case .rule:
+            Divider().overlay(palette.border)
+        }
+    }
+
+    private func inline(_ s: String) -> Text {
+        if let attr = try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
+            return Text(attr)
+        }
+        return Text(s)
+    }
+    private func headingFont(_ l: Int) -> Font {
+        switch l { case 1: return .title2; case 2: return .title3; case 3: return .headline; default: return .subheadline }
     }
 }
 
