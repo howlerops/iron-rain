@@ -955,6 +955,9 @@ public final class Model: ObservableObject {
         // Already the open session → no-op. Re-running the full clear+resubscribe (e.g. when you
         // click the active row again) briefly wiped messages/currentSession and blanked the detail.
         if id == currentSession?.id, !messages.isEmpty { return }
+        // Switch the active session id NOW, before clearing/subscribing — so streaming events from
+        // the session we're leaving (still Live) are filtered out instead of bleeding into this one.
+        sessionID = id
         messages.removeAll()
         todos = []
         pendingApproval = nil
@@ -1480,7 +1483,7 @@ public final class Model: ObservableObject {
                         busy = false
                     }
                 case MessageType.sessionMessage:
-                    if let m = try? env.payload(as: SessionMessage.self) {
+                    if let m = try? env.payload(as: SessionMessage.self), m.sessionID == sessionID {
                         cancelWatchdog()
                         let role: ChatMessage.Role = m.role == "user" ? .user : (m.role == "tool" ? .tool : .assistant)
                         let trimmed = m.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1498,18 +1501,18 @@ public final class Model: ObservableObject {
                         messages.append(ChatMessage(role: role, text: m.text))
                     }
                 case MessageType.thinking:
-                    if let t = try? env.payload(as: Thinking.self) {
+                    if let t = try? env.payload(as: Thinking.self), t.sessionID == sessionID {
                         cancelWatchdog()
                         appendThinkingDelta(t.text)
                         busy = true
                     }
                 case MessageType.outputDelta:
-                    if let d = try? env.payload(as: OutputDelta.self) {
+                    if let d = try? env.payload(as: OutputDelta.self), d.sessionID == sessionID {
                         cancelWatchdog()
                         appendAssistantDelta(d.text)
                     }
                 case MessageType.sessionStatus:
-                    if let ss = try? env.payload(as: SessionStatus.self) {
+                    if let ss = try? env.payload(as: SessionStatus.self), ss.sessionID == sessionID {
                         cancelWatchdog()
                         status = ss.status
                         activity = ss.detail
@@ -1538,7 +1541,7 @@ public final class Model: ObservableObject {
                         refreshLiveActivity()
                     }
                 case MessageType.approvalRequest:
-                    if let ar = try? env.payload(as: ApprovalRequest.self) {
+                    if let ar = try? env.payload(as: ApprovalRequest.self), ar.sessionID == sessionID {
                         cancelWatchdog()
                         pendingApproval = ar
                         refreshLiveActivity()

@@ -217,13 +217,13 @@ public struct ChatView: View {
             }
             if #available(macOS 14.0, iOS 17.0, *) {
                 // Native bottom anchoring: follows new content while you're at the bottom, and stays
-                // put — smoothly — when you scroll up to read history. No manual scroll-to churn (the
-                // per-token scrollTo was what fought you and overshot into blank space).
-                content.defaultScrollAnchor(.bottom)
+                // put — smoothly — when you scroll up. `.id(sessionID)` rebuilds the ScrollView when
+                // you switch sessions, so it re-anchors to the newly-loaded session's latest message
+                // instead of staying scrolled where the previous session was.
+                content.defaultScrollAnchor(.bottom).id(model.sessionID ?? "none")
             } else {
-                // Older OS: jump to bottom only when a NEW message arrives (not per streaming token),
-                // so it doesn't yank you back while you're scrolling up.
                 content
+                    .id(model.sessionID ?? "none")
                     .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
                     .onChange(of: model.messages.count) { _ in proxy.scrollTo("bottom", anchor: .bottom) }
             }

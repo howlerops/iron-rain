@@ -114,12 +114,6 @@ struct SessionSidebar: View {
         .searchable(text: $searchText, prompt: "Search sessions")
         #endif
         .toolbar { sidebarToolbar }
-        #if os(macOS)
-        // The search/titlebar strip used the default window material (near-white) while the list
-        // body is palette.background — a visible two-tone. Color the window toolbar to match.
-        .toolbarBackground(palette.background, for: .windowToolbar)
-        .toolbarBackground(.visible, for: .windowToolbar)
-        #endif
         .sheet(isPresented: $showPairingQR) {
             PairingQRView(url: model.pairingURL ?? "", palette: palette) { showPairingQR = false }
         }
@@ -218,6 +212,11 @@ struct SessionSidebar: View {
             }
         }
         .listStyle(.sidebar)
+        #if os(macOS)
+        // Show the system's translucent sidebar material (the "floating glass") instead of an opaque
+        // fill — the list body was painting over it, making the sidebar a solid block.
+        .scrollContentBackground(.hidden)
+        #endif
     }
 
     /// First-run empty state: no in-app sessions yet, so guide the two ways to get one —
