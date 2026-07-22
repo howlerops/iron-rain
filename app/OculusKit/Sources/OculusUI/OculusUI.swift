@@ -344,6 +344,11 @@ public final class Model: ObservableObject {
         // If a session was open when the socket dropped (e.g. the daemon restarted and forgot its
         // in-memory sessions), re-attach it so its transcript + prompts resume.
         await reopenCurrentSession()
+        // Fresh launch: nothing open in memory, but reopen the session we last had open on this
+        // desktop so you land back where you left off. Best-effort — no-ops if it no longer exists.
+        if currentSession == nil, let last = UserDefaults.standard.string(forKey: lastSessionKey), !last.isEmpty {
+            await openSession(last)
+        }
         if let token = OculusStore.shared.deviceToken {
             await registerDevice(token: token)
         }
@@ -952,12 +957,15 @@ public final class Model: ObservableObject {
         pendingApproval = nil
         busy = false
         lastDiff = nil
+        UserDefaults.standard.set(id, forKey: lastSessionKey) // remember for auto-reopen next launch
         if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.sessionSubscribe, payload: SessionRef(sessionID: id)) {
             try? await client.send(env)
         }
         await loadCommands(sessionID: id)
         await loadModels(sessionID: id)
     }
+
+    private var lastSessionKey: String { "oculus.lastSession.\(id)" }
 
     /// Loads the agent's slash commands (built-in + custom from .claude/commands) for the composer's
     /// "/" palette. Scoped to the session's provider + working directory.
