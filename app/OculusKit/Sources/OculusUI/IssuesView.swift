@@ -1,5 +1,11 @@
 import SwiftUI
 import OculusKit
+#if canImport(AppKit)
+import AppKit
+#endif
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// A saved issue view — a named preset of the search + priority/assignee/cycle filters, so you can
 /// jump to "My high-priority bugs" etc. Persisted on the Model.
@@ -789,17 +795,24 @@ struct TrackerConnectCard: View {
                 .buttonStyle(.plain)
             }
 
-            HStack(alignment: .top, spacing: 6) {
-                Image(systemName: "info.circle")
-                    .font(.caption2)
-                    .foregroundStyle(palette.primary)
-                Text(setupHelp)
-                    .font(.caption2)
-                    .foregroundStyle(palette.mutedForeground)
-                    .fixedSize(horizontal: false, vertical: true)
+            let steps = oauthSteps(for: provider)
+            if steps.isEmpty {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "info.circle").font(.caption2).foregroundStyle(palette.primary)
+                    Text(setupHelp).font(.caption2).foregroundStyle(palette.mutedForeground)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(10)
+                .background(palette.secondary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+            } else {
+                VStack(alignment: .leading, spacing: 9) {
+                    ForEach(Array(steps.enumerated()), id: \.offset) { i, step in
+                        stepRow(number: i + 1, step: step)
+                    }
+                }
+                .padding(11)
+                .background(palette.secondary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
             }
-            .padding(10)
-            .background(palette.secondary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
 
             field(TextField("Client ID", text: $clientID))
             field(SecureField("Client secret", text: $clientSecret))
@@ -829,6 +842,85 @@ struct TrackerConnectCard: View {
         return styled.textInputAutocapitalization(.never).autocorrectionDisabled()
         #else
         return styled
+        #endif
+    }
+
+    // MARK: - OAuth setup steps (numbered, with copyable values + a tappable console link)
+
+    struct OAuthStep {
+        let text: String
+        var link: String? = nil    // opens in a browser
+        var copyable: String? = nil // shown monospaced with a copy button
+    }
+
+    /// Numbered setup steps per tracker. The Callback URL and scopes are copyable so they paste
+    /// cleanly into the provider's console; the console itself is a tappable link.
+    private func oauthSteps(for provider: String) -> [OAuthStep] {
+        switch provider {
+        case "jira":
+            return [
+                OAuthStep(text: "Open the Atlassian developer console.", link: "https://developer.atlassian.com/console/myapps/"),
+                OAuthStep(text: "Create an app → “OAuth 2.0 integration”."),
+                OAuthStep(text: "Under Authorization, add this Callback URL:", copyable: "http://127.0.0.1:6900/oauth/jira/callback"),
+                OAuthStep(text: "Under Permissions → Jira API, add these scopes:", copyable: "read:jira-work write:jira-work read:jira-user offline_access"),
+                OAuthStep(text: "Copy the app’s Client ID and Secret into the fields below."),
+            ]
+        case "linear":
+            return [
+                OAuthStep(text: "Open Linear’s API settings.", link: "https://linear.app/settings/api"),
+                OAuthStep(text: "Create a new OAuth application."),
+                OAuthStep(text: "Add this Callback / Redirect URL:", copyable: "http://127.0.0.1:6900/oauth/linear/callback"),
+                OAuthStep(text: "Copy the Client ID and Secret into the fields below."),
+            ]
+        default:
+            return []
+        }
+    }
+
+    @ViewBuilder private func stepRow(number: Int, step: OAuthStep) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text("\(number)")
+                .font(.caption2.bold().monospacedDigit())
+                .foregroundStyle(palette.primaryForeground)
+                .frame(width: 16, height: 16)
+                .background(Circle().fill(palette.primary))
+            VStack(alignment: .leading, spacing: 4) {
+                if let link = step.link, let url = URL(string: link) {
+                    HStack(spacing: 4) {
+                        Text(step.text).font(.caption2).foregroundStyle(palette.mutedForeground)
+                        Link(destination: url) {
+                            HStack(spacing: 2) { Text("Open"); Image(systemName: "arrow.up.right.square") }
+                                .font(.caption2.weight(.semibold)).foregroundStyle(palette.primary)
+                        }
+                    }
+                } else {
+                    Text(step.text).font(.caption2).foregroundStyle(palette.mutedForeground)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let value = step.copyable {
+                    HStack(spacing: 6) {
+                        Text(value)
+                            .font(.system(size: 11, design: .monospaced))
+                            .textSelection(.enabled)
+                            .lineLimit(2).truncationMode(.middle)
+                            .padding(.horizontal, 7).padding(.vertical, 4)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(palette.input, in: RoundedRectangle(cornerRadius: 6))
+                        Button { copyToClipboard(value) } label: {
+                            Image(systemName: "doc.on.doc").font(.caption2)
+                        }.buttonStyle(.plain).foregroundStyle(palette.mutedForeground).help("Copy")
+                    }
+                }
+            }
+        }
+    }
+
+    private func copyToClipboard(_ s: String) {
+        #if canImport(AppKit)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(s, forType: .string)
+        #elseif canImport(UIKit)
+        UIPasteboard.general.string = s
         #endif
     }
 }
