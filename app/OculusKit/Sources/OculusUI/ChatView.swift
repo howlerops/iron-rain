@@ -26,6 +26,10 @@ public struct ChatView: View {
         guard let sid = model.sessionID else { return [] }
         return model.sessions.filter { $0.parentID == sid }
     }
+    /// Sub-agents actively working (drives the topbar running indicator).
+    private var runningChildCount: Int {
+        children.filter { model.heartbeats[$0.id]?.state == "working" || $0.status == SessionStatusValue.running }.count
+    }
 
     public var body: some View {
         VStack(spacing: 0) {
@@ -67,6 +71,16 @@ public struct ChatView: View {
             }
             if let sid = model.sessionID, let hb = model.heartbeats[sid] {
                 ToolbarItem(placement: .automatic) { HeartbeatChip(hb: hb, palette: palette) }
+            }
+            if runningChildCount > 0 {
+                ToolbarItem(placement: .automatic) {
+                    HStack(spacing: 5) {
+                        RunningPulseDot(color: .green, active: true)
+                        Text("\(runningChildCount) agent\(runningChildCount == 1 ? "" : "s")")
+                            .font(.caption.weight(.medium)).foregroundStyle(palette.mutedForeground)
+                    }
+                    .help("\(runningChildCount) sub-agent\(runningChildCount == 1 ? " is" : "s are") running")
+                }
             }
             if model.activeHandoff != nil {
                 ToolbarItem(placement: .automatic) {
@@ -585,7 +599,7 @@ struct SubAgentsStrip: View {
     private func childChip(_ child: Session) -> some View {
         let hb = model.heartbeats[child.id]
         return HStack(spacing: 6) {
-            Circle().fill(dotColor(hb)).frame(width: 7, height: 7)
+            RunningPulseDot(color: dotColor(hb), active: isRunning(child, hb))
             VStack(alignment: .leading, spacing: 1) {
                 Text(child.subtask ?? child.workspaceName ?? "subtask").font(.caption.bold())
                     .lineLimit(1).frame(maxWidth: 180, alignment: .leading)
@@ -600,6 +614,10 @@ struct SubAgentsStrip: View {
         .padding(.horizontal, 10).padding(.vertical, 6)
         .background(palette.background, in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(palette.border))
+    }
+
+    private func isRunning(_ child: Session, _ hb: SessionHeartbeat?) -> Bool {
+        hb?.state == "working" || child.status == SessionStatusValue.running
     }
 
     private func dotColor(_ hb: SessionHeartbeat?) -> Color {
@@ -621,6 +639,32 @@ struct SubAgentsStrip: View {
         case "errored": return "error"
         case "done": return "done"
         default: return s
+        }
+    }
+}
+
+/// A status dot that gently pulses (scale + halo) while its lane is actively running, so a live
+/// sub-agent reads as alive; static when idle/done.
+struct RunningPulseDot: View {
+    let color: Color
+    let active: Bool
+    @State private var pulse = false
+
+    var body: some View {
+        ZStack {
+            if active {
+                Circle().fill(color.opacity(0.35))
+                    .frame(width: 14, height: 14)
+                    .scaleEffect(pulse ? 1.0 : 0.5)
+                    .opacity(pulse ? 0 : 0.8)
+            }
+            Circle().fill(color).frame(width: 7, height: 7)
+        }
+        .frame(width: 14, height: 14)
+        .onAppear { if active { withAnimation(.easeOut(duration: 1.1).repeatForever(autoreverses: false)) { pulse = true } } }
+        .onChange(of: active) { on in
+            pulse = false
+            if on { withAnimation(.easeOut(duration: 1.1).repeatForever(autoreverses: false)) { pulse = true } }
         }
     }
 }
