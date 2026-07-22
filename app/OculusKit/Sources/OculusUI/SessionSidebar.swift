@@ -153,6 +153,20 @@ struct SessionSidebar: View {
         // with the gold theme. Rows are buttons that set `selection`; RootView's onChange opens
         // the session.
         List {
+            // Prominent New Session action right under the search bar — the primary way to start
+            // one, so you don't have to hunt for the titlebar button.
+            Button { selection = Self.newSessionTag } label: {
+                Label("New session", systemImage: "plus")
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(palette.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 6).padding(.horizontal, 8)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 4, trailing: 6))
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
             if !model.connected {
                 HStack(spacing: 6) {
                     if model.connecting {
@@ -309,7 +323,7 @@ struct SessionSidebar: View {
             }
             .help("Agent fleet — all sessions at a glance")
             Button { selection = Self.newSessionTag } label: {
-                Image(systemName: "square.and.pencil")
+                Image(systemName: "plus")
             }
             .help("New session")
         }

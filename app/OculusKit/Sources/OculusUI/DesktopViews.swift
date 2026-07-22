@@ -291,9 +291,11 @@ public struct RootView: View {
     /// close/reopen. iOS keeps a bottom TabView, which is the right idiom there.
     @ViewBuilder private func mainSurface(_ model: Model) -> some View {
         #if os(macOS)
-        // No sessions yet → skip the sidebar+chat split entirely and show a single, unmistakable
-        // CTA (or Issues if that mode is selected). The split view returns once a session exists.
-        if model.sessions.isEmpty {
+        // The "no sessions" CTA is only correct once we're actually CONNECTED and the list is
+        // genuinely empty. While still connecting (e.g. right after a restart), show the split so
+        // the sidebar's "Connecting…" status is visible and sessions appear as they load — rather
+        // than a misleading empty-state that lingered until the user quit and reopened.
+        if model.sessions.isEmpty && model.connected {
             Group {
                 if selectedTab == 1 {
                     IssuesView(model: model, palette: palette, embedded: true) { selectedTab = 0 }

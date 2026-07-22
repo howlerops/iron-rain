@@ -34,6 +34,24 @@ public actor OculusClient {
     /// the identical E2E handshake then flows over the bridge — the relay only forwards ciphertext,
     /// so a relayed connection is exactly as secure as a direct LAN one.
     public func connect(clientPrivate: Data, daemonPublic: Data, secret: String) async throws {
+        // Bound the handshake: task.receive() (step 4) has no timeout, so a daemon that accepts the
+        // socket but stalls the verdict (e.g. still holding a pre-restart client's connection) would
+        // hang this route forever — and if every route hangs, the whole connect never resolves and
+        // sessions never load. Race the handshake against a deadline; on timeout, close the socket so
+        // the stalled receive throws, and surface it as unreachable (→ the caller retries).
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask { try await self.performHandshake(clientPrivate: clientPrivate, daemonPublic: daemonPublic, secret: secret) }
+            group.addTask {
+                try await Task.sleep(nanoseconds: 12_000_000_000)
+                self.close()
+                throw OculusClientError.notConnected
+            }
+            defer { group.cancelAll() }
+            _ = try await group.next()
+        }
+    }
+
+    private func performHandshake(clientPrivate: Data, daemonPublic: Data, secret: String) async throws {
         task.resume()
 
         let clientPub = try OculusCrypto.publicKey(fromPrivate: clientPrivate)
