@@ -140,6 +140,7 @@ func serve(args []string) error {
 	// error classes to the Cloudflare telemetry Worker so failures in the wild are traceable.
 	tel := telemetry.New(telemetryPath(), version)
 	h.SetTelemetry(tel)
+	tel.Record("daemon.start", "", 0, nil) // heartbeat: makes restarts visible + confirms the pipeline
 	go tel.Run(context.Background())
 
 	// Trackers (Linear/Jira): load saved tokens, connect, and poll every 60s.
