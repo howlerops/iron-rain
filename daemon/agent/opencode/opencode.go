@@ -213,6 +213,18 @@ func (s *session) replayHistory(ctx context.Context) {
 }
 
 func (p *Provider) postJSON(ctx context.Context, path string, body, out any) error {
+	return p.doPost(ctx, path, body, out, p.unary)
+}
+
+// postJSONLong is postJSON on the UN-TIMED client, for requests opencode intentionally blocks on for
+// the entire agent turn (the message POST returns only when the turn yields — minutes for a big
+// plan/multi-agent run). The 30s unary bound would spuriously fail those with "context deadline
+// exceeded"; the session's own ctx still cancels this when the session closes.
+func (p *Provider) postJSONLong(ctx context.Context, path string, body, out any) error {
+	return p.doPost(ctx, path, body, out, p.http)
+}
+
+func (p *Provider) doPost(ctx context.Context, path string, body, out any, client *http.Client) error {
 	var buf bytes.Buffer
 	if body != nil {
 		if err := json.NewEncoder(&buf).Encode(body); err != nil {
@@ -224,7 +236,7 @@ func (p *Provider) postJSON(ctx context.Context, path string, body, out any) err
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := p.unary.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -635,7 +647,9 @@ func (s *session) sendParts(parts []map[string]any) error {
 		ctx = context.Background()
 	}
 	go func() {
-		if err := s.p.postJSON(ctx, withDir("/session/"+s.id+"/message", s.dir), body, nil); err != nil && ctx.Err() == nil {
+		// postJSONLong (un-timed): the message POST blocks for the WHOLE turn, so a bounded client
+		// would spuriously "context deadline exceeded" on any long plan/multi-agent turn.
+		if err := s.p.postJSONLong(ctx, withDir("/session/"+s.id+"/message", s.dir), body, nil); err != nil && ctx.Err() == nil {
 			log.Printf("opencode: POST message sid=%s failed: %v", s.id, err)
 			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusError, Detail: "opencode: " + err.Error()}})
 		}

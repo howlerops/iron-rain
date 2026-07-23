@@ -20,6 +20,9 @@ public struct ChatView: View {
 
     @State private var draft = ""
     @State private var anchorTask: Task<Void, Never>?
+    /// Explicit bottom re-pins only fire before this time (a short window after a session opens), so
+    /// they can't fight defaultScrollAnchor during streaming and bounce the view.
+    @State private var initialAnchorDeadline: Date = .distantPast
     @State private var showWorktreePanel = false
     @State private var showHandoff = false
     @State private var showWorkspace = false
@@ -263,13 +266,22 @@ public struct ChatView: View {
                     content.id(model.sessionID ?? "none")
                 }
             }
-            // Re-pin to the bottom once the history burst settles. Non-animated (`anchor:` set with no
-            // `withAnimation`) so it lands instantly — no visible scroll/jump. Debounced so a burst of
-            // appends coalesces into one pin at the end; keyed on count (a new turn), not text deltas.
-            .onAppear { anchorBottom(proxy) }
-            .onChange(of: model.sessionID) { _ in anchorBottom(proxy) }
-            .onChange(of: model.messages.count) { _ in anchorBottom(proxy) }
+            // Re-pin to the bottom, but ONLY during a short window right after a session opens — that's
+            // when the async history burst arrives and defaultScrollAnchor (which anchored the empty
+            // ScrollView) hasn't caught it. Firing on EVERY message-count change forever made the
+            // explicit scrollTo fight defaultScrollAnchor while streaming markdown heights fluctuate,
+            // which oscillated the view up/down during heavy multi-agent runs. After the window, native
+            // bottom-anchoring alone follows streaming smoothly.
+            .onAppear { armInitialAnchor(); anchorBottom(proxy) }
+            .onChange(of: model.sessionID) { _ in armInitialAnchor(); anchorBottom(proxy) }
+            .onChange(of: model.messages.count) { _ in
+                if Date() < initialAnchorDeadline { anchorBottom(proxy) }
+            }
         }
+    }
+
+    private func armInitialAnchor() {
+        initialAnchorDeadline = Date().addingTimeInterval(1.5) // catch the post-open history burst only
     }
 
     /// Instantly (no animation) re-pins the transcript to its last message once appends settle.
