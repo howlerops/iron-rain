@@ -87,6 +87,14 @@ public struct ChatView: View {
             if let sid = model.sessionID, let hb = model.heartbeats[sid] {
                 ToolbarItem(placement: .automatic) { HeartbeatChip(hb: hb, palette: palette) }
             }
+            // The live tool-use chip (what the agent is doing NOW) replaces the old generic running
+            // blob in the top bar — a real per-tool icon + word instead of an anonymous pulse.
+            if model.busy, model.messages.last?.streaming != true {
+                ToolbarItem(placement: .automatic) {
+                    ToolActivityView(activity: model.activity, palette: palette, compact: true)
+                        .help(model.activity.map { "Agent activity: \($0)" } ?? "Working")
+                }
+            }
             if runningChildCount > 0 {
                 ToolbarItem(placement: .automatic) {
                     HStack(spacing: 5) {
@@ -287,16 +295,15 @@ public struct ChatView: View {
     /// scroll height and bouncing the view.
     @ViewBuilder private var typingBar: some View {
         HStack(spacing: 8) {
+            // Show the real tool-use indicator whenever the agent is working but not mid-stream
+            // (mid-stream, the text itself is the activity). This is the "what's it doing right now"
+            // surface — a proper tool chip, not a generic blob.
             if model.busy && model.messages.last?.streaming != true {
-                TypingIndicator(palette: palette)
-                if let a = model.activity, !a.isEmpty {
-                    Text(a).font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(palette.mutedForeground).lineLimit(1)
-                }
+                ToolActivityView(activity: model.activity, palette: palette)
             }
             Spacer(minLength: 0)
         }
-        .frame(height: 22) // reserved height → no layout shift when it appears/disappears
+        .frame(height: 26) // reserved height → no layout shift when it appears/disappears
         .padding(.horizontal, 16)
     }
 
@@ -439,6 +446,73 @@ struct TypingIndicator: View {
             withAnimation(.easeInOut(duration: 0.5).repeatForever()) { phase = 2 }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Turns the raw activity string ("running bash", "running read", …) the daemon emits from the
+/// agent's tool calls into a real tool-use indicator: a per-tool icon + a human label + a live
+/// pulse — instead of a generic "working" blob. Falls back to "Thinking" when no tool is active.
+struct ToolActivityView: View {
+    let activity: String?
+    let palette: OculusPalette
+    /// compact = topbar pill (icon + short word); full = the working bar (icon + phrase + dots).
+    var compact = false
+    @State private var pulse = false
+
+    var body: some View {
+        let t = Self.describe(activity)
+        HStack(spacing: 6) {
+            Image(systemName: t.icon)
+                .font(.caption).foregroundStyle(palette.primary)
+                .scaleEffect(pulse ? 1.0 : 0.82)
+                .opacity(pulse ? 1 : 0.65)
+            Text(compact ? t.short : t.label)
+                .font(.caption.weight(.medium)).foregroundStyle(palette.foreground).lineLimit(1)
+            if !compact { TypingDots(palette: palette) }
+        }
+        .padding(.horizontal, 8).padding(.vertical, 3)
+        .background(Capsule().fill(palette.primary.opacity(0.12)))
+        .overlay(Capsule().stroke(palette.primary.opacity(0.18)))
+        .onAppear { withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) { pulse = true } }
+    }
+
+    /// Maps a tool name to (SF Symbol, long label, short word). Kept broad so opencode/claude/pi
+    /// tool names all land somewhere sensible.
+    static func describe(_ activity: String?) -> (icon: String, label: String, short: String) {
+        let tool = (activity ?? "")
+            .lowercased()
+            .replacingOccurrences(of: "running ", with: "")
+            .trimmingCharacters(in: .whitespaces)
+        func has(_ ss: String...) -> Bool { ss.contains { tool.contains($0) } }
+        switch true {
+        case tool.isEmpty:                              return ("waveform", "Thinking", "Thinking")
+        case has("bash", "shell", "exec", "command"):   return ("terminal", "Running a command", "Command")
+        case has("edit", "write", "patch", "apply", "create"): return ("pencil.line", "Editing files", "Editing")
+        case has("read", "cat", "view", "open"):        return ("doc.text", "Reading a file", "Reading")
+        case has("grep", "search", "glob", "find", "ripgrep"): return ("magnifyingglass", "Searching the code", "Searching")
+        case has("fetch", "web", "http", "url", "curl"): return ("globe", "Fetching from the web", "Web")
+        case has("todo"):                               return ("checklist", "Updating the plan", "Planning")
+        case has("task", "agent", "delegate", "spawn"): return ("person.2.fill", "Delegating to a sub-agent", "Delegating")
+        case has("list", "ls", "tree", "dir"):          return ("folder", "Listing files", "Listing")
+        case has("test", "build", "run"):               return ("hammer", "Running tests/build", "Testing")
+        default:                                        return ("wrench.and.screwdriver", tool.capitalized, tool.capitalized)
+        }
+    }
+}
+
+/// A compact three-dot pulse (the animated "…" used inline in the tool-activity chip).
+struct TypingDots: View {
+    let palette: OculusPalette
+    @State private var phase = 0.0
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(0..<3) { i in
+                Circle().fill(palette.primary.opacity(0.7))
+                    .frame(width: 4, height: 4)
+                    .opacity(phase == Double(i) ? 1 : 0.3)
+            }
+        }
+        .onAppear { withAnimation(.easeInOut(duration: 0.5).repeatForever()) { phase = 2 } }
     }
 }
 
