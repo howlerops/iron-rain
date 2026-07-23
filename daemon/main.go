@@ -36,6 +36,7 @@ import (
 	"github.com/howlerops/oculus/daemon/issues"
 	"github.com/howlerops/oculus/daemon/loghub"
 	"github.com/howlerops/oculus/daemon/telemetry"
+	"github.com/howlerops/oculus/daemon/transcript"
 	"github.com/howlerops/oculus/daemon/project"
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/push"
@@ -159,6 +160,13 @@ func serve(args []string) error {
 	tel := telemetry.New(telemetryPath(), version)
 	h.SetTelemetry(tel)
 	tel.Record("daemon.start", "", 0, nil) // heartbeat: makes restarts visible + confirms the pipeline
+	// Durable append-only per-session transcript (~/.oculus/transcripts): write-aheads user prompts
+	// before send and mirrors assistant/tool/status events, so a silent send failure, a provider
+	// losing its copy, or a daemon restart can never vaporize the user's work.
+	if tr := transcript.New(transcriptsDir()); tr != nil {
+		h.SetTranscripts(tr)
+		defer tr.Close()
+	}
 	go tel.Run(context.Background())
 
 	// Trackers (Linear/Jira): load saved tokens, connect, and poll every 60s.
@@ -517,6 +525,14 @@ func integrationsPath() string {
 		return "oculus-integrations.json"
 	}
 	return filepath.Join(home, ".oculus", "integrations.json")
+}
+
+func transcriptsDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "oculus-transcripts"
+	}
+	return filepath.Join(home, ".oculus", "transcripts")
 }
 
 func loopsPath() string {

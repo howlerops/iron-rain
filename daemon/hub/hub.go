@@ -24,6 +24,7 @@ import (
 	"github.com/howlerops/oculus/daemon/issues"
 	"github.com/howlerops/oculus/daemon/loghub"
 	"github.com/howlerops/oculus/daemon/telemetry"
+	"github.com/howlerops/oculus/daemon/transcript"
 	"github.com/howlerops/oculus/daemon/loops"
 	"github.com/howlerops/oculus/daemon/lsp"
 	"github.com/howlerops/oculus/daemon/commands"
@@ -58,6 +59,7 @@ type Hub struct {
 	telemetry     *telemetry.Client              // optional: anonymized diagnostics shipping
 	logHub        *loghub.Hub                    // optional: live daemon-log stream (Developer log panel)
 	logSubs       map[*transport.Conn]bool       // clients subscribed to the log stream
+	transcripts   *transcript.Store              // optional: durable append-only per-session transcript (never-lose-work)
 	loopEngine    *loops.Engine                  // optional: recurring autonomous ticket workflows
 	agentsPath    string                         // path to ~/.oculus/agents.json (custom CLI agents)
 	agentHidePath string                         // path to ~/.oculus/agent-visibility.json (hidden names)
@@ -498,6 +500,20 @@ func (h *Hub) tel() *telemetry.Client {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.telemetry
+}
+
+// SetTranscripts attaches the durable per-session transcript store (never-lose-work backstop).
+func (h *Hub) SetTranscripts(t *transcript.Store) {
+	h.mu.Lock()
+	h.transcripts = t
+	h.mu.Unlock()
+}
+
+// tr returns the transcript store (nil if not attached) without holding the lock at call sites.
+func (h *Hub) tr() *transcript.Store {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.transcripts
 }
 
 // SetLogHub attaches the daemon-log stream and wires each new line to the subscribed clients, so a
@@ -2450,10 +2466,23 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			m.pendingContext = ""
 		}
 		m.mu.Unlock()
+		// WRITE-AHEAD: durably record the user's prompt BEFORE sending it. If the send silently
+		// fails (wrong directory → opencode 2xx-no-op, provider outage), the text is already on disk
+		// and recoverable — it can never vaporize the way it did in the 6-hour-loss incident.
+		_ = h.tr().Append(req.SessionID, transcript.Entry{Kind: "user", Text: text})
+		log.Printf("session %s (%s): prompt received (%d chars)", req.SessionID, m.sess.Provider(), len(text))
 		if err := promptSession(ctx, m.sess, text, req.Images); err != nil {
+			log.Printf("session %s: prompt send FAILED: %v", req.SessionID, err)
+			if t := h.tel(); t != nil {
+				t.Record("session.prompt", m.sess.Provider(), 0, err)
+			}
 			h.sendErr(conn, env.ID, err.Error())
 			return
 		}
+		// Arm the no-response watchdog: opencode's async POST returns nil before delivery, so a
+		// wrong-directory send is accepted (2xx) yet produces ZERO events. If nothing comes back
+		// soon, surface it in ~20s instead of the user staring at a spinner for 30 minutes.
+		m.armResponseWatchdog()
 		h.sendOK(conn, env.ID, nil)
 
 	case protocol.TypeApprovalRespond:

@@ -2,14 +2,55 @@ package hub
 
 import (
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/protocol"
+	"github.com/howlerops/oculus/daemon/transcript"
 	"github.com/howlerops/oculus/daemon/transport"
 	"github.com/howlerops/oculus/daemon/worktree"
 )
+
+// responseTimeout bounds how long a sent prompt may produce ZERO provider events before the daemon
+// surfaces a "no response" error. A wrong-directory opencode send is accepted (2xx) yet yields no
+// events; without this the user waits on the 30-minute POST timeout. Short enough to catch a dead
+// send fast, long enough that a model simply thinking before its first token isn't falsely flagged.
+const responseTimeout = 25 * time.Second
+
+// armResponseWatchdog marks the session as awaiting a first event and, if none arrives within
+// responseTimeout, synthesizes a StatusError so every client sees it (and it lands in the durable
+// transcript). The generation counter makes a newer prompt/response cancel an older watchdog.
+func (m *managedSession) armResponseWatchdog() {
+	m.mu.Lock()
+	m.awaitingResponse = true
+	m.respWatchdogGen++
+	gen := m.respWatchdogGen
+	m.mu.Unlock()
+	go func() {
+		time.Sleep(responseTimeout)
+		m.mu.Lock()
+		fired := m.awaitingResponse && m.respWatchdogGen == gen
+		if fired {
+			m.awaitingResponse = false
+		}
+		m.mu.Unlock()
+		if !fired {
+			return
+		}
+		detail := "No response from the agent — your message may not have reached it (a directory mismatch can accept the send but route it nowhere). Your prompt was saved; try “Recover session”, then resend."
+		log.Printf("session %s (%s): NO RESPONSE within %s of a prompt — surfacing to clients", m.sess.ID(), m.sess.Provider(), responseTimeout)
+		if t := m.hub.tel(); t != nil {
+			t.Record("session.no_response", m.sess.Provider(), responseTimeout, fmt.Errorf("no event after prompt"))
+		}
+		_ = m.hub.tr().Append(m.sess.ID(), transcript.Entry{Kind: "status", Text: "error", Detail: detail})
+		ss := protocol.SessionStatus{SessionID: m.sess.ID(), Status: protocol.StatusError, Detail: detail}
+		if raw, err := (agent.Event{Type: protocol.TypeSessionStatus, Payload: ss}).Encode(); err == nil {
+			m.broadcast(raw)
+		}
+	}()
+}
 
 // Fan-out and transcript limits. broadcast() runs on the single run() goroutine that
 // drains the provider event stream, so it must never block on a slow socket: each
@@ -57,6 +98,9 @@ type managedSession struct {
 	model            string          // active model id ("" = provider default)
 	modelProvider    string          // sub-provider/backend for the model
 	pendingContext   string          // one-shot note prepended to the FIRST user prompt (multi-repo layout)
+
+	awaitingResponse bool // a prompt was sent and no event has come back yet (drives the no-response watchdog)
+	respWatchdogGen  int  // generation counter so a stale watchdog can't fire after a newer prompt/response
 }
 
 // subscriber owns one client's outbound queue plus the writer goroutine that drains it.
@@ -282,6 +326,13 @@ func (m *managedSession) trimTranscript() {
 // then broadcasts every event to all subscribers.
 func (m *managedSession) run() {
 	for ev := range m.sess.Events() {
+		// The turn is alive: any event back from the provider clears the no-response watchdog. A
+		// wrong-directory send produces NO events, so it never reaches here and the watchdog fires.
+		m.mu.Lock()
+		if m.awaitingResponse {
+			m.awaitingResponse = false
+		}
+		m.mu.Unlock()
 		if ev.Type == protocol.TypeApprovalRequest {
 			if ar, ok := ev.Payload.(protocol.ApprovalRequest); ok {
 				m.hub.recordApproval(ar.ApprovalID, m)
@@ -312,6 +363,11 @@ func (m *managedSession) run() {
 			m.wasRunning = true
 			m.mu.Unlock()
 		}
+		// NOTE: the durable transcript deliberately records only the user's WRITE-AHEAD prompts (at
+		// send, in the hub) + error markers (below) — the irreplaceable, low-volume, never-replayed
+		// data that the incident lost. Mirroring assistant replies here would re-append the provider's
+		// full replayed history on every restart (unbounded bloat); full assistant-transcript
+		// persistence needs replay-dedup and is tracked separately.
 		if ev.Type == protocol.TypeSessionStatus {
 			if ss, ok := ev.Payload.(protocol.SessionStatus); ok {
 				m.mu.Lock()
@@ -329,6 +385,18 @@ func (m *managedSession) run() {
 					}
 				}
 				m.mu.Unlock()
+				// Universal per-turn visibility: every provider funnels status through here, so ONE set
+				// of log lines narrates every turn (start/end/error) in the daemon log + app log panel —
+				// the fix for "0 daemon logs during a whole Q&A session". Errors are always logged.
+				switch ss.Status {
+				case protocol.StatusRunning:
+					log.Printf("session %s (%s): turn start", m.sess.ID(), m.sess.Provider())
+				case protocol.StatusIdle, protocol.StatusDone:
+					log.Printf("session %s (%s): turn end (%s)", m.sess.ID(), m.sess.Provider(), ss.Status)
+				case protocol.StatusError:
+					log.Printf("session %s (%s): turn ERROR: %s", m.sess.ID(), m.sess.Provider(), ss.Detail)
+					_ = m.hub.tr().Append(m.sess.ID(), transcript.Entry{Kind: "status", Text: "error", Detail: ss.Detail})
+				}
 				m.onStatus(ss)
 			}
 		}
