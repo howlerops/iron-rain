@@ -116,6 +116,9 @@ const (
 	TypeRunOutput        = "run.output"        // streamed line from a test/build run (event)
 	TypeRunResult        = "run.result"        // final pass/fail of a test/build run (event)
 	TypeSessionProgress  = "session.progress"  // live step during session.create (drives the loading checklist)
+	TypeLogSubscribe     = "log.subscribe"     // start streaming the daemon's log to this client (replays recent)
+	TypeLogUnsubscribe   = "log.unsubscribe"   // stop streaming the daemon's log
+	TypeLogLine          = "log.line"          // event: one daemon log line
 
 	// responses
 	TypeOK    = "ok"
@@ -386,6 +389,16 @@ type JiraSetSite struct {
 // Telemetry is the anonymized-diagnostics toggle state (set request + status response).
 type Telemetry struct {
 	Enabled bool `json:"enabled"`
+}
+
+// LogHistory is the reply to log.subscribe: the recently-buffered daemon log lines.
+type LogHistory struct {
+	Lines []string `json:"lines"`
+}
+
+// LogLine is one streamed daemon log line (event).
+type LogLine struct {
+	Line string `json:"line"`
 }
 
 // SessionProgress is a live step emitted while a session is being created, so the app can show a

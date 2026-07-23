@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -320,6 +321,12 @@ func (m *managedSession) run() {
 					m.turnEnded = false
 				case protocol.StatusIdle, protocol.StatusDone:
 					m.turnEnded = true
+				case protocol.StatusError:
+					// Surface real session/turn errors in telemetry too (scrubbed) — otherwise they
+					// were only visible in the local log, invisible to remote debugging.
+					if t := m.hub.tel(); t != nil {
+						t.Record("session.error", m.sess.Provider(), 0, fmt.Errorf("%s", ss.Detail))
+					}
 				}
 				m.mu.Unlock()
 				m.onStatus(ss)

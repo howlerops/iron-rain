@@ -22,6 +22,7 @@ import (
 	"github.com/howlerops/oculus/daemon/agent/cli"
 	"github.com/howlerops/oculus/daemon/fsaccess"
 	"github.com/howlerops/oculus/daemon/issues"
+	"github.com/howlerops/oculus/daemon/loghub"
 	"github.com/howlerops/oculus/daemon/telemetry"
 	"github.com/howlerops/oculus/daemon/loops"
 	"github.com/howlerops/oculus/daemon/lsp"
@@ -55,6 +56,8 @@ type Hub struct {
 	autoProjects  bool                           // auto-register projects from active agents' cwds
 	issues        *issues.Manager                // optional: connected trackers (Linear/Jira)
 	telemetry     *telemetry.Client              // optional: anonymized diagnostics shipping
+	logHub        *loghub.Hub                    // optional: live daemon-log stream (Developer log panel)
+	logSubs       map[*transport.Conn]bool       // clients subscribed to the log stream
 	loopEngine    *loops.Engine                  // optional: recurring autonomous ticket workflows
 	agentsPath    string                         // path to ~/.oculus/agents.json (custom CLI agents)
 	agentHidePath string                         // path to ~/.oculus/agent-visibility.json (hidden names)
@@ -497,6 +500,34 @@ func (h *Hub) tel() *telemetry.Client {
 	return h.telemetry
 }
 
+// SetLogHub attaches the daemon-log stream and wires each new line to the subscribed clients, so a
+// Developer log panel can tail the daemon (local OR remote) live.
+func (h *Hub) SetLogHub(lh *loghub.Hub) {
+	h.mu.Lock()
+	h.logHub = lh
+	h.mu.Unlock()
+	if lh != nil {
+		lh.SetListener(func(line string) { h.broadcastLogLine(line) })
+	}
+}
+
+// broadcastLogLine fans a single log line out to every log-subscribed client.
+func (h *Hub) broadcastLogLine(line string) {
+	h.mu.Lock()
+	subs := make([]*transport.Conn, 0, len(h.logSubs))
+	for c := range h.logSubs {
+		subs = append(subs, c)
+	}
+	h.mu.Unlock()
+	if len(subs) == 0 {
+		return
+	}
+	payload := protocol.LogLine{Line: line}
+	for _, c := range subs {
+		h.sendEvent(c, protocol.TypeLogLine, payload)
+	}
+}
+
 // BroadcastIssues pushes the current assigned issues to every device (the Manager's poll
 // callback). Exported so main.go can wire it as the Manager's onUpdate.
 func (h *Hub) BroadcastIssues(in []issues.Issue) {
@@ -742,6 +773,7 @@ func New() *Hub {
 		sessions:        map[string]*managedSession{},
 		approvals:       map[string]*managedSession{},
 		clients:         map[*transport.Conn]*hubClient{},
+		logSubs:         map[*transport.Conn]bool{},
 		autoProjects:    true, // on by default; disable with --auto-projects=false
 		pushTimeout:     defaultPushTimeout,
 		pushConcurrency: defaultPushConcurrency,
@@ -1431,6 +1463,7 @@ func (h *Hub) dropClient(conn *transport.Conn) {
 	h.mu.Lock()
 	c := h.clients[conn]
 	delete(h.clients, conn)
+	delete(h.logSubs, conn)
 	h.mu.Unlock()
 	if c != nil {
 		c.close()
@@ -2487,6 +2520,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		m, err := h.restartSession(ctx, req.SessionID)
 		if err != nil {
 			log.Printf("session.restart %s: FAILED: %v", req.SessionID, err)
+			if t := h.tel(); t != nil {
+				t.Record("session.restart", "", 0, err)
+			}
 			h.sendErr(conn, env.ID, err.Error())
 			return
 		}
@@ -2647,6 +2683,23 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		var req protocol.LSPDocReq
 		_ = env.Unmarshal(&req)
 		h.lsp.Close(req.Path)
+		h.sendOK(conn, env.ID, nil)
+
+	case protocol.TypeLogSubscribe:
+		h.mu.Lock()
+		h.logSubs[conn] = true
+		lh := h.logHub
+		h.mu.Unlock()
+		var lines []string
+		if lh != nil {
+			lines = lh.Recent()
+		}
+		h.sendOK(conn, env.ID, protocol.LogHistory{Lines: lines})
+
+	case protocol.TypeLogUnsubscribe:
+		h.mu.Lock()
+		delete(h.logSubs, conn)
+		h.mu.Unlock()
 		h.sendOK(conn, env.ID, nil)
 
 	case protocol.TypeLSPHover:

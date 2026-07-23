@@ -15,6 +15,8 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -32,6 +34,7 @@ import (
 	"github.com/howlerops/oculus/daemon/discovery"
 	"github.com/howlerops/oculus/daemon/hub"
 	"github.com/howlerops/oculus/daemon/issues"
+	"github.com/howlerops/oculus/daemon/loghub"
 	"github.com/howlerops/oculus/daemon/telemetry"
 	"github.com/howlerops/oculus/daemon/project"
 	"github.com/howlerops/oculus/daemon/protocol"
@@ -111,6 +114,12 @@ func serve(args []string) error {
 		return err
 	}
 
+	// Tee the standard logger into a ring buffer so the app's Developer log panel can tail this
+	// daemon live (local OR remote) — captured before anything else logs so early lines are kept.
+	// Only `log` output is captured; the pairing-QR banner (printed with fmt) stays out of the stream.
+	lh := loghub.New(1000)
+	log.SetOutput(io.MultiWriter(os.Stderr, lh))
+
 	// Keep the daemon in lockstep with releases: if a newer one exists, self-update + re-exec BEFORE
 	// binding, so every (re)start runs the latest. No-op for dev builds / non-installs. This is why
 	// updating the app (which restarts the daemon) now also updates the daemon.
@@ -127,6 +136,7 @@ func serve(args []string) error {
 
 	h := hub.New()
 	defer h.Shutdown() // stop language servers on exit
+	h.SetLogHub(lh)
 	h.SetDiscoverer(discovery.Scan)
 	if reg, err := project.Load(projectsPath()); err != nil {
 		fmt.Fprintf(os.Stderr, "  warning: could not load project registry: %v\n", err)
