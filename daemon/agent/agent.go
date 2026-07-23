@@ -53,6 +53,13 @@ type Attacher interface {
 	Attach(ctx context.Context, sessionID, cwd string) (Session, error)
 }
 
+// DirReporter is an optional Session capability: report the session's real working directory. Used
+// to heal a stale persisted cwd — e.g. opencode resolves a session's authoritative directory on
+// attach, and the hub writes it back so subsequent sends (partitioned by directory) hit the right one.
+type DirReporter interface {
+	Dir() string
+}
+
 // PlanCreator is an optional Provider capability: start a session in "plan mode", where the
 // agent proposes a plan (and requests approval to proceed) before making changes. Providers
 // that don't support it simply aren't asserted to this interface (the hub falls back to Create).

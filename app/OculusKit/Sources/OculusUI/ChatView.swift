@@ -160,6 +160,19 @@ public struct ChatView: View {
                     }
                     .help("Delegate a subtask — spawn a scoped sub-agent, seeded from this session's handoff.")
                 }
+                ToolbarItem(placement: .automatic) {
+                    Menu {
+                        Button {
+                            if let id = model.sessionID { Task { await model.recoverSession(id) } }
+                        } label: {
+                            Label(model.busy ? "Recovering…" : "Recover session", systemImage: "bandage")
+                        }
+                        .disabled(model.busy)
+                    } label: {
+                        Label("More", systemImage: "ellipsis.circle")
+                    }
+                    .help("Session tools — Recover re-attaches a session whose messages stopped working (keeps all history).")
+                }
             }
             if isWorktreeSession {
                 ToolbarItem(placement: .primaryAction) {

@@ -156,14 +156,50 @@ func (p *Provider) create(ctx context.Context, cwd, prompt, agentName string) (a
 // conversation and can continue it.
 func (p *Provider) Attach(ctx context.Context, sessionID, cwd string) (agent.Session, error) {
 	// cwd scopes the /event subscription + message writes to the session's directory
-	// (opencode partitions both by ?directory=). Empty cwd falls back to the server's
-	// default directory — correct only for sessions that live there.
-	s := &session{p: p, id: sessionID, dir: cwd, events: make(chan agent.Event, 64), done: make(chan struct{})}
+	// (opencode partitions both by ?directory=). A WRONG/stale cwd is worse than none: the
+	// session opens (history may replay) but every message write goes to a directory where
+	// opencode can't find the session, so sends silently fail — the "session is broken, no
+	// message works" bug. opencode's own GET /session/:id reports the session's real directory
+	// regardless of the directory param, so re-derive it and trust that over the stored cwd.
+	dir := cwd
+	if real := p.resolveDir(ctx, sessionID); real != "" {
+		dir = real
+	}
+	s := &session{p: p, id: sessionID, dir: dir, events: make(chan agent.Event, 64), done: make(chan struct{})}
 	if err := s.subscribe(); err != nil {
 		return nil, err
 	}
 	s.replayHistory(ctx)
 	return s, nil
+}
+
+// Dir reports the session's opencode directory (authoritative after Attach resolves it), so the hub
+// can heal a stale persisted cwd. Implements agent.DirReporter.
+func (s *session) Dir() string { return s.dir }
+
+// resolveDir asks opencode for a session's real working directory via GET /session/:id, which returns
+// the directory field no matter which (or no) ?directory= is passed. Empty string on any failure so
+// callers fall back to the cwd they already have.
+func (p *Provider) resolveDir(ctx context.Context, sessionID string) string {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/session/"+sessionID, nil)
+	if err != nil {
+		return ""
+	}
+	resp, err := p.unary.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	var info struct {
+		Directory string `json:"directory"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&info) != nil {
+		return ""
+	}
+	return info.Directory
 }
 
 // replayHistory fetches the session's messages and emits them as SessionMessage

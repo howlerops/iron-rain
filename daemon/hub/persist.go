@@ -209,6 +209,67 @@ func (h *Hub) restartSession(ctx context.Context, oldID string) (*managedSession
 	return m, nil
 }
 
+// recoverSession re-attaches an existing session with a FRESH provider attach, which re-resolves the
+// session's real directory (opencode reports it) and heals a stale/wrong stored cwd — the fix for a
+// session that OPENS but whose sends silently fail because the daemon bound it to the wrong directory
+// partition. Unlike restartSession it KEEPS the conversation (same id + full history); it just re-binds
+// the daemon to it correctly. Requires an Attacher provider (opencode); a CLI agent that can't attach
+// returns an error (there's nothing server-side to re-attach — use Restart to start fresh).
+func (h *Hub) recoverSession(ctx context.Context, id string) (*managedSession, error) {
+	h.mu.Lock()
+	db := h.db
+	live := h.sessions[id]
+	h.mu.Unlock()
+
+	var provider string
+	var meta sessionMeta
+	if live != nil {
+		provider = live.sess.Provider()
+		meta = live.meta
+	} else {
+		if db == nil {
+			return nil, fmt.Errorf("no session store")
+		}
+		recs, err := db.Sessions()
+		if err != nil {
+			return nil, err
+		}
+		var rec *store.SessionRecord
+		for i := range recs {
+			if recs[i].ID == id {
+				rec = &recs[i]
+				break
+			}
+		}
+		if rec == nil {
+			return nil, fmt.Errorf("no such session")
+		}
+		provider = rec.Provider
+		var pm persistedMeta
+		_ = json.Unmarshal([]byte(rec.Meta), &pm)
+		meta = pm.toMeta()
+	}
+
+	att := h.attacherFor(provider)
+	if att == nil {
+		return nil, fmt.Errorf("agent %q can't recover an existing conversation — use Restart to start fresh in the same folder", provider)
+	}
+
+	// Drop the broken live binding first so its stale event goroutine ends and it stops holding the id.
+	if live != nil {
+		h.mu.Lock()
+		delete(h.sessions, id)
+		h.mu.Unlock()
+		_ = live.sess.Close()
+	}
+
+	sess, err := att.Attach(ctx, id, meta.cwd) // re-resolves the real directory; addSession heals meta.cwd
+	if err != nil {
+		return nil, err
+	}
+	return h.addSession(sess, meta), nil
+}
+
 // stoppedSessions returns persisted records that aren't currently live as protocol.Session entries
 // marked Status=stopped + Restartable, so the app lists them (and offers a restart) instead of the
 // session just disappearing after a daemon restart.

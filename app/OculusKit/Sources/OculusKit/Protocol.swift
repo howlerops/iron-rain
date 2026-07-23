@@ -12,6 +12,7 @@ public enum MessageType {
     public static let sessionRename = "session.rename"
     public static let sessionAttach = "session.attach"
     public static let sessionRestart = "session.restart"
+    public static let sessionRecover = "session.recover"
     public static let sessionSubscribe = "session.subscribe"
     public static let approvalRespond = "approval.respond"
     public static let discover = "discover.list"

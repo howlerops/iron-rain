@@ -813,6 +813,16 @@ func (h *Hub) addSession(sess agent.Session, meta sessionMeta) *managedSession {
 			meta.label = n
 		}
 	}
+	// Heal a stale/wrong cwd from the provider's authoritative session directory. A wrong cwd
+	// silently breaks sends (opencode partitions message writes by ?directory=), so trust the
+	// resolved directory over whatever was persisted. No-op for freshly created sessions (the
+	// reported dir already equals the chosen cwd).
+	if dr, ok := sess.(agent.DirReporter); ok {
+		if real := dr.Dir(); real != "" && real != meta.cwd {
+			log.Printf("session %s: healed directory %q → %q", sess.ID(), meta.cwd, real)
+			meta.cwd = real
+		}
+	}
 	m := newManagedSession(h, sess, meta)
 	h.mu.Lock()
 	h.sessions[sess.ID()] = m
@@ -1363,6 +1373,7 @@ func asyncDispatch(typ string) bool {
 		protocol.TypeApprovalRespond,     // provider Respond (may be network)
 		protocol.TypeSessionAttach,       // provider Attach
 		protocol.TypeSessionRestart,      // provider Create (re-create a stopped session)
+		protocol.TypeSessionRecover,      // provider Attach (re-attach + heal a broken session's directory)
 		protocol.TypeSessionStop,         // provider Stop
 		protocol.TypeSessionInterrupt,    // provider Stop (interrupt only)
 		protocol.TypeProjectBrowse,       // disk: dir listing for the folder picker
@@ -2531,6 +2542,24 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		m.subscribe(conn)
 		go m.run()
 		h.broadcastSessionList() // the id changed (old stopped → new live); converge every client
+
+	case protocol.TypeSessionRecover:
+		var req protocol.SessionRef
+		_ = env.Unmarshal(&req)
+		m, err := h.recoverSession(ctx, req.SessionID)
+		if err != nil {
+			log.Printf("session.recover %s: FAILED: %v", req.SessionID, err)
+			if t := h.tel(); t != nil {
+				t.Record("session.recover", "", 0, err)
+			}
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		log.Printf("session.recover %s: re-attached (directory healed)", req.SessionID)
+		h.sendOK(conn, env.ID, m.info())
+		m.subscribe(conn)
+		go m.run()
+		h.broadcastSessionList() // id is unchanged but its cwd/status may have; converge clients
 
 	case protocol.TypeDiscover:
 		h.mu.Lock()

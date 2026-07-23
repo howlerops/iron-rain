@@ -1328,6 +1328,33 @@ public final class Model: ObservableObject {
         }
     }
 
+    /// Recovers a "broken" session — one that opens but whose sends silently fail because the daemon
+    /// bound it to the wrong directory partition. Re-attaches on the daemon, which re-resolves the
+    /// session's real directory from the provider and heals the stored cwd, KEEPING all history (the
+    /// id is unchanged). Use this instead of Restart when you don't want to lose the conversation.
+    public func recoverSession(_ id: String) async {
+        busy = true
+        status = "Recovering…"
+        do {
+            let env = try await request(MessageType.sessionRecover, payload: SessionRef(sessionID: id))
+            let healed = try env.payload(as: Session.self)
+            busy = false
+            status = "Recovered"
+            if let idx = sessions.firstIndex(where: { $0.id == id }) { sessions[idx] = healed }
+            else { sessions.append(healed) }
+            await openSession(healed.id) // re-subscribe to the freshly re-attached session
+        } catch {
+            busy = false
+            status = "Recover failed"
+            let msg = error.localizedDescription
+            if msg.lowercased().contains("use restart") {
+                actionError = "This agent can’t re-attach an existing conversation. Use Restart to start fresh in the same folder."
+            } else {
+                actionError = "Couldn’t recover the session.\n\n\(msg)"
+            }
+        }
+    }
+
     private var lastSessionKey: String { "oculus.lastSession.\(id)" }
 
     /// Loads the agent's slash commands (built-in + custom from .claude/commands) for the composer's

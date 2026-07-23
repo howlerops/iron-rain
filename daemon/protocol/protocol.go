@@ -33,6 +33,7 @@ const (
 	TypeSessionRename       = "session.rename"
 	TypeSessionAttach       = "session.attach"
 	TypeSessionRestart      = "session.restart"  // re-create a stopped session (provider couldn't re-attach after a daemon restart)
+	TypeSessionRecover      = "session.recover"  // re-attach an existing session, re-resolving its real directory (heals a broken session whose sends fail)
 	TypeSessionSubscribe    = "session.subscribe" // observe an already-owned session (no dup subscription)
 	TypeApprovalRespond     = "approval.respond"
 	TypeDiscover            = "discover.list"
