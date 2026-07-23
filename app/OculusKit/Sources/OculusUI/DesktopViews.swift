@@ -271,6 +271,9 @@ public struct RootView: View {
                             ManageAgentsView(model: model, palette: palette)
                         }
                     }
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                        DaemonLogPanel(model: model, palette: palette)
+                    }
             }
         }
         // CRITICAL: force the surface to FILL the window instead of sizing to the split

@@ -44,6 +44,9 @@ public enum MessageType {
     public static let telemetrySet = "telemetry.set"
     public static let telemetryStatus = "telemetry.status"
     public static let sessionProgress = "session.progress"
+    public static let logSubscribe = "log.subscribe"
+    public static let logUnsubscribe = "log.unsubscribe"
+    public static let logLine = "log.line"
     public static let jiraSites = "jira.sites"
     public static let jiraSetSite = "jira.set_site"
     public static let worktreeCatchUp = "worktree.catch_up"
@@ -930,6 +933,16 @@ public struct SessionProgress: Codable {
     public var detail: String
     public var step: Int?
     public var total: Int?
+}
+
+/// Reply to log.subscribe: the daemon's recently-buffered log lines (replayed on connect).
+public struct LogHistory: Codable {
+    public var lines: [String]
+}
+
+/// One streamed daemon log line (log.line event).
+public struct LogLine: Codable {
+    public var line: String
 }
 
 public struct IntegrationStatus: Codable {

@@ -159,6 +159,10 @@ public final class Model: ObservableObject {
     @Published public var sessionModels: [ModelInfo] = []
     @Published public var modelEditable = false
     @Published public var currentModel: String?
+    // Live daemon log (Developer bottom panel). Populated on subscribe (replay + streamed lines).
+    @Published public var daemonLog: [String] = []
+    @Published public var showLogPanel = false
+    private var logSubscribed = false
     public var pendingProjectID: String?
     public var pendingProjectIDs: [String]?  // multi-root workspace (multi-repo)
     public var pendingWorktree = false
@@ -1514,6 +1518,33 @@ public final class Model: ObservableObject {
         }
     }
 
+    /// Opens the Developer log panel and starts streaming the daemon's log (replays recent lines,
+    /// then tails new ones). Idempotent — safe to call each time the panel is shown.
+    public func openLogPanel() {
+        showLogPanel = true
+        guard !logSubscribed else { return }
+        logSubscribed = true
+        Task {
+            do {
+                let hist = try await request(MessageType.logSubscribe, payload: [String: String]()).payload(as: LogHistory.self)
+                daemonLog = hist.lines
+            } catch {
+                logSubscribed = false
+                actionError = "Couldn't stream daemon logs: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Hides the panel and tells the daemon to stop streaming (frees the subscription).
+    public func closeLogPanel() {
+        showLogPanel = false
+        guard logSubscribed else { return }
+        logSubscribed = false
+        Task { try? await client?.send(Protocol.encode(id: UUID().uuidString, type: MessageType.logUnsubscribe, payload: [String: String]())) }
+    }
+
+    public func clearDaemonLog() { daemonLog = [] }
+
     /// Lists a directory (nil/empty path → the available roots). With sessionID, the roots are
     /// scoped to that session's workspace folder(s) — a per-session file tree.
     public func fsTree(_ path: String?, sessionID: String? = nil) async throws -> FSTree {
@@ -2003,6 +2034,11 @@ public final class Model: ObservableObject {
                 case MessageType.sessionProgress: // live create step → prescriptive loading checklist
                     if startingSession, let p = try? env.payload(as: SessionProgress.self) {
                         applyCreateStep(p)
+                    }
+                case MessageType.logLine: // streamed daemon log line → Developer log panel
+                    if let l = try? env.payload(as: LogLine.self) {
+                        daemonLog.append(l.line)
+                        if daemonLog.count > 2000 { daemonLog.removeFirst(daemonLog.count - 2000) }
                     }
                 case MessageType.lspDiagnostics: // language server published diagnostics for a file
                     if let d = try? env.payload(as: LSPDiagnostics.self) {
