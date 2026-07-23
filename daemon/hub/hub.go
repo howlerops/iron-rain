@@ -2479,15 +2479,18 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		_ = env.Unmarshal(&req)
 		// Already live (e.g. another client restarted it first) → just subscribe.
 		if m := h.managed(req.SessionID); m != nil {
+			log.Printf("session.restart %s: already live — subscribing", req.SessionID)
 			h.sendOK(conn, env.ID, m.info())
 			m.subscribe(conn)
 			return
 		}
 		m, err := h.restartSession(ctx, req.SessionID)
 		if err != nil {
+			log.Printf("session.restart %s: FAILED: %v", req.SessionID, err)
 			h.sendErr(conn, env.ID, err.Error())
 			return
 		}
+		log.Printf("session.restart %s: recreated as %s", req.SessionID, m.sess.ID())
 		h.sendOK(conn, env.ID, m.info())
 		m.subscribe(conn)
 		go m.run()

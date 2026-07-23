@@ -1309,7 +1309,18 @@ public final class Model: ObservableObject {
         } catch {
             busy = false
             status = "Restart failed"
-            actionError = "Couldn’t restart the session.\n\n\(error.localizedDescription)"
+            let msg = error.localizedDescription
+            // If the daemon no longer has this session (its record/worktree is gone), it can never be
+            // restarted — drop the dead card locally and re-sync the list so it stops nagging. The
+            // user should start a fresh session instead; say so.
+            if msg.lowercased().contains("no such session") || msg.lowercased().contains("agent")  {
+                sessions.removeAll { $0.id == id }
+                if sessionID == id { newSession() }
+                await loadSessions() // converge with the daemon's real state
+                actionError = "That session can’t be restarted — its workspace is gone. Start a fresh session instead."
+            } else {
+                actionError = "Couldn’t restart the session.\n\n\(msg)"
+            }
         }
     }
 
