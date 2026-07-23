@@ -46,6 +46,31 @@ struct WorktreePanel: View {
                     }
                 }
 
+                Section {
+                    Button {
+                        Task { await model.catchUpToMain() }
+                    } label: {
+                        HStack {
+                            Label("Catch up to main", systemImage: "arrow.triangle.pull")
+                            if model.catchingUp { Spacer(); ProgressView().controlSize(.small) }
+                        }
+                    }
+                    .disabled(model.catchingUp)
+                    if let msg = model.catchUpMessage {
+                        Text(msg).font(.caption)
+                            .foregroundStyle(model.catchUpConflicts.isEmpty ? palette.mutedForeground : .orange)
+                    }
+                    ForEach(model.catchUpConflicts, id: \.self) { f in
+                        Label(f, systemImage: "exclamationmark.triangle")
+                            .font(.system(.caption, design: .monospaced)).foregroundStyle(.orange)
+                    }
+                } header: {
+                    Text("Update")
+                } footer: {
+                    Text("Merges the repo's default branch into this branch so it stays current. Conflicts are left in the worktree for the agent to resolve.")
+                        .font(.caption)
+                }
+
                 Section("Review") {
                     DiffReviewView(model: model, palette: palette)
                         .frame(height: 360)

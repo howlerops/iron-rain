@@ -1297,6 +1297,7 @@ func asyncDispatch(typ string) bool {
 		protocol.TypeWorktreeDiff,        // git diff
 		protocol.TypeWorktreeRemove,      // provider Stop/Close + git remove/prune
 		protocol.TypeWorktreePR,          // git CommitAll/Push/CreatePR
+		protocol.TypeWorktreeCatchUp,     // git fetch + merge default branch
 		protocol.TypeWorktreeConflicts,   // git per-worktree ChangedFiles
 		protocol.TypeWorkspaceDiff,       // git diff per workspace member
 		protocol.TypeWorkspacePR,         // git commit/push/PR per workspace member
@@ -1836,6 +1837,54 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			return
 		}
 		h.sendOK(conn, env.ID, protocol.WorktreeDiff{SessionID: req.SessionID, Diff: diff})
+
+	case protocol.TypeWorktreeCatchUp:
+		var req protocol.WorktreeCatchUp
+		_ = env.Unmarshal(&req)
+		m := h.managed(req.SessionID)
+		if m == nil {
+			h.sendErr(conn, env.ID, "no such session")
+			return
+		}
+		m.mu.Lock()
+		wtPath := m.meta.worktreePath
+		members := append([]worktree.Member(nil), m.meta.members...)
+		m.mu.Unlock()
+		switch {
+		case wtPath != "":
+			res, err := worktree.CatchUpToMain(ctx, wtPath)
+			if err != nil {
+				h.sendErr(conn, env.ID, err.Error())
+				return
+			}
+			h.broadcast(protocol.TypeFSChange, protocol.FSChange{Path: wtPath}) // files moved — reload open buffers
+			h.sendOK(conn, env.ID, protocol.WorktreeCatchUp{SessionID: req.SessionID, Status: res.Status, Base: res.Base, Message: res.Message, Conflicts: res.Conflicts})
+		case len(members) > 0:
+			// Workspace: catch every member repo up to its own default branch; aggregate the outcome.
+			status, base := "up_to_date", ""
+			var msgs, conflicts []string
+			for _, mem := range members {
+				res, err := worktree.CatchUpToMain(ctx, mem.Path)
+				if err != nil {
+					h.sendErr(conn, env.ID, mem.Name+": "+err.Error())
+					return
+				}
+				base = res.Base
+				msgs = append(msgs, mem.Name+": "+res.Message)
+				if res.Status == "conflicts" {
+					status = "conflicts"
+					for _, f := range res.Conflicts {
+						conflicts = append(conflicts, mem.Name+"/"+f)
+					}
+				} else if res.Status == "updated" && status != "conflicts" {
+					status = "updated"
+				}
+			}
+			h.broadcast(protocol.TypeFSChange, protocol.FSChange{Path: ""})
+			h.sendOK(conn, env.ID, protocol.WorktreeCatchUp{SessionID: req.SessionID, Status: status, Base: base, Message: strings.Join(msgs, "\n"), Conflicts: conflicts})
+		default:
+			h.sendErr(conn, env.ID, "not a worktree session")
+		}
 
 	case protocol.TypeWorkspaceDiff:
 		var req protocol.WorkspaceDiff

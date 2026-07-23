@@ -46,6 +46,7 @@ public enum MessageType {
     public static let sessionProgress = "session.progress"
     public static let jiraSites = "jira.sites"
     public static let jiraSetSite = "jira.set_site"
+    public static let worktreeCatchUp = "worktree.catch_up"
     public static let integrationOAuth = "integration.oauth"
     public static let integrationOAuthApp = "integration.oauthapp"
     public static let issueList = "issue.list"
@@ -874,6 +875,15 @@ public struct WorktreePR: Codable {
 public struct WorktreePRResult: Codable {
     public var sessionID: String; public var branch: String; public var pushed: Bool; public var url: String?
     enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case branch; case pushed; case url }
+}
+public struct WorktreeCatchUp: Codable {
+    public var sessionID: String
+    public var status: String?   // "updated" | "up_to_date" | "conflicts"
+    public var base: String?
+    public var message: String?
+    public var conflicts: [String]?
+    public init(sessionID: String) { self.sessionID = sessionID }
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case status; case base; case message; case conflicts }
 }
 public struct FileConflict: Codable, Identifiable, Hashable {
     public var path: String; public var branches: [String]

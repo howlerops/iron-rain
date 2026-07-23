@@ -1227,6 +1227,31 @@ public final class Model: ObservableObject {
         }
     }
 
+    /// Whether a catch-up is in flight, and its last outcome (message + any conflicted files) — for
+    /// the WorktreePanel to show.
+    @Published public var catchingUp = false
+    @Published public var catchUpMessage: String?
+    @Published public var catchUpConflicts: [String] = []
+
+    /// Merges the repo's default branch INTO this session's branch ("catch up to main"). Correlated
+    /// so the outcome (updated / already-current / conflicts to resolve) surfaces in the panel.
+    public func catchUpToMain() async {
+        guard client != nil, let sid = sessionID else { return }
+        catchingUp = true
+        catchUpMessage = nil
+        catchUpConflicts = []
+        defer { catchingUp = false }
+        do {
+            let resp = try await request(MessageType.worktreeCatchUp, payload: WorktreeCatchUp(sessionID: sid))
+            let r = try resp.payload(as: WorktreeCatchUp.self)
+            catchUpMessage = r.message ?? "Done."
+            catchUpConflicts = r.conflicts ?? []
+            if r.status == "updated" { await worktreeDiff() } // refresh the diff after a clean merge
+        } catch {
+            catchUpMessage = "Couldn’t catch up: \(error.localizedDescription)"
+        }
+    }
+
     /// Requests files this worktree shares with other active worktrees (result -> conflicts).
     public func loadConflicts() async {
         guard let client, let sid = sessionID else { return }

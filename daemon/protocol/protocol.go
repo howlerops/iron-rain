@@ -51,6 +51,7 @@ const (
 	TypeWorktreeDiff        = "worktree.diff"        // request the diff of a worktree session
 	TypeWorktreeRemove      = "worktree.remove"      // stop a worktree session + remove its worktree
 	TypeWorktreePR          = "worktree.pr"          // commit + push + open a PR for a worktree session
+	TypeWorktreeCatchUp     = "worktree.catch_up"    // merge the repo's default branch into a worktree session's branch
 	TypeWorktreeConflicts   = "worktree.conflicts"   // files this worktree shares with other active worktrees
 	TypeWorkspaceDiff       = "workspace.diff"       // per-member diff for a cross-repo workspace session
 	TypeWorkspacePR         = "workspace.pr"         // commit + push + open a PR for each workspace member
@@ -329,6 +330,16 @@ type WorktreePRResult struct {
 	Branch    string `json:"branch"`
 	Pushed    bool   `json:"pushed"`
 	URL       string `json:"url,omitempty"` // set when a PR was opened via gh
+}
+
+// WorktreeCatchUp merges the repo's default branch into a worktree session's branch (request carries
+// just SessionID; the rest is the response).
+type WorktreeCatchUp struct {
+	SessionID string   `json:"session_id"`
+	Status    string   `json:"status,omitempty"`    // "updated" | "up_to_date" | "conflicts"
+	Base      string   `json:"base,omitempty"`      // default branch merged in (e.g. "main")
+	Message   string   `json:"message,omitempty"`   // human summary
+	Conflicts []string `json:"conflicts,omitempty"` // conflicted paths (merge left in progress to resolve)
 }
 
 // WorktreeConflicts warns which files this worktree changed that OTHER active worktrees
