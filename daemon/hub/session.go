@@ -101,6 +101,16 @@ type managedSession struct {
 
 	awaitingResponse bool // a prompt was sent and no event has come back yet (drives the no-response watchdog)
 	respWatchdogGen  int  // generation counter so a stale watchdog can't fire after a newer prompt/response
+	userStopped      bool // the user explicitly stopped/removed this session (vs. an unexpected provider exit)
+}
+
+// markUserStopped records that the session's close is user-intended, so run()'s cleanup DELETES the
+// durable record instead of preserving it. Without this, an unexpected provider exit (crashed
+// claude-code sidecar / exited CLI) is indistinguishable from a stop and its record is wrongly dropped.
+func (m *managedSession) markUserStopped() {
+	m.mu.Lock()
+	m.userStopped = true
+	m.mu.Unlock()
 }
 
 // subscriber owns one client's outbound queue plus the writer goroutine that drains it.
@@ -406,5 +416,16 @@ func (m *managedSession) run() {
 		}
 		m.broadcast(raw)
 	}
-	m.hub.removeSession(m.sess.ID())
+	// The provider event stream ended. Distinguish an EXPLICIT user stop (drop the durable record)
+	// from an UNEXPECTED provider exit — a crashed claude-code sidecar or an exited CLI process —
+	// which must KEEP the record so the session resurfaces as stopped/restartable instead of
+	// silently vanishing from every device (its transcript/resume data may still be recoverable).
+	m.mu.Lock()
+	stopped := m.userStopped
+	m.mu.Unlock()
+	if stopped {
+		m.hub.removeSession(m.sess.ID())
+	} else {
+		m.hub.detachSession(m.sess.ID())
+	}
 }

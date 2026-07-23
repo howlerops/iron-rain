@@ -17,6 +17,7 @@ private struct SidebarSession: Identifiable {
     let managed: Bool
     let updatedAt: Date?
     var isChild: Bool = false // delegated sub-agent (shown with a ↳ marker)
+    var hasError: Bool = false // a background session whose sends stopped landing (no-response/error)
 }
 
 private struct SessionGroup: Identifiable {
@@ -490,7 +491,8 @@ struct SessionSidebar: View {
             add(key, SidebarSession(id: s.id, title: title, provider: s.provider, projectName: key,
                                     branch: s.branch, isRunning: s.status == SessionStatusValue.running,
                                     stopped: s.status == SessionStatusValue.stopped,
-                                    viewOnly: false, managed: true, updatedAt: date(s.updatedAt), isChild: isChild))
+                                    viewOnly: false, managed: true, updatedAt: date(s.updatedAt), isChild: isChild,
+                                    hasError: model.sessionErrors[s.id] != nil))
         }
         // Terminal-owned sessions discovered on the host are intentionally NOT shown here —
         // the sidebar lists only sessions started/opened in the app. Discovered sessions are
@@ -593,7 +595,11 @@ private struct SessionRow: View {
             // A solid chip to distinguish lifecycle at a glance: running (gold, live), or a
             // terminal glyph for sessions started outside the app (discovered — clicking
             // resumes them). Managed idle sessions carry no chip; they're the plain default.
-            if item.isRunning {
+            if item.hasError {
+                // A background session whose last turn errored / got no response — flag it so it
+                // doesn't fail invisibly while you're looking at another session.
+                chip(icon: "exclamationmark.triangle.fill", text: "Check", tint: palette.destructive, filled: true)
+            } else if item.isRunning {
                 chip(icon: "circle.fill", text: "Live", tint: palette.primary, filled: true)
             } else if item.stopped {
                 chip(icon: "moon.zzz.fill", text: "Stopped", tint: palette.mutedForeground)

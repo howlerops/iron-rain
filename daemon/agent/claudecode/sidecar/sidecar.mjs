@@ -128,10 +128,16 @@ if (mode === "attach" && sessionLabel) {
   // has no live multi-client attach for plain sessions, and two writers on one session id
   // interleave/corrupt the transcript (docs: sessions.md). Forking gives the app a clean,
   // owned continuation and leaves any copy still live in a terminal untouched.
-  // Resume claude's REAL session UUID (passed by the daemon from its resume map); fall back to the
-  // label only if unknown. Passing our cc_… id errors: "--resume requires a valid session ID".
-  options.resume = process.env.OCULUS_CLAUDE_RESUME || sessionLabel;
-  options.forkSession = true;
+  // Resume ONLY with claude's REAL session UUID (from the daemon's resume map). If it's unknown
+  // (session created before resume-mapping, or the map was lost) we CANNOT resume claude's
+  // history — so start a FRESH session instead of passing our cc_… id to --resume, which claude
+  // rejects ("--resume requires a valid session ID") and which used to kill the session on every
+  // restore, leaving it permanently broken.
+  const realResume = process.env.OCULUS_CLAUDE_RESUME;
+  if (realResume) {
+    options.resume = realResume;
+    options.forkSession = true;
+  }
 }
 
 send({ t: "session", id: sessionLabel });

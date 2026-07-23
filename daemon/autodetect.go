@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -144,8 +145,11 @@ func detectOrSetupClaudeSidecar(mode setupMode) string {
 	if _, err := exec.LookPath("node"); err != nil {
 		return ""
 	}
-	// Already installed somewhere? Use it as-is.
+	// Already installed somewhere? Use it — but refresh it first so an UPGRADED daemon actually
+	// ships sidecar fixes (previously an existing install was returned as-is and never updated,
+	// so sidecar bug fixes never reached machines that already had it).
 	if p := firstUsableSidecar(claudeSidecarCandidates()); p != "" {
+		refreshSidecarIfStale(p)
 		return p
 	}
 	if mode == setupOff {
@@ -186,6 +190,25 @@ func defaultSidecarDir() string {
 		return ""
 	}
 	return filepath.Join(home, ".oculus", "claude-sidecar")
+}
+
+// refreshSidecarIfStale overwrites an already-installed sidecar.mjs with the daemon's embedded copy
+// when they differ, so upgrading the daemon actually ships sidecar fixes (node_modules is left
+// intact — package.json is unchanged by JS-only fixes, so no npm re-install is needed). Only the
+// daemon-managed default dir is touched; an external/override sidecar (env or repo) is left alone.
+func refreshSidecarIfStale(mjs string) {
+	if mjs != filepath.Join(defaultSidecarDir(), "sidecar.mjs") {
+		return
+	}
+	if cur, err := os.ReadFile(mjs); err == nil && bytes.Equal(cur, claudecode.SidecarMJS) {
+		return // already current
+	}
+	if err := os.WriteFile(mjs, claudecode.SidecarMJS, 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "  claude-code: could not refresh sidecar.mjs: %v\n", err)
+		return
+	}
+	_ = os.WriteFile(filepath.Join(filepath.Dir(mjs), "package.json"), claudecode.SidecarPackageJSON, 0o644)
+	fmt.Fprintln(os.Stderr, "  claude-code: refreshed sidecar.mjs to match the upgraded daemon")
 }
 
 // materializeSidecar writes the embedded sidecar.mjs + package.json into dir (creating

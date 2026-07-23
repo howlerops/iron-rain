@@ -267,7 +267,8 @@ public struct ChatView: View {
             let content = ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     ForEach(model.messages) { msg in
-                        MessageRow(message: msg, palette: palette)
+                        MessageRow(message: msg, palette: palette,
+                                   onRetry: msg.delivery == .failed ? { Task { await model.retryFailedMessage() } } : nil)
                     }
                     Color.clear.frame(height: 1).id("bottom")
                 }
@@ -393,19 +394,40 @@ public struct ChatView: View {
 struct MessageRow: View {
     let message: ChatMessage
     let palette: OculusPalette
+    var onRetry: (() -> Void)? = nil
 
     var body: some View {
         switch message.role {
         case .user:
-            HStack {
-                Spacer(minLength: 40)
-                Text(message.text)
-                    .foregroundStyle(palette.foreground)
-                    .padding(.horizontal, 14).padding(.vertical, 9)
-                    .background(palette.secondary)
-                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(palette.border))
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
-                    .textSelection(.enabled)
+            VStack(alignment: .trailing, spacing: 3) {
+                HStack {
+                    Spacer(minLength: 40)
+                    Text(message.text)
+                        .foregroundStyle(palette.foreground)
+                        .padding(.horizontal, 14).padding(.vertical, 9)
+                        .background(palette.secondary)
+                        .overlay(RoundedRectangle(cornerRadius: 16)
+                            .stroke(message.delivery == .failed ? palette.destructive : palette.border))
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .textSelection(.enabled)
+                }
+                // Delivery badge: a failed send is visibly flagged + retryable instead of looking
+                // exactly like a delivered message (the silent-loss trap).
+                switch message.delivery {
+                case .sending:
+                    Text("Sending…").font(.caption2).foregroundStyle(palette.mutedForeground)
+                case .failed:
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill").font(.caption2)
+                        Text("Not delivered").font(.caption2)
+                        if let onRetry {
+                            Button("Retry") { onRetry() }.font(.caption2.bold()).buttonStyle(.plain)
+                        }
+                    }
+                    .foregroundStyle(palette.destructive)
+                case .ok:
+                    EmptyView()
+                }
             }
         case .assistant:
             // Render markdown LIVE as it streams (not raw-until-done) — so headings/lists/code/

@@ -10,7 +10,7 @@ import OculusKit
 struct ActionErrorAlert: ViewModifier {
     @ObservedObject var model: Model
     func body(content: Content) -> some View {
-        content.alert("Couldn’t start the session", isPresented: Binding(
+        content.alert(model.actionErrorTitle, isPresented: Binding(
             get: { model.actionError != nil },
             set: { if !$0 { model.actionError = nil } }
         )) {

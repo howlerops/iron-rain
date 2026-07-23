@@ -163,6 +163,13 @@ public final class Model: ObservableObject {
     @Published public var daemonLog: [String] = []
     @Published public var showLogPanel = false
     private var logSubscribed = false
+    // Title for the actionError alert, so a send/no-response failure isn't mislabeled "Couldn't start the session".
+    @Published public var actionErrorTitle = "Something went wrong"
+    // Per-session error detail for BACKGROUND (non-active) sessions, so a session whose sends stopped
+    // landing surfaces in the sidebar instead of failing invisibly while you're looking elsewhere.
+    @Published public var sessionErrors: [String: String] = [:]
+    // Last user message that failed to deliver, stashed so a per-message Retry can resend it verbatim.
+    private var pendingRetry: (id: UUID, text: String, images: [ImageAttachment])?
     public var pendingProjectID: String?
     public var pendingProjectIDs: [String]?  // multi-root workspace (multi-repo)
     public var pendingWorktree = false
@@ -477,7 +484,7 @@ public final class Model: ObservableObject {
         var trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let imgs = pendingImages
         let files = pendingFiles
-        guard (!trimmed.isEmpty || !imgs.isEmpty || !files.isEmpty), let client else { return }
+        guard (!trimmed.isEmpty || !imgs.isEmpty || !files.isEmpty) else { return }
         // Document attachments ride along as fenced text blocks so every provider sees their content.
         let shownBody = trimmed
         if !files.isEmpty {
@@ -488,12 +495,23 @@ public final class Model: ObservableObject {
         if !imgs.isEmpty { badges.append("🖼️ \(imgs.count) image\(imgs.count == 1 ? "" : "s")") }
         if !files.isEmpty { badges.append("📎 \(files.count) file\(files.count == 1 ? "" : "s")") }
         let shown = shownBody.isEmpty ? badges.joined(separator: "  ") : shownBody
-        messages.append(ChatMessage(role: .user, text: shown))
+        // Append the user's message FIRST — before any connectivity guard — so the text can NEVER be
+        // silently dropped (the composer already cleared the draft). A disconnected send is marked
+        // .failed and kept, retryable, instead of vanishing.
+        let msgID = UUID()
+        guard let client else {
+            messages.append(ChatMessage(id: msgID, role: .user, text: shown, delivery: .failed))
+            pendingRetry = (msgID, trimmed, imgs)
+            setError("Not connected", "You’re not connected to the daemon, so your message wasn’t sent. It’s kept below — reconnect, then tap Retry.")
+            return
+        }
+        messages.append(ChatMessage(id: msgID, role: .user, text: shown, delivery: .sending))
+        pendingRetry = (msgID, trimmed, imgs)
         busy = true
         pendingImages = []
         pendingFiles = []
         if let sid = sessionID {
-            await deliverPrompt(sessionID: sid, text: trimmed, images: imgs, allowReattach: true)
+            await deliverPrompt(sessionID: sid, text: trimmed, images: imgs, allowReattach: true, messageID: msgID)
         } else {
             do {
                 let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.sessionCreate,
@@ -506,8 +524,11 @@ public final class Model: ObservableObject {
                                                                      workspaceName: pendingWorkspaceName,
                                                                      plan: pendingPlan ? true : nil))
                 try await client.send(env)
+                markDelivery(msgID, .ok)
                 armWatchdog()
             } catch {
+                markDelivery(msgID, .failed)
+                setError("Couldn’t start the session", error.localizedDescription)
                 status = "Send failed: \(error.localizedDescription)"
                 busy = false
             }
@@ -518,22 +539,49 @@ public final class Model: ObservableObject {
     /// longer knows the session (e.g. it restarted and forgot its in-memory sessions), the
     /// underlying opencode/claude session still lives server-side, so we transparently
     /// re-attach it and retry once — instead of the chat hanging on "working…" forever.
-    private func deliverPrompt(sessionID sid: String, text: String, images: [ImageAttachment], allowReattach: Bool) async {
+    private func deliverPrompt(sessionID sid: String, text: String, images: [ImageAttachment], allowReattach: Bool, messageID: UUID? = nil) async {
         do {
             _ = try await request(MessageType.sessionPrompt,
                                   payload: SessionPrompt(sessionID: sid, text: text, images: images.isEmpty ? nil : images))
+            if let messageID { markDelivery(messageID, .ok) }
             armWatchdog()
         } catch {
             let msg = error.localizedDescription.lowercased()
             if allowReattach, msg.contains("no such session") || msg.contains("no session"),
                let revived = await reattachCurrentSync() {
-                await deliverPrompt(sessionID: revived, text: text, images: images, allowReattach: false)
+                await deliverPrompt(sessionID: revived, text: text, images: images, allowReattach: false, messageID: messageID)
                 return
             }
-            actionError = "Couldn’t send your message.\n\n\(error.localizedDescription)"
+            if let messageID { markDelivery(messageID, .failed) }
+            setError("Couldn’t send your message", error.localizedDescription)
             status = "Send failed"
             busy = false
         }
+    }
+
+    /// Sets the alert title + message together so a delivery failure isn't mislabeled as a
+    /// session-startup failure (the alert used to hardcode "Couldn't start the session").
+    public func setError(_ title: String, _ message: String) {
+        actionErrorTitle = title
+        actionError = message
+    }
+
+    /// Updates a user message's delivery badge (sending → ok/failed).
+    private func markDelivery(_ id: UUID, _ state: ChatMessage.Delivery) {
+        if let idx = messages.firstIndex(where: { $0.id == id }) { messages[idx].delivery = state }
+    }
+
+    /// Resends the last failed user message verbatim (per-message Retry affordance).
+    public func retryFailedMessage() async {
+        guard let r = pendingRetry, let idx = messages.firstIndex(where: { $0.id == r.id }) else { return }
+        messages[idx].delivery = .sending
+        guard let sid = sessionID, client != nil else {
+            messages[idx].delivery = .failed
+            setError("Not connected", "Still not connected to the daemon. Reconnect and try again.")
+            return
+        }
+        busy = true
+        await deliverPrompt(sessionID: sid, text: r.text, images: r.images, allowReattach: true, messageID: r.id)
     }
 
     /// Re-establishes the daemon's managed session for the currently open session, keeping the
@@ -599,7 +647,12 @@ public final class Model: ObservableObject {
         busy = false
         activity = nil
         finalizeStreaming()
-        actionError = "No response from the agent. It may have stopped or its backend may be unreachable — send again to retry, or check the agent."
+        // Mark the in-flight message failed (retryable) and leave a PERSISTENT transcript marker, so
+        // scrolling back shows the send stalled instead of the timeline silently healing over it.
+        if let r = pendingRetry { markDelivery(r.id, .failed) }
+        let note = "⚠️ No response from the agent — your message may not have reached it. It’s kept above; tap Retry or send again."
+        if messages.last?.text != note { messages.append(ChatMessage(role: .system, text: note)) }
+        setError("No response from the agent", "It may have stopped or its backend may be unreachable — retry the message, or check the agent.")
         status = "No response"
     }
 
@@ -1994,6 +2047,8 @@ public final class Model: ObservableObject {
                     }
                 case MessageType.sessionStatus:
                     if let ss = try? env.payload(as: SessionStatus.self), ss.sessionID == sessionID {
+                        // Any status for the active session clears its background-error badge.
+                        sessionErrors[ss.sessionID] = nil
                         bumpWatchdog() // re-arms while running; no-ops once busy clears on idle/done below
                         status = ss.status
                         activity = ss.detail
@@ -2030,6 +2085,19 @@ public final class Model: ObservableObject {
                             finalizeChildStreaming(ss.sessionID)
                         default:
                             childActivity[ss.sessionID] = ss.detail
+                        }
+                    } else if let ss = try? env.payload(as: SessionStatus.self) {
+                        // A BACKGROUND session (not active, not a child): record/clear an error so a
+                        // session whose sends stopped landing surfaces in the sidebar instead of failing
+                        // invisibly while you're looking at another session. The daemon's no-response
+                        // watchdog now emits this for ANY session, so background stalls are catchable.
+                        switch ss.status {
+                        case SessionStatusValue.error, "errored":
+                            sessionErrors[ss.sessionID] = (ss.detail?.isEmpty == false) ? ss.detail! : "The agent reported an error."
+                        case SessionStatusValue.running, SessionStatusValue.idle, SessionStatusValue.done:
+                            sessionErrors[ss.sessionID] = nil
+                        default:
+                            break
                         }
                     }
                 case MessageType.approvalRequest:

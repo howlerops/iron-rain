@@ -866,6 +866,21 @@ func (h *Hub) removeSession(id string) {
 	}
 }
 
+// detachSession removes a session from the LIVE map when its provider stream ended UNEXPECTEDLY (a
+// crashed claude-code sidecar / exited CLI), but PRESERVES the durable record + handoff so it
+// resurfaces as a stopped/restartable session instead of vanishing from every device. Contrast
+// removeSession, which is the user-initiated permanent delete.
+func (h *Hub) detachSession(id string) {
+	h.mu.Lock()
+	_, existed := h.sessions[id]
+	delete(h.sessions, id)
+	h.mu.Unlock()
+	if existed {
+		log.Printf("session %s: provider stream ended unexpectedly — kept as stopped/restartable (record preserved)", id)
+		h.broadcastSessionList()
+	}
+}
+
 // spawnChild creates a scoped sub-agent for one subtask of a parent session. The child is seeded
 // with a compact prompt (subtask + a pointer to the parent's handoff/decision doc + an optional
 // file allowlist) instead of the parent transcript, so it starts with minimal context. It runs in
@@ -2005,6 +2020,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, "not a worktree session")
 			return
 		}
+		m.markUserStopped() // worktree teardown is an intentional delete, not a crash to preserve
 		_ = m.sess.Stop(ctx)
 		_ = m.sess.Close()
 		if len(m.meta.members) > 0 {
@@ -2628,6 +2644,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		var req protocol.SessionRef
 		_ = env.Unmarshal(&req)
 		if m := h.managed(req.SessionID); m != nil {
+			m.markUserStopped() // intentional delete → run() drops the record (not a crash to preserve)
 			_ = m.sess.Stop(ctx) // interrupt any running turn
 			_ = m.sess.Close()   // end the event stream -> run() -> removeSession (drops the record)
 			h.removeSession(req.SessionID)
