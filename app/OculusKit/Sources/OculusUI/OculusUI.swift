@@ -570,13 +570,22 @@ public final class Model: ObservableObject {
 
     /// Arms the no-response watchdog: if the agent produces nothing within the window while
     /// we're still "busy", clear the spinner and prompt a retry. Any live event cancels it.
-    private func armWatchdog() {
+    private func armWatchdog(seconds: Double = 25) {
         cancelWatchdog()
         watchdogTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 25_000_000_000) // 25s
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             guard !Task.isCancelled else { return }
             self?.watchdogFired()
         }
+    }
+
+    /// Reset the no-response watchdog on live activity. Progress events used to just CANCEL it, so a
+    /// turn that started then hung mid-way (a stuck opencode/claude turn) left the app "thinking"
+    /// forever with nothing to catch it. Re-arming on each event with a generous window means a real
+    /// mid-turn stall (no events for ~2 min) surfaces "no response — send again" instead of hanging.
+    private func bumpWatchdog() {
+        guard busy else { cancelWatchdog(); return }
+        armWatchdog(seconds: 120)
     }
 
     private func cancelWatchdog() { watchdogTask?.cancel(); watchdogTask = nil }
@@ -1878,7 +1887,7 @@ public final class Model: ObservableObject {
                     }
                 case MessageType.sessionMessage:
                     if let m = try? env.payload(as: SessionMessage.self), m.sessionID == sessionID {
-                        cancelWatchdog()
+                        bumpWatchdog()
                         let role: ChatMessage.Role = m.role == "user" ? .user : (m.role == "tool" ? .tool : .assistant)
                         let trimmed = m.text.trimmingCharacters(in: .whitespacesAndNewlines)
                         // Skip the echo of our own just-sent user turn (appended locally for instant feedback).
@@ -1903,20 +1912,20 @@ public final class Model: ObservableObject {
                     }
                 case MessageType.thinking:
                     if let t = try? env.payload(as: Thinking.self), t.sessionID == sessionID {
-                        cancelWatchdog()
                         appendThinkingDelta(t.text)
                         busy = true
+                        bumpWatchdog() // reset AFTER busy=true so a mid-turn stall is still caught
                     }
                 case MessageType.outputDelta:
                     if let d = try? env.payload(as: OutputDelta.self), d.sessionID == sessionID {
-                        cancelWatchdog()
+                        bumpWatchdog()
                         appendAssistantDelta(d.text)
                     } else if let d = try? env.payload(as: OutputDelta.self), childMessages[d.sessionID] != nil {
                         appendChildDelta(d.sessionID, d.text)
                     }
                 case MessageType.sessionStatus:
                     if let ss = try? env.payload(as: SessionStatus.self), ss.sessionID == sessionID {
-                        cancelWatchdog()
+                        bumpWatchdog() // re-arms while running; no-ops once busy clears on idle/done below
                         status = ss.status
                         activity = ss.detail
                         switch ss.status {

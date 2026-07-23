@@ -647,11 +647,25 @@ func (s *session) sendParts(parts []map[string]any) error {
 		ctx = context.Background()
 	}
 	go func() {
-		// postJSONLong (un-timed): the message POST blocks for the WHOLE turn, so a bounded client
-		// would spuriously "context deadline exceeded" on any long plan/multi-agent turn.
-		if err := s.p.postJSONLong(ctx, withDir("/session/"+s.id+"/message", s.dir), body, nil); err != nil && ctx.Err() == nil {
-			log.Printf("opencode: POST message sid=%s failed: %v", s.id, err)
-			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusError, Detail: "opencode: " + err.Error()}})
+		// The message POST blocks for the WHOLE turn, so a tight bound would spuriously fail long
+		// plan/multi-agent turns (that was the old 30s bug). But leaving it UNBOUNDED means a genuinely
+		// hung opencode turn sits silently forever — no log, no error, the app stuck "thinking". So:
+		// bound it generously (30 min — longer than any real single turn) and LOG start + outcome, so
+		// a hang both surfaces as an error the app can clear AND is visible in the log.
+		pctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+		defer cancel()
+		start := time.Now()
+		log.Printf("opencode: POST message sid=%s (turn start)", s.id)
+		err := s.p.doPost(pctx, withDir("/session/"+s.id+"/message", s.dir), body, nil, s.p.http) // pctx bounds it
+		if err != nil && ctx.Err() == nil {
+			detail := err.Error()
+			if pctx.Err() == context.DeadlineExceeded {
+				detail = "the turn ran past 30 min with no result — it may be stuck; try again or interrupt"
+			}
+			log.Printf("opencode: POST message sid=%s FAILED after %s: %v", s.id, time.Since(start).Round(time.Second), err)
+			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusError, Detail: "opencode: " + detail}})
+		} else if err == nil {
+			log.Printf("opencode: POST message sid=%s turn returned after %s", s.id, time.Since(start).Round(time.Second))
 		}
 	}()
 	return nil
