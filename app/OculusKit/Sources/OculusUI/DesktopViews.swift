@@ -210,6 +210,7 @@ public struct RootView: View {
     @AppStorage("oculus.appearance") private var appearance: Appearance = .system
     #if os(macOS)
     @StateObject private var launcher = DaemonLauncher()
+    @StateObject private var loginItem = LoginItemManager()
     #endif
 
     public init(store: DesktopStore) { self.store = store }
@@ -324,6 +325,9 @@ public struct RootView: View {
                                onReview: { sid in reviewSessionID = sid; selectedTab = 2 },
                                onTakeOver: { newSessionTakeOver = true; showNewSession = true },
                                onCheckForUpdates: { checkForUpdates = true },
+                               loginAtLogin: loginItem.enabled,
+                               loginAtLoginError: loginItem.lastError,
+                               onToggleLoginAtLogin: { on in Task { await loginItem.setEnabled(on, launcher: launcher) } },
                                onOpenLoops: { panel = .loops },
                                onOpenAgents: { panel = .agents })
                     .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 340)

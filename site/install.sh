@@ -10,6 +10,9 @@ set -eu
 REPO="${OCULUS_REPO:-howlerops/iron-rain}"
 BIN="${OCULUS_BIN:-$HOME/.local/bin}"
 REL="https://github.com/$REPO/releases/latest/download"
+# macOS launchd agent: keeps the daemon alive across reboots/crashes (set OCULUS_NO_AGENT=1 to skip).
+AGENT_LABEL="com.howlerops.oculusd"
+AGENT_PLIST="$HOME/Library/LaunchAgents/$AGENT_LABEL.plist"
 
 say() { printf '\033[33m→\033[0m %s\n' "$1"; }
 ok()  { printf '\033[32m✓\033[0m %s\n' "$1"; }
@@ -46,6 +49,9 @@ fi
 # Stop it so the new binary is (re)started below / by the app.
 if daemon_up; then
   say "stopping the running daemon so the update takes effect…"
+  # If a launchd agent owns it, bootout first — otherwise KeepAlive instantly relaunches the OLD
+  # binary and the update never takes hold. Section 1b re-loads it (new binary) below.
+  if [ "$os" = "darwin" ]; then launchctl bootout "gui/$(id -u)/$AGENT_LABEL" 2>/dev/null || true; fi
   pkill -x oculusd 2>/dev/null || true
   for _ in 1 2 3 4 5; do daemon_up || break; sleep 1; done
   # pkill -x matches only a process named exactly "oculusd". If something else is still holding
@@ -55,6 +61,42 @@ if daemon_up; then
     say "port 6000 still held by PID $(port_pids) — freeing it…"
     kill $(port_pids) 2>/dev/null || true
     for _ in 1 2 3 4 5; do daemon_up || break; sleep 1; done
+  fi
+fi
+
+# --- 1b. Auto-start at login (macOS launchd agent) ---
+# Without this the daemon only runs while the app is open (it's spawned as an app child), so a
+# reboot leaves it down until you relaunch the app — and any session that can't be re-attached is
+# lost. RunAtLoad starts it at login; KeepAlive restarts it if it crashes. The app defers to
+# whatever already answers :6000, so the two never fight.
+if [ "$os" = "darwin" ] && [ "${OCULUS_NO_AGENT:-0}" != "1" ]; then
+  mkdir -p "$HOME/Library/LaunchAgents" "$HOME/.oculus"
+  cat >"$AGENT_PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>$AGENT_LABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${SHELL:-/bin/zsh}</string>
+        <string>-lc</string>
+        <string>exec "$BIN/oculusd" serve --addr 0.0.0.0:6000</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>ProcessType</key><string>Background</string>
+    <key>StandardOutPath</key><string>$HOME/.oculus/oculusd.log</string>
+    <key>StandardErrorPath</key><string>$HOME/.oculus/oculusd.log</string>
+</dict>
+</plist>
+PLIST
+  launchctl bootout "gui/$(id -u)/$AGENT_LABEL" 2>/dev/null || true
+  if launchctl bootstrap "gui/$(id -u)" "$AGENT_PLIST" 2>/dev/null || launchctl load -w "$AGENT_PLIST" 2>/dev/null; then
+    for _ in 1 2 3 4 5; do daemon_up && break; sleep 1; done
+    ok "daemon set to start at login (auto-restarts on crash). Toggle it off in the app's ⋯ menu."
+  else
+    say "couldn't load the launch agent — the app will still start the daemon when open."
   fi
 fi
 
@@ -76,6 +118,16 @@ if [ "$os" = "darwin" ] && [ "${OCULUS_NO_APP:-0}" != "1" ]; then
 fi
 
 # --- 3. Headless / no app: start the daemon directly ---
+# On macOS the launchd agent (section 1b) already owns startup, so don't also nohup a second
+# copy (that would just fail to bind :6000). Verify the agent's daemon is up and we're done.
+if [ "$os" = "darwin" ] && [ "${OCULUS_NO_AGENT:-0}" != "1" ]; then
+  for _ in 1 2 3 4 5; do daemon_up && break; sleep 1; done
+  daemon_up && ok "daemon running via launchd (log: ~/.oculus/oculusd.log). Scan the pairing QR there." \
+             || die "the daemon didn't come up. Last lines of ~/.oculus/oculusd.log:
+$(tail -5 "$HOME/.oculus/oculusd.log" 2>/dev/null)"
+  case ":$PATH:" in *":$BIN:"*) : ;; *) printf '\033[33m!\033[0m add %s to your PATH: echo '\''export PATH="%s:$PATH"'\'' >> ~/.zshrc\n' "$BIN" "$BIN" ;; esac
+  exit 0
+fi
 if daemon_up; then
   # Still up after we tried to stop + free the port → a process we couldn't stop is squatting :6000.
   die "port 6000 is in use by another process (PID $(port_pids)) that couldn't be stopped. Stop it, then re-run."

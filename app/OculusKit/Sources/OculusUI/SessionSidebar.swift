@@ -80,6 +80,11 @@ struct SessionSidebar: View {
     var onTakeOver: (() -> Void)? = nil
     /// macOS: Settings → "Check for updates". The banner (RootView-level) owns the actual check.
     var onCheckForUpdates: (() -> Void)? = nil
+    /// macOS: whether the daemon is set to start at login (a launchd LaunchAgent). RootView owns
+    /// the LoginItemManager; this is its current state + a toggle handler.
+    var loginAtLogin: Bool = false
+    var loginAtLoginError: String? = nil
+    var onToggleLoginAtLogin: ((Bool) -> Void)? = nil
     /// Opens the Loops (recurring autonomous workflows) sheet.
     var onOpenLoops: (() -> Void)? = nil
     var onOpenAgents: (() -> Void)? = nil
@@ -316,6 +321,16 @@ struct SessionSidebar: View {
                 #if os(macOS)
                 if let onCheckForUpdates {
                     Button { onCheckForUpdates() } label: { Label("Check for updates…", systemImage: "arrow.down.circle") }
+                }
+                if let onToggleLoginAtLogin {
+                    Divider()
+                    Toggle(isOn: Binding(get: { loginAtLogin }, set: { onToggleLoginAtLogin($0) })) {
+                        Label("Start daemon at login", systemImage: "power")
+                    }
+                    .help("Keep the daemon running across reboots (a launchd agent) so sessions survive and reconnect without opening the app.")
+                    if let err = loginAtLoginError {
+                        Label(err, systemImage: "exclamationmark.triangle").foregroundStyle(.red)
+                    }
                 }
                 #endif
                 Button(role: .destructive) { model.disconnect() } label: { Label("Disconnect", systemImage: "bolt.horizontal.circle") }
