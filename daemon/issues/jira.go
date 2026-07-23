@@ -208,8 +208,12 @@ func jiraCategory(key string) string {
 func (j *Jira) ListAssigned(ctx context.Context) ([]Issue, error) {
 	q := url.Values{}
 	q.Set("jql", "assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC")
-	// customfield_10020 is the standard Jira sprint field (its id varies per instance; parsed defensively).
-	q.Set("fields", "summary,status,priority,project,updated,assignee,issuetype,description,customfield_10020")
+	// NB: Jira's /search/jql 400s the ENTIRE request if `fields` names a field id that doesn't exist
+	// on the instance — so we must NOT hardcode the sprint custom field here (its id varies per
+	// instance; customfield_10020 is only the *default*). Sprint needs dynamic field-id discovery
+	// (GET /rest/api/3/field → the gh-sprint field) before it can be requested safely; until then we
+	// omit it so tickets always load. See Sprint parsing below (stays empty for now).
+	q.Set("fields", "summary,status,priority,project,updated,assignee,issuetype,description")
 	q.Set("maxResults", "50")
 	var data struct {
 		Issues []struct {
@@ -519,7 +523,8 @@ func (j *Jira) Detail(ctx context.Context, issueKey string) (Issue, []Comment, [
 			} `json:"attachment"`
 		} `json:"fields"`
 	}
-	if err := j.do(ctx, http.MethodGet, "/rest/api/3/issue/"+issueKey+"?fields=summary,description,status,project,updated,priority,assignee,comment,attachment,customfield_10020", nil, &data); err != nil {
+	// Omit the sprint custom field here too (see ListAssigned) so a bad field id can't fail the read.
+	if err := j.do(ctx, http.MethodGet, "/rest/api/3/issue/"+issueKey+"?fields=summary,description,status,project,updated,priority,assignee,comment,attachment", nil, &data); err != nil {
 		return Issue{}, nil, nil, err
 	}
 	sprintName, sprintState := jiraSprint(data.Fields.Sprint)

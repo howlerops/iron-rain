@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -330,12 +331,14 @@ func (m *Manager) Refresh(ctx context.Context) error {
 				// Surface the failure so a "connected but nothing loading" tracker shows WHY
 				// (e.g. an expired token or a bad cloud id) via the reconnect pill, instead of
 				// silently swallowing it here — the poll discards Refresh's returned error.
+				log.Printf("issues: %s ListAssigned FAILED: %v", name, err)
 				errs[name] = name + ": " + err.Error()
 				if firstErr == nil {
 					firstErr = err
 				}
 				return
 			}
+			log.Printf("issues: %s fetched %d issue(s)", name, len(got))
 			merged = append(merged, got...)
 		}(np.name, np.p)
 	}
