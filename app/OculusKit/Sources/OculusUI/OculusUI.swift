@@ -72,6 +72,11 @@ public final class Model: ObservableObject {
     @Published public var discovered: [Discovered] = []
     @Published public var busy = false { didSet { refreshLiveActivity() } } // agent is producing output; drives the Live Activity
     @Published public var activity: String? // current step, e.g. "running bash"
+    // Sub-agent (child session) inline transcripts. When a child card is expanded, we subscribe to
+    // its session and stream its tool calls + outputs into its own buffer — without leaving the parent.
+    @Published public var childMessages: [String: [ChatMessage]] = [:] // child session id → its messages
+    @Published public var childActivity: [String: String] = [:]        // child id → current tool activity
+    @Published public var expandedChildIDs: Set<String> = []           // which child cards are open
     @Published public var pairingPublicURL: String? // reachable URL for the phone-pairing QR
     /// Live LSP diagnostics keyed by file path (editor underlines + the problems list).
     @Published public var diagnostics: [String: [LSPDiagnostic]] = [:]
@@ -172,6 +177,9 @@ public final class Model: ObservableObject {
     /// While true, skip replayed transcript messages that duplicate ones already shown
     /// (set briefly around a live re-attach so reviving a session doesn't double the chat).
     private var dedupReplay = false
+    /// Child sessions we've already sent a sessionSubscribe for — so expanding a card twice (or
+    /// collapse+re-expand) doesn't re-subscribe. Kept across collapse; cleared on parent switch.
+    private var subscribedChildIDs: Set<String> = []
     private var reconnectWanted = false
     private var reconnecting = false
     #if os(iOS)
@@ -1236,6 +1244,7 @@ public final class Model: ObservableObject {
             currentSession = s
             messages.removeAll()
             todos = []; pendingApproval = nil; busy = false; lastDiff = nil
+            clearChildState()
             UserDefaults.standard.set(id, forKey: lastSessionKey)
             return
         }
@@ -1247,12 +1256,31 @@ public final class Model: ObservableObject {
         pendingApproval = nil
         busy = false
         lastDiff = nil
+        clearChildState() // a new parent session starts with no expanded/subscribed children
         UserDefaults.standard.set(id, forKey: lastSessionKey) // remember for auto-reopen next launch
         if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.sessionSubscribe, payload: SessionRef(sessionID: id)) {
             try? await client.send(env)
         }
         await loadCommands(sessionID: id)
         await loadModels(sessionID: id)
+    }
+
+    /// Expands/collapses a sub-agent's inline transcript. On first expand, subscribes to the child
+    /// session so its tool calls + outputs stream live into `childMessages[id]` — without leaving the
+    /// parent. The subscription + buffer are kept on collapse (cheap; avoids re-replay churn); collapse
+    /// just hides the body.
+    public func toggleChildExpanded(_ id: String) {
+        if expandedChildIDs.contains(id) {
+            expandedChildIDs.remove(id)
+            return
+        }
+        expandedChildIDs.insert(id)
+        if childMessages[id] == nil { childMessages[id] = [] }
+        guard !subscribedChildIDs.contains(id) else { return }
+        subscribedChildIDs.insert(id)
+        if let client, let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.sessionSubscribe, payload: SessionRef(sessionID: id)) {
+            Task { try? await client.send(env) }
+        }
     }
 
     /// Re-creates a stopped session as a FRESH conversation in the same folder/agent/model and opens
@@ -1751,6 +1779,37 @@ public final class Model: ObservableObject {
         messages.append(ChatMessage(role: .tool, text: text))
     }
 
+    // MARK: sub-agent (child) transcript buffers
+
+    /// Resets all inline child-transcript state — called on parent-session switch so a new session
+    /// starts clean (no stale expanded cards, buffers, or lingering subscriptions).
+    private func clearChildState() {
+        childMessages.removeAll()
+        childActivity.removeAll()
+        expandedChildIDs.removeAll()
+        subscribedChildIDs.removeAll()
+    }
+
+    /// Per-child version of appendAssistantDelta: fold streamed output into the child's last message
+    /// if it's a streaming assistant, else start a new one. No throttled flush — a child transcript
+    /// is a secondary peek, so a direct append keeps it simple.
+    private func appendChildDelta(_ sid: String, _ text: String) {
+        var buf = childMessages[sid] ?? []
+        if let last = buf.last, last.role == .assistant, last.streaming {
+            buf[buf.count - 1].text += text
+        } else {
+            buf.append(ChatMessage(role: .assistant, text: text, streaming: true))
+        }
+        childMessages[sid] = buf
+    }
+
+    /// Seals any in-flight streaming assistant message in a child's buffer.
+    private func finalizeChildStreaming(_ sid: String) {
+        guard var buf = childMessages[sid], let last = buf.last, last.role == .assistant, last.streaming else { return }
+        buf[buf.count - 1].streaming = false
+        childMessages[sid] = buf
+    }
+
     // MARK: receive loop
 
     private func receiveLoop() async {
@@ -1834,6 +1893,13 @@ public final class Model: ObservableObject {
                         }
                         finalizeStreaming()
                         messages.append(ChatMessage(role: role, text: m.text))
+                    } else if let m = try? env.payload(as: SessionMessage.self), childMessages[m.sessionID] != nil {
+                        // A subscribed sub-agent's message — route into its own buffer, never the main
+                        // transcript. Tool calls arrive as role=="tool" with Text=the tool name; keep
+                        // them — they ARE the child's tool-call list.
+                        let role: ChatMessage.Role = m.role == "user" ? .user : (m.role == "tool" ? .tool : .assistant)
+                        finalizeChildStreaming(m.sessionID)
+                        childMessages[m.sessionID, default: []].append(ChatMessage(role: role, text: m.text))
                     }
                 case MessageType.thinking:
                     if let t = try? env.payload(as: Thinking.self), t.sessionID == sessionID {
@@ -1845,6 +1911,8 @@ public final class Model: ObservableObject {
                     if let d = try? env.payload(as: OutputDelta.self), d.sessionID == sessionID {
                         cancelWatchdog()
                         appendAssistantDelta(d.text)
+                    } else if let d = try? env.payload(as: OutputDelta.self), childMessages[d.sessionID] != nil {
+                        appendChildDelta(d.sessionID, d.text)
                     }
                 case MessageType.sessionStatus:
                     if let ss = try? env.payload(as: SessionStatus.self), ss.sessionID == sessionID {
@@ -1874,6 +1942,17 @@ public final class Model: ObservableObject {
                             // approval replaces it.
                         }
                         refreshLiveActivity()
+                    } else if let ss = try? env.payload(as: SessionStatus.self), childMessages[ss.sessionID] != nil {
+                        // A subscribed sub-agent's status — drive its inline card's activity chip only,
+                        // never the main session's busy/activity. On idle/done/error, clear the chip and
+                        // seal any streaming output.
+                        switch ss.status {
+                        case SessionStatusValue.idle, SessionStatusValue.done, SessionStatusValue.error, "errored":
+                            childActivity[ss.sessionID] = nil
+                            finalizeChildStreaming(ss.sessionID)
+                        default:
+                            childActivity[ss.sessionID] = ss.detail
+                        }
                     }
                 case MessageType.approvalRequest:
                     if let ar = try? env.payload(as: ApprovalRequest.self), ar.sessionID == sessionID {

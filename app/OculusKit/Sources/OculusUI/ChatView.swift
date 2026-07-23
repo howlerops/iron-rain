@@ -751,7 +751,7 @@ struct SubAgentsStrip: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("Sub-agents").font(.caption2.bold()).foregroundStyle(palette.mutedForeground)
                 Spacer()
@@ -759,40 +759,89 @@ struct SubAgentsStrip: View {
                     .font(.caption2.monospacedDigit()).foregroundStyle(palette.mutedForeground)
             }
             .padding(.horizontal, 12)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(children) { child in
-                        Button { Task { await model.openSession(child.id) } } label: {
-                            childChip(child)
-                        }
-                        .buttonStyle(.plain)
-                    }
+            VStack(spacing: 6) {
+                ForEach(children) { child in
+                    childCard(child)
                 }
-                .padding(.horizontal, 12)
             }
+            .padding(.horizontal, 12)
         }
         .padding(.vertical, 7)
         .background(palette.secondary.opacity(0.35))
     }
 
-    private func childChip(_ child: Session) -> some View {
+    /// One sub-agent as an expandable lane: a tappable header (chevron · pulse · subtask · live
+    /// tool-activity · state/todos · cost · open-full) over an inline, scrollable transcript that
+    /// streams the child's tool calls + outputs while expanded.
+    @ViewBuilder
+    private func childCard(_ child: Session) -> some View {
         let hb = model.heartbeats[child.id]
-        return HStack(spacing: 6) {
-            RunningPulseDot(color: dotColor(hb), active: isRunning(child, hb))
-            VStack(alignment: .leading, spacing: 1) {
-                Text(child.subtask ?? child.workspaceName ?? "subtask").font(.caption.bold())
-                    .lineLimit(1).frame(maxWidth: 180, alignment: .leading)
-                if let hb, hb.todosTotal > 0 {
-                    Text("\(stateLabel(hb.state)) · \(hb.todosDone)/\(hb.todosTotal)")
-                        .font(.caption2).foregroundStyle(palette.mutedForeground)
-                } else if let hb {
-                    Text(stateLabel(hb.state)).font(.caption2).foregroundStyle(palette.mutedForeground)
+        let expanded = model.expandedChildIDs.contains(child.id)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    .font(.caption2).foregroundStyle(palette.mutedForeground).frame(width: 10)
+                RunningPulseDot(color: dotColor(hb), active: isRunning(child, hb))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(child.subtask ?? child.workspaceName ?? "subtask").font(.caption.bold())
+                        .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                    if let hb, hb.todosTotal > 0 {
+                        Text("\(stateLabel(hb.state)) · \(hb.todosDone)/\(hb.todosTotal)")
+                            .font(.caption2).foregroundStyle(palette.mutedForeground)
+                    } else if let hb {
+                        Text(stateLabel(hb.state)).font(.caption2).foregroundStyle(palette.mutedForeground)
+                    }
                 }
+                if isRunning(child, hb) {
+                    ToolActivityView(activity: model.childActivity[child.id], palette: palette, compact: true)
+                }
+                if let cost = child.costUSD, cost > 0 {
+                    Text(String(format: "$%.3f", cost)).font(.caption2.monospacedDigit())
+                        .foregroundStyle(palette.mutedForeground)
+                }
+                // Distinct from expanding (an inline peek): open the child as the full active session.
+                Button { Task { await model.openSession(child.id) } } label: {
+                    Image(systemName: "arrow.up.forward.app").font(.caption)
+                        .foregroundStyle(palette.mutedForeground)
+                }
+                .buttonStyle(.plain)
+                .help("Open as full session")
             }
+            .contentShape(Rectangle())
+            .onTapGesture { model.toggleChildExpanded(child.id) }
+            if expanded { childTranscript(child) }
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
         .background(palette.background, in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(palette.border))
+    }
+
+    /// The nested lane: a bordered, scrollable compact transcript of the child's messages (reusing
+    /// MessageRow), tinted secondary so it reads as a sub-conversation. A max height + internal scroll
+    /// keeps it from shoving the main transcript around.
+    @ViewBuilder
+    private func childTranscript(_ child: Session) -> some View {
+        let msgs = model.childMessages[child.id] ?? []
+        VStack(spacing: 0) {
+            Divider().padding(.vertical, 6)
+            if msgs.isEmpty {
+                Text("waiting for activity…")
+                    .font(.caption2).italic().foregroundStyle(palette.mutedForeground)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 8).padding(.horizontal, 6)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(msgs) { m in
+                            MessageRow(message: m, palette: palette)
+                        }
+                    }
+                    .padding(.vertical, 4).padding(.horizontal, 6)
+                }
+                .frame(maxHeight: 260)
+            }
+        }
+        .background(palette.secondary.opacity(0.25), in: RoundedRectangle(cornerRadius: 6))
     }
 
     private func isRunning(_ child: Session, _ hb: SessionHeartbeat?) -> Bool {
