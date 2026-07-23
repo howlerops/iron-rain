@@ -110,10 +110,14 @@ func (h *Hub) SetStore(s *store.Store) {
 // creating + bootstrapping a git worktree, and merging extra metadata (e.g. an issue
 // link). It does NOT subscribe a client or start the run loop; the caller does that.
 func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta sessionMeta) (*managedSession, error) {
+	t0 := time.Now()
+	log.Printf("session.create: provider=%s project=%s projects=%v worktree=%v plan=%v prompt=%dB",
+		req.Provider, req.ProjectID, req.ProjectIDs, req.Worktree, req.Plan, len(req.Prompt))
 	h.mu.Lock()
 	p := h.providers[req.Provider]
 	h.mu.Unlock()
 	if p == nil {
+		log.Printf("session.create: FAILED — unknown provider %q", req.Provider)
 		return nil, fmt.Errorf("unknown provider: %s", req.Provider)
 	}
 	cwd := req.Cwd
@@ -150,10 +154,14 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 			if name == "" {
 				name = "workspace-" + randToken()
 			}
+			log.Printf("session.create: building %d-repo isolated workspace %q (a git worktree per repo)…", len(paths), name)
+			wt0 := time.Now()
 			layout, members, err := worktree.CreateWorkspace("", name, paths)
 			if err != nil {
+				log.Printf("session.create: FAILED — workspace setup: %v", err)
 				return nil, fmt.Errorf("workspace setup failed: %w", err)
 			}
+			log.Printf("session.create: workspace %q ready at %s (%d members) in %s", name, layout, len(members), time.Since(wt0).Round(time.Millisecond))
 			cwd = layout
 			meta.members = members
 			meta.workspaceName = name
@@ -248,6 +256,8 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 		createPrompt = multiRepoNote + createPrompt
 		multiRepoNote = ""
 	}
+	log.Printf("session.create: starting %s in %s (plan=%v)…", req.Provider, cwd, req.Plan)
+	pc0 := time.Now()
 	var sess agent.Session
 	var err error
 	if req.Plan {
@@ -260,8 +270,10 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 		sess, err = p.Create(ctx, cwd, createPrompt)
 	}
 	if err != nil {
+		log.Printf("session.create: FAILED — provider %s start: %v", req.Provider, err)
 		return nil, err
 	}
+	log.Printf("session.create: %s session %s started in %s", req.Provider, sess.ID(), time.Since(pc0).Round(time.Millisecond))
 	if len(req.Images) > 0 {
 		text := req.Prompt
 		if multiRepoNote != "" {
@@ -282,6 +294,7 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 	}
 	ms.pendingContext = multiRepoNote
 	ms.mu.Unlock()
+	log.Printf("session.create: DONE — session %s ready in %s", sess.ID(), time.Since(t0).Round(time.Millisecond))
 	return ms, nil
 }
 
@@ -1387,7 +1400,11 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, "bad session.create")
 			return
 		}
-		m, err := h.startSession(ctx, req, sessionMeta{})
+		// Bound the whole create so a hung worktree/provider start surfaces as an error the app can
+		// show, instead of leaving it forever on the "starting session" spinner.
+		cctx, ccancel := context.WithTimeout(ctx, 3*time.Minute)
+		m, err := h.startSession(cctx, req, sessionMeta{})
+		ccancel()
 		if err != nil {
 			h.sendErr(conn, env.ID, err.Error())
 			return
