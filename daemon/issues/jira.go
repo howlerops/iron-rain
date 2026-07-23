@@ -152,6 +152,45 @@ func (j *Jira) refresh(ctx context.Context) error {
 	return nil
 }
 
+// adfNode is a node in Atlassian Document Format (Jira Cloud's rich-text JSON for descriptions).
+type adfNode struct {
+	Type    string    `json:"type"`
+	Text    string    `json:"text"`
+	Content []adfNode `json:"content"`
+}
+
+// adfToText flattens ADF to plain text — concatenating text nodes with newlines between blocks — so
+// a Jira description imports as readable body text instead of being dropped (it's an object, not a
+// string, so the old `Description string` silently parsed to empty). "" for null/empty/unparseable.
+func adfToText(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var node adfNode
+	if err := json.Unmarshal(raw, &node); err != nil {
+		return "" // some tokens/instances return a plain string or nothing — don't error the whole list
+	}
+	var b strings.Builder
+	adfWalk(&node, &b)
+	return strings.TrimSpace(b.String())
+}
+
+func adfWalk(n *adfNode, b *strings.Builder) {
+	switch n.Type {
+	case "text":
+		b.WriteString(n.Text)
+	case "hardBreak":
+		b.WriteByte('\n')
+	}
+	for i := range n.Content {
+		adfWalk(&n.Content[i], b)
+	}
+	switch n.Type { // block nodes end with a newline so paragraphs/list items separate
+	case "paragraph", "heading", "listItem", "blockquote", "codeBlock", "rule":
+		b.WriteByte('\n')
+	}
+}
+
 // jiraCategory maps Jira's statusCategory key to our normalized category.
 func jiraCategory(key string) string {
 	switch key {
@@ -169,16 +208,17 @@ func jiraCategory(key string) string {
 func (j *Jira) ListAssigned(ctx context.Context) ([]Issue, error) {
 	q := url.Values{}
 	q.Set("jql", "assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC")
-	q.Set("fields", "summary,status,priority,project,updated")
+	q.Set("fields", "summary,status,priority,project,updated,assignee,issuetype,description")
 	q.Set("maxResults", "50")
 	var data struct {
 		Issues []struct {
 			ID     string `json:"id"`
 			Key    string `json:"key"`
 			Fields struct {
-				Summary string `json:"summary"`
-				Updated string `json:"updated"`
-				Status  struct {
+				Summary     string          `json:"summary"`
+				Updated     string          `json:"updated"`
+				Description json.RawMessage `json:"description"` // ADF object on Jira Cloud
+				Status      struct {
 					Name           string `json:"name"`
 					StatusCategory struct {
 						Key string `json:"key"`
@@ -187,6 +227,12 @@ func (j *Jira) ListAssigned(ctx context.Context) ([]Issue, error) {
 				Priority struct {
 					Name string `json:"name"`
 				} `json:"priority"`
+				Assignee struct {
+					DisplayName string `json:"displayName"`
+				} `json:"assignee"`
+				IssueType struct {
+					Name string `json:"name"`
+				} `json:"issuetype"`
 				Project struct {
 					ID, Key string
 				} `json:"project"`
@@ -200,12 +246,33 @@ func (j *Jira) ListAssigned(ctx context.Context) ([]Issue, error) {
 	for _, is := range data.Issues {
 		out = append(out, Issue{
 			ID: is.Key, Key: is.Key, Title: is.Fields.Summary,
-			Status: is.Fields.Status.Name, Category: jiraCategory(is.Fields.Status.StatusCategory.Key),
+			Body:     adfToText(is.Fields.Description),
+			Status:   is.Fields.Status.Name, Category: jiraCategory(is.Fields.Status.StatusCategory.Key),
+			Assignee: is.Fields.Assignee.DisplayName, Priority: jiraPriority(is.Fields.Priority.Name),
 			Provider: "jira", TeamID: is.Fields.Project.Key, BranchName: branchNameFor(is.Key, is.Fields.Summary),
 			URL: j.base + "/browse/" + is.Key, UpdatedAt: is.Fields.Updated,
 		})
 	}
 	return out, nil
+}
+
+// jiraPriority maps Jira's named priorities to our numeric scale (1 = highest/urgent → red dot),
+// matching Linear's convention so the board renders both consistently. 0 = none/unset.
+func jiraPriority(name string) int {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "highest", "urgent", "blocker", "critical":
+		return 1
+	case "high", "major":
+		return 2
+	case "medium", "normal":
+		return 3
+	case "low", "minor":
+		return 4
+	case "lowest", "trivial":
+		return 5
+	default:
+		return 0
+	}
 }
 
 // WorkflowStates returns the issue's available transitions as columns (Jira transitions
@@ -254,26 +321,33 @@ func (j *Jira) Detail(ctx context.Context, issueKey string) (Issue, []Comment, e
 		ID     string `json:"id"`
 		Key    string `json:"key"`
 		Fields struct {
-			Summary     string `json:"summary"`
-			Description string `json:"description"`
-			Updated     string `json:"updated"`
+			Summary     string          `json:"summary"`
+			Description json.RawMessage `json:"description"` // ADF object
+			Updated     string          `json:"updated"`
 			Status      struct {
 				Name           string `json:"name"`
 				StatusCategory struct {
 					Key string `json:"key"`
 				} `json:"statusCategory"`
 			} `json:"status"`
+			Priority struct {
+				Name string `json:"name"`
+			} `json:"priority"`
+			Assignee struct {
+				DisplayName string `json:"displayName"`
+			} `json:"assignee"`
 			Project struct {
 				ID, Key string
 			} `json:"project"`
 		} `json:"fields"`
 	}
-	if err := j.do(ctx, http.MethodGet, "/rest/api/3/issue/"+issueKey+"?fields=summary,description,status,project,updated", nil, &data); err != nil {
+	if err := j.do(ctx, http.MethodGet, "/rest/api/3/issue/"+issueKey+"?fields=summary,description,status,project,updated,priority,assignee", nil, &data); err != nil {
 		return Issue{}, nil, err
 	}
 	return Issue{
-		ID: data.Key, Key: data.Key, Title: data.Fields.Summary, Body: data.Fields.Description,
+		ID: data.Key, Key: data.Key, Title: data.Fields.Summary, Body: adfToText(data.Fields.Description),
 		Status: data.Fields.Status.Name, Category: jiraCategory(data.Fields.Status.StatusCategory.Key),
+		Assignee: data.Fields.Assignee.DisplayName, Priority: jiraPriority(data.Fields.Priority.Name),
 		Provider: "jira", TeamID: data.Fields.Project.Key,
 		BranchName: branchNameFor(data.Key, data.Fields.Summary),
 		URL:        j.base + "/browse/" + data.Key, UpdatedAt: data.Fields.Updated,
