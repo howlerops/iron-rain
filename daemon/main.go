@@ -37,12 +37,15 @@ import (
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/push"
 	"github.com/howlerops/oculus/daemon/relay"
+	"github.com/howlerops/oculus/daemon/selfupdate"
 	"github.com/howlerops/oculus/daemon/server"
 	"github.com/howlerops/oculus/daemon/slack"
 	"github.com/howlerops/oculus/daemon/store"
 )
 
-const version = "0.0.0-dev"
+// version is stamped at build time via -ldflags "-X main.version=<tag>" (see .github/workflows/
+// release.yml). A dev build keeps the placeholder, which disables self-update.
+var version = "0.0.0-dev"
 
 // defaultRelayURL is the comma-separated list of shared relays a daemon registers on by default so
 // the app can reach it from anywhere (off-LAN) with zero setup. The app races them (plus LAN), so
@@ -107,6 +110,11 @@ func serve(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+
+	// Keep the daemon in lockstep with releases: if a newer one exists, self-update + re-exec BEFORE
+	// binding, so every (re)start runs the latest. No-op for dev builds / non-installs. This is why
+	// updating the app (which restarts the daemon) now also updates the daemon.
+	selfupdate.MaybeUpdateAndReexec(version)
 
 	kp, err := loadOrCreateKey(*keyPath)
 	if err != nil {
@@ -178,6 +186,17 @@ func serve(args []string) error {
 	go h.RestoreSessions(context.Background(), sessionTTL)
 	h.StartSessionPruning(context.Background(), 6*time.Hour, sessionTTL)
 	h.StartHeartbeat(context.Background()) // supervise autonomous sessions (nudge/checkpoint/escalate)
+
+	// A long-running daemon (e.g. a launchd agent on a server) would otherwise never pick up a new
+	// release until it happened to restart. Re-check periodically so it stays current on its own;
+	// on an update it swaps + re-execs (sessions restore on the fresh start). No-op for dev builds.
+	go func() {
+		t := time.NewTicker(6 * time.Hour)
+		defer t.Stop()
+		for range t.C {
+			selfupdate.MaybeUpdateAndReexec(version)
+		}
+	}()
 
 	// Slack mirror (optional): agent events also post to a Slack channel via an Incoming Webhook.
 	slackURL := *slackWebhook

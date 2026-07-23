@@ -80,6 +80,12 @@ public final class UpdateChecker: ObservableObject {
             guard let newApp = try FileManager.default.contentsOfDirectory(at: extractDir, includingPropertiesForKeys: nil)
                 .first(where: { $0.pathExtension == "app" }) else { throw UpdateError.msg("Update package looked empty.") }
 
+            // COUPLE THE DAEMON: the daemon (not the app) does the real work, so update its binary in
+            // lockstep here — otherwise the app moves ahead and the daemon silently misses features.
+            // Best-effort: a daemon-swap failure must not block the app update. The detached script
+            // below restarts the daemon so the new binary takes over.
+            let daemonSwapped = await swapDaemonBinary(version: latestVersion, work: work)
+
             let dest = Bundle.main.bundleURL.path            // where THIS app runs (e.g. /Applications/Iron Rain.app)
             // Pre-flight: the swap writes into the app's parent dir — bail early (before quitting) if
             // it isn't writable, so the user sees guidance instead of the old version relaunching.
@@ -107,6 +113,9 @@ public final class UpdateChecker: ObservableObject {
             /usr/bin/xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
             echo "[$(date)] update: relaunching $DEST"
             open "$DEST" && echo "update: done" || echo "update: open FAILED"
+            # Restart the local daemon so the freshly-swapped binary takes over (launchd KeepAlive or
+            # the relaunched app's auto-start brings it right back on the new version).
+            if [ "$4" = "1" ]; then echo "[$(date)] update: restarting daemon"; pkill -x oculusd 2>/dev/null || true; fi
             """
             let scriptURL = work.appendingPathComponent("apply-update.sh")
             try script.write(to: scriptURL, atomically: true, encoding: .utf8)
@@ -119,7 +128,7 @@ public final class UpdateChecker: ObservableObject {
             FileManager.default.createFile(atPath: logPath, contents: nil)
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/usr/bin/nohup")
-            p.arguments = ["/bin/sh", scriptURL.path, String(pid), newApp.path, dest]
+            p.arguments = ["/bin/sh", scriptURL.path, String(pid), newApp.path, dest, daemonSwapped ? "1" : "0"]
             if let logFH = try? FileHandle(forWritingTo: URL(fileURLWithPath: logPath)) {
                 p.standardOutput = logFH
                 p.standardError = logFH
@@ -134,6 +143,52 @@ public final class UpdateChecker: ObservableObject {
         } catch {
             installError = (error as? UpdateError)?.message ?? error.localizedDescription
         }
+    }
+
+    /// Downloads the matching daemon release and swaps the locally-installed `oculusd` in place, so
+    /// the daemon updates in lockstep with the app. Returns whether it swapped (best-effort — a
+    /// failure never blocks the app update). The daemon is restarted by the caller's script.
+    private func swapDaemonBinary(version: String?, work: URL) async -> Bool {
+        guard let bin = Self.resolveDaemon() else { return false }
+        #if arch(arm64)
+        let arch = "arm64"
+        #else
+        let arch = "amd64"
+        #endif
+        let urlStr = version.map { "https://github.com/howlerops/iron-rain/releases/download/v\($0)/oculusd_darwin_\(arch).tar.gz" }
+            ?? "https://github.com/howlerops/iron-rain/releases/latest/download/oculusd_darwin_\(arch).tar.gz"
+        guard let url = URL(string: urlStr) else { return false }
+        do {
+            var req = URLRequest(url: url); req.timeoutInterval = 120
+            let (tgz, resp) = try await URLSession.shared.download(for: req)
+            guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return false }
+            let dstTgz = work.appendingPathComponent("oculusd.tar.gz")
+            try? FileManager.default.removeItem(at: dstTgz)
+            try FileManager.default.moveItem(at: tgz, to: dstTgz)
+            let outDir = work.appendingPathComponent("daemon")
+            try FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+            try run("/usr/bin/tar", ["-xzf", dstTgz.path, "-C", outDir.path])
+            let newBin = outDir.appendingPathComponent("oculusd")
+            guard FileManager.default.fileExists(atPath: newBin.path) else { return false }
+            // Replace the running binary's file (the running process keeps the old inode; the path now
+            // points at the new binary, which the restart picks up). Same dir → atomic-ish.
+            let staged = (bin as NSString).deletingLastPathComponent + "/.oculusd-new"
+            try? FileManager.default.removeItem(atPath: staged)
+            try FileManager.default.copyItem(atPath: newBin.path, toPath: staged)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: staged)
+            _ = try? FileManager.default.replaceItemAt(URL(fileURLWithPath: bin), withItemAt: URL(fileURLWithPath: staged))
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// Resolve the installed daemon path (same order as DaemonLauncher.findOculusd).
+    static func resolveDaemon() -> String? {
+        let home = NSHomeDirectory()
+        for c in ["\(home)/.local/bin/oculusd", "/opt/homebrew/bin/oculusd", "/usr/local/bin/oculusd", "\(home)/go/bin/oculusd"]
+        where FileManager.default.isExecutableFile(atPath: c) { return c }
+        return nil
     }
 
     private func run(_ tool: String, _ args: [String]) throws {

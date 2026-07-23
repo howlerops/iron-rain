@@ -25,12 +25,18 @@ jobs:
 
       - name: Build binaries
         working-directory: daemon
+        env:
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         run: |
           mkdir -p ../dist
+          # Stamp the real version so the daemon knows it (self-update comparison + version reporting).
+          # Without -X main.version, every released daemon reported 0.0.0-dev and could never tell it
+          # was stale — the root cause of the daemon silently drifting behind the app.
+          VERSION="${TAG#v}"
           for pair in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64; do
             os="${pair%/*}"; arch="${pair#*/}"
-            echo "building $os/$arch"
-            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "-s -w" -o oculusd .
+            echo "building $os/$arch @ $VERSION"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o oculusd .
             tar -czf "../dist/oculusd_${os}_${arch}.tar.gz" oculusd
             rm oculusd
           done
