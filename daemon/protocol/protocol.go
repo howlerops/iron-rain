@@ -32,6 +32,7 @@ const (
 	TypeSessionChild        = "session.child"     // spawn a scoped sub-agent seeded from a parent's handoff
 	TypeSessionRename       = "session.rename"
 	TypeSessionAttach       = "session.attach"
+	TypeSessionRestart      = "session.restart"  // re-create a stopped session (provider couldn't re-attach after a daemon restart)
 	TypeSessionSubscribe    = "session.subscribe" // observe an already-owned session (no dup subscription)
 	TypeApprovalRespond     = "approval.respond"
 	TypeDiscover            = "discover.list"
@@ -117,6 +118,7 @@ const (
 	StatusAwaitingApproval = "awaiting_approval"
 	StatusDone             = "done"
 	StatusError            = "error"
+	StatusStopped          = "stopped" // persisted but not live: the provider couldn't re-attach after a daemon restart; restartable
 )
 
 // Approval decisions.
@@ -794,6 +796,7 @@ type Session struct {
 	IssueID       string `json:"issue_id,omitempty"`
 	Model         string `json:"model,omitempty"`          // active model id ("" = provider default)
 	ModelProvider string `json:"model_provider,omitempty"` // sub-provider/backend for the model
+	Restartable   bool   `json:"restartable,omitempty"`    // a stopped session that can be re-created (session.restart)
 	UpdatedAt     int64  `json:"updated_at,omitempty"` // unix seconds of last activity (0 = unknown)
 	// Cumulative token/cost usage for the session (surfaced as a meter; 0 = unknown).
 	InputTokens  int     `json:"input_tokens,omitempty"`

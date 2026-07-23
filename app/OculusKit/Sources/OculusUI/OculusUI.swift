@@ -955,6 +955,16 @@ public final class Model: ObservableObject {
         // Already the open session → no-op. Re-running the full clear+resubscribe (e.g. when you
         // click the active row again) briefly wiped messages/currentSession and blanked the detail.
         if id == currentSession?.id, !messages.isEmpty { return }
+        // A stopped session (daemon restarted, provider couldn't re-attach) has nothing to subscribe
+        // to — load it and let ChatView show a Restart affordance, instead of erroring on subscribe.
+        if let s = sessions.first(where: { $0.id == id }), s.status == SessionStatusValue.stopped {
+            sessionID = id
+            currentSession = s
+            messages.removeAll()
+            todos = []; pendingApproval = nil; busy = false; lastDiff = nil
+            UserDefaults.standard.set(id, forKey: lastSessionKey)
+            return
+        }
         // Switch the active session id NOW, before clearing/subscribing — so streaming events from
         // the session we're leaving (still Live) are filtered out instead of bleeding into this one.
         sessionID = id
@@ -969,6 +979,27 @@ public final class Model: ObservableObject {
         }
         await loadCommands(sessionID: id)
         await loadModels(sessionID: id)
+    }
+
+    /// Re-creates a stopped session as a FRESH conversation in the same folder/agent/model and opens
+    /// it. The provider conversation itself can't be resumed (that's why it stopped — a CLI agent has
+    /// no server-side session, or the old one is gone), so history isn't restored; the context is.
+    public func restartSession(_ id: String) async {
+        guard sessions.contains(where: { $0.id == id }) else { return }
+        busy = true
+        status = "Restarting…"
+        do {
+            let env = try await request(MessageType.sessionRestart, payload: SessionRef(sessionID: id))
+            let revived = try env.payload(as: Session.self)
+            busy = false
+            if let idx = sessions.firstIndex(where: { $0.id == id }) { sessions[idx] = revived }
+            else { sessions.append(revived) }
+            await openSession(revived.id) // its id changed (new live session)
+        } catch {
+            busy = false
+            status = "Restart failed"
+            actionError = "Couldn’t restart the session.\n\n\(error.localizedDescription)"
+        }
     }
 
     private var lastSessionKey: String { "oculus.lastSession.\(id)" }
@@ -1477,6 +1508,13 @@ public final class Model: ObservableObject {
                     // An uncorrelated error (a fire-and-forget send the daemon rejected, e.g. a
                     // session that couldn't start) — surface it instead of silently doing nothing.
                     if let e = try? env.payload(as: [String: String].self), let m = e["message"] {
+                        let low = m.lowercased()
+                        // Benign restart artifact: a fire-and-forget subscribe/attach to a session the
+                        // daemon dropped after a restart. It's now surfaced as a "stopped" session with
+                        // a Restart action, so don't raise a scary alert for it.
+                        if low.contains("no such session") || low.contains("no session") || low.contains("cannot attach") {
+                            break
+                        }
                         status = "Error"
                         statusDetail = m
                         actionError = m

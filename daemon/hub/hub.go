@@ -1269,6 +1269,7 @@ func asyncDispatch(typ string) bool {
 		protocol.TypeSessionPrompt,       // provider prompt (may be network)
 		protocol.TypeApprovalRespond,     // provider Respond (may be network)
 		protocol.TypeSessionAttach,       // provider Attach
+		protocol.TypeSessionRestart,      // provider Create (re-create a stopped session)
 		protocol.TypeSessionStop,         // provider Stop
 		protocol.TypeSessionInterrupt,    // provider Stop (interrupt only)
 		protocol.TypeProjectBrowse,       // disk: dir listing for the folder picker
@@ -1456,6 +1457,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			list = append(list, m.info())
 		}
 		h.mu.Unlock()
+		// Also surface persisted sessions the daemon couldn't re-attach after a restart, as
+		// "stopped" + restartable — so they don't silently vanish from the sidebar.
+		list = append(list, h.stoppedSessions()...)
 		h.sendOK(conn, env.ID, protocol.SessionList{Sessions: list})
 
 	case protocol.TypeProviderList:
@@ -2176,6 +2180,25 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, m.info())
 		m.subscribe(conn)
 		go m.run()
+
+	case protocol.TypeSessionRestart:
+		var req protocol.SessionRef
+		_ = env.Unmarshal(&req)
+		// Already live (e.g. another client restarted it first) → just subscribe.
+		if m := h.managed(req.SessionID); m != nil {
+			h.sendOK(conn, env.ID, m.info())
+			m.subscribe(conn)
+			return
+		}
+		m, err := h.restartSession(ctx, req.SessionID)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, m.info())
+		m.subscribe(conn)
+		go m.run()
+		h.broadcastSessionList() // the id changed (old stopped → new live); converge every client
 
 	case protocol.TypeDiscover:
 		h.mu.Lock()

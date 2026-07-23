@@ -10,6 +10,7 @@ private struct SidebarSession: Identifiable {
     let projectName: String // the natural (project) group this session belongs to
     let branch: String?
     let isRunning: Bool
+    let stopped: Bool // persisted but not live after a daemon restart (restartable)
     let viewOnly: Bool
     /// True when this session is owned by our daemon (started from the app) — it can be
     /// stopped/managed. False for sessions discovered from a terminal (view-only lifecycle).
@@ -427,6 +428,7 @@ struct SessionSidebar: View {
             let key = s.projectID.flatMap { projectNames[$0] } ?? ((s.projectID?.isEmpty ?? true) ? "On this Mac" : s.projectID!)
             add(key, SidebarSession(id: s.id, title: title, provider: s.provider, projectName: key,
                                     branch: s.branch, isRunning: s.status == SessionStatusValue.running,
+                                    stopped: s.status == SessionStatusValue.stopped,
                                     viewOnly: false, managed: true, updatedAt: date(s.updatedAt), isChild: isChild))
         }
         // Terminal-owned sessions discovered on the host are intentionally NOT shown here —
@@ -532,6 +534,8 @@ private struct SessionRow: View {
             // resumes them). Managed idle sessions carry no chip; they're the plain default.
             if item.isRunning {
                 chip(icon: "circle.fill", text: "Live", tint: palette.primary, filled: true)
+            } else if item.stopped {
+                chip(icon: "moon.zzz.fill", text: "Stopped", tint: palette.mutedForeground)
             } else if !item.managed {
                 chip(icon: "terminal", text: nil, tint: palette.mutedForeground)
             }

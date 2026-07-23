@@ -11,6 +11,7 @@ public enum MessageType {
     public static let sessionInterrupt = "session.interrupt"
     public static let sessionRename = "session.rename"
     public static let sessionAttach = "session.attach"
+    public static let sessionRestart = "session.restart"
     public static let sessionSubscribe = "session.subscribe"
     public static let approvalRespond = "approval.respond"
     public static let discover = "discover.list"
@@ -101,6 +102,7 @@ public enum SessionStatusValue {
     public static let awaitingApproval = "awaiting_approval"
     public static let done = "done"
     public static let error = "error"
+    public static let stopped = "stopped" // persisted but not live after a daemon restart; restartable
 }
 
 public enum Decision {
@@ -434,12 +436,13 @@ public struct Session: Codable, Identifiable {
     public var issueID: String?
     public var model: String?          // active model id ("" = provider default)
     public var modelProvider: String?  // sub-provider/backend for the model
+    public var restartable: Bool?      // a "stopped" session that can be re-created (session.restart)
     public var updatedAt: Int? // unix seconds of last activity
     public var inputTokens: Int?
     public var outputTokens: Int?
     public var costUSD: Double?
     enum CodingKeys: String, CodingKey {
-        case id, provider, status, title, name, cwd, branch, port, model
+        case id, provider, status, title, name, cwd, branch, port, model, restartable
         case projectID = "project_id"
         case workspaceName = "workspace_name"
         case isWorkspace = "is_workspace"

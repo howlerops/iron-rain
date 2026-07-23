@@ -38,9 +38,13 @@ public struct ChatView: View {
         children.filter { model.heartbeats[$0.id]?.state == "working" || $0.status == SessionStatusValue.running }.count
     }
 
+    /// A session the daemon couldn't re-attach after a restart — persisted, not live, restartable.
+    private var isStopped: Bool { model.currentSession?.status == SessionStatusValue.stopped }
+
     public var body: some View {
         VStack(spacing: 0) {
             if isWorktreeSession { worktreeBanner }
+            if isStopped { stoppedBanner }
             if !children.isEmpty { SubAgentsStrip(model: model, children: children, palette: palette) }
             if !model.todos.isEmpty { TodoBar(todos: model.todos, palette: palette) }
             if model.messages.isEmpty && model.sessionID == nil {
@@ -59,7 +63,7 @@ public struct ChatView: View {
                              onDeny: { Task { await model.respond(Decision.deny) } })
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-            Composer(model: model, draft: $draft, palette: palette)
+            if isStopped { restartFooter } else { Composer(model: model, draft: $draft, palette: palette) }
         }
         // NOTE: was `.background(palette.background.ignoresSafeArea())`. In a NavigationSplitView
         // detail column on macOS 26, the ignoresSafeArea inflated ChatView's ideal height, which
@@ -179,6 +183,37 @@ public struct ChatView: View {
         .sheet(isPresented: $showDelegate) {
             DelegateSheet(model: model, palette: palette) { showDelegate = false }
         }
+    }
+
+    /// Shown when the open session is "stopped" (the daemon restarted and its provider couldn't
+    /// re-attach — e.g. a CLI agent, which has no server-side session to resume). Explains the state.
+    private var stoppedBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "moon.zzz.fill").font(.caption)
+            Text("This session stopped when the daemon restarted. Its history isn’t restored, but you can start a fresh one in the same folder and agent.")
+                .font(.caption).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(palette.mutedForeground)
+        .padding(.horizontal, 14).padding(.vertical, 8)
+        .background(palette.muted.opacity(0.35))
+    }
+
+    /// Replaces the composer for a stopped session — you can't message it until it's restarted.
+    private var restartFooter: some View {
+        HStack(spacing: 10) {
+            Button {
+                if let id = model.sessionID { Task { await model.restartSession(id) } }
+            } label: {
+                Label(model.busy ? "Restarting…" : "Restart session", systemImage: "arrow.clockwise")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent).tint(palette.primary).controlSize(.large)
+            .disabled(model.busy)
+        }
+        .padding(14)
+        .background(palette.background)
+        .overlay(Rectangle().frame(height: 1).foregroundStyle(palette.border), alignment: .top)
     }
 
     private var worktreeBanner: some View {
