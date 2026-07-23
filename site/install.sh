@@ -31,6 +31,13 @@ tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 say "Downloading the Iron Rain daemon ($os/$arch)…"
 if curl -fsSL "$REL/oculusd_${os}_${arch}.tar.gz" -o "$tmp/o.tgz" 2>/dev/null; then
   tar -xzf "$tmp/o.tgz" -C "$tmp"; mkdir -p "$BIN"; install -m 0755 "$tmp/oculusd" "$BIN/oculusd"
+  # The release binary is cross-compiled on Linux → UNSIGNED. On Apple Silicon an unsigned Mach-O is
+  # killed at exec by AMFI, so the launchd agent below would crash-loop it (.ips reports). Ad-hoc
+  # re-sign + drop quarantine so it's valid on this machine.
+  if [ "$os" = "darwin" ]; then
+    xattr -c "$BIN/oculusd" 2>/dev/null || true
+    codesign --force --sign - "$BIN/oculusd" 2>/dev/null || say "warning: could not ad-hoc sign oculusd (it may not launch on Apple Silicon)"
+  fi
   ok "installed $BIN/oculusd"
 else
   command -v go >/dev/null 2>&1 || die "no release binary and Go not found (https://go.dev/dl/)"

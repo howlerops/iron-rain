@@ -176,6 +176,13 @@ public final class UpdateChecker: ObservableObject {
             try? FileManager.default.removeItem(atPath: staged)
             try FileManager.default.copyItem(atPath: newBin.path, toPath: staged)
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: staged)
+            // The released binary is cross-compiled on Linux → UNSIGNED. Apple Silicon's AMFI SIGKILLs
+            // an unsigned Mach-O at exec, so swapping it in unmodified would brick the daemon (the
+            // ".ips" crashes). Drop quarantine + ad-hoc re-sign, then sanity-run --version; only commit
+            // the swap if it actually launches, so a bad download can never replace a working daemon.
+            try? run("/usr/bin/xattr", ["-c", staged])
+            try? run("/usr/bin/codesign", ["--force", "--sign", "-", staged])
+            guard sanityRuns(staged) else { return false }
             _ = try? FileManager.default.replaceItemAt(URL(fileURLWithPath: bin), withItemAt: URL(fileURLWithPath: staged))
             return true
         } catch {
@@ -197,6 +204,19 @@ public final class UpdateChecker: ObservableObject {
         p.arguments = args
         try p.run(); p.waitUntilExit()
         if p.terminationStatus != 0 { throw UpdateError.msg("\(tool) failed (\(p.terminationStatus)).") }
+    }
+
+    /// True if the binary actually launches (`--version` exits 0). Catches an unsigned/AMFI-killed or
+    /// corrupt download BEFORE we swap it over the working daemon.
+    private func sanityRuns(_ path: String) -> Bool {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: path)
+        p.arguments = ["--version"]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { return false }
+        p.waitUntilExit()
+        return p.terminationStatus == 0
     }
 
     /// Strips a leading "v" and any pre-release suffix ("0.2.0-rc1" → "0.2.0").

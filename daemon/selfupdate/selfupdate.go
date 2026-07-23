@@ -186,7 +186,26 @@ func downloadBinary(ctx context.Context, url, dir string) (string, error) {
 			os.Remove(out.Name())
 			return "", err
 		}
+		// CI cross-compiles the darwin binary on Linux, so it ships UNSIGNED. Apple Silicon's AMFI
+		// SIGKILLs an unsigned/invalid-CDHash Mach-O at exec — which meant the sanity run (and every
+		// subsequent launch) died, so on arm64 the update silently aborted and the daemon never moved
+		// off its stale version. Ad-hoc re-sign locally (and drop any quarantine xattr) so the freshly
+		// written binary is valid on this machine before we sanity-run and swap it in.
+		adhocSign(out.Name())
 		return out.Name(), nil
+	}
+}
+
+// adhocSign gives a Mach-O a valid local (ad-hoc) code signature and strips quarantine so Apple
+// Silicon will actually exec it. No-op off macOS. Best-effort: if codesign is missing we proceed and
+// let the sanity run catch a genuinely broken binary.
+func adhocSign(path string) {
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	exec.Command("/usr/bin/xattr", "-c", path).Run()
+	if err := exec.Command("/usr/bin/codesign", "--force", "--sign", "-", path).Run(); err != nil {
+		log.Printf("selfupdate: ad-hoc codesign failed (%v) — the binary may not launch on Apple Silicon", err)
 	}
 }
 
