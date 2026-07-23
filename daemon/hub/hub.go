@@ -458,7 +458,7 @@ func (h *Hub) SetIssues(m *issues.Manager) {
 func (h *Hub) BroadcastIssues(in []issues.Issue) {
 	h.broadcast(protocol.TypeIssueList, protocol.IssueList{Issues: toProtoIssues(in)})
 	if m := h.issuesMgr(); m != nil {
-		h.broadcast(protocol.TypeIntegrationStatus, protocol.IntegrationStatus{Connected: m.Connected(), AuthErrors: m.AuthErrors()})
+		h.broadcast(protocol.TypeIntegrationStatus, protocol.IntegrationStatus{Connected: m.Connected(), OAuthApps: m.OAuthApps(), AuthErrors: m.AuthErrors(), AuthErrorDetails: m.AuthErrorDetails()})
 	}
 	// Feed the loop engine so it can start agents on newly-appearing tickets.
 	h.mu.Lock()
@@ -1258,6 +1258,7 @@ func asyncDispatch(typ string) bool {
 		protocol.TypeWorkspacePR,         // git commit/push/PR per workspace member
 		protocol.TypeSessionChild,        // provider Create for a scoped sub-agent
 		protocol.TypeIntegrationConnect,  // tracker HTTP
+		protocol.TypeIntegrationDisconnect, // writes integrations.json + refresh
 		protocol.TypeIntegrationOAuthApp, // writes integrations.json
 		protocol.TypeIntegrationOAuth,    // tracker HTTP
 		protocol.TypeIssueStates,         // tracker HTTP
@@ -1919,16 +1920,37 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, err.Error())
 			return
 		}
-		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: m.Connected()})
+		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: m.Connected(), OAuthApps: m.OAuthApps(), AuthErrors: m.AuthErrors(), AuthErrorDetails: m.AuthErrorDetails()})
+
+	case protocol.TypeIntegrationDisconnect:
+		var req protocol.IntegrationConnect // reuses {provider, token}; only provider is read
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad integration.disconnect")
+			return
+		}
+		m := h.issuesMgr()
+		if m == nil {
+			h.sendErr(conn, env.ID, "integrations not enabled")
+			return
+		}
+		if err := m.Disconnect(ctx, req.Provider); err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		st := protocol.IntegrationStatus{Connected: m.Connected(), OAuthApps: m.OAuthApps(), AuthErrors: m.AuthErrors(), AuthErrorDetails: m.AuthErrorDetails()}
+		h.sendOK(conn, env.ID, st)
+		h.broadcast(protocol.TypeIntegrationStatus, st) // every device converges on the disconnect
 
 	case protocol.TypeIntegrationStatus:
 		var connected, oauthApps, authErrors []string
+		var details map[string]string
 		if m := h.issuesMgr(); m != nil {
 			connected = m.Connected()
 			oauthApps = m.OAuthApps()
 			authErrors = m.AuthErrors()
+			details = m.AuthErrorDetails()
 		}
-		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: connected, OAuthApps: oauthApps, AuthErrors: authErrors})
+		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: connected, OAuthApps: oauthApps, AuthErrors: authErrors, AuthErrorDetails: details})
 
 	case protocol.TypeIntegrationOAuthApp:
 		var req protocol.IntegrationOAuthApp
@@ -1945,7 +1967,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, err.Error())
 			return
 		}
-		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: m.Connected(), OAuthApps: m.OAuthApps(), AuthErrors: m.AuthErrors()})
+		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: m.Connected(), OAuthApps: m.OAuthApps(), AuthErrors: m.AuthErrors(), AuthErrorDetails: m.AuthErrorDetails()})
 
 	case protocol.TypeIntegrationOAuth:
 		var req protocol.IntegrationOAuth

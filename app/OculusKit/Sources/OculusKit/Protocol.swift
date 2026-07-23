@@ -39,6 +39,7 @@ public enum MessageType {
     public static let worktreePR = "worktree.pr"
     public static let worktreeConflicts = "worktree.conflicts"
     public static let integrationConnect = "integration.connect"
+    public static let integrationDisconnect = "integration.disconnect"
     public static let integrationStatus = "integration.status"
     public static let integrationOAuth = "integration.oauth"
     public static let integrationOAuthApp = "integration.oauthapp"
@@ -887,8 +888,12 @@ public struct IntegrationConnect: Codable {
 public struct IntegrationStatus: Codable {
     public var connected: [String]
     public var oauthApps: [String]?   // providers with an OAuth app configured
-    public var authErrors: [String]?  // connected providers whose OAuth refresh is failing (need reconnect)
-    enum CodingKeys: String, CodingKey { case connected; case oauthApps = "oauth_apps"; case authErrors = "auth_errors" }
+    public var authErrors: [String]?  // connected providers whose fetch/refresh is failing (need reconnect)
+    public var authErrorDetails: [String: String]? // provider -> the actual failure message (why it isn't loading)
+    enum CodingKeys: String, CodingKey {
+        case connected; case oauthApps = "oauth_apps"; case authErrors = "auth_errors"
+        case authErrorDetails = "auth_error_details"
+    }
 }
 public struct IntegrationOAuth: Codable {
     public var provider: String; public var url: String?

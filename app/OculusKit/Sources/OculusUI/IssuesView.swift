@@ -146,23 +146,78 @@ public struct IssuesView: View {
             VStack(spacing: 0) {
                 if !model.trackerAuthErrors.isEmpty { authErrorBanner }
                 filterBar
-                if kanban { board } else { table }
+                if model.issues.isEmpty {
+                    trackerEmptyState // connected but nothing to show — explain + let them disconnect
+                } else if kanban { board } else { table }
             }
         }
     }
 
-    /// A pill shown when a tracker's OAuth has expired/failed, so you can reconnect in one tap.
+    /// Shown when trackers are connected but the board is empty — distinguishes "working, but no
+    /// issues assigned to you" from a real failure, and always exposes Disconnect so a broken or
+    /// unwanted connection can be removed (previously unreachable once connected).
+    private var trackerEmptyState: some View {
+        VStack(spacing: 16) {
+            Spacer()
+            Image(systemName: "tray").font(.system(size: 40)).foregroundStyle(palette.mutedForeground)
+            Text("No issues to show").font(.headline).foregroundStyle(palette.foreground)
+            VStack(spacing: 12) {
+                ForEach(model.connectedTrackers, id: \.self) { p in
+                    let dn = p == "jira" ? "Jira" : p.capitalized
+                    VStack(spacing: 6) {
+                        if let d = model.trackerAuthDetails[p], !d.isEmpty {
+                            Text("\(dn) failed: \(d)")
+                                .font(.caption.monospaced()).foregroundStyle(.orange)
+                                .textSelection(.enabled).multilineTextAlignment(.center)
+                        } else {
+                            Text("\(dn) is connected and responded, but no issues are assigned to you.")
+                                .font(.caption).foregroundStyle(palette.mutedForeground)
+                                .multilineTextAlignment(.center)
+                        }
+                        HStack(spacing: 8) {
+                            Button { Task { await model.startOAuth(provider: p) } } label: { Text("Reconnect") }
+                                .buttonStyle(.bordered)
+                            Button(role: .destructive) { Task { await model.disconnectTracker(p) } } label: { Text("Disconnect") }
+                                .buttonStyle(.bordered)
+                        }
+                    }
+                    .padding(12)
+                    .frame(maxWidth: 460)
+                    .background(palette.card, in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.border))
+                }
+            }
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding()
+    }
+
+    /// Shown when a tracker's fetch/refresh is failing, so you can see WHY and reconnect or drop it.
     private var authErrorBanner: some View {
         ForEach(model.trackerAuthErrors, id: \.self) { provider in
-            HStack(spacing: 8) {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                Text("\(provider == "jira" ? "Jira" : provider.capitalized) needs reconnecting — its access expired.")
-                    .font(.callout).foregroundStyle(palette.foreground)
-                Spacer()
-                Button { Task { await model.startOAuth(provider: provider) } } label: {
-                    Text("Reconnect").font(.callout.weight(.semibold))
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    Text("\(provider == "jira" ? "Jira" : provider.capitalized) isn’t loading issues.")
+                        .font(.callout.weight(.medium)).foregroundStyle(palette.foreground)
+                    Spacer()
+                    Button { Task { await model.startOAuth(provider: provider) } } label: {
+                        Text("Reconnect").font(.callout.weight(.semibold))
+                    }
+                    .buttonStyle(.borderedProminent).tint(palette.primary)
+                    Button(role: .destructive) { Task { await model.disconnectTracker(provider) } } label: {
+                        Text("Disconnect").font(.callout)
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.borderedProminent).tint(palette.primary)
+                // The ACTUAL failure the daemon recorded (expired token, bad cloud id, 401, etc.) —
+                // so you can diagnose it instead of guessing.
+                if let detail = model.trackerAuthDetails[provider], !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption.monospaced()).foregroundStyle(palette.mutedForeground)
+                        .textSelection(.enabled).lineLimit(4).fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
             .background(Color.orange.opacity(0.12))
@@ -686,6 +741,11 @@ struct TrackerConnectCard: View {
                         .foregroundStyle(.green)
                         .padding(.horizontal, 8).padding(.vertical, 4)
                         .background(Color.green.opacity(0.1), in: Capsule())
+                    Button(role: .destructive) { Task { await model.disconnectTracker(provider) } } label: {
+                        Text("Disconnect").font(.caption.weight(.medium))
+                    }
+                    .buttonStyle(.bordered)
+                    .help("Remove this connection (keeps your OAuth app so you can reconnect in one tap).")
                 }
             }
             .padding(16)

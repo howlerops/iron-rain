@@ -55,6 +55,7 @@ const (
 	TypeWorkspaceDiff       = "workspace.diff"       // per-member diff for a cross-repo workspace session
 	TypeWorkspacePR         = "workspace.pr"         // commit + push + open a PR for each workspace member
 	TypeIntegrationConnect  = "integration.connect"  // connect a tracker (Linear/Jira) with a token
+	TypeIntegrationDisconnect = "integration.disconnect" // remove a tracker's connection (clears its token)
 	TypeIntegrationStatus   = "integration.status"   // which trackers are connected
 	TypeIntegrationOAuth    = "integration.oauth"    // begin an OAuth flow; returns an authorize URL
 	TypeIntegrationOAuthApp = "integration.oauthapp" // save a provider's OAuth app client_id/secret
@@ -347,7 +348,10 @@ type IntegrationConnect struct {
 type IntegrationStatus struct {
 	Connected  []string `json:"connected"`             // provider names currently connected
 	OAuthApps  []string `json:"oauth_apps,omitempty"`  // providers with an OAuth app configured (client_id present)
-	AuthErrors []string `json:"auth_errors,omitempty"` // connected providers whose OAuth refresh is failing (need reconnect)
+	AuthErrors []string `json:"auth_errors,omitempty"` // connected providers whose fetch/refresh is failing (need reconnect)
+	// AuthErrorDetails is provider -> the actual failure message (e.g. "jira: 401 Unauthorized"), so
+	// the app can show WHY a connected tracker isn't loading, not just that it isn't.
+	AuthErrorDetails map[string]string `json:"auth_error_details,omitempty"`
 }
 
 type IntegrationOAuth struct {

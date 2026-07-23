@@ -387,7 +387,7 @@ func (m *Manager) refreshTokens(ctx context.Context) {
 	}
 }
 
-// AuthErrors returns the providers whose OAuth token refresh is currently failing (needs reconnect).
+// AuthErrors returns the providers whose fetch/refresh is currently failing (needs reconnect).
 func (m *Manager) AuthErrors() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -397,6 +397,46 @@ func (m *Manager) AuthErrors() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// AuthErrorDetails returns provider -> the actual failure message, so the app can show WHY a
+// connected tracker isn't loading (e.g. "jira: 401 Unauthorized"), not just that it isn't.
+func (m *Manager) AuthErrorDetails() map[string]string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.authErrors) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m.authErrors))
+	for n, msg := range m.authErrors {
+		out[n] = msg
+	}
+	return out
+}
+
+// Disconnect removes a tracker's connection: it drops the live adapter, clears the stored token
+// (keeping the OAuth app client_id/secret so reconnecting is one tap), clears any auth error, and
+// rebuilds the issue cache from whatever providers remain.
+func (m *Manager) Disconnect(ctx context.Context, name string) error {
+	m.mu.Lock()
+	if _, ok := m.providers[name]; !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("%q is not connected", name)
+	}
+	delete(m.providers, name)
+	delete(m.authErrors, name)
+	switch name {
+	case "linear":
+		m.cfg.Linear.Token = ""
+	case "jira":
+		m.cfg.Jira.Token = ""
+	}
+	cfg := m.cfg
+	m.mu.Unlock()
+	m.save(cfg)
+	// Rebuild the cache from the remaining providers (empty if none), so the disconnected
+	// tracker's issues disappear from the board immediately.
+	return m.Refresh(ctx)
 }
 
 // save writes cfg to disk. It takes cfg by value (not m.cfg) so callers can
