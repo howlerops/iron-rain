@@ -62,13 +62,13 @@ public struct IssuesView: View {
                     if launched { onLaunched() }
                 }
             }
-            .task { await model.loadIntegrationStatus(); await model.loadIssues() }
+            .task { await model.loadIntegrationStatus(); await model.loadIssues(); await model.loadJiraSites() }
             // The initial .task can run before the desktop finishes connecting (client not ready),
             // leaving trackers showing "not connected" even though the daemon has them. Re-fetch the
             // moment the connection lands (e.g. right after scanning the pairing QR).
             .onChange(of: model.connected) { isConnected in
                 if isConnected {
-                    Task { await model.loadIntegrationStatus(); await model.loadIssues() }
+                    Task { await model.loadIntegrationStatus(); await model.loadIssues(); await model.loadJiraSites() }
                 }
             }
     }
@@ -153,6 +153,26 @@ public struct IssuesView: View {
         }
     }
 
+    /// Site switcher for multi-site Atlassian orgs — picking the wrong site is the classic
+    /// "connected but no tickets" (the daemon was routing to the unused site). No re-auth needed.
+    private var jiraSitePicker: some View {
+        VStack(spacing: 8) {
+            Text("Your Atlassian login has \(model.jiraSites.count) Jira sites. Pick the one your tickets are in:")
+                .font(.caption).foregroundStyle(palette.foreground).multilineTextAlignment(.center)
+            Picker("Jira site", selection: Binding(get: { model.jiraCurrentSite }, set: { id in Task { await model.setJiraSite(id) } })) {
+                ForEach(model.jiraSites) { s in
+                    Text(s.name.isEmpty ? s.url : s.name).tag(s.cloudID)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+        }
+        .padding(12)
+        .frame(maxWidth: 460)
+        .background(palette.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.primary.opacity(0.4)))
+    }
+
     /// Shown when trackers are connected but the board is empty — distinguishes "working, but no
     /// issues assigned to you" from a real failure, and always exposes Disconnect so a broken or
     /// unwanted connection can be removed (previously unreachable once connected).
@@ -161,6 +181,7 @@ public struct IssuesView: View {
             Spacer()
             Image(systemName: "tray").font(.system(size: 40)).foregroundStyle(palette.mutedForeground)
             Text("No issues to show").font(.headline).foregroundStyle(palette.foreground)
+            if model.jiraSites.count > 1 { jiraSitePicker }
             VStack(spacing: 12) {
                 ForEach(model.connectedTrackers, id: \.self) { p in
                     let dn = p == "jira" ? "Jira" : p.capitalized

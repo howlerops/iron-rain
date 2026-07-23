@@ -40,7 +40,7 @@ func TestFinishWorkspaceMember_SkipBranches(t *testing.T) {
 	initRepo(t, repoB)
 	base := t.TempDir()
 
-	_, members, err := worktree.CreateWorkspace(base, "cross", []string{repoA, repoB})
+	_, members, err := worktree.CreateWorkspace(base, "cross", []string{repoA, repoB}, nil)
 	if err != nil {
 		t.Fatalf("CreateWorkspace: %v", err)
 	}

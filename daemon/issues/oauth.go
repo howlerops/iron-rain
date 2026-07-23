@@ -177,30 +177,44 @@ func exchangeCode(ctx context.Context, tokenURL string, form url.Values) (oauthT
 }
 
 // jiraCloudID returns the first Jira site (cloudid) the access token can reach.
-func jiraCloudID(ctx context.Context, accessToken string) (string, error) {
+// JiraSiteInfo is one Atlassian site (cloud) the OAuth token can access.
+type JiraSiteInfo struct {
+	ID   string `json:"id"`   // cloud id (routes /ex/jira/{id})
+	Name string `json:"name"`
+	URL  string `json:"url"`
+}
+
+// jiraAccessibleSites lists every Atlassian site the token can reach. An org with more than one
+// site is exactly why picking [0] is wrong — the caller must let the user choose.
+func jiraAccessibleSites(ctx context.Context, accessToken string) ([]JiraSiteInfo, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, jiraResourcesURL, nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "application/json")
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer drainClose(resp.Body)
-	var resources []struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
-	}
+	var resources []JiraSiteInfo
 	if err := json.NewDecoder(resp.Body).Decode(&resources); err != nil {
+		return nil, err
+	}
+	return resources, nil
+}
+
+func jiraCloudID(ctx context.Context, accessToken string) (string, error) {
+	sites, err := jiraAccessibleSites(ctx, accessToken)
+	if err != nil {
 		return "", err
 	}
-	if len(resources) == 0 {
+	if len(sites) == 0 {
 		return "", fmt.Errorf("jira: the token has access to no sites (grant the app access to a Jira site)")
 	}
-	return resources[0].ID, nil
+	return sites[0].ID, nil
 }
 
 // refreshJiraToken exchanges a refresh token for a fresh access (+ rotated refresh) token.

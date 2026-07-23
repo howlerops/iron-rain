@@ -31,7 +31,7 @@ struct SessionStartingOverlay: ViewModifier {
         content
             .overlay {
                 if model.startingSession {
-                    SessionSkeleton(provider: model.startingProvider, palette: palette)
+                    SessionSkeleton(provider: model.startingProvider, palette: palette, steps: model.createSteps)
                         .transition(.opacity)
                 }
             }
@@ -43,6 +43,7 @@ struct SessionStartingOverlay: ViewModifier {
 struct SessionSkeleton: View {
     let provider: String
     let palette: OculusPalette
+    var steps: [CreateStep] = []
     @State private var pulse = false
     private let rows: [(w: CGFloat, mine: Bool)] = [(0.62, false), (0.42, true), (0.80, false), (0.34, true), (0.70, false), (0.5, false)]
 
@@ -60,14 +61,9 @@ struct SessionSkeleton: View {
                 .disabled(true)
             }
             Divider().overlay(palette.border)
-            HStack(spacing: 10) {
-                ProgressView()
-                Text("Starting \(provider.isEmpty ? "session" : provider)…")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(palette.mutedForeground)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 18)
+            footer
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 20).padding(.vertical, 16)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(palette.background)
@@ -76,6 +72,43 @@ struct SessionSkeleton: View {
         .onAppear {
             withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { pulse = true }
         }
+    }
+
+    /// The prescriptive checklist when the daemon is streaming create steps; the generic
+    /// "Starting…" line until the first step arrives (or for providers that report none).
+    @ViewBuilder private var footer: some View {
+        if steps.isEmpty {
+            HStack(spacing: 10) {
+                ProgressView()
+                Text("Starting \(provider.isEmpty ? "session" : provider)…")
+                    .font(.subheadline.weight(.medium)).foregroundStyle(palette.mutedForeground)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 9) {
+                ForEach(steps) { step in
+                    HStack(spacing: 9) {
+                        stepIcon(step)
+                        Text(stepLabel(step))
+                            .font(.subheadline.weight(step.done ? .regular : .medium))
+                            .foregroundStyle(step.done ? palette.mutedForeground : palette.foreground)
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func stepIcon(_ step: CreateStep) -> some View {
+        if step.done {
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).font(.subheadline)
+        } else {
+            ProgressView().controlSize(.small).frame(width: 16, height: 16)
+        }
+    }
+
+    private func stepLabel(_ step: CreateStep) -> String {
+        if step.total > 1 { return "\(step.detail)  (\(step.step)/\(step.total))" }
+        return step.detail
     }
 
     private func bubble(width: CGFloat, mine: Bool) -> some View {

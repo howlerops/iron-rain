@@ -35,7 +35,9 @@ func WorkspacesBase() string {
 // oculus/<slug>. An empty base uses WorkspacesBase(). It returns the layout directory (the shared
 // parent the agent runs in) and the members. On any error it rolls back every worktree it created
 // so a partial workspace never leaks.
-func CreateWorkspace(base, name string, repoDirs []string) (layout string, members []Member, err error) {
+// onProgress, if non-nil, is called before each member repo's worktree is created (step is 1-based,
+// total is len(repoDirs)) so callers can surface a "Creating worktree 2/3 · repo-b" step.
+func CreateWorkspace(base, name string, repoDirs []string, onProgress func(step, total int, repo string)) (layout string, members []Member, err error) {
 	slug := Slug(name)
 	if slug == "" {
 		return "", nil, fmt.Errorf("workspace: empty name")
@@ -64,7 +66,7 @@ func CreateWorkspace(base, name string, repoDirs []string) (layout string, membe
 	}
 
 	seen := map[string]bool{}
-	for _, dir := range repoDirs {
+	for i, dir := range repoDirs {
 		root, rErr := RepoRoot(dir)
 		if rErr != nil {
 			rollback()
@@ -76,6 +78,9 @@ func CreateWorkspace(base, name string, repoDirs []string) (layout string, membe
 			memberName = memberName + "-" + Slug(filepath.Base(filepath.Dir(root)))
 		}
 		seen[memberName] = true
+		if onProgress != nil {
+			onProgress(i+1, len(repoDirs), memberName)
+		}
 		path := filepath.Join(layout, memberName)
 		wt, cErr := createAt(root, path, branch)
 		if cErr != nil {

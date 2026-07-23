@@ -122,6 +122,54 @@ func (m *Manager) Connect(ctx context.Context, name, token string) error {
 	return m.Refresh(ctx)
 }
 
+// JiraSites lists every Atlassian site the connected Jira OAuth token can access, plus the cloud id
+// currently in use — so the app can let the user switch when an org has more than one site (the
+// cause of "connected but no tickets": the daemon was routing to the wrong/unused site).
+func (m *Manager) JiraSites(ctx context.Context) (sites []JiraSiteInfo, current string, err error) {
+	m.mu.Lock()
+	tok := m.cfg.Jira.Token
+	m.mu.Unlock()
+	if !strings.HasPrefix(tok, "oauth|") {
+		return nil, "", fmt.Errorf("jira isn't connected via OAuth")
+	}
+	parts := strings.SplitN(tok, "|", 4)
+	if len(parts) != 4 {
+		return nil, "", fmt.Errorf("jira token malformed")
+	}
+	current = parts[1]
+	sites, err = jiraAccessibleSites(ctx, parts[2])
+	return sites, current, err
+}
+
+// SetJiraSite switches the active Jira site (cloud id). The OAuth access/refresh tokens work across
+// all of the org's sites — only the cloud id routes the API — so this just rewrites the composite
+// token, rebuilds the adapter, and refreshes. No re-auth needed.
+func (m *Manager) SetJiraSite(ctx context.Context, cloudID string) error {
+	if cloudID == "" {
+		return fmt.Errorf("no site chosen")
+	}
+	m.mu.Lock()
+	tok := m.cfg.Jira.Token
+	m.mu.Unlock()
+	parts := strings.SplitN(tok, "|", 4)
+	if !strings.HasPrefix(tok, "oauth|") || len(parts) != 4 {
+		return fmt.Errorf("jira isn't connected via OAuth")
+	}
+	newToken := strings.Join([]string{"oauth", cloudID, parts[2], parts[3]}, "|")
+	p, err := m.newAdapter("jira", newToken)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.providers["jira"] = p
+	m.cfg.Jira.Token = newToken
+	delete(m.authErrors, "jira")
+	cfg := m.cfg
+	m.mu.Unlock()
+	m.save(cfg)
+	return m.Refresh(ctx)
+}
+
 // AddProvider registers a provider directly (used by tests + non-token backends).
 func (m *Manager) AddProvider(name string, p Provider) {
 	m.mu.Lock()

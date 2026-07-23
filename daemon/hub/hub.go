@@ -111,8 +111,17 @@ func (h *Hub) SetStore(s *store.Store) {
 // startSession creates a managed session per req — resolving the project cwd, optionally
 // creating + bootstrapping a git worktree, and merging extra metadata (e.g. an issue
 // link). It does NOT subscribe a client or start the run loop; the caller does that.
-func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta sessionMeta) (*managedSession, error) {
+// progressFn reports a live create step (nil-safe via the local emit helper). Drives the app's
+// prescriptive loading checklist.
+type progressFn func(stage, detail string, step, total int)
+
+func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta sessionMeta, progress progressFn) (*managedSession, error) {
 	t0 := time.Now()
+	emit := func(stage, detail string, step, total int) {
+		if progress != nil {
+			progress(stage, detail, step, total)
+		}
+	}
 	log.Printf("session.create: provider=%s project=%s projects=%v worktree=%v plan=%v prompt=%dB",
 		req.Provider, req.ProjectID, req.ProjectIDs, req.Worktree, req.Plan, len(req.Prompt))
 	h.mu.Lock()
@@ -157,8 +166,11 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 				name = "workspace-" + randToken()
 			}
 			log.Printf("session.create: building %d-repo isolated workspace %q (a git worktree per repo)…", len(paths), name)
+			emit("workspace", fmt.Sprintf("Preparing %d-repo workspace…", len(paths)), 0, 0)
 			wt0 := time.Now()
-			layout, members, err := worktree.CreateWorkspace("", name, paths)
+			layout, members, err := worktree.CreateWorkspace("", name, paths, func(step, total int, repo string) {
+				emit("worktree", "Creating worktree · "+repo, step, total)
+			})
 			if err != nil {
 				log.Printf("session.create: FAILED — workspace setup: %v", err)
 				return nil, fmt.Errorf("workspace setup failed: %w", err)
@@ -217,6 +229,7 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 		if name == "" {
 			name = "session-" + randToken()
 		}
+		emit("worktree", "Creating an isolated worktree…", 0, 0)
 		h.mu.Lock()
 		base := h.worktreeBase
 		h.mu.Unlock()
@@ -259,6 +272,7 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 		multiRepoNote = ""
 	}
 	log.Printf("session.create: starting %s in %s (plan=%v)…", req.Provider, cwd, req.Plan)
+	emit("provider", "Starting "+req.Provider+"…", 0, 0)
 	pc0 := time.Now()
 	var sess agent.Session
 	var err error
@@ -296,6 +310,7 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 	}
 	ms.pendingContext = multiRepoNote
 	ms.mu.Unlock()
+	emit("ready", "Session ready", 0, 0)
 	log.Printf("session.create: DONE — session %s ready in %s", sess.ID(), time.Since(t0).Round(time.Millisecond))
 	return ms, nil
 }
@@ -345,7 +360,7 @@ func (h *Hub) handleIssueLaunch(ctx context.Context, conn *transport.Conn, env p
 		Worktree:      true,
 		WorkspaceName: branch,
 	}
-	ms, err := h.startSession(ctx, create, sessionMeta{issueID: issue.ID, issueKey: issue.Key, issueProvider: issue.Provider})
+	ms, err := h.startSession(ctx, create, sessionMeta{issueID: issue.ID, issueKey: issue.Key, issueProvider: issue.Provider}, nil)
 	if err != nil {
 		h.sendErr(conn, env.ID, err.Error())
 		return
@@ -545,7 +560,7 @@ func (h *Hub) spawnLoopRun(lp loops.Loop, iss *loops.Issue) (string, error) {
 			Provider: lp.Provider, ProjectID: projectID, ProjectIDs: projectIDs, Prompt: prompt,
 			Worktree: lp.Worktree, Plan: lp.Plan, Autonomous: true, BudgetUSD: lp.BudgetUSD, WorkspaceName: branch,
 		}
-		ms, err := h.startSession(context.Background(), create, sessionMeta{})
+		ms, err := h.startSession(context.Background(), create, sessionMeta{}, nil)
 		if err != nil {
 			return "", err
 		}
@@ -582,7 +597,7 @@ func (h *Hub) spawnLoopRun(lp loops.Loop, iss *loops.Issue) (string, error) {
 		Provider: lp.Provider, ProjectID: projectID, ProjectIDs: projectIDs, Prompt: prompt,
 		Worktree: lp.Worktree, Plan: lp.Plan, Autonomous: true, BudgetUSD: lp.BudgetUSD, WorkspaceName: branch,
 	}
-	ms, err := h.startSession(context.Background(), create, meta)
+	ms, err := h.startSession(context.Background(), create, meta, nil)
 	if err != nil {
 		return "", err
 	}
@@ -1290,6 +1305,8 @@ func asyncDispatch(typ string) bool {
 		protocol.TypeIntegrationDisconnect, // writes integrations.json + refresh
 		protocol.TypeIntegrationOAuthApp, // writes integrations.json
 		protocol.TypeIntegrationOAuth,    // tracker HTTP
+		protocol.TypeJiraSites,           // tracker HTTP (accessible-resources)
+		protocol.TypeJiraSetSite,         // tracker HTTP (switch site + refresh)
 		protocol.TypeIssueStates,         // tracker HTTP
 		protocol.TypeIssueDetail,         // tracker HTTP
 		protocol.TypeIssueUpdate,         // tracker HTTP
@@ -1420,7 +1437,11 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		// show, instead of leaving it forever on the "starting session" spinner.
 		cctx, ccancel := context.WithTimeout(ctx, 3*time.Minute)
 		tc0 := time.Now()
-		m, err := h.startSession(cctx, req, sessionMeta{})
+		// Stream create steps to THIS client so its loading screen shows a prescriptive checklist.
+		prog := func(stage, detail string, step, total int) {
+			h.sendEvent(conn, protocol.TypeSessionProgress, protocol.SessionProgress{Stage: stage, Detail: detail, Step: step, Total: total})
+		}
+		m, err := h.startSession(cctx, req, sessionMeta{}, prog)
 		ccancel()
 		if t := h.tel(); t != nil {
 			ev := "session.create"
@@ -2026,6 +2047,37 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		st := protocol.Telemetry{Enabled: req.Enabled}
 		h.sendOK(conn, env.ID, st)
 		h.broadcast(protocol.TypeTelemetryStatus, st) // converge every device on the toggle
+
+	case protocol.TypeJiraSites:
+		m := h.issuesMgr()
+		if m == nil {
+			h.sendErr(conn, env.ID, "integrations not enabled")
+			return
+		}
+		sites, current, err := m.JiraSites(ctx)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		out := make([]protocol.JiraSite, 0, len(sites))
+		for _, s := range sites {
+			out = append(out, protocol.JiraSite{ID: s.ID, Name: s.Name, URL: s.URL})
+		}
+		h.sendOK(conn, env.ID, protocol.JiraSites{Sites: out, Current: current})
+
+	case protocol.TypeJiraSetSite:
+		var req protocol.JiraSetSite
+		_ = env.Unmarshal(&req)
+		m := h.issuesMgr()
+		if m == nil {
+			h.sendErr(conn, env.ID, "integrations not enabled")
+			return
+		}
+		if err := m.SetJiraSite(ctx, req.CloudID); err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: m.Connected(), OAuthApps: m.OAuthApps(), AuthErrors: m.AuthErrors(), AuthErrorDetails: m.AuthErrorDetails()})
 
 	case protocol.TypeIntegrationOAuth:
 		var req protocol.IntegrationOAuth
@@ -2739,6 +2791,14 @@ func (h *Hub) sendOK(conn *transport.Conn, id string, payload any) {
 
 func (h *Hub) sendErr(conn *transport.Conn, id, msg string) {
 	if raw, err := protocol.Encode(id, protocol.TypeError, protocol.Error{Message: msg}); err == nil {
+		_ = conn.Send(raw)
+	}
+}
+
+// sendEvent pushes an id-less event to a single client (e.g. session.create progress to the client
+// that requested it).
+func (h *Hub) sendEvent(conn *transport.Conn, typ string, payload any) {
+	if raw, err := protocol.Encode("", typ, payload); err == nil {
 		_ = conn.Send(raw)
 	}
 }

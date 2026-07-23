@@ -43,6 +43,9 @@ public enum MessageType {
     public static let integrationStatus = "integration.status"
     public static let telemetrySet = "telemetry.set"
     public static let telemetryStatus = "telemetry.status"
+    public static let sessionProgress = "session.progress"
+    public static let jiraSites = "jira.sites"
+    public static let jiraSetSite = "jira.set_site"
     public static let integrationOAuth = "integration.oauth"
     public static let integrationOAuthApp = "integration.oauthapp"
     public static let issueList = "issue.list"
@@ -890,6 +893,29 @@ public struct IntegrationConnect: Codable {
 public struct Telemetry: Codable {
     public var enabled: Bool
     public init(enabled: Bool) { self.enabled = enabled }
+}
+
+/// One Atlassian site (cloud) the Jira OAuth token can reach.
+public struct JiraSite: Codable, Identifiable, Equatable {
+    public var id: String { cloudID }
+    public var cloudID: String
+    public var name: String
+    public var url: String
+    enum CodingKeys: String, CodingKey { case cloudID = "id"; case name; case url }
+}
+public struct JiraSites: Codable { public var sites: [JiraSite]; public var current: String? }
+public struct JiraSetSite: Codable {
+    public var cloudID: String
+    public init(cloudID: String) { self.cloudID = cloudID }
+    enum CodingKeys: String, CodingKey { case cloudID = "cloud_id" }
+}
+
+/// A live step during session creation (drives the prescriptive loading checklist).
+public struct SessionProgress: Codable {
+    public var stage: String
+    public var detail: String
+    public var step: Int?
+    public var total: Int?
 }
 
 public struct IntegrationStatus: Codable {

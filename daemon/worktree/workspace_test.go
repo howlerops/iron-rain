@@ -13,7 +13,7 @@ func TestCreateWorkspaceAndRemove(t *testing.T) {
 	baseB := gitInit(t, repoB)
 	base := t.TempDir() // workspaces layout base
 
-	layout, members, err := CreateWorkspace(base, "Cross Cut", []string{repoA, repoB})
+	layout, members, err := CreateWorkspace(base, "Cross Cut", []string{repoA, repoB}, nil)
 	if err != nil {
 		t.Fatalf("CreateWorkspace: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestCreateWorkspaceAndRemove(t *testing.T) {
 	}
 
 	// A duplicate name collides on the layout dir.
-	if _, _, err := CreateWorkspace(base, "Cross Cut", []string{repoA, repoB}); err == nil {
+	if _, _, err := CreateWorkspace(base, "Cross Cut", []string{repoA, repoB}, nil); err == nil {
 		t.Errorf("expected error on duplicate workspace path")
 	}
 
@@ -58,7 +58,7 @@ func TestCreateWorkspaceRollsBackOnBadRepo(t *testing.T) {
 	notARepo := t.TempDir() // no git init → RepoRoot fails on the 2nd member
 	base := t.TempDir()
 
-	_, _, err := CreateWorkspace(base, "ws", []string{repoA, notARepo})
+	_, _, err := CreateWorkspace(base, "ws", []string{repoA, notARepo}, nil)
 	if err == nil {
 		t.Fatal("expected error for non-repo member")
 	}
@@ -71,7 +71,7 @@ func TestCreateWorkspaceRollsBackOnBadRepo(t *testing.T) {
 func TestCreateWorkspaceNeedsTwoRepos(t *testing.T) {
 	repoA := t.TempDir()
 	gitInit(t, repoA)
-	if _, _, err := CreateWorkspace(t.TempDir(), "solo", []string{repoA}); err == nil {
+	if _, _, err := CreateWorkspace(t.TempDir(), "solo", []string{repoA}, nil); err == nil {
 		t.Error("expected error for a single-repo workspace")
 	}
 }

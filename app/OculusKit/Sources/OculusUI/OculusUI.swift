@@ -18,6 +18,17 @@ private enum RouteOutcome: Sendable {
 /// Drives one daemon connection: connect, autodetect running sessions, hold a
 /// streaming conversation, and approve/deny tool calls. Built entirely on OculusKit
 /// (the proven, vector-locked client). Shared by the iOS and macOS app targets.
+/// One step in the session-create checklist (see Model.createSteps). Identified by stage so
+/// repeated events for the same phase (e.g. worktree 1/3 → 2/3) update one row instead of stacking.
+public struct CreateStep: Identifiable, Equatable {
+    public let stage: String
+    public var detail: String
+    public var step: Int
+    public var total: Int
+    public var done: Bool
+    public var id: String { stage }
+}
+
 @MainActor
 public final class Model: ObservableObject {
     @Published public var wsURL = "ws://127.0.0.1:6000/ws"
@@ -47,6 +58,10 @@ public final class Model: ObservableObject {
     /// seconds). Drives a skeleton loading overlay that locks the surface until it's ready.
     @Published public var startingSession = false
     @Published public var startingProvider = ""
+    /// Live, ordered steps streamed by the daemon while a session is being created (worktree per
+    /// repo, provider spin-up), so the loading screen is a prescriptive checklist rather than a
+    /// generic skeleton. Reset each create; the last step completes on "ready".
+    @Published public var createSteps: [CreateStep] = []
     /// The active session's agent slash commands (built-in + custom from .claude/commands), for the
     /// composer's "/" palette. Loaded per session.
     @Published public var commands: [SlashCommand] = []
@@ -104,6 +119,10 @@ public final class Model: ObservableObject {
     @Published public var trackerAuthDetails: [String: String] = [:]
     /// Whether the daemon is shipping anonymized diagnostics (on by default; toggled in Settings).
     @Published public var telemetryEnabled: Bool = true
+    /// Atlassian sites the Jira token can reach + the active one — for orgs with more than one Jira
+    /// site (picking the wrong one is the classic "connected but no tickets").
+    @Published public var jiraSites: [JiraSite] = []
+    @Published public var jiraCurrentSite: String = ""
     /// Recurring autonomous workflows ("loops") + their run history.
     @Published public var loops: [Loop] = []
     @Published public var loopRuns: [LoopRun] = []
@@ -636,11 +655,30 @@ public final class Model: ObservableObject {
         return ([], false)
     }
 
+    /// Folds a streamed create step into `createSteps`: repeated events for the same stage update
+    /// that row (e.g. worktree 1/3 → 2/3); a new stage marks the prior steps done and appends the
+    /// current one. "ready" completes them all.
+    private func applyCreateStep(_ p: SessionProgress) {
+        if p.stage == "ready" {
+            for i in createSteps.indices { createSteps[i].done = true }
+            return
+        }
+        if let i = createSteps.firstIndex(where: { $0.stage == p.stage }) {
+            createSteps[i].detail = p.detail
+            createSteps[i].step = p.step ?? 0
+            createSteps[i].total = p.total ?? 0
+        } else {
+            for i in createSteps.indices { createSteps[i].done = true } // prior phases finished
+            createSteps.append(CreateStep(stage: p.stage, detail: p.detail, step: p.step ?? 0, total: p.total ?? 0, done: false))
+        }
+    }
+
     public func createSession(provider: String, projectIDs: [String]? = nil, worktree: Bool = false, workspaceName: String? = nil, plan: Bool = false, autonomous: Bool = false, model: String? = nil, modelProvider: String? = nil) async {
         guard client != nil else { return }
         startingProvider = provider
-        startingSession = true // skeleton loading overlay + UI lock until the session is ready
-        defer { startingSession = false }
+        createSteps = [] // fresh checklist; the daemon streams session.progress as it works
+        startingSession = true // loading overlay + UI lock until the session is ready
+        defer { startingSession = false; createSteps = [] }
         newSession() // clear the conversation; the created session replaces it on success
         self.autonomous = autonomous
         let multi = (projectIDs?.count ?? 0) > 1
@@ -949,6 +987,29 @@ public final class Model: ObservableObject {
     }
 
     public func startLinearOAuth() async { await startOAuth(provider: "linear") }
+
+    /// Lists the Atlassian sites the Jira token can access (+ the active one). Empty on non-OAuth or
+    /// single-site setups (the picker only matters with >1 site).
+    public func loadJiraSites() async {
+        guard client != nil, connectedTrackers.contains("jira") else { jiraSites = []; return }
+        if let resp = try? await request(MessageType.jiraSites, payload: Optional<Int>.none),
+           let js = try? resp.payload(as: JiraSites.self) {
+            jiraSites = js.sites
+            jiraCurrentSite = js.current ?? ""
+        }
+    }
+
+    /// Switches the active Jira site (cloud id) — no re-auth; the token spans all the org's sites.
+    public func setJiraSite(_ cloudID: String) async {
+        guard client != nil else { return }
+        trackerError = nil
+        jiraCurrentSite = cloudID // optimistic
+        if let resp = try? await request(MessageType.jiraSetSite, payload: JiraSetSite(cloudID: cloudID)),
+           let st = try? resp.payload(as: IntegrationStatus.self) {
+            applyIntegrationStatus(st)
+        }
+        await loadIssues()
+    }
 
     /// Reads whether the daemon is sending anonymized diagnostics (drives the Settings toggle).
     public func loadTelemetryStatus() async {
@@ -1647,6 +1708,10 @@ public final class Model: ObservableObject {
                     if let st = try? env.payload(as: IntegrationStatus.self) { applyIntegrationStatus(st) }
                 case MessageType.telemetryStatus: // broadcast after a toggle on any device
                     if let t = try? env.payload(as: Telemetry.self) { telemetryEnabled = t.enabled }
+                case MessageType.sessionProgress: // live create step → prescriptive loading checklist
+                    if startingSession, let p = try? env.payload(as: SessionProgress.self) {
+                        applyCreateStep(p)
+                    }
                 case MessageType.lspDiagnostics: // language server published diagnostics for a file
                     if let d = try? env.payload(as: LSPDiagnostics.self) {
                         diagnostics[d.path] = d.diagnostics

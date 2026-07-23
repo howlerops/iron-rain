@@ -59,6 +59,8 @@ const (
 	TypeIntegrationStatus   = "integration.status"   // which trackers are connected
 	TypeTelemetrySet        = "telemetry.set"        // toggle anonymized diagnostics on/off
 	TypeTelemetryStatus     = "telemetry.status"     // query whether anonymized diagnostics are on
+	TypeJiraSites           = "jira.sites"           // list Atlassian sites the token can access (multi-site orgs)
+	TypeJiraSetSite         = "jira.set_site"        // switch the active Jira site (cloud id)
 	TypeIntegrationOAuth    = "integration.oauth"    // begin an OAuth flow; returns an authorize URL
 	TypeIntegrationOAuthApp = "integration.oauthapp" // save a provider's OAuth app client_id/secret
 	TypeIssueList           = "issue.list"           // assigned issues (request + broadcast)
@@ -108,6 +110,7 @@ const (
 	TypeSessionHeartbeat = "session.heartbeat" // supervision state for a session (event)
 	TypeRunOutput        = "run.output"        // streamed line from a test/build run (event)
 	TypeRunResult        = "run.result"        // final pass/fail of a test/build run (event)
+	TypeSessionProgress  = "session.progress"  // live step during session.create (drives the loading checklist)
 
 	// responses
 	TypeOK    = "ok"
@@ -347,9 +350,37 @@ type IntegrationConnect struct {
 	Token    string `json:"token"`
 }
 
+// JiraSite is one Atlassian site (cloud) the OAuth token can reach.
+type JiraSite struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	URL  string `json:"url"`
+}
+
+// JiraSites is the list + the currently-selected cloud id (jira.sites response).
+type JiraSites struct {
+	Sites   []JiraSite `json:"sites"`
+	Current string     `json:"current,omitempty"`
+}
+
+// JiraSetSite switches the active Jira site (jira.set_site request).
+type JiraSetSite struct {
+	CloudID string `json:"cloud_id"`
+}
+
 // Telemetry is the anonymized-diagnostics toggle state (set request + status response).
 type Telemetry struct {
 	Enabled bool `json:"enabled"`
+}
+
+// SessionProgress is a live step emitted while a session is being created, so the app can show a
+// prescriptive checklist ("Creating worktree 2/3 · repo-b", "Starting opencode…") instead of a
+// generic skeleton. Stage is a stable code; Detail is human text. Step/Total drive a "2/3" when >0.
+type SessionProgress struct {
+	Stage  string `json:"stage"`  // "workspace" | "worktree" | "bootstrap" | "provider" | "ready"
+	Detail string `json:"detail"` // human-readable line
+	Step   int    `json:"step,omitempty"`
+	Total  int    `json:"total,omitempty"`
 }
 
 type IntegrationStatus struct {
