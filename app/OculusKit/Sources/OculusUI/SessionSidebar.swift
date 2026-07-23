@@ -86,6 +86,11 @@ struct SessionSidebar: View {
     var loginAtLogin: Bool = false
     var loginAtLoginError: String? = nil
     var onToggleLoginAtLogin: ((Bool) -> Void)? = nil
+    #if os(macOS)
+    /// The self-update checker (RootView-owned) — drives the "Relaunch to update" card pinned at the
+    /// bottom of the sidebar (Claude-Code style). macOS only: iOS updates via TestFlight/App Store.
+    @ObservedObject var updates: UpdateChecker
+    #endif
     /// Opens the Loops (recurring autonomous workflows) sheet.
     var onOpenLoops: (() -> Void)? = nil
     var onOpenAgents: (() -> Void)? = nil
@@ -104,6 +109,9 @@ struct SessionSidebar: View {
                     emptyState
                 }
             }
+            #if os(macOS)
+            .safeAreaInset(edge: .bottom) { updateCard }
+            #endif
             .tint(palette.primary)
         // The desktop switcher hangs off the title as a `.toolbarTitleMenu` (the
         // Xcode scheme-menu pattern). `.navigationTitle` is also what makes the
@@ -353,6 +361,55 @@ struct SessionSidebar: View {
             .help("New session")
         }
     }
+
+    #if os(macOS)
+    /// Claude-Code-style "Relaunch to update" card pinned to the bottom of the sidebar. Only shows
+    /// when a newer release exists; one tap installs the new app + daemon (they update together now)
+    /// and relaunches, streaming progress in place.
+    @ViewBuilder private var updateCard: some View {
+        if updates.updateAvailable {
+            VStack(spacing: 0) {
+                Button {
+                    if !updates.installing { Task { await updates.installAndRelaunch() } }
+                } label: {
+                    HStack(spacing: 10) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 8).fill(palette.primary.opacity(0.16)).frame(width: 30, height: 30)
+                            if updates.installing {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Image(systemName: "arrow.down.circle.fill").foregroundStyle(palette.primary).font(.system(size: 15))
+                            }
+                        }
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(updates.installing ? "Updating…" : "Relaunch to update")
+                                .font(.system(size: 13, weight: .semibold)).foregroundStyle(palette.foreground)
+                            Text(updates.installing ? updates.installPhase : "v\(updates.latestVersion ?? "")")
+                                .font(.system(size: 11)).foregroundStyle(palette.mutedForeground).lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
+                        if !updates.installing {
+                            Image(systemName: "arrow.right").font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(palette.mutedForeground)
+                        }
+                    }
+                    .padding(10)
+                    .background(palette.card, in: RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(palette.primary.opacity(0.3)))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(updates.installing)
+                .help("Update the app + daemon and relaunch")
+                if let err = updates.installError {
+                    Text(err).font(.caption2).foregroundStyle(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 4)
+                }
+            }
+            .padding(.horizontal, 10).padding(.bottom, 10)
+        }
+    }
+    #endif
 
     private var desktopName: String {
         let n = store.active?.name ?? model.name

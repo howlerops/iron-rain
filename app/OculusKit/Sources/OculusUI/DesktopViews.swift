@@ -129,32 +129,14 @@ struct SessionSkeleton: View {
 struct SoftwareUpdateModifier: ViewModifier {
     let palette: OculusPalette
     @Binding var forceCheck: Bool
-    @StateObject private var updates = UpdateChecker()
+    @ObservedObject var updates: UpdateChecker // owned by RootView so the sidebar card shares it
     @State private var showSheet = false
 
+    // The "update available" affordance now lives as a card at the BOTTOM OF THE SIDEBAR
+    // (SessionSidebar.updatePill), Claude-Code style. This modifier just drives the periodic check,
+    // the "Check for updates" sheet, and the manual/error details.
     func body(content: Content) -> some View {
         content
-            .safeAreaInset(edge: .bottom) {
-                if updates.updateAvailable {
-                    Button { showSheet = true } label: {
-                        HStack(spacing: 7) {
-                            Image(systemName: "arrow.down.circle.fill").foregroundStyle(palette.primary)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text("Update available").font(.caption.bold())
-                                if let v = updates.latestVersion {
-                                    Text("v\(v) — click to update").font(.caption2).foregroundStyle(palette.mutedForeground)
-                                }
-                            }
-                            Spacer()
-                        }
-                        .padding(.horizontal, 12).padding(.vertical, 9)
-                        .frame(maxWidth: .infinity)
-                        .background(palette.secondary.opacity(0.6))
-                        .overlay(Rectangle().frame(height: 1).foregroundStyle(palette.border), alignment: .top)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
             .sheet(isPresented: $showSheet) { updateSheet }
             .task { await updates.check() }
             .onChange(of: forceCheck) { go in
@@ -244,6 +226,7 @@ public struct RootView: View {
     #if os(macOS)
     @StateObject private var launcher = DaemonLauncher()
     @StateObject private var loginItem = LoginItemManager()
+    @StateObject private var updates = UpdateChecker() // shared: drives the sidebar update card + the check
     #endif
 
     public init(store: DesktopStore) { self.store = store }
@@ -272,7 +255,7 @@ public struct RootView: View {
                     .modifier(SessionStartingOverlay(model: model, palette: palette))
                     .modifier(ActionErrorAlert(model: model))
                     #if os(macOS)
-                    .modifier(SoftwareUpdateModifier(palette: palette, forceCheck: $checkForUpdates))
+                    .modifier(SoftwareUpdateModifier(palette: palette, forceCheck: $checkForUpdates, updates: updates))
                     #endif
                     .sheet(item: $panel) { which in
                         switch which {
@@ -361,6 +344,7 @@ public struct RootView: View {
                                loginAtLogin: loginItem.enabled,
                                loginAtLoginError: loginItem.lastError,
                                onToggleLoginAtLogin: { on in Task { await loginItem.setEnabled(on, launcher: launcher) } },
+                               updates: updates,
                                onOpenLoops: { panel = .loops },
                                onOpenAgents: { panel = .agents })
                     .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 340)
