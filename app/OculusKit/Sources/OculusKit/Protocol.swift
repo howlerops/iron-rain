@@ -57,6 +57,10 @@ public enum MessageType {
     public static let issueComment = "issue.comment"
     public static let issueCommentEdit = "issue.comment.edit"
     public static let issueImage = "issue.image"
+    public static let issueColumns = "issue.columns"
+    public static let issueMove = "issue.move"
+    public static let issueCreate = "issue.create"
+    public static let issueProjects = "issue.projects"
 
     // Built-in editor file access.
     public static let fsTree = "fs.tree"
@@ -972,6 +976,9 @@ public struct Issue: Codable, Identifiable, Hashable {
     public var cycleID: String?
     public var cycleName: String?
     public var cycleNumber: Int?
+    public var teamName: String?
+    public var sprintName: String?
+    public var sprintState: String?
     enum CodingKeys: String, CodingKey {
         case id, key, title, body, status, category, assignee, url, provider, priority
         case branchName = "branch_name"
@@ -980,6 +987,9 @@ public struct Issue: Codable, Identifiable, Hashable {
         case cycleID = "cycle_id"
         case cycleName = "cycle_name"
         case cycleNumber = "cycle_number"
+        case teamName = "team_name"
+        case sprintName = "sprint_name"
+        case sprintState = "sprint_state"
     }
     /// Display label for the issue's cycle/sprint, e.g. "Cycle 12" or a named cycle.
     public var cycleLabel: String? {
@@ -998,6 +1008,43 @@ public struct IssueStatesReq: Codable {
     enum CodingKeys: String, CodingKey { case provider; case teamID = "team_id" }
 }
 public struct IssueStateList: Codable { public var states: [IssueState] }
+
+// MARK: - Kanban board: columns / move / create / projects
+
+/// Request the ordered workflow-status columns for a project's board.
+public struct IssueColumnsReq: Codable {
+    public var provider: String; public var project: String
+    public init(provider: String, project: String) { self.provider = provider; self.project = project }
+    enum CodingKeys: String, CodingKey { case provider, project }
+}
+
+/// Move a card to a workflow status.
+public struct IssueMove: Codable {
+    public var provider: String; public var issueID: String; public var statusID: String
+    public init(provider: String, issueID: String, statusID: String) {
+        self.provider = provider; self.issueID = issueID; self.statusID = statusID
+    }
+    enum CodingKeys: String, CodingKey { case provider; case issueID = "issue_id"; case statusID = "status_id" }
+}
+
+/// Create a new ticket on a project's board.
+public struct IssueCreate: Codable {
+    public var provider: String; public var project: String; public var title: String
+    public var description: String?; public var priority: Int?; public var type: String?
+    public init(provider: String, project: String, title: String, description: String? = nil, priority: Int? = nil, type: String? = nil) {
+        self.provider = provider; self.project = project; self.title = title
+        self.description = description; self.priority = priority; self.type = type
+    }
+    enum CodingKeys: String, CodingKey { case provider, project, title, description, priority, type }
+}
+
+/// A selectable board/project.
+public struct IssueProject: Codable, Identifiable, Hashable {
+    public var id: String; public var name: String; public var provider: String
+    public init(id: String, name: String, provider: String) { self.id = id; self.name = name; self.provider = provider }
+    enum CodingKeys: String, CodingKey { case id, name, provider }
+}
+public struct IssueProjectsList: Codable { public var projects: [IssueProject] }
 public struct IssueLaunch: Codable {
     public var issueID: String; public var provider: String; public var projectID: String
     public var worktree: Bool?; public var agentProvider: String?
@@ -1034,6 +1081,24 @@ public struct IssueDetailReq: Codable {
 public struct IssueDetail: Codable {
     public var issue: Issue
     public var comments: [IssueComment]
+    public var attachments: [IssueAttachment]?
+}
+
+/// One file/image attached to an issue.
+public struct IssueAttachment: Codable, Identifiable, Hashable {
+    public var id: String
+    public var filename: String
+    public var url: String
+    public var mime: String
+    public var size: Int?
+    public var isImage: Bool
+    public init(id: String, filename: String, url: String, mime: String, size: Int? = nil, isImage: Bool = false) {
+        self.id = id; self.filename = filename; self.url = url; self.mime = mime; self.size = size; self.isImage = isImage
+    }
+    enum CodingKeys: String, CodingKey {
+        case id, filename, url, mime, size
+        case isImage = "is_image"
+    }
 }
 
 /// Partial edit — only non-nil fields are applied server-side.

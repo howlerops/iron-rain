@@ -18,11 +18,14 @@ type Issue struct {
 	Provider   string `json:"provider"`              // "linear" | "jira"
 	BranchName string `json:"branch_name,omitempty"` // git branch for a worktree
 	TeamID      string `json:"team_id,omitempty"`
+	TeamName    string `json:"team_name,omitempty"` // human name of the project/team
 	Priority    int    `json:"priority,omitempty"`
 	UpdatedAt   string `json:"updated_at,omitempty"`
 	CycleID     string `json:"cycle_id,omitempty"`
 	CycleName   string `json:"cycle_name,omitempty"`
 	CycleNumber int    `json:"cycle_number,omitempty"`
+	SprintName  string `json:"sprint_name,omitempty"`  // Jira active sprint (Linear reuses cycle)
+	SprintState string `json:"sprint_state,omitempty"` // "active" | "future" | "closed"
 }
 
 // State is a workflow state (a kanban column).
@@ -50,6 +53,32 @@ type UpdateFields struct {
 	Priority    *int
 }
 
+// CreateIssueInput is a new-ticket request. Project is a Jira project key / Linear team id;
+// Type is a Jira issue type name (e.g. "Task"), ignored by Linear.
+type CreateIssueInput struct {
+	Project     string
+	Title       string
+	Description string
+	Priority    int
+	Type        string
+}
+
+// Project is a tracker project/team offered in the board picker.
+type Project struct {
+	ID   string
+	Name string
+}
+
+// Attachment is a file on an issue. IsImage lets the app render it inline vs. offer a download.
+type Attachment struct {
+	ID       string
+	Filename string
+	URL      string // auth-gated content URL (fetch via FetchImage)
+	Mime     string
+	Size     int
+	IsImage  bool
+}
+
 // Provider is one tracker backend.
 type Provider interface {
 	Name() string
@@ -58,14 +87,23 @@ type Provider interface {
 	Comment(ctx context.Context, issueID, body string) error
 	Transition(ctx context.Context, issueID, toStateID string) error
 
-	// Detail fetches a single issue plus its comments.
-	Detail(ctx context.Context, issueID string) (Issue, []Comment, error)
+	// Detail fetches a single issue plus its comments and attachments.
+	Detail(ctx context.Context, issueID string) (Issue, []Comment, []Attachment, error)
 	// Update applies the non-nil fields of f and returns the updated issue.
 	Update(ctx context.Context, issueID string, f UpdateFields) (Issue, error)
 	// EditComment replaces the body of an existing comment.
 	EditComment(ctx context.Context, commentID, body string) error
 	// FetchImage GETs an auth-gated attachment, returning its MIME type and bytes.
 	FetchImage(ctx context.Context, url string) (mime string, data []byte, err error)
+
+	// ProjectStatuses returns a project/team's ordered workflow statuses (the board columns).
+	ProjectStatuses(ctx context.Context, projectID string) ([]State, error)
+	// MoveToStatus moves an issue to a status (resolves a Jira transition; sets a Linear state).
+	MoveToStatus(ctx context.Context, issueID, statusID string) error
+	// CreateIssue creates a ticket and returns it.
+	CreateIssue(ctx context.Context, in CreateIssueInput) (Issue, error)
+	// Projects lists the projects/teams this provider exposes (board picker).
+	Projects(ctx context.Context) ([]Project, error)
 }
 
 // categoryFor normalizes a provider status type into our four buckets.

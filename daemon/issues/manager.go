@@ -254,11 +254,11 @@ func (m *Manager) States(ctx context.Context, provider, teamID string) ([]State,
 	return p.WorkflowStates(ctx, teamID)
 }
 
-// Detail returns a single issue plus its comments from the named provider.
-func (m *Manager) Detail(ctx context.Context, provider, issueID string) (Issue, []Comment, error) {
+// Detail returns a single issue plus its comments and attachments from the named provider.
+func (m *Manager) Detail(ctx context.Context, provider, issueID string) (Issue, []Comment, []Attachment, error) {
 	p := m.Provider(provider)
 	if p == nil {
-		return Issue{}, nil, fmt.Errorf("%s not connected", provider)
+		return Issue{}, nil, nil, fmt.Errorf("%s not connected", provider)
 	}
 	return p.Detail(ctx, issueID)
 }

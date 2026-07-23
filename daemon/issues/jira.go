@@ -208,7 +208,8 @@ func jiraCategory(key string) string {
 func (j *Jira) ListAssigned(ctx context.Context) ([]Issue, error) {
 	q := url.Values{}
 	q.Set("jql", "assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC")
-	q.Set("fields", "summary,status,priority,project,updated,assignee,issuetype,description")
+	// customfield_10020 is the standard Jira sprint field (its id varies per instance; parsed defensively).
+	q.Set("fields", "summary,status,priority,project,updated,assignee,issuetype,description,customfield_10020")
 	q.Set("maxResults", "50")
 	var data struct {
 		Issues []struct {
@@ -218,6 +219,7 @@ func (j *Jira) ListAssigned(ctx context.Context) ([]Issue, error) {
 				Summary     string          `json:"summary"`
 				Updated     string          `json:"updated"`
 				Description json.RawMessage `json:"description"` // ADF object on Jira Cloud
+				Sprint      json.RawMessage `json:"customfield_10020"`
 				Status      struct {
 					Name           string `json:"name"`
 					StatusCategory struct {
@@ -234,7 +236,7 @@ func (j *Jira) ListAssigned(ctx context.Context) ([]Issue, error) {
 					Name string `json:"name"`
 				} `json:"issuetype"`
 				Project struct {
-					ID, Key string
+					ID, Key, Name string
 				} `json:"project"`
 			} `json:"fields"`
 		} `json:"issues"`
@@ -244,16 +246,43 @@ func (j *Jira) ListAssigned(ctx context.Context) ([]Issue, error) {
 	}
 	out := make([]Issue, 0, len(data.Issues))
 	for _, is := range data.Issues {
+		sprintName, sprintState := jiraSprint(is.Fields.Sprint)
 		out = append(out, Issue{
 			ID: is.Key, Key: is.Key, Title: is.Fields.Summary,
 			Body:     adfToText(is.Fields.Description),
 			Status:   is.Fields.Status.Name, Category: jiraCategory(is.Fields.Status.StatusCategory.Key),
 			Assignee: is.Fields.Assignee.DisplayName, Priority: jiraPriority(is.Fields.Priority.Name),
-			Provider: "jira", TeamID: is.Fields.Project.Key, BranchName: branchNameFor(is.Key, is.Fields.Summary),
-			URL: j.base + "/browse/" + is.Key, UpdatedAt: is.Fields.Updated,
+			Provider: "jira", TeamID: is.Fields.Project.Key, TeamName: is.Fields.Project.Name,
+			BranchName: branchNameFor(is.Key, is.Fields.Summary),
+			URL:        j.base + "/browse/" + is.Key, UpdatedAt: is.Fields.Updated,
+			SprintName: sprintName, SprintState: sprintState,
 		})
 	}
 	return out, nil
+}
+
+// jiraSprint extracts the active (or last) sprint name/state from Jira's sprint custom field.
+// The field id varies per instance and its shape drifts (an array of objects on modern Cloud, an
+// array of GreenHopper strings on old instances), so parse defensively and never error the list.
+func jiraSprint(raw json.RawMessage) (name, state string) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return "", ""
+	}
+	var sprints []struct {
+		Name  string `json:"name"`
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal(raw, &sprints); err != nil || len(sprints) == 0 {
+		return "", "" // old string form or unexpected shape — skip rather than fail
+	}
+	// Prefer an active sprint; otherwise fall back to the last one listed.
+	for _, s := range sprints {
+		if strings.EqualFold(s.State, "active") {
+			return s.Name, s.State
+		}
+	}
+	last := sprints[len(sprints)-1]
+	return last.Name, last.State
 }
 
 // jiraPriority maps Jira's named priorities to our numeric scale (1 = highest/urgent → red dot),
@@ -272,6 +301,25 @@ func jiraPriority(name string) int {
 		return 5
 	default:
 		return 0
+	}
+}
+
+// jiraPriorityName maps our numeric scale back to a Jira priority name for issue creation
+// (inverse of jiraPriority). "" for 0/unset so the caller can omit the field.
+func jiraPriorityName(n int) string {
+	switch n {
+	case 1:
+		return "Highest"
+	case 2:
+		return "High"
+	case 3:
+		return "Medium"
+	case 4:
+		return "Low"
+	case 5:
+		return "Lowest"
+	default:
+		return ""
 	}
 }
 
@@ -314,9 +362,121 @@ func (j *Jira) Transition(ctx context.Context, issueKey, transitionID string) er
 	return j.do(ctx, http.MethodPost, "/rest/api/3/issue/"+issueKey+"/transitions", body, nil)
 }
 
-// Detail fetches one issue (best-effort, no comments). The richer inspector is
-// Linear-focused; Jira gets a minimal read so the interface is satisfied.
-func (j *Jira) Detail(ctx context.Context, issueKey string) (Issue, []Comment, error) {
+// ProjectStatuses returns a project's real workflow statuses as ordered board columns. Jira
+// exposes statuses per issue type, so we flatten and dedupe (first occurrence wins) to present
+// one column set for the whole project.
+func (j *Jira) ProjectStatuses(ctx context.Context, projectKey string) ([]State, error) {
+	var data []struct {
+		Name     string `json:"name"` // issue type name
+		Statuses []struct {
+			ID             string `json:"id"`
+			Name           string `json:"name"`
+			StatusCategory struct {
+				Key string `json:"key"`
+			} `json:"statusCategory"`
+		} `json:"statuses"`
+	}
+	if err := j.do(ctx, http.MethodGet, "/rest/api/3/project/"+projectKey+"/statuses", nil, &data); err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	out := make([]State, 0)
+	for _, it := range data {
+		for _, s := range it.Statuses {
+			if seen[s.ID] {
+				continue
+			}
+			seen[s.ID] = true
+			out = append(out, State{ID: s.ID, Name: s.Name, Category: jiraCategory(s.StatusCategory.Key), Position: float64(len(out))})
+		}
+	}
+	return out, nil
+}
+
+// MoveToStatus drags an issue to a status column. Jira has no "set status" API — you POST a
+// workflow transition — so we look up the transition that lands on statusID and execute it.
+// Jira workflows don't always allow arbitrary moves, so an unreachable column is a clear error.
+func (j *Jira) MoveToStatus(ctx context.Context, issueKey, statusID string) error {
+	var data struct {
+		Transitions []struct {
+			ID string `json:"id"`
+			To struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"to"`
+		} `json:"transitions"`
+	}
+	if err := j.do(ctx, http.MethodGet, "/rest/api/3/issue/"+issueKey+"/transitions", nil, &data); err != nil {
+		return err
+	}
+	for _, t := range data.Transitions {
+		if t.To.ID == statusID {
+			return j.Transition(ctx, issueKey, t.ID)
+		}
+	}
+	return fmt.Errorf("no transition from the current status to that column")
+}
+
+// CreateIssue creates a ticket via the v3 issue API. The description must be ADF, so a
+// non-empty body is wrapped in a single-paragraph doc.
+func (j *Jira) CreateIssue(ctx context.Context, in CreateIssueInput) (Issue, error) {
+	issueType := in.Type
+	if issueType == "" {
+		issueType = "Task"
+	}
+	fields := map[string]any{
+		"project":   map[string]any{"key": in.Project},
+		"summary":   in.Title,
+		"issuetype": map[string]any{"name": issueType},
+	}
+	if in.Description != "" {
+		fields["description"] = map[string]any{
+			"type": "doc", "version": 1,
+			"content": []any{map[string]any{"type": "paragraph",
+				"content": []any{map[string]any{"type": "text", "text": in.Description}}}},
+		}
+	}
+	if in.Priority > 0 {
+		fields["priority"] = map[string]any{"name": jiraPriorityName(in.Priority)}
+	}
+	var resp struct {
+		ID  string `json:"id"`
+		Key string `json:"key"`
+	}
+	if err := j.do(ctx, http.MethodPost, "/rest/api/3/issue", map[string]any{"fields": fields}, &resp); err != nil {
+		return Issue{}, err
+	}
+	// Build from the create response + inputs; the board refreshes the list afterwards, which
+	// fills in the server-resolved status/priority names.
+	return Issue{
+		ID: resp.Key, Key: resp.Key, Title: in.Title, Body: in.Description,
+		Priority: in.Priority, Provider: "jira", TeamID: in.Project,
+		BranchName: branchNameFor(resp.Key, in.Title),
+		URL:        j.base + "/browse/" + resp.Key,
+	}, nil
+}
+
+// Projects lists the site's projects for the board picker (first page, maxResults=50).
+func (j *Jira) Projects(ctx context.Context) ([]Project, error) {
+	var data struct {
+		Values []struct {
+			Key  string `json:"key"`
+			Name string `json:"name"`
+		} `json:"values"`
+	}
+	if err := j.do(ctx, http.MethodGet, "/rest/api/3/project/search?maxResults=50", nil, &data); err != nil {
+		return nil, err
+	}
+	out := make([]Project, 0, len(data.Values))
+	for _, v := range data.Values {
+		out = append(out, Project{ID: v.Key, Name: v.Name})
+	}
+	return out, nil
+}
+
+// Detail fetches one issue with its comments and attachments. The sprint field id varies per
+// instance (customfield_10020 is the standard) and is parsed defensively so it never fails the read.
+func (j *Jira) Detail(ctx context.Context, issueKey string) (Issue, []Comment, []Attachment, error) {
 	var data struct {
 		ID     string `json:"id"`
 		Key    string `json:"key"`
@@ -324,6 +484,7 @@ func (j *Jira) Detail(ctx context.Context, issueKey string) (Issue, []Comment, e
 			Summary     string          `json:"summary"`
 			Description json.RawMessage `json:"description"` // ADF object
 			Updated     string          `json:"updated"`
+			Sprint      json.RawMessage `json:"customfield_10020"`
 			Status      struct {
 				Name           string `json:"name"`
 				StatusCategory struct {
@@ -337,21 +498,52 @@ func (j *Jira) Detail(ctx context.Context, issueKey string) (Issue, []Comment, e
 				DisplayName string `json:"displayName"`
 			} `json:"assignee"`
 			Project struct {
-				ID, Key string
+				ID, Key, Name string
 			} `json:"project"`
+			Comment struct {
+				Comments []struct {
+					ID     string `json:"id"`
+					Author struct {
+						DisplayName string `json:"displayName"`
+					} `json:"author"`
+					Body    json.RawMessage `json:"body"` // ADF object
+					Created string          `json:"created"`
+				} `json:"comments"`
+			} `json:"comment"`
+			Attachment []struct {
+				ID       string `json:"id"`
+				Filename string `json:"filename"`
+				Content  string `json:"content"` // auth-gated download URL
+				MimeType string `json:"mimeType"`
+				Size     int    `json:"size"`
+			} `json:"attachment"`
 		} `json:"fields"`
 	}
-	if err := j.do(ctx, http.MethodGet, "/rest/api/3/issue/"+issueKey+"?fields=summary,description,status,project,updated,priority,assignee", nil, &data); err != nil {
-		return Issue{}, nil, err
+	if err := j.do(ctx, http.MethodGet, "/rest/api/3/issue/"+issueKey+"?fields=summary,description,status,project,updated,priority,assignee,comment,attachment,customfield_10020", nil, &data); err != nil {
+		return Issue{}, nil, nil, err
 	}
-	return Issue{
+	sprintName, sprintState := jiraSprint(data.Fields.Sprint)
+	issue := Issue{
 		ID: data.Key, Key: data.Key, Title: data.Fields.Summary, Body: adfToText(data.Fields.Description),
 		Status: data.Fields.Status.Name, Category: jiraCategory(data.Fields.Status.StatusCategory.Key),
 		Assignee: data.Fields.Assignee.DisplayName, Priority: jiraPriority(data.Fields.Priority.Name),
-		Provider: "jira", TeamID: data.Fields.Project.Key,
+		Provider: "jira", TeamID: data.Fields.Project.Key, TeamName: data.Fields.Project.Name,
 		BranchName: branchNameFor(data.Key, data.Fields.Summary),
 		URL:        j.base + "/browse/" + data.Key, UpdatedAt: data.Fields.Updated,
-	}, nil, nil
+		SprintName: sprintName, SprintState: sprintState,
+	}
+	comments := make([]Comment, 0, len(data.Fields.Comment.Comments))
+	for _, c := range data.Fields.Comment.Comments {
+		comments = append(comments, Comment{ID: c.ID, Author: c.Author.DisplayName, Body: adfToText(c.Body), CreatedAt: c.Created})
+	}
+	attachments := make([]Attachment, 0, len(data.Fields.Attachment))
+	for _, a := range data.Fields.Attachment {
+		attachments = append(attachments, Attachment{
+			ID: a.ID, Filename: a.Filename, URL: a.Content, Mime: a.MimeType, Size: a.Size,
+			IsImage: strings.HasPrefix(a.MimeType, "image/"),
+		})
+	}
+	return issue, comments, attachments, nil
 }
 
 // Update, EditComment, and FetchImage are not implemented for Jira yet; the daemon's

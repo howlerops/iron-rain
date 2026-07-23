@@ -689,9 +689,18 @@ func toProtoIssue(i issues.Issue) protocol.Issue {
 	return protocol.Issue{
 		ID: i.ID, Key: i.Key, Title: i.Title, Body: i.Body, Status: i.Status,
 		Category: i.Category, Assignee: i.Assignee, URL: i.URL, Provider: i.Provider,
-		BranchName: i.BranchName, TeamID: i.TeamID, Priority: i.Priority, UpdatedAt: i.UpdatedAt,
+		BranchName: i.BranchName, TeamID: i.TeamID, TeamName: i.TeamName, Priority: i.Priority, UpdatedAt: i.UpdatedAt,
 		CycleID: i.CycleID, CycleName: i.CycleName, CycleNumber: i.CycleNumber,
+		SprintName: i.SprintName, SprintState: i.SprintState,
 	}
+}
+
+func toProtoAttachments(in []issues.Attachment) []protocol.IssueAttachment {
+	out := make([]protocol.IssueAttachment, len(in))
+	for i, a := range in {
+		out[i] = protocol.IssueAttachment{ID: a.ID, Filename: a.Filename, URL: a.URL, Mime: a.Mime, Size: a.Size, IsImage: a.IsImage}
+	}
+	return out
 }
 
 func toProtoIssues(in []issues.Issue) []protocol.Issue {
@@ -1309,6 +1318,10 @@ func asyncDispatch(typ string) bool {
 		protocol.TypeJiraSites,           // tracker HTTP (accessible-resources)
 		protocol.TypeJiraSetSite,         // tracker HTTP (switch site + refresh)
 		protocol.TypeIssueStates,         // tracker HTTP
+		protocol.TypeIssueColumns,        // tracker HTTP
+		protocol.TypeIssueMove,           // tracker HTTP (resolve + transition + re-fetch)
+		protocol.TypeIssueCreate,         // tracker HTTP
+		protocol.TypeIssueProjects,       // tracker HTTP (per connected provider)
 		protocol.TypeIssueDetail,         // tracker HTTP
 		protocol.TypeIssueUpdate,         // tracker HTTP
 		protocol.TypeIssueComment,        // tracker HTTP
@@ -2174,6 +2187,104 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		}
 		h.sendOK(conn, env.ID, protocol.IssueStateList{States: out})
 
+	case protocol.TypeIssueColumns:
+		var req protocol.IssueColumnsReq
+		_ = env.Unmarshal(&req)
+		m := h.issuesMgr()
+		if m == nil {
+			h.sendErr(conn, env.ID, "integrations not enabled")
+			return
+		}
+		p := m.Provider(req.Provider)
+		if p == nil {
+			h.sendErr(conn, env.ID, req.Provider+" not connected")
+			return
+		}
+		states, err := p.ProjectStatuses(ctx, req.Project)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		out := make([]protocol.IssueState, len(states))
+		for i, s := range states {
+			out[i] = protocol.IssueState{ID: s.ID, Name: s.Name, Category: s.Category, Position: s.Position}
+		}
+		h.sendOK(conn, env.ID, protocol.IssueStateList{States: out})
+
+	case protocol.TypeIssueMove:
+		var req protocol.IssueMove
+		_ = env.Unmarshal(&req)
+		m := h.issuesMgr()
+		if m == nil {
+			h.sendErr(conn, env.ID, "integrations not enabled")
+			return
+		}
+		p := m.Provider(req.Provider)
+		if p == nil {
+			h.sendErr(conn, env.ID, req.Provider+" not connected")
+			return
+		}
+		if err := p.MoveToStatus(ctx, req.IssueID, req.StatusID); err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		// Re-fetch so the reply carries the updated status/category for the board; fall back to a
+		// minimal issue if the re-fetch fails (the move already succeeded).
+		updated, _, _, err := p.Detail(ctx, req.IssueID)
+		if err != nil {
+			updated = issues.Issue{ID: req.IssueID, Provider: req.Provider}
+		}
+		h.sendOK(conn, env.ID, toProtoIssue(updated))
+		// Refresh the merged cache off the reply path so every device's board reflects the move.
+		go func() { _ = m.Refresh(context.Background()) }()
+
+	case protocol.TypeIssueCreate:
+		var req protocol.IssueCreate
+		_ = env.Unmarshal(&req)
+		m := h.issuesMgr()
+		if m == nil {
+			h.sendErr(conn, env.ID, "integrations not enabled")
+			return
+		}
+		p := m.Provider(req.Provider)
+		if p == nil {
+			h.sendErr(conn, env.ID, req.Provider+" not connected")
+			return
+		}
+		created, err := p.CreateIssue(ctx, issues.CreateIssueInput{
+			Project: req.Project, Title: req.Title, Description: req.Description,
+			Priority: req.Priority, Type: req.Type,
+		})
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, toProtoIssue(created))
+		// Refresh so the new ticket appears on every device's board.
+		go func() { _ = m.Refresh(context.Background()) }()
+
+	case protocol.TypeIssueProjects:
+		m := h.issuesMgr()
+		if m == nil {
+			h.sendErr(conn, env.ID, "integrations not enabled")
+			return
+		}
+		var projects []protocol.IssueProject
+		for _, name := range m.Connected() {
+			p := m.Provider(name)
+			if p == nil {
+				continue
+			}
+			ps, err := p.Projects(ctx)
+			if err != nil {
+				continue // one tracker failing shouldn't blank the whole picker
+			}
+			for _, pr := range ps {
+				projects = append(projects, protocol.IssueProject{ID: pr.ID, Name: pr.Name, Provider: name})
+			}
+		}
+		h.sendOK(conn, env.ID, protocol.IssueProjectsList{Projects: projects})
+
 	case protocol.TypeIssueLaunch:
 		h.handleIssueLaunch(ctx, conn, env)
 
@@ -2185,14 +2296,15 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, "integrations not enabled")
 			return
 		}
-		issue, comments, err := m.Detail(ctx, req.Provider, req.IssueID)
+		issue, comments, attachments, err := m.Detail(ctx, req.Provider, req.IssueID)
 		if err != nil {
 			h.sendErr(conn, env.ID, err.Error())
 			return
 		}
 		h.sendOK(conn, env.ID, protocol.IssueDetail{
-			Issue:    toProtoIssue(issue),
-			Comments: toProtoComments(comments),
+			Issue:       toProtoIssue(issue),
+			Comments:    toProtoComments(comments),
+			Attachments: toProtoAttachments(attachments),
 		})
 
 	case protocol.TypeIssueUpdate:

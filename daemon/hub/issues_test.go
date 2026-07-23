@@ -42,9 +42,9 @@ func (f *fakeIssueProvider) Transition(context.Context, string, string) error {
 	f.mu.Unlock()
 	return nil
 }
-func (f *fakeIssueProvider) Detail(context.Context, string) (issues.Issue, []issues.Comment, error) {
+func (f *fakeIssueProvider) Detail(context.Context, string) (issues.Issue, []issues.Comment, []issues.Attachment, error) {
 	return issues.Issue{ID: "i1", Key: "ENG-1", Title: "Fix the bug", Provider: "linear"},
-		[]issues.Comment{{ID: "c1", Author: "jacob", Body: "hi"}}, nil
+		[]issues.Comment{{ID: "c1", Author: "jacob", Body: "hi"}}, nil, nil
 }
 func (f *fakeIssueProvider) Update(_ context.Context, _ string, _ issues.UpdateFields) (issues.Issue, error) {
 	return issues.Issue{ID: "i1", Key: "ENG-1", Title: "Fix the bug", Provider: "linear"}, nil
@@ -52,6 +52,21 @@ func (f *fakeIssueProvider) Update(_ context.Context, _ string, _ issues.UpdateF
 func (f *fakeIssueProvider) EditComment(context.Context, string, string) error { return nil }
 func (f *fakeIssueProvider) FetchImage(context.Context, string) (string, []byte, error) {
 	return "image/png", []byte{0x89, 0x50}, nil
+}
+func (f *fakeIssueProvider) ProjectStatuses(context.Context, string) ([]issues.State, error) {
+	return []issues.State{{ID: "s2", Name: "In Progress", Category: "in_progress"}}, nil
+}
+func (f *fakeIssueProvider) MoveToStatus(context.Context, string, string) error {
+	f.mu.Lock()
+	f.transitions++
+	f.mu.Unlock()
+	return nil
+}
+func (f *fakeIssueProvider) CreateIssue(context.Context, issues.CreateIssueInput) (issues.Issue, error) {
+	return issues.Issue{ID: "i2", Key: "ENG-2", Title: "New", Provider: "linear"}, nil
+}
+func (f *fakeIssueProvider) Projects(context.Context) ([]issues.Project, error) {
+	return []issues.Project{{ID: "team1", Name: "Engineering"}}, nil
 }
 
 // TestIssueLaunch: list assigned issues, then launch an agent on one — it runs in a

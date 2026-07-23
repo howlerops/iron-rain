@@ -1,11 +1,21 @@
 import SwiftUI
 import OculusKit
+import UniformTypeIdentifiers
 #if canImport(AppKit)
 import AppKit
 #endif
 #if canImport(UIKit)
 import UIKit
 #endif
+
+/// Provider-aware label for a ticket's external "open" action.
+func openInLabel(for provider: String) -> String {
+    switch provider {
+    case "jira": return "Open in Jira"
+    case "linear": return "Open in Linear"
+    default: return "Open in browser"
+    }
+}
 
 /// A saved issue view — a named preset of the search + priority/assignee/cycle filters, so you can
 /// jump to "My high-priority bugs" etc. Persisted on the Model.
@@ -40,6 +50,8 @@ public struct IssuesView: View {
     @State private var showHidden = false       // reveal hidden tickets (to unhide)
     @State private var savingView = false       // "save current filters as a view" dialog
     @State private var newViewName = ""
+    @State private var creatingTicket = false    // "+ New ticket" sheet
+    @State private var dropTargetColumn: String? // column id currently under a dragged card
     @Environment(\.openURL) private var openURL
 
     public init(model: Model, palette: OculusPalette, embedded: Bool = false, onLaunched: @escaping () -> Void = {}) {
@@ -62,14 +74,27 @@ public struct IssuesView: View {
                     if launched { onLaunched() }
                 }
             }
-            .task { await model.loadIntegrationStatus(); await model.loadIssues(); await model.loadJiraSites() }
+            .task {
+                await model.loadIntegrationStatus(); await model.loadIssues(); await model.loadJiraSites()
+                await model.loadIssueProjects(); await model.loadBoardColumns()
+            }
             // The initial .task can run before the desktop finishes connecting (client not ready),
             // leaving trackers showing "not connected" even though the daemon has them. Re-fetch the
             // moment the connection lands (e.g. right after scanning the pairing QR).
             .onChange(of: model.connected) { isConnected in
                 if isConnected {
-                    Task { await model.loadIntegrationStatus(); await model.loadIssues(); await model.loadJiraSites() }
+                    Task {
+                        await model.loadIntegrationStatus(); await model.loadIssues(); await model.loadJiraSites()
+                        await model.loadIssueProjects(); await model.loadBoardColumns()
+                    }
                 }
+            }
+            // Switching boards reloads that board's status columns.
+            .onChange(of: model.selectedProjectID) { _ in
+                Task { await model.loadBoardColumns() }
+            }
+            .sheet(isPresented: $creatingTicket) {
+                NewTicketSheet(model: model, palette: palette, projectID: model.selectedProjectID)
             }
     }
 
@@ -254,6 +279,8 @@ public struct IssuesView: View {
         return model.issues.filter { i in
             // Hidden tickets are excluded everywhere unless you toggle "show hidden" to unhide them.
             if model.hiddenIssueIDs.contains(i.id) && !showHidden { return false }
+            // When boards are known, scope to the selected board (degrades to no-op if unsupported).
+            if !model.issueProjects.isEmpty, let proj = model.selectedProjectID, i.teamID != proj { return false }
             if !q.isEmpty {
                 let hay = "\(i.key) \(i.title) \(i.body ?? "")".lowercased()
                 if !hay.contains(q) { return false }
@@ -526,41 +553,142 @@ public struct IssuesView: View {
 
     // MARK: kanban
 
+    /// A rendered board column, resolved from real workflow states (falling back to the fixed
+    /// category buckets when the daemon hasn't supplied per-project columns yet).
+    private struct BoardColumn: Identifiable, Hashable {
+        var id: String       // status id (real) or category (fallback) — the moveIssue target
+        var name: String
+        var category: String
+        var real: Bool       // true when built from model.boardColumns
+    }
+
+    private var boardColumnDefs: [BoardColumn] {
+        let cols = model.visibleColumns()
+        if cols.isEmpty {
+            return columns.map { BoardColumn(id: $0.category, name: $0.name, category: $0.category, real: false) }
+        }
+        return cols.map { BoardColumn(id: $0.id, name: $0.name, category: $0.category, real: true) }
+    }
+
     private var board: some View {
-        // Group once per render instead of re-filtering the issues twice per
-        // column (count + ForEach); indexing the grouping is O(1) per column.
-        let grouped = Dictionary(grouping: filteredIssues, by: { $0.category })
-        return ScrollView(.horizontal, showsIndicators: false) {
-            HStack(alignment: .top, spacing: 14) {
-                ForEach(columns, id: \.category) { col in
-                    let colIssues = grouped[col.category] ?? []
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            Text(col.name).font(.subheadline.bold())
-                            Text("\(colIssues.count)").font(.caption)
-                                .foregroundStyle(palette.mutedForeground)
-                        }
-                        .padding(.horizontal, 4)
-                        // Each column scrolls its own cards, lazily — a "Done" column with
-                        // hundreds of tickets must not overflow the board's height.
-                        ScrollView(.vertical, showsIndicators: false) {
-                            LazyVStack(alignment: .leading, spacing: 10) {
-                                ForEach(colIssues) { issue in card(issue) }
+        let defs = boardColumnDefs
+        let realColumns = defs.first?.real ?? false
+        // Group once per render instead of re-filtering per column; indexing the grouping is O(1).
+        let grouped: [String: [Issue]] = realColumns
+            ? Dictionary(grouping: filteredIssues, by: { $0.status.lowercased() })
+            : Dictionary(grouping: filteredIssues, by: { $0.category })
+        return VStack(spacing: 0) {
+            boardToolbar
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .top, spacing: 14) {
+                    ForEach(defs) { col in
+                        let colIssues = realColumns ? (grouped[col.name.lowercased()] ?? []) : (grouped[col.category] ?? [])
+                        boardColumn(col, issues: colIssues)
+                    }
+                }
+                .padding(14)
+                .frame(maxHeight: .infinity, alignment: .top)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    /// Board header: the project/board picker, a Columns menu (hide/reorder/reveal), and New ticket.
+    private var boardToolbar: some View {
+        HStack(spacing: 10) {
+            if !model.issueProjects.isEmpty {
+                Menu {
+                    ForEach(model.issueProjects) { p in
+                        Button { model.selectProject(p.id) } label: {
+                            let hint = p.provider == "jira" ? "Jira" : p.provider.capitalized
+                            if p.id == model.selectedProjectID {
+                                Label("\(p.name) · \(hint)", systemImage: "checkmark")
+                            } else {
+                                Text("\(p.name) · \(hint)")
                             }
-                            .padding(.bottom, 8)
                         }
                     }
-                    .frame(width: 280)
-                    .frame(maxHeight: .infinity, alignment: .top)
-                    .padding(10)
-                    .background(palette.card.opacity(0.5))
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                } label: {
+                    Label(selectedProjectName, systemImage: "square.stack.3d.up.fill").font(.callout)
+                }
+                .menuStyle(.borderlessButton).fixedSize()
+                .foregroundStyle(palette.foreground)
+            }
+
+            if !model.boardColumns.isEmpty { columnsMenu }
+
+            Spacer()
+
+            if model.selectedProjectID != nil {
+                Button { creatingTicket = true } label: {
+                    Label("New ticket", systemImage: "plus").font(.callout.weight(.medium))
+                }
+                .buttonStyle(.borderedProminent).tint(palette.primary)
+            }
+        }
+        .padding(.horizontal, 14).padding(.top, 4).padding(.bottom, 8)
+    }
+
+    private var selectedProjectName: String {
+        model.issueProjects.first(where: { $0.id == model.selectedProjectID })?.name ?? "Board"
+    }
+
+    /// Per-board column management: reorder, hide, and reveal hidden columns.
+    private var columnsMenu: some View {
+        Menu {
+            ForEach(model.visibleColumns()) { c in
+                Menu(c.name) {
+                    Button { model.moveBoardColumn(c.id, left: true) } label: { Label("Move left", systemImage: "arrow.left") }
+                    Button { model.moveBoardColumn(c.id, left: false) } label: { Label("Move right", systemImage: "arrow.right") }
+                    Divider()
+                    Button { model.hideBoardColumn(c.id) } label: { Label("Hide column", systemImage: "eye.slash") }
                 }
             }
-            .padding(14)
-            .frame(maxHeight: .infinity, alignment: .top)
+            let hidden = model.hiddenColumns()
+            if !hidden.isEmpty {
+                Divider()
+                Menu("Hidden columns") {
+                    ForEach(hidden) { c in
+                        Button { model.showBoardColumn(c.id) } label: { Label(c.name, systemImage: "eye") }
+                    }
+                }
+            }
+        } label: {
+            Label("Columns", systemImage: "rectangle.split.3x1").font(.callout)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .menuStyle(.borderlessButton).fixedSize()
+        .foregroundStyle(palette.mutedForeground)
+    }
+
+    @ViewBuilder private func boardColumn(_ col: BoardColumn, issues colIssues: [Issue]) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(col.name).font(.subheadline.bold())
+                Text("\(colIssues.count)").font(.caption)
+                    .foregroundStyle(palette.mutedForeground)
+                Spacer()
+            }
+            .padding(.horizontal, 4)
+            // Each column scrolls its own cards, lazily — a "Done" column with
+            // hundreds of tickets must not overflow the board's height.
+            ScrollView(.vertical, showsIndicators: false) {
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    ForEach(colIssues) { issue in card(issue) }
+                }
+                .padding(.bottom, 8)
+            }
+        }
+        .frame(width: 280)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .padding(10)
+        .background(dropTargetColumn == col.id ? palette.primary.opacity(0.14) : palette.card.opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(dropTargetColumn == col.id ? palette.primary : Color.clear, lineWidth: 1.5)
+        )
+        .modifier(ColumnDropModifier(columnID: col.id, dropTarget: $dropTargetColumn,
+                                     onDropID: { id in Task { await model.moveIssue(id, toStatus: col.id) } }))
     }
 
     private func card(_ issue: Issue) -> some View {
@@ -572,10 +700,10 @@ public struct IssuesView: View {
             }
             Text(issue.title).font(.callout).lineLimit(3)
             if let cycle = issue.cycleLabel {
-                Label(cycle, systemImage: "arrow.triangle.2.circlepath").font(.caption2)
-                    .foregroundStyle(palette.mutedForeground)
-                    .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(Capsule().fill(palette.muted.opacity(0.4)))
+                cycleChip(cycle, systemImage: "arrow.triangle.2.circlepath")
+            }
+            if let sprint = issue.sprintName, !sprint.isEmpty {
+                cycleChip(sprint, systemImage: "flag.checkered")
             }
             HStack(spacing: 6) {
                 Text(issue.status).font(.caption2).foregroundStyle(palette.mutedForeground).lineLimit(1)
@@ -594,6 +722,15 @@ public struct IssuesView: View {
         .opacity(model.hiddenIssueIDs.contains(issue.id) ? 0.5 : 1) // dim while revealed via "show hidden"
         .onTapGesture { selectedIssue = issue }
         .contextMenu { issueRowMenu(issue) }
+        .modifier(CardDragModifier(id: issue.id))
+    }
+
+    /// The compact cycle/sprint pill used on cards.
+    private func cycleChip(_ text: String, systemImage: String) -> some View {
+        Label(text, systemImage: systemImage).font(.caption2)
+            .foregroundStyle(palette.mutedForeground)
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(Capsule().fill(palette.muted.opacity(0.4)))
     }
 
     /// Right-click / long-press actions on a ticket — start an agent, hide/unhide, open externally.
@@ -605,7 +742,7 @@ public struct IssuesView: View {
             Button { model.hideIssue(issue.id) } label: { Label("Hide ticket", systemImage: "eye.slash") }
         }
         if let url = issue.url, let u = URL(string: url) {
-            Button { openURL(u) } label: { Label("Open in \(issue.provider == "jira" ? "Jira" : "Linear")", systemImage: "arrow.up.right.square") }
+            Button { openURL(u) } label: { Label(openInLabel(for: issue.provider), systemImage: "arrow.up.right.square") }
         }
     }
 
@@ -1016,5 +1153,139 @@ struct TrackerConnectCard: View {
         #elseif canImport(UIKit)
         UIPasteboard.general.string = s
         #endif
+    }
+}
+
+// MARK: - Drag & drop (card → column)
+
+/// Makes a card draggable with the issue id as the payload. Uses the modern `.draggable` API when
+/// available, falling back to an `NSItemProvider` `onDrag` on older OSes.
+struct CardDragModifier: ViewModifier {
+    let id: String
+    func body(content: Content) -> some View {
+        if #available(macOS 14.0, iOS 17.0, *) {
+            content.draggable(id)
+        } else {
+            content.onDrag { NSItemProvider(object: id as NSString) }
+        }
+    }
+}
+
+/// Turns a column into a drop target for a dragged card id, highlighting while hovered and calling
+/// `onDropID` with the dropped issue id. Modern `.dropDestination` with an `onDrop` fallback.
+struct ColumnDropModifier: ViewModifier {
+    let columnID: String
+    @Binding var dropTarget: String?
+    let onDropID: (String) -> Void
+
+    func body(content: Content) -> some View {
+        if #available(macOS 14.0, iOS 17.0, *) {
+            content.dropDestination(for: String.self) { items, _ in
+                guard let id = items.first else { return false }
+                onDropID(id)
+                return true
+            } isTargeted: { hovering in
+                if hovering { dropTarget = columnID }
+                else if dropTarget == columnID { dropTarget = nil }
+            }
+        } else {
+            content.onDrop(of: [UTType.text], isTargeted: Binding(
+                get: { dropTarget == columnID },
+                set: { hovering in
+                    if hovering { dropTarget = columnID }
+                    else if dropTarget == columnID { dropTarget = nil }
+                }
+            )) { providers in
+                guard let provider = providers.first else { return false }
+                _ = provider.loadObject(ofClass: NSString.self) { obj, _ in
+                    guard let s = obj as? String else { return }
+                    DispatchQueue.main.async { onDropID(s) }
+                }
+                return true
+            }
+        }
+    }
+}
+
+// MARK: - New ticket
+
+/// Sheet to create a ticket on the current board: title, description, a Jira-only Type field
+/// (default "Task"), and a priority picker. Closes on success; errors surface via trackerError.
+struct NewTicketSheet: View {
+    @ObservedObject var model: Model
+    let palette: OculusPalette
+    let projectID: String?
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var title = ""
+    @State private var description = ""
+    @State private var type = "Task"
+    @State private var priority = 0   // 0 = no priority
+    @State private var submitting = false
+
+    private var isJira: Bool {
+        model.issueProjects.first(where: { $0.id == projectID })?.provider == "jira"
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Ticket") {
+                    TextField("Title", text: $title)
+                        #if os(iOS)
+                        .textInputAutocapitalization(.sentences)
+                        #endif
+                    TextField("Description", text: $description, axis: .vertical)
+                        .lineLimit(3...8)
+                }
+                if isJira {
+                    Section("Type") {
+                        TextField("Type", text: $type)
+                            #if os(iOS)
+                            .textInputAutocapitalization(.words).autocorrectionDisabled()
+                            #endif
+                    }
+                }
+                Section("Priority") {
+                    Picker("Priority", selection: $priority) {
+                        Text("No priority").tag(0)
+                        Text("Urgent").tag(1)
+                        Text("High").tag(2)
+                        Text("Medium").tag(3)
+                        Text("Low").tag(4)
+                    }
+                }
+            }
+            .navigationTitle("New ticket")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        submit()
+                    } label: {
+                        if submitting { ProgressView().controlSize(.small) } else { Text("Create") }
+                    }
+                    .disabled(projectID == nil || submitting || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+            }
+        }
+    }
+
+    private func submit() {
+        guard let pid = projectID else { return }
+        let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        submitting = true
+        Task {
+            await model.createIssue(project: pid, title: t,
+                                    description: description.isEmpty ? nil : description,
+                                    priority: priority == 0 ? nil : priority,
+                                    type: isJira ? type : nil)
+            submitting = false
+            if model.trackerError == nil { dismiss() }
+        }
     }
 }

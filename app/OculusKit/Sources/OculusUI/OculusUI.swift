@@ -129,6 +129,18 @@ public final class Model: ObservableObject {
     // Last tracker-connect/OAuth error, surfaced on the connect screen.
     @Published public var trackerError: String?
     @Published public var oauthURL: URL? // set when an OAuth flow returns an authorize URL to open
+
+    // Kanban board (real workflow-status columns + drag/drop).
+    /// Selectable boards/projects (from `issue.projects`).
+    @Published public var issueProjects: [IssueProject] = []
+    /// The board currently shown; persisted globally so the app reopens on the same board.
+    @Published public var selectedProjectID: String?
+    /// The selected board's ordered workflow-status columns (from `issue.columns`).
+    @Published public var boardColumns: [IssueState] = []
+    /// Per-project column ordering (ids), overriding the daemon's default position order.
+    @Published public var boardColumnOrder: [String: [String]] = [:]
+    /// Per-project hidden column ids.
+    @Published public var hiddenBoardColumns: [String: Set<String>] = [:]
     /// Options applied to the NEXT session created (by the first send). Set via newSession(...).
     @Published public var newSessionProvider = "opencode"
     // Agent providers this daemon actually has (opencode/claude-code/pi + any generic CLI agents),
@@ -173,6 +185,8 @@ public final class Model: ObservableObject {
         secret = defaults.string(forKey: Keys.secret) ?? ""
         relayURL = defaults.string(forKey: Keys.relay) ?? ""
         loadIssuePrefs()
+        selectedProjectID = defaults.string(forKey: BoardKeys.project)
+        if let p = selectedProjectID { loadBoardPrefs(for: p) }
     }
 
     // MARK: saved issue views + hidden tickets
@@ -362,6 +376,8 @@ public final class Model: ObservableObject {
         await loadSessions()
         await loadIntegrationStatus()
         await loadIssues()
+        await loadIssueProjects() // board picker options
+        await loadBoardColumns()  // real workflow-status columns for the selected board
         await listProviders() // reflect the daemon's real agent set in the picker
         await listHandoffs()  // seed the handoff index (live updates arrive via handoff.list)
         await loadLoops()     // recurring autonomous workflows
@@ -1041,6 +1057,158 @@ public final class Model: ObservableObject {
         guard let client else { return }
         if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.issueList, payload: Optional<Int>.none) {
             try? await client.send(env)
+        }
+    }
+
+    // MARK: Kanban board — projects / columns / move / create
+
+    private enum BoardKeys {
+        static let project = "oculus.board.project"
+        static func order(_ p: String) -> String { "oculus.board.order.\(p)" }
+        static func hidden(_ p: String) -> String { "oculus.board.hidden.\(p)" }
+    }
+
+    /// Reads a project's saved column order + hidden set from defaults into the published caches.
+    private func loadBoardPrefs(for project: String) {
+        if boardColumnOrder[project] == nil {
+            let s = defaults.string(forKey: BoardKeys.order(project)) ?? ""
+            boardColumnOrder[project] = s.isEmpty ? [] : s.components(separatedBy: ",")
+        }
+        if hiddenBoardColumns[project] == nil {
+            let s = defaults.string(forKey: BoardKeys.hidden(project)) ?? ""
+            hiddenBoardColumns[project] = Set(s.isEmpty ? [] : s.components(separatedBy: ","))
+        }
+    }
+
+    /// The provider (linear/jira) that owns a given project id.
+    private func providerForProject(_ id: String) -> String? {
+        issueProjects.first(where: { $0.id == id })?.provider
+    }
+
+    /// Switches the active board, persisting the choice and hydrating its column prefs.
+    public func selectProject(_ id: String?) {
+        selectedProjectID = id
+        if let id {
+            defaults.set(id, forKey: BoardKeys.project)
+            loadBoardPrefs(for: id)
+        } else {
+            defaults.removeObject(forKey: BoardKeys.project)
+        }
+    }
+
+    /// All columns for the current board, applying the saved order (unordered ids fall back to position).
+    public func orderedColumns() -> [IssueState] {
+        guard let p = selectedProjectID, let order = boardColumnOrder[p], !order.isEmpty else {
+            return boardColumns.sorted { $0.position < $1.position }
+        }
+        return boardColumns.sorted { a, b in
+            let ia = order.firstIndex(of: a.id) ?? Int.max
+            let ib = order.firstIndex(of: b.id) ?? Int.max
+            if ia != ib { return ia < ib }
+            return a.position < b.position
+        }
+    }
+
+    /// Visible columns for the current board (ordered, minus hidden).
+    public func visibleColumns() -> [IssueState] {
+        guard let p = selectedProjectID else { return orderedColumns() }
+        let hidden = hiddenBoardColumns[p] ?? []
+        return orderedColumns().filter { !hidden.contains($0.id) }
+    }
+
+    /// Columns the user has hidden on the current board (for a "reveal" menu).
+    public func hiddenColumns() -> [IssueState] {
+        guard let p = selectedProjectID, let hidden = hiddenBoardColumns[p], !hidden.isEmpty else { return [] }
+        return orderedColumns().filter { hidden.contains($0.id) }
+    }
+
+    public func hideBoardColumn(_ id: String) {
+        guard let p = selectedProjectID else { return }
+        var s = hiddenBoardColumns[p] ?? []
+        s.insert(id)
+        hiddenBoardColumns[p] = s
+        defaults.set(s.sorted().joined(separator: ","), forKey: BoardKeys.hidden(p))
+    }
+
+    public func showBoardColumn(_ id: String) {
+        guard let p = selectedProjectID else { return }
+        var s = hiddenBoardColumns[p] ?? []
+        s.remove(id)
+        hiddenBoardColumns[p] = s
+        defaults.set(s.sorted().joined(separator: ","), forKey: BoardKeys.hidden(p))
+    }
+
+    /// Moves a column one slot left/right within the visible order, persisting the new order.
+    public func moveBoardColumn(_ id: String, left: Bool) {
+        guard let p = selectedProjectID else { return }
+        var ids = orderedColumns().map(\.id)
+        guard let idx = ids.firstIndex(of: id) else { return }
+        let target = left ? idx - 1 : idx + 1
+        guard ids.indices.contains(target) else { return }
+        ids.swapAt(idx, target)
+        boardColumnOrder[p] = ids
+        defaults.set(ids.joined(separator: ","), forKey: BoardKeys.order(p))
+    }
+
+    /// Loads the selectable boards; defaults the selection to the first if none is set.
+    public func loadIssueProjects() async {
+        guard client != nil else { return }
+        if let resp = try? await request(MessageType.issueProjects, payload: Optional<Int>.none),
+           let list = try? resp.payload(as: IssueProjectsList.self) {
+            issueProjects = list.projects
+            if selectedProjectID == nil || !list.projects.contains(where: { $0.id == selectedProjectID }) {
+                selectProject(list.projects.first?.id)
+            } else if let p = selectedProjectID {
+                loadBoardPrefs(for: p)
+            }
+        }
+    }
+
+    /// Loads the current board's workflow-status columns (needs a selected project + known provider).
+    public func loadBoardColumns() async {
+        guard client != nil, let p = selectedProjectID, let provider = providerForProject(p) else {
+            boardColumns = []
+            return
+        }
+        if let resp = try? await request(MessageType.issueColumns, payload: IssueColumnsReq(provider: provider, project: p)),
+           let list = try? resp.payload(as: IssueStateList.self) {
+            boardColumns = list.states.sorted { $0.position < $1.position }
+        }
+    }
+
+    /// Moves a card to a workflow status. Optimistic: the card jumps to the target column immediately,
+    /// is replaced with the daemon's returned issue on success, and reverts (with an error) on failure.
+    public func moveIssue(_ id: String, toStatus statusID: String) async {
+        guard let idx = issues.firstIndex(where: { $0.id == id }) else { return }
+        let original = issues[idx]
+        if let col = boardColumns.first(where: { $0.id == statusID }) {
+            issues[idx].status = col.name
+            issues[idx].category = col.category
+        }
+        do {
+            let updated = try await request(MessageType.issueMove,
+                payload: IssueMove(provider: original.provider, issueID: id, statusID: statusID))
+                .payload(as: Issue.self)
+            if let i = issues.firstIndex(where: { $0.id == updated.id }) { issues[i] = updated }
+        } catch {
+            if let i = issues.firstIndex(where: { $0.id == id }) { issues[i] = original }
+            trackerError = "Couldn’t move ticket: \(error.localizedDescription)"
+        }
+    }
+
+    /// Creates a ticket on a board and refreshes the list on success.
+    public func createIssue(project: String, title: String, description: String? = nil,
+                            priority: Int? = nil, type: String? = nil) async {
+        guard client != nil, let provider = providerForProject(project) else { return }
+        trackerError = nil
+        do {
+            _ = try await request(MessageType.issueCreate,
+                payload: IssueCreate(provider: provider, project: project, title: title,
+                                     description: description, priority: priority, type: type))
+                .payload(as: Issue.self)
+            await loadIssues()
+        } catch {
+            trackerError = "Couldn’t create ticket: \(error.localizedDescription)"
         }
     }
 

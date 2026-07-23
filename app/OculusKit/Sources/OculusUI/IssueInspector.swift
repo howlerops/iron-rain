@@ -26,6 +26,7 @@ struct IssueInspectorPanel: View {
 
     @State private var detail: IssueDetail?
     @State private var states: [IssueState] = []
+    @State private var attachments: [IssueAttachment] = []
     @State private var loadError: String?
 
     // Current field values (seeded from detail/issue, mutated by edits).
@@ -58,6 +59,10 @@ struct IssueInspectorPanel: View {
                     metaSection
                     Divider().overlay(palette.border)
                     descriptionSection
+                    if !attachments.isEmpty {
+                        Divider().overlay(palette.border)
+                        attachmentsSection
+                    }
                     Divider().overlay(palette.border)
                     commentsSection
                 }
@@ -153,6 +158,7 @@ struct IssueInspectorPanel: View {
 
             if let a = current.assignee, !a.isEmpty { chip(a, systemImage: "person") }
             if let cycle = current.cycleLabel { chip(cycle, systemImage: "arrow.triangle.2.circlepath") }
+            if let sprint = current.sprintName, !sprint.isEmpty { chip(sprint, systemImage: "flag.checkered") }
             Spacer()
         }
     }
@@ -191,6 +197,49 @@ struct IssueInspectorPanel: View {
                 Text("No description.").font(.callout).foregroundStyle(palette.mutedForeground)
             }
         }
+    }
+
+    // MARK: attachments
+
+    @ViewBuilder private var attachmentsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Attachments (\(attachments.count))")
+                .font(.caption.bold()).foregroundStyle(palette.mutedForeground)
+            ForEach(attachments) { a in attachmentRow(a) }
+        }
+    }
+
+    @ViewBuilder private func attachmentRow(_ a: IssueAttachment) -> some View {
+        if a.isImage {
+            VStack(alignment: .leading, spacing: 4) {
+                // Auth-gated tracker CDNs: fetch through the daemon (reuses the markdown image path).
+                TrackerImage(model: model, provider: current.provider, url: a.url, alt: a.filename, palette: palette)
+                Text(a.filename).font(.caption2).foregroundStyle(palette.mutedForeground).lineLimit(1)
+            }
+        } else {
+            Button { if let u = URL(string: a.url) { openURL(u) } } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "paperclip").font(.caption).foregroundStyle(palette.mutedForeground)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(a.filename).font(.caption).foregroundStyle(palette.foreground).lineLimit(1)
+                        if let size = a.size, size > 0 {
+                            Text(byteLabel(size)).font(.caption2).foregroundStyle(palette.mutedForeground)
+                        }
+                    }
+                    Spacer()
+                    Image(systemName: "arrow.up.right.square").font(.caption).foregroundStyle(palette.primary)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(palette.card.opacity(0.6))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func byteLabel(_ n: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(n), countStyle: .file)
     }
 
     // MARK: comments
@@ -265,7 +314,7 @@ struct IssueInspectorPanel: View {
     private var footer: some View {
         HStack(spacing: 10) {
             if let u = current.url, let url = URL(string: u) {
-                Button { openURL(url) } label: { Label("Open in Linear", systemImage: "arrow.up.right.square") }
+                Button { openURL(url) } label: { Label(openInLabel(for: current.provider), systemImage: "arrow.up.right.square") }
                     .buttonStyle(.bordered)
             }
             Spacer()
@@ -285,6 +334,7 @@ struct IssueInspectorPanel: View {
             self.detail = detail
             self.current = detail.issue
             self.comments = detail.comments
+            self.attachments = detail.attachments ?? []
             self.states = (try? await s) ?? []
         } catch {
             loadError = error.localizedDescription

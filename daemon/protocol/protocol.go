@@ -66,6 +66,10 @@ const (
 	TypeIntegrationOAuthApp = "integration.oauthapp" // save a provider's OAuth app client_id/secret
 	TypeIssueList           = "issue.list"           // assigned issues (request + broadcast)
 	TypeIssueStates         = "issue.states"         // workflow states (kanban columns) for a team
+	TypeIssueColumns        = "issue.columns"        // a project's ordered workflow statuses (real-status board columns)
+	TypeIssueMove           = "issue.move"           // move an issue to a status (drag-drop) — resolves the transition
+	TypeIssueCreate         = "issue.create"         // create a new ticket on a provider/project
+	TypeIssueProjects       = "issue.projects"       // list the projects/teams the connected trackers expose (board picker)
 	TypeIssueLaunch         = "issue.launch"         // launch an agent on an issue (worktree)
 	TypeIssueDetail         = "issue.detail"         // full issue + comments
 	TypeIssueUpdate         = "issue.update"         // edit issue fields (partial)
@@ -428,11 +432,14 @@ type Issue struct {
 	Provider    string `json:"provider"`
 	BranchName  string `json:"branch_name,omitempty"`
 	TeamID      string `json:"team_id,omitempty"`
+	TeamName    string `json:"team_name,omitempty"` // human name of the project/team (board picker labels)
 	Priority    int    `json:"priority,omitempty"`
 	UpdatedAt   string `json:"updated_at,omitempty"`
 	CycleID     string `json:"cycle_id,omitempty"`
 	CycleName   string `json:"cycle_name,omitempty"`
 	CycleNumber int    `json:"cycle_number,omitempty"`
+	SprintName  string `json:"sprint_name,omitempty"`  // Jira active sprint (Linear reuses cycle)
+	SprintState string `json:"sprint_state,omitempty"` // "active" | "future" | "closed"
 }
 
 type IssueList struct {
@@ -469,10 +476,56 @@ type IssueDetailReq struct {
 	IssueID  string `json:"issue_id"`
 }
 
-// IssueDetail is the full issue view: the issue and its comments.
+// IssueDetail is the full issue view: the issue, its comments, and its attachments.
 type IssueDetail struct {
-	Issue    Issue          `json:"issue"`
-	Comments []IssueComment `json:"comments"`
+	Issue       Issue             `json:"issue"`
+	Comments    []IssueComment    `json:"comments"`
+	Attachments []IssueAttachment `json:"attachments,omitempty"`
+}
+
+// IssueAttachment is a file on an issue. IsImage lets the app render it inline vs. offer a download.
+type IssueAttachment struct {
+	ID       string `json:"id"`
+	Filename string `json:"filename"`
+	URL      string `json:"url"` // auth-gated content URL (fetch via issue.image)
+	Mime     string `json:"mime,omitempty"`
+	Size     int    `json:"size,omitempty"`
+	IsImage  bool   `json:"is_image,omitempty"`
+}
+
+// IssueColumnsReq asks for a project/team's ordered workflow statuses (the real-status board columns).
+type IssueColumnsReq struct {
+	Provider string `json:"provider"`
+	Project  string `json:"project"` // Jira project key / Linear team id
+}
+
+// IssueMove moves an issue to a status (drag-drop). The daemon resolves the transition (Jira) or
+// sets the state (Linear). Reply is the updated Issue.
+type IssueMove struct {
+	Provider string `json:"provider"`
+	IssueID  string `json:"issue_id"`
+	StatusID string `json:"status_id"`
+}
+
+// IssueCreate creates a ticket. Reply is the created Issue.
+type IssueCreate struct {
+	Provider    string `json:"provider"`
+	Project     string `json:"project"` // Jira project key / Linear team id
+	Title       string `json:"title"`
+	Description string `json:"description,omitempty"`
+	Priority    int    `json:"priority,omitempty"`
+	Type        string `json:"type,omitempty"` // Jira issue type name (e.g. "Task"); ignored by Linear
+}
+
+// IssueProjectsList lists the projects/teams the connected trackers expose (board picker).
+type IssueProjectsList struct {
+	Projects []IssueProject `json:"projects"`
+}
+
+type IssueProject struct {
+	ID       string `json:"id"`   // Jira project key / Linear team id
+	Name     string `json:"name"`
+	Provider string `json:"provider"`
 }
 
 // IssueUpdate is a partial edit of an issue; only non-nil fields are applied. The

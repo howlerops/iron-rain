@@ -78,7 +78,7 @@ func (l *Linear) gql(ctx context.Context, query string, vars map[string]any, out
 
 const assignedIssuesQuery = `query { viewer { assignedIssues(first: 50, includeArchived: false) {
   nodes { id identifier title description url branchName priority updatedAt
-    state { id name type } team { id key } cycle { id number name } }
+    state { id name type } team { id key name } cycle { id number name } }
 } } }`
 
 func (l *Linear) ListAssigned(ctx context.Context) ([]Issue, error) {
@@ -97,7 +97,7 @@ func (l *Linear) ListAssigned(ctx context.Context) ([]Issue, error) {
 					State       struct {
 						ID, Name, Type string
 					} `json:"state"`
-					Team  struct{ ID, Key string } `json:"team"`
+					Team  struct{ ID, Key, Name string } `json:"team"`
 					Cycle struct {
 						ID     string `json:"id"`
 						Number int    `json:"number"`
@@ -115,7 +115,7 @@ func (l *Linear) ListAssigned(ctx context.Context) ([]Issue, error) {
 		out = append(out, Issue{
 			ID: n.ID, Key: n.Identifier, Title: n.Title, Body: n.Description, URL: n.URL,
 			Status: n.State.Name, Category: categoryFor(n.State.Type),
-			Provider: "linear", BranchName: n.BranchName, TeamID: n.Team.ID,
+			Provider: "linear", BranchName: n.BranchName, TeamID: n.Team.ID, TeamName: n.Team.Name,
 			Priority: n.Priority, UpdatedAt: n.UpdatedAt,
 			CycleID: n.Cycle.ID, CycleNumber: n.Cycle.Number, CycleName: n.Cycle.Name,
 		})
@@ -161,10 +161,69 @@ func (l *Linear) Transition(ctx context.Context, issueID, toStateID string) erro
 	return l.gql(ctx, issueUpdateMutation, map[string]any{"id": issueID, "stateId": toStateID}, nil)
 }
 
+// ProjectStatuses returns a team's workflow states as board columns. For Linear a "project"
+// column set is just the team's workflow states, so this delegates to WorkflowStates.
+func (l *Linear) ProjectStatuses(ctx context.Context, teamID string) ([]State, error) {
+	return l.WorkflowStates(ctx, teamID)
+}
+
+// MoveToStatus moves an issue to a status. Linear's stateId is the status id, so this is a
+// plain issueUpdate — delegate to Transition.
+func (l *Linear) MoveToStatus(ctx context.Context, issueID, statusID string) error {
+	return l.Transition(ctx, issueID, statusID)
+}
+
+var issueCreateMutation = `mutation($input: IssueCreateInput!) {
+  issueCreate(input: $input) { success issue { ` + issueFields + ` } } }`
+
+// CreateIssue creates a ticket on a team (in.Project is the Linear team id). in.Type is ignored
+// (Linear has no free-form issue type on create).
+func (l *Linear) CreateIssue(ctx context.Context, in CreateIssueInput) (Issue, error) {
+	input := map[string]any{"teamId": in.Project, "title": in.Title}
+	if in.Description != "" {
+		input["description"] = in.Description
+	}
+	if in.Priority > 0 {
+		input["priority"] = in.Priority
+	}
+	var data struct {
+		IssueCreate struct {
+			Success bool            `json:"success"`
+			Issue   linearIssueNode `json:"issue"`
+		} `json:"issueCreate"`
+	}
+	if err := l.gql(ctx, issueCreateMutation, map[string]any{"input": input}, &data); err != nil {
+		return Issue{}, err
+	}
+	return data.IssueCreate.Issue.toIssue(), nil
+}
+
+const teamsQuery = `query { teams { nodes { id name } } }`
+
+// Projects lists the workspace's teams for the board picker.
+func (l *Linear) Projects(ctx context.Context) ([]Project, error) {
+	var data struct {
+		Teams struct {
+			Nodes []struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"nodes"`
+		} `json:"teams"`
+	}
+	if err := l.gql(ctx, teamsQuery, nil, &data); err != nil {
+		return nil, err
+	}
+	out := make([]Project, 0, len(data.Teams.Nodes))
+	for _, n := range data.Teams.Nodes {
+		out = append(out, Project{ID: n.ID, Name: n.Name})
+	}
+	return out, nil
+}
+
 // issueFields is the GraphQL selection shared by Detail and Update so both return a
 // fully-populated issue node.
 const issueFields = `id identifier title description url branchName priority updatedAt
-  state { id name type } team { id key } cycle { id number name }`
+  state { id name type } team { id key name } cycle { id number name }`
 
 // linearIssueNode mirrors issueFields for JSON decoding.
 type linearIssueNode struct {
@@ -179,7 +238,7 @@ type linearIssueNode struct {
 	State       struct {
 		ID, Name, Type string
 	} `json:"state"`
-	Team  struct{ ID, Key string } `json:"team"`
+	Team  struct{ ID, Key, Name string } `json:"team"`
 	Cycle struct {
 		ID     string `json:"id"`
 		Number int    `json:"number"`
@@ -191,16 +250,17 @@ func (n linearIssueNode) toIssue() Issue {
 	return Issue{
 		ID: n.ID, Key: n.Identifier, Title: n.Title, Body: n.Description, URL: n.URL,
 		Status: n.State.Name, Category: categoryFor(n.State.Type),
-		Provider: "linear", BranchName: n.BranchName, TeamID: n.Team.ID,
+		Provider: "linear", BranchName: n.BranchName, TeamID: n.Team.ID, TeamName: n.Team.Name,
 		Priority: n.Priority, UpdatedAt: n.UpdatedAt,
 		CycleID: n.Cycle.ID, CycleNumber: n.Cycle.Number, CycleName: n.Cycle.Name,
 	}
 }
 
 var issueDetailQuery = `query($id: String!) { issue(id: $id) { ` + issueFields + `
-  comments { nodes { id body createdAt user { name } } } } }`
+  comments { nodes { id body createdAt user { name } } }
+  attachments { nodes { id title url } } } }`
 
-func (l *Linear) Detail(ctx context.Context, issueID string) (Issue, []Comment, error) {
+func (l *Linear) Detail(ctx context.Context, issueID string) (Issue, []Comment, []Attachment, error) {
 	var data struct {
 		Issue struct {
 			linearIssueNode
@@ -214,16 +274,29 @@ func (l *Linear) Detail(ctx context.Context, issueID string) (Issue, []Comment, 
 					} `json:"user"`
 				} `json:"nodes"`
 			} `json:"comments"`
+			Attachments struct {
+				Nodes []struct {
+					ID    string `json:"id"`
+					Title string `json:"title"`
+					URL   string `json:"url"`
+				} `json:"nodes"`
+			} `json:"attachments"`
 		} `json:"issue"`
 	}
 	if err := l.gql(ctx, issueDetailQuery, map[string]any{"id": issueID}, &data); err != nil {
-		return Issue{}, nil, err
+		return Issue{}, nil, nil, err
 	}
 	comments := make([]Comment, 0, len(data.Issue.Comments.Nodes))
 	for _, c := range data.Issue.Comments.Nodes {
 		comments = append(comments, Comment{ID: c.ID, Author: c.User.Name, Body: c.Body, CreatedAt: c.CreatedAt})
 	}
-	return data.Issue.linearIssueNode.toIssue(), comments, nil
+	// Linear attachments are integration links (not always files), so IsImage is best-effort
+	// false — the app can still surface them as links.
+	attachments := make([]Attachment, 0, len(data.Issue.Attachments.Nodes))
+	for _, a := range data.Issue.Attachments.Nodes {
+		attachments = append(attachments, Attachment{ID: a.ID, Filename: a.Title, URL: a.URL})
+	}
+	return data.Issue.linearIssueNode.toIssue(), comments, attachments, nil
 }
 
 // buildUpdateInput turns the non-nil fields of f into a Linear issueUpdate input map.
