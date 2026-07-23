@@ -54,6 +54,7 @@ public struct ChatView: View {
                 emptyState
             } else {
                 transcript
+                typingBar // pinned below the scroll so its flicker never shifts the transcript
             }
             if model.showTests {
                 TestResultPanel(model: model, palette: palette)
@@ -236,19 +237,16 @@ public struct ChatView: View {
 
     @ViewBuilder private var transcript: some View {
         ScrollViewReader { proxy in
+            // A plain VStack (not Lazy): LazyVStack ESTIMATES off-screen row heights, and with
+            // defaultScrollAnchor(.bottom) those estimate-vs-actual mismatches make the bottom jump as
+            // content streams — the up/down bounce on heavy multi-agent runs. VStack lays out exact
+            // heights so the anchor is stable; the per-message markdown is memoized so the cost is low.
+            // The typing/activity indicator lives BELOW the scroll (see body), not in the content, so
+            // its flicker can't change the scroll height and shove the bottom.
             let content = ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 12) {
                     ForEach(model.messages) { msg in
                         MessageRow(message: msg, palette: palette)
-                    }
-                    if model.busy && model.messages.last?.streaming != true {
-                        HStack(spacing: 8) {
-                            TypingIndicator(palette: palette)
-                            if let a = model.activity, !a.isEmpty {
-                                Text(a).font(.system(.caption, design: .monospaced))
-                                    .foregroundStyle(palette.mutedForeground)
-                            }
-                        }.id("typing")
                     }
                     Color.clear.frame(height: 1).id("bottom")
                 }
@@ -282,6 +280,24 @@ public struct ChatView: View {
 
     private func armInitialAnchor() {
         initialAnchorDeadline = Date().addingTimeInterval(1.5) // catch the post-open history burst only
+    }
+
+    /// The "working…" indicator, OUTSIDE the scroll content — a fixed-height row so it can toggle
+    /// on/off (as busy/streaming flip between sub-agent turns) without ever changing the transcript's
+    /// scroll height and bouncing the view.
+    @ViewBuilder private var typingBar: some View {
+        HStack(spacing: 8) {
+            if model.busy && model.messages.last?.streaming != true {
+                TypingIndicator(palette: palette)
+                if let a = model.activity, !a.isEmpty {
+                    Text(a).font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(palette.mutedForeground).lineLimit(1)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(height: 22) // reserved height → no layout shift when it appears/disappears
+        .padding(.horizontal, 16)
     }
 
     /// Instantly (no animation) re-pins the transcript to its last message once appends settle.
