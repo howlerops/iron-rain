@@ -577,9 +577,10 @@ public struct IssuesView: View {
                     .padding(.horizontal, 6).padding(.vertical, 2)
                     .background(Capsule().fill(palette.muted.opacity(0.4)))
             }
-            HStack {
-                Text(issue.status).font(.caption2).foregroundStyle(palette.mutedForeground)
-                Spacer()
+            HStack(spacing: 6) {
+                Text(issue.status).font(.caption2).foregroundStyle(palette.mutedForeground).lineLimit(1)
+                if let a = issue.assignee, !a.isEmpty { assigneeChip(a) }
+                Spacer(minLength: 4)
                 Button { launching = issue } label: {
                     Label("Start agent", systemImage: "play.circle.fill").font(.caption2)
                 }.buttonStyle(.plain).foregroundStyle(palette.primary)
@@ -611,6 +612,18 @@ public struct IssuesView: View {
     private func priorityDot(_ p: Int) -> some View {
         let color: Color = p == 1 ? .red : (p == 2 ? .orange : palette.mutedForeground)
         return Circle().fill(color).frame(width: 7, height: 7)
+    }
+
+    /// The assignee's initials in a small tinted circle (with the full name on hover) — compact
+    /// enough for a card, clear enough to scan who owns what.
+    private func assigneeChip(_ name: String) -> some View {
+        let initials = name.split(separator: " ").prefix(2).compactMap { $0.first }.map(String.init).joined().uppercased()
+        return Text(initials.isEmpty ? "?" : initials)
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(palette.primary)
+            .frame(width: 18, height: 18)
+            .background(Circle().fill(palette.primary.opacity(0.16)))
+            .help(name)
     }
 
     // MARK: table
