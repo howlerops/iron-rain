@@ -1,0 +1,18 @@
+# Oculus / Iron Rain anonymized telemetry ingest Worker.
+#
+# Deploy (needs your Cloudflare auth — run once):
+#   cd cloudflare/telemetry-worker
+#   npx wrangler login          # if not already authed
+#   npx wrangler deploy
+#
+# After deploy the ingest URL is https://oculus-telemetry.<your-subdomain>.workers.dev/ingest —
+# it must match telemetry.DefaultEndpoint in daemon/telemetry/telemetry.go.
+name = "oculus-telemetry"
+main = "src/index.js"
+compatibility_date = "2026-01-01"
+
+# Analytics Engine: cheap, high-cardinality, queryable via the SQL API. No dataset pre-creation
+# needed — the first writeDataPoint creates it.
+[[analytics_engine_datasets]]
+binding = "TELEMETRY"
+dataset = "oculus_telemetry"

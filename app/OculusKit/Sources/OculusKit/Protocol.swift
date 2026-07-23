@@ -41,6 +41,8 @@ public enum MessageType {
     public static let integrationConnect = "integration.connect"
     public static let integrationDisconnect = "integration.disconnect"
     public static let integrationStatus = "integration.status"
+    public static let telemetrySet = "telemetry.set"
+    public static let telemetryStatus = "telemetry.status"
     public static let integrationOAuth = "integration.oauth"
     public static let integrationOAuthApp = "integration.oauthapp"
     public static let issueList = "issue.list"
@@ -885,6 +887,11 @@ public struct IntegrationConnect: Codable {
     public var provider: String; public var token: String
     public init(provider: String, token: String) { self.provider = provider; self.token = token }
 }
+public struct Telemetry: Codable {
+    public var enabled: Bool
+    public init(enabled: Bool) { self.enabled = enabled }
+}
+
 public struct IntegrationStatus: Codable {
     public var connected: [String]
     public var oauthApps: [String]?   // providers with an OAuth app configured

@@ -22,6 +22,7 @@ import (
 	"github.com/howlerops/oculus/daemon/agent/cli"
 	"github.com/howlerops/oculus/daemon/fsaccess"
 	"github.com/howlerops/oculus/daemon/issues"
+	"github.com/howlerops/oculus/daemon/telemetry"
 	"github.com/howlerops/oculus/daemon/loops"
 	"github.com/howlerops/oculus/daemon/lsp"
 	"github.com/howlerops/oculus/daemon/commands"
@@ -53,6 +54,7 @@ type Hub struct {
 	projects      *project.Registry              // optional: registered folders sessions spawn in
 	autoProjects  bool                           // auto-register projects from active agents' cwds
 	issues        *issues.Manager                // optional: connected trackers (Linear/Jira)
+	telemetry     *telemetry.Client              // optional: anonymized diagnostics shipping
 	loopEngine    *loops.Engine                  // optional: recurring autonomous ticket workflows
 	agentsPath    string                         // path to ~/.oculus/agents.json (custom CLI agents)
 	agentHidePath string                         // path to ~/.oculus/agent-visibility.json (hidden names)
@@ -464,6 +466,20 @@ func (h *Hub) SetIssues(m *issues.Manager) {
 	h.mu.Lock()
 	h.issues = m
 	h.mu.Unlock()
+}
+
+// SetTelemetry attaches the anonymized diagnostics client.
+func (h *Hub) SetTelemetry(t *telemetry.Client) {
+	h.mu.Lock()
+	h.telemetry = t
+	h.mu.Unlock()
+}
+
+// tel returns the telemetry client (nil if not attached) without holding the lock at call sites.
+func (h *Hub) tel() *telemetry.Client {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.telemetry
 }
 
 // BroadcastIssues pushes the current assigned issues to every device (the Manager's poll
@@ -1403,8 +1419,16 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		// Bound the whole create so a hung worktree/provider start surfaces as an error the app can
 		// show, instead of leaving it forever on the "starting session" spinner.
 		cctx, ccancel := context.WithTimeout(ctx, 3*time.Minute)
+		tc0 := time.Now()
 		m, err := h.startSession(cctx, req, sessionMeta{})
 		ccancel()
+		if t := h.tel(); t != nil {
+			ev := "session.create"
+			if len(req.ProjectIDs) > 1 {
+				ev = "session.create.multirepo" // the case that hung — track it distinctly
+			}
+			t.Record(ev, req.Provider, time.Since(tc0), err)
+		}
 		if err != nil {
 			h.sendErr(conn, env.ID, err.Error())
 			return
@@ -1985,6 +2009,23 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			return
 		}
 		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: m.Connected(), OAuthApps: m.OAuthApps(), AuthErrors: m.AuthErrors(), AuthErrorDetails: m.AuthErrorDetails()})
+
+	case protocol.TypeTelemetryStatus:
+		on := false
+		if t := h.tel(); t != nil {
+			on = t.Enabled()
+		}
+		h.sendOK(conn, env.ID, protocol.Telemetry{Enabled: on})
+
+	case protocol.TypeTelemetrySet:
+		var req protocol.Telemetry
+		_ = env.Unmarshal(&req)
+		if t := h.tel(); t != nil {
+			t.SetEnabled(req.Enabled)
+		}
+		st := protocol.Telemetry{Enabled: req.Enabled}
+		h.sendOK(conn, env.ID, st)
+		h.broadcast(protocol.TypeTelemetryStatus, st) // converge every device on the toggle
 
 	case protocol.TypeIntegrationOAuth:
 		var req protocol.IntegrationOAuth

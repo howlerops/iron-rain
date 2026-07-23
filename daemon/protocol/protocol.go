@@ -57,6 +57,8 @@ const (
 	TypeIntegrationConnect  = "integration.connect"  // connect a tracker (Linear/Jira) with a token
 	TypeIntegrationDisconnect = "integration.disconnect" // remove a tracker's connection (clears its token)
 	TypeIntegrationStatus   = "integration.status"   // which trackers are connected
+	TypeTelemetrySet        = "telemetry.set"        // toggle anonymized diagnostics on/off
+	TypeTelemetryStatus     = "telemetry.status"     // query whether anonymized diagnostics are on
 	TypeIntegrationOAuth    = "integration.oauth"    // begin an OAuth flow; returns an authorize URL
 	TypeIntegrationOAuthApp = "integration.oauthapp" // save a provider's OAuth app client_id/secret
 	TypeIssueList           = "issue.list"           // assigned issues (request + broadcast)
@@ -343,6 +345,11 @@ type FileConflict struct {
 type IntegrationConnect struct {
 	Provider string `json:"provider"` // "linear" | "jira"
 	Token    string `json:"token"`
+}
+
+// Telemetry is the anonymized-diagnostics toggle state (set request + status response).
+type Telemetry struct {
+	Enabled bool `json:"enabled"`
 }
 
 type IntegrationStatus struct {

@@ -334,6 +334,10 @@ struct SessionSidebar: View {
                     }
                 }
                 #endif
+                Toggle(isOn: Binding(get: { model.telemetryEnabled }, set: { on in Task { await model.setTelemetry(on) } })) {
+                    Label("Send anonymous diagnostics", systemImage: "waveform.path.ecg")
+                }
+                .help("Ships anonymized lifecycle events + scrubbed error classes (no paths, prompts, repo names, or tokens) so failures can be traced.")
                 Button(role: .destructive) { model.disconnect() } label: { Label("Disconnect", systemImage: "bolt.horizontal.circle") }
             } label: {
                 Image(systemName: "ellipsis")

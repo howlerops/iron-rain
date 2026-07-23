@@ -32,6 +32,7 @@ import (
 	"github.com/howlerops/oculus/daemon/discovery"
 	"github.com/howlerops/oculus/daemon/hub"
 	"github.com/howlerops/oculus/daemon/issues"
+	"github.com/howlerops/oculus/daemon/telemetry"
 	"github.com/howlerops/oculus/daemon/project"
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/push"
@@ -135,6 +136,12 @@ func serve(args []string) error {
 		h.SetStore(db)
 		defer db.Close()
 	}
+	// Anonymized diagnostics (on by default; toggle via the app). Ships lifecycle events + scrubbed
+	// error classes to the Cloudflare telemetry Worker so failures in the wild are traceable.
+	tel := telemetry.New(telemetryPath(), version)
+	h.SetTelemetry(tel)
+	go tel.Run(context.Background())
+
 	// Trackers (Linear/Jira): load saved tokens, connect, and poll every 60s.
 	issuesMgr := issues.NewManager(integrationsPath(), h.BroadcastIssues)
 	h.SetIssues(issuesMgr)
@@ -562,6 +569,14 @@ func dbPath() string {
 		return "oculus.db"
 	}
 	return filepath.Join(home, ".oculus", "oculus.db")
+}
+
+func telemetryPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "telemetry.json"
+	}
+	return filepath.Join(home, ".oculus", "telemetry.json")
 }
 
 func loadOrCreateKey(path string) (crypto.KeyPair, error) {

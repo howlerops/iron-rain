@@ -102,6 +102,8 @@ public final class Model: ObservableObject {
     /// Provider -> the ACTUAL failure message (e.g. "jira: 401 Unauthorized"), so the UI can show
     /// WHY a connected tracker isn't loading, not just that it isn't.
     @Published public var trackerAuthDetails: [String: String] = [:]
+    /// Whether the daemon is shipping anonymized diagnostics (on by default; toggled in Settings).
+    @Published public var telemetryEnabled: Bool = true
     /// Recurring autonomous workflows ("loops") + their run history.
     @Published public var loops: [Loop] = []
     @Published public var loopRuns: [LoopRun] = []
@@ -344,6 +346,7 @@ public final class Model: ObservableObject {
         await listProviders() // reflect the daemon's real agent set in the picker
         await listHandoffs()  // seed the handoff index (live updates arrive via handoff.list)
         await loadLoops()     // recurring autonomous workflows
+        await loadTelemetryStatus() // reflect the daemon's diagnostics toggle
         // If a session was open when the socket dropped (e.g. the daemon restarted and forgot its
         // in-memory sessions), re-attach it so its transcript + prompts resume.
         await reopenCurrentSession()
@@ -946,6 +949,25 @@ public final class Model: ObservableObject {
     }
 
     public func startLinearOAuth() async { await startOAuth(provider: "linear") }
+
+    /// Reads whether the daemon is sending anonymized diagnostics (drives the Settings toggle).
+    public func loadTelemetryStatus() async {
+        guard client != nil else { return }
+        if let resp = try? await request(MessageType.telemetryStatus, payload: Optional<Int>.none),
+           let t = try? resp.payload(as: Telemetry.self) {
+            telemetryEnabled = t.enabled
+        }
+    }
+
+    /// Turns anonymized diagnostics on/off on the daemon (persisted there).
+    public func setTelemetry(_ on: Bool) async {
+        guard client != nil else { return }
+        telemetryEnabled = on // optimistic
+        if let resp = try? await request(MessageType.telemetrySet, payload: Telemetry(enabled: on)),
+           let t = try? resp.payload(as: Telemetry.self) {
+            telemetryEnabled = t.enabled
+        }
+    }
 
     public func loadIntegrationStatus() async {
         guard let client else { return }
@@ -1623,6 +1645,8 @@ public final class Model: ObservableObject {
                     }
                 case MessageType.integrationStatus: // broadcast after (re)connect/disconnect
                     if let st = try? env.payload(as: IntegrationStatus.self) { applyIntegrationStatus(st) }
+                case MessageType.telemetryStatus: // broadcast after a toggle on any device
+                    if let t = try? env.payload(as: Telemetry.self) { telemetryEnabled = t.enabled }
                 case MessageType.lspDiagnostics: // language server published diagnostics for a file
                     if let d = try? env.payload(as: LSPDiagnostics.self) {
                         diagnostics[d.path] = d.diagnostics
