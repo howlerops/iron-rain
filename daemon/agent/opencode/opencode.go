@@ -163,7 +163,15 @@ func (p *Provider) Attach(ctx context.Context, sessionID, cwd string) (agent.Ses
 	// regardless of the directory param, so re-derive it and trust that over the stored cwd.
 	dir := cwd
 	if real := p.resolveDir(ctx, sessionID); real != "" {
+		if real != cwd {
+			log.Printf("opencode: attach %s — resolved real directory %q (stored cwd was %q)", sessionID, real, cwd)
+		}
 		dir = real
+	} else if cwd != "" {
+		// Couldn't verify the directory (opencode unreachable/slow, or the session is unknown to it).
+		// We fall back to the stored cwd — but if that cwd is stale, sends will silently fail, so make
+		// the un-healed attach VISIBLE instead of re-arming the "broken session" bug quietly.
+		log.Printf("opencode: attach %s — could NOT resolve real directory (opencode unreachable?); using stored cwd %q — sends may fail if it's stale, try Recover", sessionID, cwd)
 	}
 	s := &session{p: p, id: sessionID, dir: dir, events: make(chan agent.Event, 64), done: make(chan struct{})}
 	if err := s.subscribe(); err != nil {
