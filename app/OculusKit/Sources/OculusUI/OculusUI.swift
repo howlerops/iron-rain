@@ -662,7 +662,10 @@ public final class Model: ObservableObject {
     private func bumpWatchdog() {
         resumeIfStalled() // any live event means the agent is alive — heal a prior false alarm
         guard busy else { cancelWatchdog(); return }
-        armWatchdog(seconds: 180)
+        // A running tool/sub-agent (activity set) legitimately goes quiet for a long time — an opencode
+        // `task` sub-agent runs as a SEPARATE session whose events don't reach the parent — so while a
+        // tool is active we give it a far longer leash before ever crying "no response".
+        armWatchdog(seconds: activity != nil ? 600 : 180)
     }
 
     private func cancelWatchdog() { watchdogTask?.cancel(); watchdogTask = nil }

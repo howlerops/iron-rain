@@ -314,6 +314,7 @@ type session struct {
 	msgRoles    map[string]string // messageID -> role (from message.updated)
 	emittedUser map[string]bool   // messageIDs already forwarded as a user turn
 	usageDone   map[string]bool   // messageIDs whose usage was already emitted (once per turn)
+	emittedTool map[string]bool   // tool part ids already surfaced inline (dedup)
 }
 
 func (s *session) ID() string                 { return s.id }
@@ -487,6 +488,7 @@ func (s *session) handle(raw []byte) {
 	case "message.part.updated":
 		var pu struct {
 			Part struct {
+				ID        string `json:"id"`
 				Type      string `json:"type"`
 				Text      string `json:"text"`
 				Tool      string `json:"tool"`
@@ -509,6 +511,20 @@ func (s *session) handle(raw []byte) {
 				s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{
 					SessionID: s.id, Status: protocol.StatusRunning, Detail: "running " + pu.Part.Tool,
 				}})
+				// Also surface the tool call INLINE in the transcript (once per tool part), so tool use
+				// — and especially the `task` sub-agent — reads as part of the conversation instead of
+				// only a transient top chip. Deduped by part id so repeated updates don't re-append.
+				if pu.Part.ID != "" {
+					if s.emittedTool == nil {
+						s.emittedTool = map[string]bool{}
+					}
+					if !s.emittedTool[pu.Part.ID] {
+						s.emittedTool[pu.Part.ID] = true
+						s.emit(agent.Event{Type: protocol.TypeSessionMessage, Payload: protocol.SessionMessage{
+							SessionID: s.id, Role: "tool", Text: toolLabel(pu.Part.Tool),
+						}})
+					}
+				}
 			}
 		case "text":
 			// Forward USER turns (so every attached client shows a prompt from any client;
@@ -624,7 +640,21 @@ func (s *session) handle(raw []byte) {
 		s.msgRoles = nil
 		s.emittedUser = nil
 		s.usageDone = nil
+		s.emittedTool = nil
 		s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusIdle}})
+	}
+}
+
+// toolLabel gives a tool call a short, human label for the inline transcript row. opencode's `task`
+// tool is a sub-agent, so it's labelled distinctly (the app renders sub-agents with their own style).
+func toolLabel(tool string) string {
+	switch tool {
+	case "task":
+		return "sub-agent"
+	case "":
+		return "tool"
+	default:
+		return tool
 	}
 }
 

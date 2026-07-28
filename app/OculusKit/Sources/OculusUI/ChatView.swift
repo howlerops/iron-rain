@@ -496,15 +496,18 @@ struct MessageRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.leading, 2)
         case .tool:
+            // Sub-agents (opencode's `task` tool) read as a distinct inline row — a little agent badge
+            // rather than the wrench — so a delegated lane is obvious in the transcript flow.
+            let isSubAgent = message.text.hasPrefix("sub-agent")
             HStack(spacing: 8) {
-                Image(systemName: "wrench.and.screwdriver.fill").font(.caption2)
-                Text(message.text).font(.system(.caption, design: .monospaced))
+                Image(systemName: isSubAgent ? "person.2.fill" : "wrench.and.screwdriver.fill").font(.caption2)
+                Text(isSubAgent ? "Sub-agent delegated" : message.text).font(.system(.caption, design: .monospaced))
             }
             .foregroundStyle(palette.accentForeground)
             .padding(.horizontal, 12).padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(palette.accent)
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.primary.opacity(0.25)))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.primary.opacity(isSubAgent ? 0.45 : 0.25)))
             .clipShape(RoundedRectangle(cornerRadius: 10))
         case .system:
             Text(message.text).font(.caption).foregroundStyle(palette.mutedForeground)
