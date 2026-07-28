@@ -24,6 +24,8 @@ struct Composer: View {
     @State private var thumbCache: [String: Image] = [:]
     @State private var showFileImporter = false // both platforms: attach documents
     @State private var showPhotoPicker = false  // iOS: photo library
+    /// Highlighted row in the slash-command popup (Tab completes it, ↑/↓ move it).
+    @State private var cmdIndex = 0
     #if os(iOS)
     @State private var photoItem: PhotosPickerItem?
     #endif
@@ -129,42 +131,63 @@ struct Composer: View {
     /// Autocomplete of the agent's slash commands (built-in + custom), shown above the input when
     /// the draft begins with "/". Tapping inserts "/name " so you can add args, then send.
     private var commandPalette: some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                ForEach(commandMatches) { cmd in
-                    Button {
-                        draft = "\(cmd.glyph)\(cmd.name) "
-                        focused = true
-                    } label: {
-                        HStack(spacing: 8) {
-                            Text("\(cmd.glyph)\(cmd.name)")
-                                .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(palette.primary)
-                            if let d = cmd.description, !d.isEmpty {
-                                Text(d).font(.caption).foregroundStyle(palette.mutedForeground).lineLimit(1)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(Array(commandMatches.enumerated()), id: \.element.id) { idx, cmd in
+                        let selected = idx == clampedCmdIndex
+                        Button { complete(cmd) } label: {
+                            HStack(spacing: 8) {
+                                Text("\(cmd.glyph)\(cmd.name)")
+                                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                                    .foregroundStyle(palette.primary)
+                                if let d = cmd.description, !d.isEmpty {
+                                    Text(d).font(.caption).foregroundStyle(palette.mutedForeground).lineLimit(1)
+                                }
+                                Spacer(minLength: 6)
+                                if selected {
+                                    Text("tab").font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                        .foregroundStyle(palette.mutedForeground)
+                                        .padding(.horizontal, 4).padding(.vertical, 1)
+                                        .background(RoundedRectangle(cornerRadius: 3).fill(palette.muted.opacity(0.5)))
+                                }
+                                if cmd.isCustom {
+                                    Text("custom").font(.system(size: 9, weight: .semibold)).foregroundStyle(palette.mutedForeground)
+                                        .padding(.horizontal, 5).padding(.vertical, 1)
+                                        .background(Capsule().fill(palette.muted.opacity(0.45)))
+                                }
                             }
-                            Spacer(minLength: 6)
-                            if cmd.isCustom {
-                                Text("custom").font(.system(size: 9, weight: .semibold)).foregroundStyle(palette.mutedForeground)
-                                    .padding(.horizontal, 5).padding(.vertical, 1)
-                                    .background(Capsule().fill(palette.muted.opacity(0.45)))
-                            }
+                            .padding(.horizontal, 14).padding(.vertical, 8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(selected ? palette.primary.opacity(0.14) : .clear)
+                            .contentShape(Rectangle())
                         }
-                        .padding(.horizontal, 14).padding(.vertical, 8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
+                        .buttonStyle(.plain)
+                        .id(idx)
+                        if cmd.id != commandMatches.last?.id { Divider().overlay(palette.border.opacity(0.5)) }
                     }
-                    .buttonStyle(.plain)
-                    if cmd.id != commandMatches.last?.id { Divider().overlay(palette.border.opacity(0.5)) }
                 }
             }
+            .frame(maxHeight: 220)
+            .onChange(of: clampedCmdIndex) { i in withAnimation(.linear(duration: 0.08)) { proxy.scrollTo(i, anchor: .center) } }
         }
-        .frame(maxHeight: 220)
         .background(palette.input)
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(palette.border))
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .padding(.horizontal, 12)
         .padding(.bottom, 6)
+    }
+
+    /// The highlighted command index, clamped to the current matches.
+    private var clampedCmdIndex: Int {
+        guard !commandMatches.isEmpty else { return 0 }
+        return min(max(0, cmdIndex), commandMatches.count - 1)
+    }
+
+    /// Completes a command into the draft (full name + trailing space, which closes the popup).
+    private func complete(_ cmd: SlashCommand) {
+        draft = "\(cmd.glyph)\(cmd.name) "
+        focused = true
     }
 
     /// The message input: a scrollable, auto-growing multiline editor (ComposerTextView) so long
@@ -177,11 +200,40 @@ struct Composer: View {
                     .font(.body).foregroundStyle(palette.mutedForeground)
                     .padding(.top, 7).padding(.leading, 2).allowsHitTesting(false)
             }
-            ComposerTextView(text: $draft, maxHeight: 160) { submit() }
+            ComposerTextView(
+                text: $draft, maxHeight: 160,
+                onSubmit: { submit() },
+                // Tab completes the highlighted command; ↑/↓ move the highlight. Each only consumes
+                // the key while the popup is open, so normal typing/tabbing is unaffected.
+                onTab: { completeSelected() },
+                onMoveUp: { moveSelection(-1) },
+                onMoveDown: { moveSelection(1) }
+            )
         }
+        // Reset the highlight to the top whenever the set of matches changes (new keystroke).
+        .onChange(of: draft) { _ in cmdIndex = 0 }
+    }
+
+    /// Completes the highlighted slash command when the popup is open. Returns true (consume the
+    /// Tab) only in that case; otherwise Tab does nothing special.
+    private func completeSelected() -> Bool {
+        guard !commandMatches.isEmpty else { return false }
+        complete(commandMatches[clampedCmdIndex])
+        return true
+    }
+
+    /// Moves the popup highlight by `delta`, wrapping around. Returns true (consume the arrow) only
+    /// while the popup is open.
+    private func moveSelection(_ delta: Int) -> Bool {
+        guard !commandMatches.isEmpty else { return false }
+        let n = commandMatches.count
+        cmdIndex = ((clampedCmdIndex + delta) % n + n) % n
+        return true
     }
 
     private func submit() {
+        // Enter with the popup open completes the highlighted command instead of sending.
+        if !commandMatches.isEmpty { _ = completeSelected(); return }
         guard canSend else { return }
         let text = draft
         draft = ""

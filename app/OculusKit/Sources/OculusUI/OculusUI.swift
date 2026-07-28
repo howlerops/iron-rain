@@ -177,6 +177,15 @@ public final class Model: ObservableObject {
     /// Text to inject into the composer (Design-Mode picked-element block). The Composer observes
     /// this, appends it to its draft, and clears it.
     @Published public var draftInsert: String = ""
+    /// Unsent composer text, kept per session (keyed by session id; the empty string keys the
+    /// not-yet-started "new session" composer). Switching sessions swaps the draft in and out so a
+    /// half-typed message is never lost, and never leaks into another session.
+    @Published public var drafts: [String: String] = [:]
+    /// A binding into `drafts` for the currently open session — this is what the Composer edits.
+    public var currentDraft: String {
+        get { drafts[sessionID ?? ""] ?? "" }
+        set { drafts[sessionID ?? ""] = newValue }
+    }
     public var pendingProjectID: String?
     public var pendingProjectIDs: [String]?  // multi-root workspace (multi-repo)
     public var pendingWorktree = false
@@ -192,6 +201,11 @@ public final class Model: ObservableObject {
     private var imageCache: [String: Data] = [:]
     /// Fires if a prompt gets no response within the window (dead/orphaned session).
     private var watchdogTask: Task<Void, Never>?
+    /// True after the no-response watchdog fired but before the agent proved it's still alive. Lets a
+    /// late burst of output SELF-HEAL the session (clear the false "No response" alarm and resume)
+    /// instead of leaving it stuck — the exact failure on big multi-agent opencode turns that go
+    /// quiet while children work, then come back.
+    private var stalled = false
     /// While true, skip replayed transcript messages that duplicate ones already shown
     /// (set briefly around a live re-attach so reviving a session doesn't double the chat).
     private var dedupReplay = false
@@ -516,6 +530,7 @@ public final class Model: ObservableObject {
         messages.append(ChatMessage(id: msgID, role: .user, text: shown, delivery: .sending))
         pendingRetry = (msgID, trimmed, imgs)
         busy = true
+        stalled = false // fresh turn — don't inherit a prior stall's self-heal state
         pendingImages = []
         pendingFiles = []
         if let sid = sessionID {
@@ -642,10 +657,12 @@ public final class Model: ObservableObject {
     /// Reset the no-response watchdog on live activity. Progress events used to just CANCEL it, so a
     /// turn that started then hung mid-way (a stuck opencode/claude turn) left the app "thinking"
     /// forever with nothing to catch it. Re-arming on each event with a generous window means a real
-    /// mid-turn stall (no events for ~2 min) surfaces "no response — send again" instead of hanging.
+    /// mid-turn stall surfaces "no response — send again" instead of hanging. The window is roomy
+    /// (180s) because a big multi-agent opencode turn can legitimately go quiet while children work.
     private func bumpWatchdog() {
+        resumeIfStalled() // any live event means the agent is alive — heal a prior false alarm
         guard busy else { cancelWatchdog(); return }
-        armWatchdog(seconds: 120)
+        armWatchdog(seconds: 180)
     }
 
     private func cancelWatchdog() { watchdogTask?.cancel(); watchdogTask = nil }
@@ -653,6 +670,7 @@ public final class Model: ObservableObject {
     private func watchdogFired() {
         guard busy else { return }
         busy = false
+        stalled = true // arm self-heal: if output resumes, we clear this alarm instead of staying stuck
         activity = nil
         finalizeStreaming()
         // Mark the in-flight message failed (retryable) and leave a PERSISTENT transcript marker, so
@@ -662,6 +680,21 @@ public final class Model: ObservableObject {
         if messages.last?.text != note { messages.append(ChatMessage(role: .system, text: note)) }
         setError("No response from the agent", "It may have stopped or its backend may be unreachable — retry the message, or check the agent.")
         status = "No response"
+    }
+
+    /// The watchdog fired, but the agent then produced fresh output/activity — it wasn't dead, just
+    /// slow. Clear the false "No response" alarm, drop the transient marker, restore the delivery
+    /// badge, and resume the spinner so the session heals instead of staying stuck behind the error.
+    private func resumeIfStalled() {
+        guard stalled else { return }
+        stalled = false
+        busy = true
+        status = "Working"
+        if actionErrorTitle == "No response from the agent" { actionError = nil }
+        if let last = messages.last, last.role == .system, last.text.hasPrefix("⚠️ No response") {
+            messages.removeLast()
+        }
+        if let r = pendingRetry { markDelivery(r.id, .ok) } // it did land after all
     }
 
     /// Deletes a daemon-managed session: halts its agent (which ends the session server-side)
@@ -2030,7 +2063,8 @@ public final class Model: ObservableObject {
     // in `messages`, so the view renders it unchanged.
     private var streamBuffer = ""
     private var flushTask: Task<Void, Never>?
-    private static let flushInterval: UInt64 = 60_000_000 // 60ms
+    private static let flushInterval: UInt64 = 40_000_000 // 40ms (~25fps) — streaming text renders
+    // plain (cheap) while in-flight, so a faster flush stays smooth without stalling the main thread.
 
     /// Folds any buffered token text into the current streaming message (one array
     /// mutation). Safe to call at any time — a no-op when nothing is buffered.

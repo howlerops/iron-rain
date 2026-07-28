@@ -44,10 +44,16 @@ struct ComposerTextView: View {
     @Binding var text: String
     var maxHeight: CGFloat = 160
     var onSubmit: () -> Void
+    // Return true to CONSUME the key (used to drive the slash-command popup: Tab completes,
+    // arrows move the highlight). Return false to let the text view do the default.
+    var onTab: () -> Bool = { false }
+    var onMoveUp: () -> Bool = { false }
+    var onMoveDown: () -> Bool = { false }
     @State private var measured: CGFloat = 34
 
     var body: some View {
-        Representable(text: $text, maxHeight: maxHeight, height: $measured, onSubmit: onSubmit)
+        Representable(text: $text, maxHeight: maxHeight, height: $measured,
+                      onSubmit: onSubmit, onTab: onTab, onMoveUp: onMoveUp, onMoveDown: onMoveDown)
             .frame(height: min(max(34, measured), maxHeight))
     }
 }
@@ -58,6 +64,9 @@ private struct Representable: NSViewRepresentable {
     var maxHeight: CGFloat
     @Binding var height: CGFloat
     var onSubmit: () -> Void
+    var onTab: () -> Bool = { false }
+    var onMoveUp: () -> Bool = { false }
+    var onMoveDown: () -> Bool = { false }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -105,8 +114,12 @@ private struct Representable: NSViewRepresentable {
             parent.text = tv.string
             parent.recomputeHeight(tv)
         }
-        // Return sends; Shift+Return inserts a newline.
+        // Return sends; Shift+Return inserts a newline. Tab / ↑ / ↓ drive the slash-command popup
+        // when it's open (the closures return true to consume), else fall through to defaults.
         func textView(_ textView: NSTextView, doCommandBy sel: Selector) -> Bool {
+            if sel == #selector(NSResponder.insertTab(_:)) { return parent.onTab() }
+            if sel == #selector(NSResponder.moveUp(_:)) { return parent.onMoveUp() }
+            if sel == #selector(NSResponder.moveDown(_:)) { return parent.onMoveDown() }
             if sel == #selector(NSResponder.insertNewline(_:)) {
                 let shift = NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false
                 if shift { return false } // let it insert a newline
@@ -128,6 +141,9 @@ private struct Representable: UIViewRepresentable {
     var maxHeight: CGFloat
     @Binding var height: CGFloat
     var onSubmit: () -> Void
+    var onTab: () -> Bool = { false }
+    var onMoveUp: () -> Bool = { false }
+    var onMoveDown: () -> Bool = { false }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -140,11 +156,15 @@ private struct Representable: UIViewRepresentable {
         tv.textContainerInset = UIEdgeInsets(top: 7, left: 0, bottom: 7, right: 0)
         tv.textContainer.lineFragmentPadding = 0
         tv.onSubmit = onSubmit
+        tv.onTab = onTab; tv.onMoveUp = onMoveUp; tv.onMoveDown = onMoveDown
         return tv
     }
 
     func updateUIView(_ tv: UITextView, context: Context) {
         (tv as? KeyTextView)?.onSubmit = onSubmit
+        (tv as? KeyTextView)?.onTab = onTab
+        (tv as? KeyTextView)?.onMoveUp = onMoveUp
+        (tv as? KeyTextView)?.onMoveDown = onMoveDown
         if tv.text != text { tv.text = text }
         recompute(tv)
     }
@@ -163,12 +183,24 @@ private struct Representable: UIViewRepresentable {
     }
 }
 
-/// UITextView that sends on a hardware Return (Shift+Return still inserts a newline via the default).
+/// UITextView that sends on a hardware Return, and drives the slash-command popup with Tab / ↑ / ↓
+/// (hardware keyboard on iPad). Shift+Return still inserts a newline via the default.
 private final class KeyTextView: UITextView {
     var onSubmit: (() -> Void)?
+    var onTab: (() -> Bool)?
+    var onMoveUp: (() -> Bool)?
+    var onMoveDown: (() -> Bool)?
     override var keyCommands: [UIKeyCommand]? {
-        [UIKeyCommand(input: "\r", modifierFlags: [], action: #selector(sendCommand))]
+        [
+            UIKeyCommand(input: "\r", modifierFlags: [], action: #selector(sendCommand)),
+            UIKeyCommand(input: "\t", modifierFlags: [], action: #selector(tabCommand)),
+            UIKeyCommand(input: UIKeyCommand.inputUpArrow, modifierFlags: [], action: #selector(upCommand)),
+            UIKeyCommand(input: UIKeyCommand.inputDownArrow, modifierFlags: [], action: #selector(downCommand)),
+        ]
     }
     @objc private func sendCommand() { onSubmit?() }
+    @objc private func tabCommand() { _ = onTab?() }
+    @objc private func upCommand() { _ = onMoveUp?() }
+    @objc private func downCommand() { _ = onMoveDown?() }
 }
 #endif

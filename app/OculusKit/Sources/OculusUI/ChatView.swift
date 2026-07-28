@@ -18,7 +18,11 @@ public struct ChatView: View {
     @Environment(\.colorScheme) private var scheme
     private var palette: OculusPalette { .current(scheme) }
 
-    @State private var draft = ""
+    /// Draft is stored on the model, keyed by session id, so switching sessions preserves each
+    /// composer's unsent text (see Model.drafts). This binding reads/writes the active session's.
+    private var draft: Binding<String> {
+        Binding(get: { model.currentDraft }, set: { model.currentDraft = $0 })
+    }
     @State private var anchorTask: Task<Void, Never>?
     /// Explicit bottom re-pins only fire before this time (a short window after a session opens), so
     /// they can't fight defaultScrollAnchor during streaming and bounce the view.
@@ -68,7 +72,7 @@ public struct ChatView: View {
                              onDeny: { Task { await model.respond(Decision.deny) } })
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-            if isStopped { restartFooter } else { Composer(model: model, draft: $draft, palette: palette) }
+            if isStopped { restartFooter } else { Composer(model: model, draft: draft, palette: palette) }
         }
         // NOTE: was `.background(palette.background.ignoresSafeArea())`. In a NavigationSplitView
         // detail column on macOS 26, the ignoresSafeArea inflated ChatView's ideal height, which
@@ -381,7 +385,7 @@ public struct ChatView: View {
                 .frame(maxWidth: 360).fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 8) {
                 ForEach(Self.starters, id: \.self) { prompt in
-                    Button { draft = prompt } label: {
+                    Button { draft.wrappedValue = prompt } label: {
                         Text(prompt).font(.system(size: 12))
                             .foregroundStyle(palette.foreground)
                             .padding(.horizontal, 12).padding(.vertical, 7)
@@ -453,11 +457,19 @@ struct MessageRow: View {
                 }
             }
         case .assistant:
-            // Render markdown LIVE as it streams (not raw-until-done) — so headings/lists/code/
-            // emphasis appear as they arrive and there's no plain→markdown "jump" at the end.
-            // Streaming text is coalesced every ~60ms upstream, so this parses ~16×/s, not per token.
             if message.text.isEmpty && message.streaming {
                 Text("…").font(.body).frame(maxWidth: .infinity, alignment: .leading)
+            } else if message.streaming {
+                // While streaming, render PLAIN text. Foundation's markdown init (AttributedString)
+                // is heavy; re-parsing the whole growing message on every ~40ms flush stalls the
+                // main thread and makes the stream stutter. We keep the live text flowing cheaply and
+                // snap to full markdown the instant the turn ends (the `else` below). Line breaks are
+                // preserved so lists/paragraphs still read naturally mid-stream.
+                Text(message.text)
+                    .font(.body)
+                    .foregroundStyle(palette.foreground)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
             } else {
                 ChatMarkdownView(text: message.text, palette: palette)
                     .textSelection(.enabled)
