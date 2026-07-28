@@ -167,6 +167,14 @@ public struct ChatView: View {
                     }
                     .help("Open this session's files and review its changes (code editor + diff).")
                 }
+                #if canImport(WebKit)
+                ToolbarItem(placement: .automatic) {
+                    Button { model.designRequested = true } label: {
+                        Label("Browser / Design", systemImage: "safari")
+                    }
+                    .help("Open the in-app browser (Design Mode): pick a UI element to drop its HTML/CSS into the prompt.")
+                }
+                #endif
                 ToolbarItem(placement: .automatic) {
                     Button { showDelegate = true } label: {
                         Label("Delegate subtask", systemImage: "arrowshape.turn.up.right")
@@ -951,11 +959,24 @@ struct InlineSubAgentCard: View {
                     Text(running ? "working…" : "no output").font(.caption2).italic()
                         .foregroundStyle(palette.mutedForeground).padding(.vertical, 4).padding(.leading, 4)
                 } else {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(msgs) { m in MessageRow(message: m, palette: palette) }
+                    // Cap the expanded peek + scroll internally, so even a huge sub-agent transcript
+                    // never balloons the parent chat. The header stays put (one tap to collapse).
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(msgs) { m in MessageRow(message: m, palette: palette) }
+                        }
+                        .padding(.leading, 4).padding(.trailing, 2)
                     }
-                    .padding(.leading, 4)
+                    .frame(maxHeight: 300)
                 }
+                // A full-width "Collapse" footer so getting back to the base state is always one obvious
+                // tap, no matter how long the transcript is.
+                Button { model.toggleChildExpanded(subAgentID) } label: {
+                    Label("Collapse", systemImage: "chevron.up").font(.caption2)
+                        .frame(maxWidth: .infinity).padding(.top, 6)
+                        .foregroundStyle(palette.mutedForeground).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 9)

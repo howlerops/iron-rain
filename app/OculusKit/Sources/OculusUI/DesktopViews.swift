@@ -236,7 +236,6 @@ public struct RootView: View {
     @State private var showAddDesktop = false
     @State private var renamingDesktop = false
     @State private var desktopNewName = ""
-    @State private var showDesign = false            // Design Mode (WebKit element picker) sheet
     @AppStorage("oculus.appearance") private var appearance: Appearance = .system
     #if os(macOS)
     @StateObject private var launcher = DaemonLauncher()
@@ -323,8 +322,8 @@ public struct RootView: View {
                         FanoutSheet(model: model, palette: palette, onClose: { showFanout = false })
                     }
                     #if canImport(WebKit)
-                    .sheet(isPresented: $showDesign) {
-                        DesignModeView(model: model, palette: palette, initialURL: designURL(model), onClose: { showDesign = false })
+                    .sheet(isPresented: Binding(get: { model.designRequested }, set: { model.designRequested = $0 })) {
+                        DesignModeView(model: model, palette: palette, initialURL: designURL(model), onClose: { model.designRequested = false })
                     }
                     #endif
             }
@@ -553,7 +552,7 @@ public struct RootView: View {
         #if canImport(WebKit)
         out.append(PaletteItem(id: "act-design", kind: .action, title: "Design mode",
                                subtitle: "Pick a UI element → HTML/CSS into the prompt", symbol: "cursorarrow.rays") {
-            showDesign = true
+            model.designRequested = true
         })
         #endif
         if model.needsYouCount > 0 {

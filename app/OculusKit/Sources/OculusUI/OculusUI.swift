@@ -199,8 +199,10 @@ public final class Model: ObservableObject {
     private var pendingRequests: [String: CheckedContinuation<Envelope, Error>] = [:]
     /// Decoded tracker images keyed by URL (fetched through the daemon; auth-gated).
     private var imageCache: [String: Data] = [:]
-    /// Fires if a prompt gets no response within the window (dead/orphaned session).
+    /// Fires if a prompt gets no response within the window (dead/orphaned session). A single poll
+    /// loop compares `busy` against `watchdogDeadline` — bumping just moves the deadline (O(1)).
     private var watchdogTask: Task<Void, Never>?
+    private var watchdogDeadline: Date = .distantFuture
     /// True after the no-response watchdog fired but before the agent proved it's still alive. Lets a
     /// late burst of output SELF-HEAL the session (clear the false "No response" alarm and resume)
     /// instead of leaving it stuck — the exact failure on big multi-agent opencode turns that go
@@ -645,30 +647,39 @@ public final class Model: ObservableObject {
 
     /// Arms the no-response watchdog: if the agent produces nothing within the window while
     /// we're still "busy", clear the spinner and prompt a retry. Any live event cancels it.
-    private func armWatchdog(seconds: Double = 25) {
-        cancelWatchdog()
+    // The watchdog is a deadline + ONE poll loop, not a Task per event. Bumping it is O(1) (just move
+    // the deadline) — critical because bumpWatchdog fires on every streamed token from the parent AND
+    // every sub-agent, so a Task-per-bump churned the scheduler hard once sub-agent streaming landed.
+    private func armWatchdog(seconds: Double = 180) {
+        watchdogDeadline = Date().addingTimeInterval(seconds)
+        startWatchdogLoop()
+    }
+
+    private func startWatchdogLoop() {
+        guard watchdogTask == nil else { return }
         watchdogTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-            guard !Task.isCancelled else { return }
-            self?.watchdogFired()
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 2_000_000_000) // check every 2s — granularity is negligible vs the 180s+ window
+                guard let self else { return }
+                if self.busy, Date() >= self.watchdogDeadline { self.watchdogFired() }
+            }
         }
     }
 
-    /// Reset the no-response watchdog on live activity. Progress events used to just CANCEL it, so a
-    /// turn that started then hung mid-way (a stuck opencode/claude turn) left the app "thinking"
-    /// forever with nothing to catch it. Re-arming on each event with a generous window means a real
-    /// mid-turn stall surfaces "no response — send again" instead of hanging. The window is roomy
-    /// (180s) because a big multi-agent opencode turn can legitimately go quiet while children work.
+    /// Push the no-response deadline out on live activity (O(1)). A real mid-turn stall (no events past
+    /// the window) still surfaces "no response". The window is roomy (180s), and far longer (600s)
+    /// while a tool/sub-agent is active since an opencode `task` sub-agent can legitimately go quiet.
     private func bumpWatchdog() {
         resumeIfStalled() // any live event means the agent is alive — heal a prior false alarm
         guard busy else { cancelWatchdog(); return }
-        // A running tool/sub-agent (activity set) legitimately goes quiet for a long time — an opencode
-        // `task` sub-agent runs as a SEPARATE session whose events don't reach the parent — so while a
-        // tool is active we give it a far longer leash before ever crying "no response".
-        armWatchdog(seconds: activity != nil ? 600 : 180)
+        watchdogDeadline = Date().addingTimeInterval(activity != nil ? 600 : 180)
+        startWatchdogLoop() // ensure the poll loop is running (no-op if it already is)
     }
 
-    private func cancelWatchdog() { watchdogTask?.cancel(); watchdogTask = nil }
+    private func cancelWatchdog() {
+        watchdogDeadline = .distantFuture
+        watchdogTask?.cancel(); watchdogTask = nil
+    }
 
     private func watchdogFired() {
         guard busy else { return }
@@ -2225,6 +2236,9 @@ public final class Model: ObservableObject {
     /// detail; nil = the chat transcript. Promoted to the model so the chat toolbar's "Code / Review"
     /// button and CodeSurface's own back button can both drive it (was a buried right-click only).
     @Published public var codeReviewTarget: String?
+    /// Set to open Design Mode (the in-app browser element picker) — surfaced as a session toolbar
+    /// button, not only the Cmd-K palette. The deck presents the sheet when this flips true.
+    @Published public var designRequested = false
 
     /// Folds a sub-agent lifecycle event into the transcript. "started" inserts an inline collapsible
     /// card (once) at the point the parent delegated, and readies its child buffers so the sub-agent's
@@ -2318,12 +2332,34 @@ public final class Model: ObservableObject {
         expandedChildIDs.removeAll()
         subscribedChildIDs.removeAll()
         subAgentStatus.removeAll()
+        childStreamBuffers.removeAll()
+        childFlushTask?.cancel(); childFlushTask = nil
     }
 
-    /// Per-child version of appendAssistantDelta: fold streamed output into the child's last message
-    /// if it's a streaming assistant, else start a new one. No throttled flush — a child transcript
-    /// is a secondary peek, so a direct append keeps it simple.
+    // Child deltas are COALESCED (buffer + timed flush) exactly like the parent's streamBuffer. Without
+    // this, every sub-agent token re-published `childMessages` and re-rendered the whole transcript —
+    // the perf cliff that appeared when sub-agent streaming started working.
+    private var childStreamBuffers: [String: String] = [:]
+    private var childFlushTask: Task<Void, Never>?
+
     private func appendChildDelta(_ sid: String, _ text: String) {
+        childStreamBuffers[sid, default: ""] += text
+        scheduleChildFlush()
+    }
+
+    private func scheduleChildFlush() {
+        guard childFlushTask == nil else { return }
+        childFlushTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 50_000_000) // 50ms (~20fps) — one re-publish per cycle for all children
+            guard let self else { return }
+            self.childFlushTask = nil
+            self.flushChildStreams()
+        }
+    }
+
+    /// Folds buffered child text for `sid` (or all children) into childMessages in one mutation.
+    private func flushChild(_ sid: String) {
+        guard let text = childStreamBuffers[sid], !text.isEmpty else { return }
         var buf = childMessages[sid] ?? []
         if let last = buf.last, last.role == .assistant, last.streaming {
             buf[buf.count - 1].text += text
@@ -2331,10 +2367,16 @@ public final class Model: ObservableObject {
             buf.append(ChatMessage(role: .assistant, text: text, streaming: true))
         }
         childMessages[sid] = buf
+        childStreamBuffers[sid] = ""
     }
 
-    /// Seals any in-flight streaming assistant message in a child's buffer.
+    private func flushChildStreams() {
+        for sid in childStreamBuffers.keys { flushChild(sid) }
+    }
+
+    /// Seals any in-flight streaming assistant message in a child's buffer (folding pending deltas first).
     private func finalizeChildStreaming(_ sid: String) {
+        flushChild(sid) // don't lose buffered text at the boundary
         guard var buf = childMessages[sid], let last = buf.last, last.role == .assistant, last.streaming else { return }
         buf[buf.count - 1].streaming = false
         childMessages[sid] = buf
