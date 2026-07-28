@@ -26,6 +26,8 @@ private struct SessionGroup: Identifiable {
     let showProvider: Bool // only when a group actually mixes providers
     let showProject: Bool  // the "Recent" group spans projects, so show each row's project
     let hasRunning: Bool
+    let runningCount: Int   // rolled-up status: agents running in this project
+    let needsYouCount: Int  // rolled-up status: agents in this project needing attention
     var id: String { name }
 }
 
@@ -234,7 +236,7 @@ struct SessionSidebar: View {
                         .contextMenu { rowMenu(item) }
                     }
                 } header: {
-                    sectionHeader(group.name, running: group.hasRunning)
+                    sectionHeader(group.name, running: group.runningCount, needsYou: group.needsYouCount)
                 }
             }
         }
@@ -441,7 +443,9 @@ struct SessionSidebar: View {
             guard !hits.isEmpty else { return nil }
             return SessionGroup(name: g.name, items: hits,
                                 showProvider: g.showProvider, showProject: g.showProject,
-                                hasRunning: hits.contains { $0.isRunning })
+                                hasRunning: hits.contains { $0.isRunning },
+                                runningCount: hits.filter { $0.isRunning }.count,
+                                needsYouCount: hits.filter { $0.hasError }.count)
         }
     }
 
@@ -468,15 +472,26 @@ struct SessionSidebar: View {
         }
     }
 
-    private func sectionHeader(_ name: String, running: Bool) -> some View {
+    /// Project header with ROLLED-UP status: a project row shows its aggregate agent states
+    /// ("3 running · 1 needs you") so you read a whole project at a glance without expanding it.
+    private func sectionHeader(_ name: String, running: Int, needsYou: Int) -> some View {
         HStack(spacing: 6) {
             Text(name.uppercased())
                 .font(.system(size: 11, weight: .bold)).tracking(0.4)
                 .foregroundStyle(palette.mutedForeground)
-            if running {
-                Circle().fill(palette.primary).frame(width: 5, height: 5)
-            }
             Spacer()
+            if running > 0 {
+                HStack(spacing: 3) {
+                    Circle().fill(palette.primary).frame(width: 5, height: 5)
+                    Text("\(running)").font(.system(size: 10, weight: .semibold, design: .monospaced))
+                }.foregroundStyle(palette.primary)
+            }
+            if needsYou > 0 {
+                HStack(spacing: 3) {
+                    Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 8))
+                    Text("\(needsYou)").font(.system(size: 10, weight: .semibold, design: .monospaced))
+                }.foregroundStyle(Color(hex: 0xE0912A))
+            }
         }
     }
 
@@ -535,7 +550,9 @@ struct SessionSidebar: View {
             return SessionGroup(name: name, items: sorted,
                                 showProvider: Set(sorted.map { $0.provider }).count > 1,
                                 showProject: showProject,
-                                hasRunning: sorted.contains { $0.isRunning })
+                                hasRunning: sorted.contains { $0.isRunning },
+                                runningCount: sorted.filter { $0.isRunning }.count,
+                                needsYouCount: sorted.filter { $0.hasError }.count)
         }
 
         var result: [SessionGroup] = []
