@@ -357,16 +357,22 @@ public struct ChatView: View {
     /// scroll height and bouncing the view.
     @ViewBuilder private var typingBar: some View {
         HStack(spacing: 8) {
-            // Show the real tool-use indicator whenever the agent is working but not mid-stream
-            // (mid-stream, the text itself is the activity). This is the "what's it doing right now"
-            // surface — a proper tool chip, not a generic blob.
-            if model.busy && model.messages.last?.streaming != true {
-                ToolActivityView(activity: model.activity, palette: palette)
+            // A stalled stream trumps the working chip: if we're busy but no bytes have arrived for a
+            // while, the socket may be half-open — offer a one-tap Reconnect (replays the true state
+            // from the daemon) instead of leaving an ageless spinner that only a restart would clear.
+            if model.streamMaybeStalled {
+                StreamStallBar(palette: palette) { Task { await model.forceResync() } }
+            } else if model.busy && model.messages.last?.streaming != true {
+                // Show the real tool-use indicator whenever the agent is working but not mid-stream
+                // (mid-stream, the text itself is the activity). Now carries the concrete command/path
+                // so you actually see WHAT it's doing, not just "Running a command".
+                ToolActivityView(activity: model.activity, palette: palette, detail: model.activityDetail)
             }
             Spacer(minLength: 0)
         }
         .frame(height: 26) // reserved height → no layout shift when it appears/disappears
         .padding(.horizontal, 16)
+        .animation(.easeInOut(duration: 0.2), value: model.streamMaybeStalled)
     }
 
     /// Instantly (no animation) re-pins the transcript to its last message once appends settle.
@@ -561,25 +567,23 @@ struct ToolCallCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button { if hasOutput { expanded.toggle() } } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: icon).font(.caption2).foregroundStyle(tint).frame(width: 14)
-                    Text(call.name).font(.system(.caption, design: .monospaced).bold()).foregroundStyle(palette.foreground)
-                    if !call.title.isEmpty {
-                        Text(call.title).font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(palette.mutedForeground).lineLimit(1).truncationMode(.middle)
-                    }
-                    Spacer(minLength: 6)
-                    if running {
-                        ProgressView().controlSize(.mini)
-                    } else if hasOutput {
-                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                            .font(.system(size: 9)).foregroundStyle(palette.mutedForeground)
-                    }
+            HStack(spacing: 8) {
+                Image(systemName: icon).font(.caption2).foregroundStyle(tint).frame(width: 14)
+                Text(call.name).font(.system(.caption, design: .monospaced).bold()).foregroundStyle(palette.foreground)
+                if !call.title.isEmpty {
+                    Text(call.title).font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(palette.mutedForeground).lineLimit(1).truncationMode(.middle)
                 }
-                .contentShape(Rectangle())
+                Spacer(minLength: 6)
+                if running {
+                    // Live elapsed so a long-running (or stuck) tool is visibly still going.
+                    ElapsedLabel(since: call.startedAt, palette: palette)
+                    ProgressView().controlSize(.mini)
+                } else if hasOutput {
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 9)).foregroundStyle(palette.mutedForeground)
+                }
             }
-            .buttonStyle(.plain)
             if expanded, hasOutput {
                 ScrollView(.horizontal, showsIndicators: false) {
                     Text(call.output).font(.system(.caption2, design: .monospaced))
@@ -588,12 +592,20 @@ struct ToolCallCard: View {
                         .padding(.top, 6)
                 }
                 .frame(maxHeight: 220)
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(palette.secondary.opacity(0.3), in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke((isError ? palette.destructive : palette.primary).opacity(running ? 0.4 : 0.2)))
+        // Tap ANYWHERE on the card to expand/collapse its output. This is its own tap target, so a tool
+        // card nested inside a sub-agent card handles its own taps and never collapses the parent.
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard hasOutput else { return }
+            withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
+        }
     }
 
     private var icon: String {
@@ -607,6 +619,46 @@ struct ToolCallCard: View {
         }
     }
     private var tint: Color { isError ? palette.destructive : palette.primary }
+}
+
+/// A tiny live "elapsed" readout (ticks ~1×/s) — shows how long a running tool or sub-agent has been
+/// going, so a stuck one reads as "stuck at 2:14" instead of an indefinite, ageless spinner.
+struct ElapsedLabel: View {
+    let since: Date
+    let palette: OculusPalette
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { ctx in
+            Text(Self.format(ctx.date.timeIntervalSince(since)))
+                .font(.system(.caption2, design: .monospaced)).monospacedDigit()
+                .foregroundStyle(palette.mutedForeground)
+        }
+    }
+    static func format(_ s: TimeInterval) -> String {
+        let t = max(0, Int(s))
+        return t < 60 ? "\(t)s" : String(format: "%d:%02d", t / 60, t % 60)
+    }
+}
+
+/// Shown in the working bar when the stream has gone quiet mid-turn (possible half-open socket). It's a
+/// gentle, non-error hint with a one-tap Reconnect — the manual escape from a stuck stream that used to
+/// require quitting and relaunching the app.
+struct StreamStallBar: View {
+    let palette: OculusPalette
+    let onReconnect: () -> Void
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "wifi.exclamationmark").font(.caption).foregroundStyle(Color(hex: 0xE0912A))
+            Text("No updates for a while — the stream may be stuck")
+                .font(.caption).foregroundStyle(palette.foreground).lineLimit(1)
+            Button(action: onReconnect) {
+                Text("Reconnect").font(.caption.bold())
+            }
+            .buttonStyle(.plain).foregroundStyle(palette.primary)
+        }
+        .padding(.horizontal, 8).padding(.vertical, 3)
+        .background(Capsule().fill(Color(hex: 0xE0912A).opacity(0.12)))
+        .overlay(Capsule().stroke(Color(hex: 0xE0912A).opacity(0.35)))
+    }
 }
 
 struct TypingIndicator: View {
@@ -635,6 +687,9 @@ struct ToolActivityView: View {
     let palette: OculusPalette
     /// compact = topbar pill (icon + short word); full = the working bar (icon + phrase + dots).
     var compact = false
+    /// The concrete thing being done right now (a command line, a file path) — appended to the full
+    /// bar so it reads "Running a command · npm test" instead of a contentless label. Ignored when compact.
+    var detail: String? = nil
     @State private var pulse = false
 
     var body: some View {
@@ -646,6 +701,12 @@ struct ToolActivityView: View {
                 .opacity(pulse ? 1 : 0.65)
             Text(compact ? t.short : t.label)
                 .font(.caption.weight(.medium)).foregroundStyle(palette.foreground).lineLimit(1)
+            if !compact, let d = detail?.trimmingCharacters(in: .whitespacesAndNewlines), !d.isEmpty {
+                Text("· \(d)")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(palette.mutedForeground)
+                    .lineLimit(1).truncationMode(.middle)
+            }
             if !compact { TypingDots(palette: palette) }
         }
         .padding(.horizontal, 8).padding(.vertical, 3)
@@ -931,28 +992,29 @@ struct InlineSubAgentCard: View {
     private var expanded: Bool { model.expandedChildIDs.contains(subAgentID) }
     private var msgs: [ChatMessage] { model.childMessages[subAgentID] ?? [] }
 
+    private func toggle() { withAnimation(.easeInOut(duration: 0.22)) { model.toggleChildExpanded(subAgentID) } }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button { model.toggleChildExpanded(subAgentID) } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                        .font(.caption2).foregroundStyle(palette.mutedForeground).frame(width: 10)
-                    Image(systemName: "person.2.fill").font(.caption2).foregroundStyle(palette.primary)
-                    Text(title).font(.caption.bold()).foregroundStyle(palette.foreground).lineLimit(1)
-                    if running {
-                        RunningPulseDot(color: .green, active: true)
-                        if let act = model.childActivity[subAgentID] {
-                            ToolActivityView(activity: act, palette: palette, compact: true)
-                        }
-                    } else {
-                        Text("done").font(.caption2).foregroundStyle(palette.mutedForeground)
+            HStack(spacing: 8) {
+                Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    .font(.caption2).foregroundStyle(palette.mutedForeground).frame(width: 10)
+                Image(systemName: "person.2.fill").font(.caption2).foregroundStyle(palette.primary)
+                Text(title).font(.caption.bold()).foregroundStyle(palette.foreground).lineLimit(1)
+                if running {
+                    RunningPulseDot(color: .green, active: true)
+                    if let act = model.childActivity[subAgentID] {
+                        ToolActivityView(activity: act, palette: palette, compact: true)
                     }
-                    Spacer()
-                    if !msgs.isEmpty { Text("\(msgs.count)").font(.caption2.monospacedDigit()).foregroundStyle(palette.mutedForeground) }
+                    if let started = model.subAgentStartedAt[subAgentID] {
+                        ElapsedLabel(since: started, palette: palette)
+                    }
+                } else {
+                    Text("done").font(.caption2).foregroundStyle(palette.mutedForeground)
                 }
-                .contentShape(Rectangle())
+                Spacer()
+                if !msgs.isEmpty { Text("\(msgs.count)").font(.caption2.monospacedDigit()).foregroundStyle(palette.mutedForeground) }
             }
-            .buttonStyle(.plain)
             if expanded {
                 Divider().overlay(palette.border.opacity(0.5)).padding(.vertical, 6)
                 if msgs.isEmpty {
@@ -971,7 +1033,7 @@ struct InlineSubAgentCard: View {
                 }
                 // A full-width "Collapse" footer so getting back to the base state is always one obvious
                 // tap, no matter how long the transcript is.
-                Button { model.toggleChildExpanded(subAgentID) } label: {
+                Button(action: toggle) {
                     Label("Collapse", systemImage: "chevron.up").font(.caption2)
                         .frame(maxWidth: .infinity).padding(.top, 6)
                         .foregroundStyle(palette.mutedForeground).contentShape(Rectangle())
@@ -982,6 +1044,11 @@ struct InlineSubAgentCard: View {
         .padding(.horizontal, 12).padding(.vertical, 9)
         .background(palette.secondary.opacity(0.3), in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.primary.opacity(running ? 0.4 : 0.2)))
+        // Tap anywhere on the card to expand/collapse. Nested tool cards + the Collapse button are their
+        // own tap targets, so tapping INSIDE a running tool toggles that tool — it doesn't fold the
+        // whole sub-agent (child taps win over this parent gesture, so inheritance is respected).
+        .contentShape(Rectangle())
+        .onTapGesture(perform: toggle)
     }
 }
 
@@ -1077,8 +1144,11 @@ struct SubAgentsStrip: View {
                 .help("Open as full session")
             }
             .contentShape(Rectangle())
-            .onTapGesture { model.toggleChildExpanded(child.id) }
-            if expanded { childTranscript(child) }
+            .onTapGesture { withAnimation(.easeInOut(duration: 0.22)) { model.toggleChildExpanded(child.id) } }
+            if expanded {
+                childTranscript(child)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
         .background(palette.background, in: RoundedRectangle(cornerRadius: 8))

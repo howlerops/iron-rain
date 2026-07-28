@@ -208,6 +208,15 @@ public final class Model: ObservableObject {
     /// instead of leaving it stuck — the exact failure on big multi-agent opencode turns that go
     /// quiet while children work, then come back.
     private var stalled = false
+    /// Wall-clock of the last live event (any parent OR sub-agent delta/tool/status). Bumped at the
+    /// single event choke point (`bumpWatchdog`). Drives the softer, earlier "stream may be stuck"
+    /// hint — distinct from the hard no-response watchdog — so a silently half-open socket (the app
+    /// thinks it's working, but no bytes are arriving) is visible WITHOUT restarting the app.
+    private var lastEventAt = Date()
+    /// True when we're busy but no event has arrived for a while — surfaced as a gentle, dismissable
+    /// "No updates — Reconnect" hint in the working bar. Flips back to false the instant activity
+    /// resumes (or on a manual resync).
+    @Published public var streamMaybeStalled = false
     /// While true, skip replayed transcript messages that duplicate ones already shown
     /// (set briefly around a live re-attach so reviving a session doesn't double the chat).
     private var dedupReplay = false
@@ -662,6 +671,10 @@ public final class Model: ObservableObject {
                 try? await Task.sleep(nanoseconds: 2_000_000_000) // check every 2s — granularity is negligible vs the 180s+ window
                 guard let self else { return }
                 if self.busy, Date() >= self.watchdogDeadline { self.watchdogFired() }
+                // Softer, earlier signal than the no-response watchdog: busy but no bytes for a while →
+                // hint the stream may be half-open so the user can Reconnect without restarting the app.
+                let stale = self.busy && Date().timeIntervalSince(self.lastEventAt) > self.streamStaleAfter
+                if stale != self.streamMaybeStalled { self.streamMaybeStalled = stale }
             }
         }
     }
@@ -670,15 +683,23 @@ public final class Model: ObservableObject {
     /// the window) still surfaces "no response". The window is roomy (180s), and far longer (600s)
     /// while a tool/sub-agent is active since an opencode `task` sub-agent can legitimately go quiet.
     private func bumpWatchdog() {
+        lastEventAt = Date()                 // a byte arrived → the stream is live
+        if streamMaybeStalled { streamMaybeStalled = false } // heal the soft "stuck" hint on any activity
         resumeIfStalled() // any live event means the agent is alive — heal a prior false alarm
         guard busy else { cancelWatchdog(); return }
         watchdogDeadline = Date().addingTimeInterval(activity != nil ? 600 : 180)
         startWatchdogLoop() // ensure the poll loop is running (no-op if it already is)
     }
 
+    /// How long to wait with ZERO events (parent or sub-agent) before hinting the stream may be stuck.
+    /// Roomy enough that a legitimately quiet tool (a long build) rarely trips it; short enough that a
+    /// dead half-open socket surfaces a Reconnect long before the 180s no-response watchdog.
+    private let streamStaleAfter: TimeInterval = 45
+
     private func cancelWatchdog() {
         watchdogDeadline = .distantFuture
         watchdogTask?.cancel(); watchdogTask = nil
+        if streamMaybeStalled { streamMaybeStalled = false } // turn ended → no stale hint
     }
 
     /// True while any sub-agent (opencode `task`) is still running under this session. The parent turn
@@ -1439,6 +1460,27 @@ public final class Model: ObservableObject {
     /// session so its tool calls + outputs stream live into `childMessages[id]` — without leaving the
     /// parent. The subscription + buffer are kept on collapse (cheap; avoids re-replay churn); collapse
     /// just hides the body.
+    /// The command/summary of the tool the agent is running RIGHT NOW (the last still-`running` tool
+    /// card), so the working bar can say "Running a command · npm test" instead of a contentless
+    /// "Running a command". Nil when nothing is mid-tool.
+    public var activityDetail: String? {
+        if let t = messages.last(where: { $0.role == .tool && $0.tool?.status == "running" })?.tool,
+           !t.title.isEmpty { return t.title }
+        return nil
+    }
+
+    /// Forces a fresh reconnect to the daemon — the manual escape from a half-open/stuck stream. Closing
+    /// the socket unwinds the receive loop into `scheduleReconnect`, whose `finishConnect` clears the
+    /// transcript and replays it from the daemon (which holds the true, current state) — the same
+    /// "restart the app and it catches up" recovery, without the restart.
+    public func forceResync() async {
+        streamMaybeStalled = false
+        status = "Reconnecting…"
+        connected = false            // so scheduleReconnect's guard doesn't bail
+        client?.close()              // receive loop throws → scheduleReconnect → replay rebuilds
+        scheduleReconnect()
+    }
+
     public func toggleChildExpanded(_ id: String) {
         if expandedChildIDs.contains(id) {
             expandedChildIDs.remove(id)
@@ -2244,6 +2286,8 @@ public final class Model: ObservableObject {
     /// Sub-agent lifecycle status by id ("started" | "done" | "error"), driving each inline card's
     /// live/finished chrome.
     @Published public var subAgentStatus: [String: String] = [:]
+    /// When each sub-agent started — drives its live "elapsed" readout so a long or stuck lane is visible.
+    @Published public var subAgentStartedAt: [String: Date] = [:]
     /// The session whose Code surface (file tree · editor · diff review) is open in the Sessions
     /// detail; nil = the chat transcript. Promoted to the model so the chat toolbar's "Code / Review"
     /// button and CodeSurface's own back button can both drive it (was a buried right-click only).
@@ -2260,6 +2304,7 @@ public final class Model: ObservableObject {
         subAgentStatus[sa.id] = sa.status
         switch sa.status {
         case "started":
+            if subAgentStartedAt[sa.id] == nil { subAgentStartedAt[sa.id] = Date() }
             if childMessages[sa.id] == nil { childMessages[sa.id] = [] }
             if !messages.contains(where: { $0.role == .subagent && $0.subAgentID == sa.id }) {
                 finalizeStreaming()
@@ -2284,7 +2329,8 @@ public final class Model: ObservableObject {
                      name: st.name.isEmpty ? (old?.name ?? "") : st.name,
                      title: (st.title?.isEmpty ?? true) ? (old?.title ?? "") : st.title!,
                      output: (st.output?.isEmpty ?? true) ? (old?.output ?? "") : st.output!,
-                     status: st.status.isEmpty ? (old?.status ?? "running") : st.status)
+                     status: st.status.isEmpty ? (old?.status ?? "running") : st.status,
+                     startedAt: old?.startedAt ?? Date()) // keep the original clock across merges
         }
         if st.sessionID == sessionID {
             bumpWatchdog()
@@ -2344,6 +2390,7 @@ public final class Model: ObservableObject {
         expandedChildIDs.removeAll()
         subscribedChildIDs.removeAll()
         subAgentStatus.removeAll()
+        subAgentStartedAt.removeAll()
         childStreamBuffers.removeAll()
         childFlushTask?.cancel(); childFlushTask = nil
     }

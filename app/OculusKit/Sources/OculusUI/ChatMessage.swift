@@ -56,7 +56,11 @@ public struct ToolCall: Equatable {
     public var title: String     // human command summary
     public var output: String    // result / error text
     public var status: String    // running | completed | error
-    public init(id: String, name: String, title: String, output: String, status: String) {
+    /// When the card was first observed — drives the live "elapsed" indicator so a long-running
+    /// (or stuck) tool is visible. Preserved across in-place merges so the clock doesn't reset.
+    public var startedAt: Date
+    public init(id: String, name: String, title: String, output: String, status: String, startedAt: Date = Date()) {
         self.id = id; self.name = name; self.title = title; self.output = output; self.status = status
+        self.startedAt = startedAt
     }
 }
