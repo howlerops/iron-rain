@@ -1745,6 +1745,19 @@ public final class Model: ObservableObject {
         }
     }
 
+    /// Removes a SPECIFIC session's worktree (git worktree remove + prune) and ends the session — the
+    /// all-sessions manager uses this to clean up an old worktree session that isn't the active one.
+    /// Mirrors stopSession's optimistic + auto-reopen cleanup so the row doesn't linger or reappear.
+    public func removeWorktree(_ id: String, force: Bool = true) async {
+        guard let client else { return }
+        sessions.removeAll { $0.id == id }
+        if sessionID == id { newSession() }
+        if defaults.string(forKey: lastSessionKey) == id { defaults.removeObject(forKey: lastSessionKey) }
+        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.worktreeRemove, payload: WorktreeRemove(sessionID: id, force: force)) {
+            try? await client.send(env)
+        }
+    }
+
     public func createPR(title: String, body: String? = nil) async {
         guard let client, let sid = sessionID else { return }
         if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.worktreePR, payload: WorktreePR(sessionID: sid, title: title, body: body)) {

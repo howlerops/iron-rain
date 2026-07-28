@@ -100,6 +100,7 @@ struct SessionSidebar: View {
     var onOpenAgents: (() -> Void)? = nil
     var onOpenAccounts: (() -> Void)? = nil
     var onOpenRemotes: (() -> Void)? = nil
+    var onManageSessions: (() -> Void)? = nil
     @AppStorage("oculus.appearance") private var appearance: Appearance = .system
     @AppStorage("oculus.chatFontDesign") private var chatFontDesign = ChatFontDesign.system.rawValue
     @AppStorage("oculus.chatFontScale") private var chatFontScale = ChatFontScale.standard.rawValue
@@ -351,6 +352,9 @@ struct SessionSidebar: View {
                 }
                 if let onOpenRemotes {
                     Button { onOpenRemotes() } label: { Label("Remote hosts…", systemImage: "server.rack") }
+                }
+                if let onManageSessions {
+                    Button { onManageSessions() } label: { Label("Manage sessions…", systemImage: "square.stack.3d.up") }
                 }
                 Picker(selection: $appearance) {
                     ForEach(Appearance.allCases) { a in

@@ -205,7 +205,7 @@ struct SoftwareUpdateModifier: ViewModifier {
 
 /// The one shared sheet slot for the Loops / Agents panels (kept to a single `.sheet` so they
 /// don't collide with the New Session sheet).
-private enum PanelSheet: Int, Identifiable { case loops, agents, accounts, remotes; var id: Int { rawValue } }
+private enum PanelSheet: Int, Identifiable { case loops, agents, accounts, remotes, sessions; var id: Int { rawValue } }
 
 public struct RootView: View {
     @ObservedObject var store: DesktopStore
@@ -289,6 +289,13 @@ public struct RootView: View {
                             AccountsView(model: model, palette: palette, onClose: { panel = nil })
                         case .remotes:
                             RemotesView(model: model, palette: palette, onClose: { panel = nil })
+                        case .sessions:
+                            AllSessionsView(model: model, palette: palette, onClose: { panel = nil },
+                                            onOpen: { sid in
+                                                panel = nil
+                                                Task { await model.openSession(sid) }
+                                                showSessionDetail = true
+                                            })
                         }
                     }
                     .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -425,7 +432,8 @@ public struct RootView: View {
                                onOpenLoops: { destination = .loops },
                                onOpenAgents: { panel = .agents },
                                onOpenAccounts: { panel = .accounts },
-                               onOpenRemotes: { panel = .remotes })
+                               onOpenRemotes: { panel = .remotes },
+                               onManageSessions: { panel = .sessions })
                     .navigationDestination(isPresented: $showSessionDetail) { ChatView(model: model) }
                     .toolbar {
                         ToolbarItem(placement: .topBarTrailing) {
@@ -589,7 +597,8 @@ public struct RootView: View {
                            onOpenLoops: { destination = .loops },
                            onOpenAgents: { panel = .agents },
                            onOpenAccounts: { panel = .accounts },
-                               onOpenRemotes: { panel = .remotes })
+                               onOpenRemotes: { panel = .remotes },
+                               onManageSessions: { panel = .sessions })
 
         case .loops:
             LoopsListColumn(model: model, palette: palette, selected: $selectedLoopID,
