@@ -681,8 +681,20 @@ public final class Model: ObservableObject {
         watchdogTask?.cancel(); watchdogTask = nil
     }
 
+    /// True while any sub-agent (opencode `task`) is still running under this session. The parent turn
+    /// is legitimately blocked on them, and their events stream under CHILD ids — so the parent must
+    /// never be declared "no response" while they work.
+    private var hasActiveSubAgents: Bool {
+        subAgentStatus.values.contains { $0 != "done" && $0 != "error" }
+    }
+
     private func watchdogFired() {
         guard busy else { return }
+        // Never cry "no response" while sub-agents are actively working — re-arm generously instead.
+        if hasActiveSubAgents {
+            watchdogDeadline = Date().addingTimeInterval(600)
+            return
+        }
         busy = false
         stalled = true // arm self-heal: if output resumes, we clear this alarm instead of staying stuck
         activity = nil
@@ -2529,9 +2541,10 @@ public final class Model: ObservableObject {
                         }
                         refreshLiveActivity()
                     } else if let ss = try? env.payload(as: SessionStatus.self), childMessages[ss.sessionID] != nil {
-                        // A subscribed sub-agent's status — drive its inline card's activity chip only,
-                        // never the main session's busy/activity. On idle/done/error, clear the chip and
-                        // seal any streaming output.
+                        // A sub-agent's status — drives its inline card's activity chip. It ALSO keeps the
+                        // parent watchdog alive: a long sub-agent "Reading" emits status, not deltas, so
+                        // without this the parent could falsely time out while the sub-agent works.
+                        bumpWatchdog()
                         switch ss.status {
                         case SessionStatusValue.idle, SessionStatusValue.done, SessionStatusValue.error, "errored":
                             childActivity[ss.sessionID] = nil
