@@ -29,6 +29,25 @@ public struct IronRainWordmark: View {
     }
 }
 
+/// Compact HORIZONTAL brand lockup (wolf mark + wordmark) for the top of the app's sidebar — the
+/// signature that identifies the window at a glance.
+public struct IronRainHeader: View {
+    private let markSize: CGFloat
+    private let wordSize: CGFloat
+    public init(markSize: CGFloat = 22, wordSize: CGFloat = 15) {
+        self.markSize = markSize; self.wordSize = wordSize
+    }
+    public var body: some View {
+        HStack(spacing: 8) {
+            Image("WolfMark").resizable().scaledToFit()
+                .frame(width: markSize, height: markSize)
+            IronRainWordmark(size: wordSize)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Iron Rain")
+    }
+}
+
 /// Logo + wordmark lockup for landing / empty / loading surfaces.
 public struct IronRainLockup: View {
     private let markSize: CGFloat

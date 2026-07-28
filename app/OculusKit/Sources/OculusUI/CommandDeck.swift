@@ -232,6 +232,33 @@ struct FleetStrip: View {
     }
 }
 
+/// A sticky search field for the sidebar's session/fleet list — pinned above the scrolling list (so
+/// it never scrolls away) with breathing room after the destination rail above it.
+struct DeckSearchBar: View {
+    @Binding var text: String
+    let palette: OculusPalette
+    var prompt: String = "Search sessions"
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(palette.mutedForeground)
+            TextField(prompt, text: $text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12.5))
+            if !text.isEmpty {
+                Button { text = "" } label: { Image(systemName: "xmark.circle.fill").font(.system(size: 11)) }
+                    .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
+            }
+        }
+        .padding(.horizontal, 9).padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 8).fill(palette.secondary.opacity(0.6))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(palette.border)))
+        .padding(.horizontal, 10)
+        .padding(.top, 10)   // breathing room after the destination rail (the "top section")
+        .padding(.bottom, 4)
+    }
+}
+
 /// A friendly placeholder for a destination whose primary surface lives in the other column.
 struct DestinationHint: View {
     let palette: OculusPalette

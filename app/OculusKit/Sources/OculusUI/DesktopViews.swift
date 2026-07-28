@@ -371,8 +371,18 @@ public struct RootView: View {
                 // destination below it — so every capability is a first-glance destination, nothing
                 // is a modal sheet or a "⋯" menu item.
                 VStack(spacing: 0) {
+                    // Brand signature at the very top of the app: wolf mark + IRON RAIN wordmark.
+                    HStack {
+                        IronRainHeader()
+                        Spacer()
+                    }
+                    .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 6)
                     DestinationRail(destination: $destination, model: model, palette: palette)
                     Divider().overlay(palette.border)
+                    // Sticky search above the session/fleet list (padded after the rail).
+                    if destination == .sessions || destination == .fleet {
+                        DeckSearchBar(text: $searchText, palette: palette)
+                    }
                     deckList(model)
                 }
                 .background(palette.background)
