@@ -233,6 +233,10 @@ public struct RootView: View {
     @State private var editingLoop = false          // Loops destination: detail shows the editor
     @State private var showPalette = false          // Cmd-K command palette
     @State private var showFanout = false           // Fan-out composer sheet
+    // Desktop (paired-Mac) switcher — hangs off the window title, Xcode-scheme-menu style.
+    @State private var showAddDesktop = false
+    @State private var renamingDesktop = false
+    @State private var desktopNewName = ""
     @State private var showDesign = false            // Design Mode (WebKit element picker) sheet
     @AppStorage("oculus.appearance") private var appearance: Appearance = .system
     #if os(macOS)
@@ -371,13 +375,8 @@ public struct RootView: View {
                 // destination below it — so every capability is a first-glance destination, nothing
                 // is a modal sheet or a "⋯" menu item.
                 VStack(spacing: 0) {
-                    // Brand signature at the very top of the app: wolf mark + IRON RAIN wordmark.
-                    HStack {
-                        IronRainHeader()
-                        Spacer()
-                    }
-                    .padding(.horizontal, 14).padding(.top, 12).padding(.bottom, 6)
                     DestinationRail(destination: $destination, model: model, palette: palette)
+                        .padding(.top, 4)
                     Divider().overlay(palette.border)
                     // Sticky search above the session/fleet list (padded after the rail).
                     if destination == .sessions || destination == .fleet {
@@ -387,6 +386,19 @@ public struct RootView: View {
                 }
                 .background(palette.background)
                 .navigationSplitViewColumnWidth(min: 250, ideal: 290, max: 360)
+                // The window title is the current PAGE (or the open session's name) — set at the deck
+                // level so it's consistent across every destination. The desktop (paired-Mac)
+                // switcher hangs off it as the title menu.
+                .navigationTitle(pageTitle(model))
+                .toolbarTitleMenu { deckDesktopMenu }
+                .sheet(isPresented: $showAddDesktop) {
+                    AddDesktopView(store: store, palette: palette) { showAddDesktop = false }
+                }
+                .alert("Rename desktop", isPresented: $renamingDesktop) {
+                    TextField("Name", text: $desktopNewName)
+                    Button("Save") { if let a = store.active { store.rename(a.id, to: desktopNewName) } }
+                    Button("Cancel", role: .cancel) {}
+                }
             } detail: {
                 deckDetail(model)
                     // Clamp the detail column to the window height (see original note): the split view
@@ -626,6 +638,31 @@ public struct RootView: View {
         .toolbarBackground(.visible, for: .windowToolbar)
         .onChange(of: model.currentSession?.id) { sid in
             if destination == .sessions && sid == nil { reviewSessionID = nil }
+        }
+    }
+
+    /// The window title: the open session's name while chatting in Sessions, else the destination.
+    private func pageTitle(_ model: Model) -> String {
+        if destination == .sessions, reviewSessionID == nil,
+           let s = model.currentSession {
+            return s.name ?? s.title ?? "Session"
+        }
+        return destination.title
+    }
+
+    /// Desktop (paired-Mac) switcher, shown as the window-title dropdown.
+    @ViewBuilder private var deckDesktopMenu: some View {
+        ForEach(store.models, id: \.id) { m in
+            Button { store.selectedID = m.id } label: {
+                Label(m.name.isEmpty ? "Desktop" : m.name,
+                      systemImage: m.id == store.selectedID ? "checkmark" : (m.connected ? "circle.fill" : "circle"))
+            }
+        }
+        Divider()
+        Button { showAddDesktop = true } label: { Label("Add desktop…", systemImage: "plus") }
+        if let a = store.active {
+            Button { desktopNewName = a.name; renamingDesktop = true } label: { Label("Rename…", systemImage: "pencil") }
+            Button(role: .destructive) { store.remove(a.id) } label: { Label("Remove desktop", systemImage: "trash") }
         }
     }
 

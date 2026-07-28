@@ -119,18 +119,9 @@ struct SessionSidebar: View {
             .safeAreaInset(edge: .bottom) { updateCard }
             #endif
             .tint(palette.primary)
-        // The desktop switcher hangs off the title as a `.toolbarTitleMenu` (the
-        // Xcode scheme-menu pattern). `.navigationTitle` is also what makes the
-        // NavigationSplitView reserve the titlebar top inset for this column.
-        .navigationTitle(desktopName)
-        #if os(macOS)
-        .toolbarTitleMenu { desktopSwitcherMenu }
-        // Search on macOS is the sticky DeckSearchBar in the deck layout (above this list), so it
-        // never scrolls away and sits with proper padding under the destination rail. iOS keeps the
-        // native pull-down search.
-        #else
-        .searchable(text: $searchText, prompt: "Search sessions")
-        #endif
+        // macOS: the window title + desktop switcher live on the DECK (RootView), showing the current
+        // PAGE consistently across destinations; search is the sticky DeckSearchBar. iOS keeps a
+        // per-tab title + native search (applied at the END of this chain — see below).
         .toolbar { sidebarToolbar }
         .sheet(isPresented: $showPairingQR) {
             PairingQRView(url: model.pairingURL ?? "", palette: palette) { showPairingQR = false }
@@ -159,6 +150,12 @@ struct SessionSidebar: View {
         } message: {
             Text("Give this session a name. Leave blank to reset to its default title.")
         }
+        // iOS-only: per-tab title + native pull-down search. On macOS these live on the deck.
+        // (A trailing #if is safe — nothing follows it in the chain.)
+        #if os(iOS)
+        .navigationTitle(desktopName)
+        .searchable(text: $searchText, prompt: "Search sessions")
+        #endif
     }
 
     /// The sidebar body — a plain session `List`, styled by the system as a sidebar. Search
