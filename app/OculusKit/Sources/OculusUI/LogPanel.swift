@@ -1,4 +1,5 @@
 import SwiftUI
+import OculusKit
 #if canImport(AppKit)
 import AppKit
 #endif
@@ -13,6 +14,10 @@ import UIKit
 struct DaemonLogPanel: View {
     @ObservedObject var model: Model
     let palette: OculusPalette
+    /// Tapping the always-on activity summary jumps to the Activity destination (nil = no-op).
+    var onOpenActivity: (() -> Void)? = nil
+
+    private var runningCount: Int { model.sessions.filter { $0.status == SessionStatusValue.running }.count }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -31,6 +36,33 @@ struct DaemonLogPanel: View {
     // The always-present strip (VS Code's bottom status bar): click to toggle the panel.
     private var statusStrip: some View {
         HStack(spacing: 8) {
+            // Always-on activity summary (the ticker): running / needs-you counts across all
+            // sessions. Tap to drill into the Activity destination. This is the ambient glance;
+            // Activity is the full inbox.
+            Button { onOpenActivity?() } label: {
+                HStack(spacing: 8) {
+                    if runningCount > 0 {
+                        HStack(spacing: 4) {
+                            Circle().fill(palette.primary).frame(width: 6, height: 6)
+                            Text("\(runningCount) running").font(.system(size: 11))
+                        }.foregroundStyle(palette.foreground)
+                    }
+                    if model.needsYouCount > 0 {
+                        HStack(spacing: 4) {
+                            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 9))
+                            Text("\(model.needsYouCount) need you").font(.system(size: 11, weight: .medium))
+                        }.foregroundStyle(Color(hex: 0xE0912A))
+                    }
+                    if runningCount == 0 && model.needsYouCount == 0 {
+                        Text("Idle").font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(onOpenActivity == nil)
+
+            Divider().frame(height: 12).overlay(palette.border)
+
             Button {
                 if model.showLogPanel { model.closeLogPanel() } else { model.openLogPanel() }
             } label: {

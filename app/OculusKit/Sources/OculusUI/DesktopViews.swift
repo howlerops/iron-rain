@@ -231,6 +231,7 @@ public struct RootView: View {
     @State private var reviewSessionID: String?
     @State private var selectedLoopID: String?     // Loops destination: which loop the detail edits (nil = new/templates)
     @State private var editingLoop = false          // Loops destination: detail shows the editor
+    @State private var showPalette = false          // Cmd-K command palette
     @AppStorage("oculus.appearance") private var appearance: Appearance = .system
     #if os(macOS)
     @StateObject private var launcher = DaemonLauncher()
@@ -281,7 +282,26 @@ public struct RootView: View {
                         }
                     }
                     .safeAreaInset(edge: .bottom, spacing: 0) {
-                        DaemonLogPanel(model: model, palette: palette)
+                        DaemonLogPanel(model: model, palette: palette, onOpenActivity: { destination = .activity })
+                    }
+                    // Cmd-K command palette: one fuzzy entry across destinations, sessions, loops,
+                    // agents, and actions. ⌘K on macOS; a search button in the sidebar on iOS.
+                    .background(
+                        Button("") { showPalette = true }
+                            .keyboardShortcut("k", modifiers: .command).opacity(0)
+                    )
+                    .overlay {
+                        if showPalette {
+                            ZStack {
+                                Color.black.opacity(0.35).ignoresSafeArea()
+                                    .onTapGesture { showPalette = false }
+                                CommandPalette(model: model, palette: palette,
+                                               items: paletteItems(model), onClose: { showPalette = false })
+                                    .padding(.top, 80)
+                                    .frame(maxHeight: .infinity, alignment: .top)
+                            }
+                            .transition(.opacity)
+                        }
                     }
             }
         }
@@ -369,6 +389,11 @@ public struct RootView: View {
                                onOpenLoops: { destination = .loops },
                                onOpenAgents: { panel = .agents })
                     .navigationDestination(isPresented: $showSessionDetail) { ChatView(model: model) }
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button { showPalette = true } label: { Image(systemName: "magnifyingglass") }
+                        }
+                    }
             }
             .onChange(of: selection) { handleSelection($0, model) }
             .onChange(of: model.currentSession?.id) { if $0 != nil { showSessionDetail = true } }
@@ -423,6 +448,61 @@ public struct RootView: View {
         showSessionDetail = true
     }
     #endif
+
+    /// Shared session-open used by the palette (both platforms): go to Sessions and open it.
+    private func openSessionNav(_ sid: String, _ model: Model) {
+        destination = .sessions
+        #if os(macOS)
+        reviewSessionID = nil
+        #endif
+        Task { await model.openSession(sid) }
+        showSessionDetail = true
+    }
+
+    /// Builds the Cmd-K index: destinations, live sessions, loops, agents, and quick actions.
+    private func paletteItems(_ model: Model) -> [PaletteItem] {
+        var out: [PaletteItem] = []
+        // Destinations
+        for d in Destination.allCases {
+            out.append(PaletteItem(id: "dest-\(d.rawValue)", kind: .destination, title: d.title,
+                                   subtitle: "Go to \(d.title)", symbol: d.symbol) { destination = d })
+        }
+        // Actions
+        out.append(PaletteItem(id: "act-new", kind: .action, title: "New session",
+                               subtitle: "Start an agent", symbol: "plus.circle") {
+            newSessionTakeOver = false; showNewSession = true
+        })
+        out.append(PaletteItem(id: "act-newloop", kind: .action, title: "New loop",
+                               subtitle: "Automate recurring work", symbol: "arrow.trianglehead.2.clockwise.rotate.90") {
+            destination = .loops; selectedLoopID = nil; editingLoop = true
+        })
+        if model.needsYouCount > 0 {
+            out.append(PaletteItem(id: "act-markread", kind: .action, title: "Mark all activity read",
+                                   subtitle: "\(model.needsYouCount) need you", symbol: "checkmark.circle") {
+                Task { await model.markActivityRead() }
+            })
+        }
+        // Sessions
+        for s in model.sessions {
+            let name = s.name ?? s.title ?? String(s.id.prefix(8))
+            out.append(PaletteItem(id: "ses-\(s.id)", kind: .session, title: name,
+                                   subtitle: [s.provider, s.branch].compactMap { $0 }.joined(separator: " · "),
+                                   symbol: "bubble.left") { openSessionNav(s.id, model) })
+        }
+        // Loops
+        for l in model.loops {
+            out.append(PaletteItem(id: "loop-\(l.id)", kind: .loop, title: l.name,
+                                   subtitle: l.provider, symbol: "arrow.trianglehead.2.clockwise.rotate.90") {
+                destination = .loops; selectedLoopID = l.id; editingLoop = false
+            })
+        }
+        // Agents
+        for a in model.agents {
+            out.append(PaletteItem(id: "agent-\(a.id)", kind: .agent, title: a.name,
+                                   subtitle: a.kind, symbol: "cpu") { panel = .agents })
+        }
+        return out
+    }
 
     #if os(macOS)
     /// The sidebar's contextual LIST column, per destination. Sessions & Fleet share the session
