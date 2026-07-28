@@ -2422,6 +2422,16 @@ public final class Model: ObservableObject {
                         if dedupReplay, messages.contains(where: { $0.role == role && $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed }) {
                             break
                         }
+                        // A full-text assistant message that arrives while an assistant message is still
+                        // streaming is the daemon's authoritative end-of-turn RESYNC (opencode's SSE
+                        // dropped mid-turn, so it re-sends the completed text) — REPLACE the partial
+                        // streamed message with it rather than appending a duplicate.
+                        if role == .assistant, let last = messages.last, last.role == .assistant, last.streaming {
+                            streamBuffer = ""; cancelFlush() // drop the partial; the resync text is authoritative
+                            messages[messages.count - 1].text = shown
+                            messages[messages.count - 1].streaming = false
+                            break
+                        }
                         finalizeStreaming()
                         messages.append(ChatMessage(role: role, text: shown))
                     } else if let m = try? env.payload(as: SessionMessage.self), childMessages[m.sessionID] != nil {

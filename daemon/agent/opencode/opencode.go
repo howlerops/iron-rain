@@ -256,6 +256,46 @@ func (s *session) replayHistory(ctx context.Context) {
 	}
 }
 
+// resyncLast fetches the session's LAST assistant message and emits its full text, so a turn whose
+// streaming deltas were missed (the SSE stream dropped/stalled while opencode kept working) still
+// shows its result. The app replaces the partial streamed message with this authoritative text.
+func (s *session) resyncLast(ctx context.Context) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.p.baseURL+withDir("/session/"+s.id+"/message", s.dir), nil)
+	if err != nil {
+		return
+	}
+	resp, err := s.p.unary.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	var msgs []struct {
+		Info  struct{ Role string } `json:"info"`
+		Parts []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"parts"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&msgs) != nil {
+		return
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Info.Role != "assistant" {
+			continue
+		}
+		var text string
+		for _, part := range msgs[i].Parts {
+			if part.Type == "text" {
+				text += part.Text
+			}
+		}
+		if text != "" {
+			s.emit(agent.Event{Type: protocol.TypeSessionMessage, Payload: protocol.SessionMessage{SessionID: s.id, Role: "assistant", Text: text}})
+		}
+		return
+	}
+}
+
 func (p *Provider) postJSON(ctx context.Context, path string, body, out any) error {
 	return p.doPost(ctx, path, body, out, p.unary)
 }
@@ -309,6 +349,9 @@ type session struct {
 	modelMu       sync.Mutex // guards the selected model (set from the hub, read in sendParts)
 	modelID       string
 	modelProvider string
+
+	statusMu   sync.Mutex // guards lastStatus (written by the SSE loop, read by the POST goroutine)
+	lastStatus string     // last session.status emitted — lets the POST-return idle backstop skip when awaiting approval
 
 	// populated in the (single) readEvents goroutine — no mutex needed.
 	msgRoles    map[string]string // messageID -> role (from message.updated)
@@ -696,6 +739,15 @@ func (s *session) handle(raw []byte) {
 }
 
 func (s *session) emit(ev agent.Event) {
+	// Track the last status so the POST-return idle backstop knows whether the turn actually
+	// completed vs. parked on an approval.
+	if ev.Type == protocol.TypeSessionStatus {
+		if ss, ok := ev.Payload.(protocol.SessionStatus); ok {
+			s.statusMu.Lock()
+			s.lastStatus = ss.Status
+			s.statusMu.Unlock()
+		}
+	}
 	select {
 	case s.events <- ev:
 	case <-s.done:
@@ -758,25 +810,41 @@ func (s *session) sendParts(parts []map[string]any) error {
 		ctx = context.Background()
 	}
 	go func() {
-		// The message POST blocks for the WHOLE turn, so a tight bound would spuriously fail long
-		// plan/multi-agent turns (that was the old 30s bug). But leaving it UNBOUNDED means a genuinely
-		// hung opencode turn sits silently forever — no log, no error, the app stuck "thinking". So:
-		// bound it generously (30 min — longer than any real single turn) and LOG start + outcome, so
-		// a hang both surfaces as an error the app can clear AND is visible in the log.
-		pctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+		// opencode's message POST blocks server-side for the WHOLE turn. We bound it only to prevent a
+		// leaked goroutine — NOT to bound the turn (huge migrations legitimately run for hours). The
+		// real progress + completion channel is the SSE stream; this POST is fire-and-forget.
+		pctx, cancel := context.WithTimeout(ctx, 3*time.Hour)
 		defer cancel()
 		start := time.Now()
 		log.Printf("opencode: POST message sid=%s (turn start)", s.id)
 		err := s.p.doPost(pctx, withDir("/session/"+s.id+"/message", s.dir), body, nil, s.p.http) // pctx bounds it
-		if err != nil && ctx.Err() == nil {
-			detail := err.Error()
-			if pctx.Err() == context.DeadlineExceeded {
-				detail = "the turn ran past 30 min with no result — it may be stuck; try again or interrupt"
-			}
-			log.Printf("opencode: POST message sid=%s FAILED after %s: %v", s.id, time.Since(start).Round(time.Second), err)
-			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusError, Detail: "opencode: " + detail}})
-		} else if err == nil {
+		if ctx.Err() != nil {
+			return // the session was closed/stopped — nothing to report
+		}
+		switch {
+		case err == nil:
 			log.Printf("opencode: POST message sid=%s turn returned after %s", s.id, time.Since(start).Round(time.Second))
+			// The POST returning cleanly is a RELIABLE end-of-turn signal. opencode's /event stream is
+			// live pub/sub with NO replay, so a mid-turn reconnect (network blip, opencode idle timeout,
+			// a long turn) can MISS the session.idle — leaving the app stuck "working" forever. Emit idle
+			// here as a backstop, UNLESS the turn parked on an approval (POST can return on a yield), in
+			// which case awaiting-approval must stand until it's answered.
+			s.statusMu.Lock()
+			parked := s.lastStatus == protocol.StatusAwaitingApproval
+			s.statusMu.Unlock()
+			if !parked {
+				s.resyncLast(ctx) // recover the turn's result if its streaming was missed, then seal it
+				s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusIdle}})
+			}
+		case pctx.Err() == context.DeadlineExceeded:
+			// Our local 3h leak-bound elapsed. opencode's turn may STILL be running server-side and the
+			// SSE stream keeps delivering it — so we do NOT declare an error (that used to falsely mark
+			// long migrations "stuck"). Just stop waiting on this POST; SSE / the client watchdog cover it.
+			log.Printf("opencode: POST message sid=%s stopped waiting after %s (turn continues on the server)", s.id, time.Since(start).Round(time.Second))
+		default:
+			// A real transport failure (opencode died / connection refused) — surface it.
+			log.Printf("opencode: POST message sid=%s FAILED after %s: %v", s.id, time.Since(start).Round(time.Second), err)
+			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusError, Detail: "opencode: " + err.Error()}})
 		}
 	}()
 	return nil
