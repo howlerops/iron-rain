@@ -16,10 +16,12 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/osctitle"
 	"github.com/howlerops/oculus/daemon/protocol"
+	"github.com/howlerops/oculus/daemon/ratelimit"
 )
 
 // Config describes one CLI agent. Args (and ResumeArgs) are templates: the tokens {prompt} and
@@ -106,6 +108,7 @@ type session struct {
 	done   chan struct{}
 
 	acctEnv map[string]string // active account's env overrides, snapshotted at create
+	ratedThisTurn bool        // a rate-limit was already surfaced this turn (dedupe)
 
 	mu        sync.Mutex
 	running   bool
@@ -182,6 +185,7 @@ func (s *session) startTurn(text string) {
 }
 
 func (s *session) runTurn(ctx context.Context, argv []string) {
+	s.ratedThisTurn = false // fresh turn: allow one rate-limit surfacing
 	s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusRunning, Detail: s.cfg.Name}})
 	defer func() {
 		s.mu.Lock()
@@ -224,12 +228,35 @@ func (s *session) stream(r io.Reader, titles *osctitle.Scanner) {
 			}
 			if txt := stripANSI(string(buf[:n])); txt != "" {
 				s.emit(agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: s.id, Text: txt}})
+				s.detectRateLimit(txt)
 			}
 		}
 		if err != nil {
 			return
 		}
 	}
+}
+
+// detectRateLimit scans agent output for a rate-limit condition (from the agent's own message) and
+// surfaces it ONCE per turn as a status event with a "retry in N" hint — so the app can show "rate
+// limited" and back off, on any provider, without account APIs.
+func (s *session) detectRateLimit(text string) {
+	if s.ratedThisTurn {
+		return
+	}
+	info := ratelimit.Parse(text)
+	if !info.Hit {
+		return
+	}
+	s.ratedThisTurn = true
+	detail := "Rate limited by the provider"
+	if info.RetryAfter > 0 {
+		detail += " — retry in " + info.RetryAfter.Round(time.Second).String()
+	} else if info.ResetHint != "" {
+		detail += " — resets at " + info.ResetHint
+	}
+	s.emit(agent.Event{Type: protocol.TypeSessionStatus,
+		Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusError, Detail: detail}})
 }
 
 // newTitleScanner returns an OSC-title scanner that emits a SessionStatus whenever the agent's

@@ -165,6 +165,43 @@ loop:
 	}
 }
 
+// TestSession_RateLimitSurfaces proves a rate-limit line in the agent's OWN output is detected and
+// surfaced as a status with a retry hint — the universal, account-API-free rate-limit signal.
+func TestSession_RateLimitSurfaces(t *testing.T) {
+	p := NewProvider(Config{Name: "rl", Command: "sh", Args: []string{"-c", "printf 'Error: 429 Too Many Requests — retry after 30s\\n'"}})
+	sess, err := p.Create(context.Background(), t.TempDir(), "go")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	var detail string
+	deadline := time.After(5 * time.Second)
+loop:
+	for {
+		select {
+		case ev, ok := <-sess.Events():
+			if !ok {
+				break loop
+			}
+			if e, ok := ev.Payload.(protocol.SessionStatus); ok {
+				if strings.Contains(e.Detail, "Rate limited") {
+					detail = e.Detail
+				}
+				if e.Status == protocol.StatusIdle {
+					sess.Close()
+				}
+			}
+		case <-deadline:
+			t.Fatal("timed out")
+		}
+	}
+	if detail == "" {
+		t.Fatal("rate-limit condition was not surfaced as a status")
+	}
+	if !strings.Contains(detail, "30s") {
+		t.Errorf("detail %q should carry the retry hint", detail)
+	}
+}
+
 func TestSession_RejectsUnknownCommand(t *testing.T) {
 	p := NewProvider(Config{Name: "nope", Command: "definitely-not-a-real-binary-xyz", Args: []string{"{prompt}"}})
 	if _, err := p.Create(context.Background(), t.TempDir(), "x"); err == nil {
