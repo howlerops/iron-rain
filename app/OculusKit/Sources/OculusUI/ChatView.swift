@@ -48,6 +48,7 @@ public struct ChatView: View {
         VStack(spacing: 0) {
             if isWorktreeSession { worktreeBanner }
             if isStopped { stoppedBanner }
+            FleetStrip(model: model, palette: palette) // whole-fleet awareness while chatting
             if !children.isEmpty { SubAgentsStrip(model: model, children: children, palette: palette) }
             if !model.todos.isEmpty { TodoBar(todos: model.todos, palette: palette) }
             if model.messages.isEmpty && model.sessionID == nil {

@@ -16,5 +16,6 @@ let package = Package(
             resources: [.process("Resources")]
         ),
         .testTarget(name: "OculusKitTests", dependencies: ["OculusKit"]),
+        .testTarget(name: "OculusUITests", dependencies: ["OculusUI", "OculusKit"]),
     ]
 )
