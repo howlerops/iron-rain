@@ -295,7 +295,8 @@ public struct ChatView: View {
                 VStack(alignment: .leading, spacing: 12) {
                     ForEach(model.messages) { msg in
                         MessageRow(message: msg, palette: palette,
-                                   onRetry: msg.delivery == .failed ? { Task { await model.retryFailedMessage() } } : nil)
+                                   onRetry: msg.delivery == .failed ? { Task { await model.retryFailedMessage() } } : nil,
+                                   onUIAction: { c, a in Task { await model.invokeUIAction(c, a) } })
                     }
                     Color.clear.frame(height: 1).id("bottom")
                 }
@@ -422,6 +423,9 @@ struct MessageRow: View {
     let message: ChatMessage
     let palette: OculusPalette
     var onRetry: (() -> Void)? = nil
+    /// Fired when the user activates a generative-UI component's action (choice/confirm). The
+    /// transcript wires this to Model.invokeUIAction.
+    var onUIAction: ((UIComponent, UIAction) -> Void)? = nil
     // Mirror ChatMarkdownView's type prefs so the whole transcript (user bubble, thinking, streaming
     // plain text) shares the chosen font, not just finalized assistant markdown.
     @AppStorage("oculus.chatFontDesign") private var fontDesignRaw = ChatFontDesign.system.rawValue
@@ -505,6 +509,10 @@ struct MessageRow: View {
         case .system:
             Text(message.text).font(.caption).foregroundStyle(palette.mutedForeground)
                 .frame(maxWidth: .infinity, alignment: .center)
+        case .ui:
+            if let c = message.component {
+                UIComponentView(component: c, palette: palette, onAction: { a in onUIAction?(c, a) })
+            }
         }
     }
 }

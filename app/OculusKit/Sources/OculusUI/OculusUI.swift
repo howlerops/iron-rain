@@ -2149,6 +2149,36 @@ public final class Model: ObservableObject {
         messages.append(ChatMessage(role: .tool, text: text))
     }
 
+    // MARK: generative UI
+
+    /// Folds an incoming generative-UI component into the transcript. A component with the same
+    /// stable `id` UPDATES in place (running skeleton → ready table); a new id appends a `.ui` row.
+    /// Any in-flight streaming assistant text is sealed first so the component lands after it.
+    private func applyUIComponent(_ c: UIComponent) {
+        if let idx = messages.firstIndex(where: { $0.role == .ui && $0.component?.id == c.id }) {
+            messages[idx].component = c
+        } else {
+            finalizeStreaming()
+            messages.append(ChatMessage(role: .ui, text: "", component: c))
+        }
+    }
+
+    /// The user activated a generative-UI action (choice/confirm). Sends ui.action to the daemon,
+    /// which maps it to the NEXT user turn (prompt/answer) or resolves an approval (permission) — the
+    /// component can never execute a tool directly. Optimistically echoes a prompt as a user message.
+    public func invokeUIAction(_ c: UIComponent, _ a: UIAction) async {
+        guard let client else { return }
+        let invoke = UIActionInvoke(sessionID: c.sessionID, messageID: c.messageID, componentID: c.id,
+                                    actionID: a.id, kind: a.kind, prompt: a.prompt)
+        if a.kind == "prompt", let p = a.prompt, !p.isEmpty {
+            messages.append(ChatMessage(role: .user, text: p, delivery: .sending))
+            busy = true
+        }
+        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.uiAction, payload: invoke) {
+            try? await client.send(env)
+        }
+    }
+
     // MARK: sub-agent (child) transcript buffers
 
     /// Resets all inline child-transcript state — called on parent-session switch so a new session
@@ -2393,6 +2423,10 @@ public final class Model: ObservableObject {
                 case MessageType.sessionTodos: // the agent's live to-do list (replaces the prior list)
                     if let t = try? env.payload(as: SessionTodos.self), t.sessionID == sessionID {
                         todos = t.todos
+                    }
+                case MessageType.uiComponent: // a normalized generative-UI component (projected or fenced)
+                    if let c = try? env.payload(as: UIComponent.self), c.sessionID == sessionID {
+                        applyUIComponent(c)
                     }
                 case MessageType.sessionHeartbeat: // supervision "on-track" state for a session
                     if let hb = try? env.payload(as: SessionHeartbeat.self) {
