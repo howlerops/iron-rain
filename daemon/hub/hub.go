@@ -926,6 +926,63 @@ func (h *Hub) detachSession(id string) {
 // with a compact prompt (subtask + a pointer to the parent's handoff/decision doc + an optional
 // file allowlist) instead of the parent transcript, so it starts with minimal context. It runs in
 // the parent's working directory and is linked back to the parent for grouping.
+// spawnFanout starts N agents on the SAME prompt, each in its own git worktree/branch, tagged with
+// one shared group id — the fan-out primitive: race several approaches, then compare and merge the
+// winner. Each variant is an ordinary worktree session (so it already streams status, diffs, and
+// finishes/PRs via the existing paths); the only new thing is the group tag. Returns the group id +
+// the spawned session ids. Partial success is allowed (some variants may fail to start).
+func (h *Hub) spawnFanout(ctx context.Context, req protocol.FanoutCreate) (protocol.FanoutResult, error) {
+	count := req.Count
+	if count < 2 {
+		count = 2
+	}
+	if count > 6 {
+		count = 6
+	}
+	if strings.TrimSpace(req.Prompt) == "" {
+		return protocol.FanoutResult{}, fmt.Errorf("fan-out needs a prompt")
+	}
+	group := randToken()
+	res := protocol.FanoutResult{Group: group}
+	var firstErr error
+	for i := 0; i < count; i++ {
+		create := protocol.SessionCreate{
+			Provider:      req.Provider,
+			ProjectID:     req.ProjectID,
+			ProjectIDs:    req.ProjectIDs,
+			Prompt:        req.Prompt,
+			Plan:          req.Plan,
+			Worktree:      true, // each variant is isolated on its own branch
+			WorkspaceName: fmt.Sprintf("fanout-%s-%d", group, i+1),
+		}
+		if i < len(req.Models) && req.Models[i] != "" {
+			create.Model = req.Models[i]
+		} else if len(req.Models) > 0 {
+			create.Model = req.Models[i%len(req.Models)] // cycle if fewer models than variants
+		}
+		meta := sessionMeta{fanoutGroup: group, fanoutVariant: i}
+		ms, err := h.startSession(ctx, create, meta, nil)
+		if err != nil {
+			log.Printf("fanout %s: variant %d FAILED to start: %v", group, i+1, err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		go ms.run()
+		res.SessionIDs = append(res.SessionIDs, ms.sess.ID())
+	}
+	if len(res.SessionIDs) == 0 {
+		return res, fmt.Errorf("fan-out: no variants started: %v", firstErr)
+	}
+	log.Printf("fanout %s: started %d/%d variants on prompt (%dB)", group, len(res.SessionIDs), count, len(req.Prompt))
+	h.recordActivity(activity.Event{
+		Kind: activity.KindLoopRun, Title: fmt.Sprintf("Fan-out: %d agents racing the same task", len(res.SessionIDs)),
+	})
+	h.broadcastSessionList()
+	return res, nil
+}
+
 func (h *Hub) spawnChild(ctx context.Context, req protocol.SessionChild) (*managedSession, error) {
 	parent := h.managed(req.ParentSessionID)
 	if parent == nil {
@@ -1424,6 +1481,7 @@ func (h *Hub) Serve(ctx context.Context, conn *transport.Conn) error {
 func asyncDispatch(typ string) bool {
 	switch typ {
 	case protocol.TypeSessionCreate, // worktree.Create + Bootstrap (setup hooks) + provider Create
+		protocol.TypeFanoutCreate,        // N× worktree.Create + provider Create (fan-out)
 		protocol.TypeIssueLaunch,         // same startSession path as create
 		protocol.TypeWorktreeDiff,        // git diff
 		protocol.TypeWorktreeRemove,      // provider Stop/Close + git remove/prune
@@ -1650,6 +1708,19 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, child.info())
 		child.subscribe(conn)
 		go child.run()
+
+	case protocol.TypeFanoutCreate:
+		var req protocol.FanoutCreate
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad fanout.create")
+			return
+		}
+		res, err := h.spawnFanout(ctx, req) // runs each variant internally
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, res)
 
 	case protocol.TypeSessionList:
 		h.mu.Lock()

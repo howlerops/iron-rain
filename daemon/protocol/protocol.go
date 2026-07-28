@@ -123,6 +123,7 @@ const (
 	TypeActivityList     = "activity.list"     // request → recent cross-session activity events (the feed backbone)
 	TypeActivityEvent    = "activity.event"    // event: one new activity item (finished/needs-you/error/loop)
 	TypeActivityMarkRead = "activity.markread" // mark activity items read (clears the needs-you badge)
+	TypeFanoutCreate     = "fanout.create"     // spawn N agents on the SAME prompt in isolated worktrees (compare + merge winner)
 
 	// responses
 	TypeOK    = "ok"
@@ -422,6 +423,26 @@ type ActivityList struct {
 // ActivityMarkRead marks items read; empty IDs = mark all read.
 type ActivityMarkRead struct {
 	IDs []string `json:"ids,omitempty"`
+}
+
+// FanoutCreate spawns N agents on the SAME prompt, each in its own git worktree/branch, as one
+// group — so you can compare their approaches and merge the winner (Orca's core primitive). When
+// Models is set, each variant uses the model at its index (cycling if fewer than Count); otherwise
+// all variants use the provider default. Count is clamped to [2, 6].
+type FanoutCreate struct {
+	Provider   string   `json:"provider"`
+	ProjectID  string   `json:"project_id,omitempty"`
+	ProjectIDs []string `json:"project_ids,omitempty"`
+	Prompt     string   `json:"prompt"`
+	Plan       bool     `json:"plan,omitempty"`
+	Count      int      `json:"count"`
+	Models     []string `json:"models,omitempty"`
+}
+
+// FanoutResult reports the spawned group.
+type FanoutResult struct {
+	Group      string   `json:"group"`
+	SessionIDs []string `json:"session_ids"`
 }
 
 // LogLine is one streamed daemon log line (event).
@@ -952,6 +973,10 @@ type Session struct {
 	// True when this worktree session's branch would conflict with the default branch (passive
 	// badge, computed by a periodic sweep) — so parallel agents on one repo don't silently collide.
 	Conflicted bool `json:"conflicted,omitempty"`
+	// Fan-out grouping: when this session is one of N agents racing the same prompt, FanoutGroup is
+	// the shared group id and FanoutVariant is its 0-based index (so the app groups + labels them).
+	FanoutGroup   string `json:"fanout_group,omitempty"`
+	FanoutVariant int    `json:"fanout_variant,omitempty"`
 }
 
 // SessionUsage is a usage update for one session (event). InputTokens/OutputTokens/CostUSD are

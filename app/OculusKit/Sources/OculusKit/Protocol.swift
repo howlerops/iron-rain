@@ -51,6 +51,7 @@ public enum MessageType {
     public static let activityList = "activity.list"
     public static let activityEvent = "activity.event"
     public static let activityMarkRead = "activity.markread"
+    public static let fanoutCreate = "fanout.create"
     public static let jiraSites = "jira.sites"
     public static let jiraSetSite = "jira.set_site"
     public static let worktreeCatchUp = "worktree.catch_up"
@@ -460,8 +461,12 @@ public struct Session: Codable, Identifiable {
     public var outputTokens: Int?
     public var costUSD: Double?
     public var conflicted: Bool? // worktree branch would conflict with the default branch
+    public var fanoutGroup: String?  // shared id when this is one of N agents racing the same prompt
+    public var fanoutVariant: Int?   // 0-based variant index within the fan-out group
     enum CodingKeys: String, CodingKey {
         case id, provider, status, title, name, cwd, branch, port, model, restartable, conflicted
+        case fanoutGroup = "fanout_group"
+        case fanoutVariant = "fanout_variant"
         case projectID = "project_id"
         case workspaceName = "workspace_name"
         case isWorkspace = "is_workspace"
@@ -977,6 +982,31 @@ public struct ActivityList: Codable {
 public struct ActivityMarkRead: Codable {
     public var ids: [String]?
     public init(ids: [String]? = nil) { self.ids = ids }
+}
+
+/// fanout.create — spawn N agents on the SAME prompt in isolated worktrees.
+public struct FanoutCreate: Codable {
+    public var provider: String
+    public var projectID: String?
+    public var projectIDs: [String]?
+    public var prompt: String
+    public var plan: Bool?
+    public var count: Int
+    public var models: [String]?
+    enum CodingKeys: String, CodingKey {
+        case provider; case projectID = "project_id"; case projectIDs = "project_ids"
+        case prompt; case plan; case count; case models
+    }
+    public init(provider: String, projectID: String? = nil, projectIDs: [String]? = nil, prompt: String, plan: Bool? = nil, count: Int, models: [String]? = nil) {
+        self.provider = provider; self.projectID = projectID; self.projectIDs = projectIDs
+        self.prompt = prompt; self.plan = plan; self.count = count; self.models = models
+    }
+}
+
+public struct FanoutResult: Codable {
+    public var group: String
+    public var sessionIDs: [String]
+    enum CodingKeys: String, CodingKey { case group; case sessionIDs = "session_ids" }
 }
 
 public struct IntegrationStatus: Codable {

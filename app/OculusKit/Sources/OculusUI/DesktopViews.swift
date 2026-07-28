@@ -232,6 +232,7 @@ public struct RootView: View {
     @State private var selectedLoopID: String?     // Loops destination: which loop the detail edits (nil = new/templates)
     @State private var editingLoop = false          // Loops destination: detail shows the editor
     @State private var showPalette = false          // Cmd-K command palette
+    @State private var showFanout = false           // Fan-out composer sheet
     @AppStorage("oculus.appearance") private var appearance: Appearance = .system
     #if os(macOS)
     @StateObject private var launcher = DaemonLauncher()
@@ -302,6 +303,9 @@ public struct RootView: View {
                             }
                             .transition(.opacity)
                         }
+                    }
+                    .sheet(isPresented: $showFanout) {
+                        FanoutSheet(model: model, palette: palette, onClose: { showFanout = false })
                     }
             }
         }
@@ -425,7 +429,7 @@ public struct RootView: View {
 
             // Fleet
             NavigationStack {
-                FleetView(model: model, palette: palette, onOpen: { sid in openMobile(sid, model) }, onClose: {})
+                FleetView(model: model, palette: palette, onOpen: { sid in openMobile(sid, model) }, onClose: {}, onFanout: { showFanout = true })
                     .navigationTitle("Fleet")
                     .navigationDestination(isPresented: $showSessionDetail) { ChatView(model: model) }
             }
@@ -475,6 +479,10 @@ public struct RootView: View {
         out.append(PaletteItem(id: "act-newloop", kind: .action, title: "New loop",
                                subtitle: "Automate recurring work", symbol: "arrow.trianglehead.2.clockwise.rotate.90") {
             destination = .loops; selectedLoopID = nil; editingLoop = true
+        })
+        out.append(PaletteItem(id: "act-fanout", kind: .action, title: "Fan out a task",
+                               subtitle: "Race N agents, merge the winner", symbol: "square.grid.2x2") {
+            showFanout = true
         })
         if model.needsYouCount > 0 {
             out.append(PaletteItem(id: "act-markread", kind: .action, title: "Mark all activity read",
@@ -548,7 +556,7 @@ public struct RootView: View {
                     ChatView(model: model)
                 }
             case .fleet:
-                FleetView(model: model, palette: palette, onOpen: { sid in openFromActivity(sid, model) }, onClose: {})
+                FleetView(model: model, palette: palette, onOpen: { sid in openFromActivity(sid, model) }, onClose: {}, onFanout: { showFanout = true })
             case .loops:
                 LoopDetail(model: model, palette: palette, loopID: selectedLoopID, editing: editingLoop,
                            onOpenSession: { sid in openFromActivity(sid, model) },

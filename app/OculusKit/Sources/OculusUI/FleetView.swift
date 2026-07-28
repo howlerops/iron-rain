@@ -8,6 +8,7 @@ struct FleetView: View {
     let palette: OculusPalette
     let onOpen: (String) -> Void
     let onClose: () -> Void
+    var onFanout: (() -> Void)? = nil // show a "Fan out" button (destination usage)
 
     private let columns = [GridItem(.adaptive(minimum: 220, maximum: 320), spacing: 12)]
 
@@ -31,7 +32,12 @@ struct FleetView: View {
                         .font(.caption2).foregroundStyle(palette.mutedForeground)
                 }
                 Spacer()
-                Button("Done", action: onClose).keyboardShortcut(.cancelAction)
+                if let onFanout {
+                    Button(action: onFanout) { Label("Fan out", systemImage: "square.grid.2x2") }
+                        .help("Race one task across several agents, then merge the winner")
+                } else {
+                    Button("Done", action: onClose).keyboardShortcut(.cancelAction)
+                }
             }
             .padding(.horizontal, 16).padding(.vertical, 12)
             Divider()

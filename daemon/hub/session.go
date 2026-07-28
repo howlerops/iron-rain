@@ -175,6 +175,11 @@ type sessionMeta struct {
 	// top-level sessions. Lets the app group children under their parent and label them.
 	parentID string
 	subtask  string
+
+	// Fan-out grouping: when this session is one of N racing the same prompt, fanoutGroup is the
+	// shared id and fanoutVariant its 0-based index.
+	fanoutGroup   string
+	fanoutVariant int
 }
 
 func newManagedSession(h *Hub, sess agent.Session, meta sessionMeta) *managedSession {
@@ -254,6 +259,8 @@ func (m *managedSession) info() protocol.Session {
 		OutputTokens:  outTok,
 		CostUSD:       cost,
 		Conflicted:    conflicted,
+		FanoutGroup:   m.meta.fanoutGroup,
+		FanoutVariant: m.meta.fanoutVariant,
 	}
 }
 
