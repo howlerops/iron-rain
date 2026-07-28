@@ -29,12 +29,20 @@ type Config struct {
 	Copy      []string `json:"copy"`      // gitignored paths/globs to copy from the repo root
 	PortRange []int    `json:"portRange"` // [lo, hi] — a free port is allocated + exported as OCULUS_PORT
 	SkipHooks bool     `json:"skipHooks"` // don't run the repo's shared git hooks in this worktree
+	// Link SHARES heavy dependency dirs (default: node_modules) by symlinking them from the repo root
+	// into the worktree instead of installing/copying a fresh copy per worktree — so N worktrees reuse
+	// ONE install. Explicit list wins; when empty, node_modules is auto-linked if it exists at the repo
+	// root (set NoAutoLink to opt out). A symlinked dep dir is present before Setup runs, so a `pnpm/npm
+	// install` there is a fast no-op/incremental instead of a full download.
+	Link       []string `json:"link"`
+	NoAutoLink bool     `json:"noAutoLink"`
 }
 
 // Result reports what Bootstrap did.
 type Result struct {
 	Port    int      `json:"port,omitempty"` // 0 = none allocated
 	Copied  []string `json:"copied,omitempty"`
+	Linked  []string `json:"linked,omitempty"` // dep dirs symlinked from the repo (shared, not reinstalled)
 	SetupOK bool     `json:"setup_ok"`
 }
 
@@ -78,6 +86,34 @@ func Bootstrap(ctx context.Context, repoRoot, worktreePath string, cfg Config, p
 			}
 			res.Copied = append(res.Copied, rel)
 		}
+	}
+
+	// Share heavy dependency dirs (node_modules, …) by SYMLINKING them from the repo root, so every
+	// worktree reuses ONE install instead of downloading a fresh node_modules each time. The link is
+	// in place before Setup, so a `pnpm/npm install` in the setup step becomes a fast incremental.
+	links := cfg.Link
+	if len(links) == 0 && !cfg.NoAutoLink {
+		if fi, err := os.Lstat(filepath.Join(repoRoot, "node_modules")); err == nil && fi.IsDir() {
+			links = []string{"node_modules"} // smart default: share the repo's node_modules
+		}
+	}
+	for _, rel := range links {
+		rel = filepath.Clean(rel)
+		src := filepath.Join(repoRoot, rel)
+		if _, err := os.Lstat(src); err != nil {
+			continue // the repo doesn't have this dir — nothing to share
+		}
+		dst := filepath.Join(worktreePath, rel)
+		if _, err := os.Lstat(dst); err == nil {
+			continue // worktree already has it (copied, tracked, or a prior link) — don't clobber
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return res, fmt.Errorf("link %s: %w", rel, err)
+		}
+		if err := os.Symlink(src, dst); err != nil {
+			return res, fmt.Errorf("link %s: %w", rel, err)
+		}
+		res.Linked = append(res.Linked, rel)
 	}
 
 	if cfg.SkipHooks {

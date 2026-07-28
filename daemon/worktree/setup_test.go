@@ -159,3 +159,57 @@ func itoa(i int) string {
 	}
 	return string(b[pos:])
 }
+
+func TestBootstrap_LinksNodeModulesByDefault(t *testing.T) {
+	repo := t.TempDir()
+	wt := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "node_modules", "left-pad"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "node_modules", "left-pad", "index.js"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Bootstrap(context.Background(), repo, wt, Config{}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Linked) != 1 || res.Linked[0] != "node_modules" {
+		t.Fatalf("expected node_modules auto-linked, got %v", res.Linked)
+	}
+	fi, err := os.Lstat(filepath.Join(wt, "node_modules"))
+	if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("worktree node_modules should be a symlink (err=%v mode=%v)", err, fi.Mode())
+	}
+	if _, err := os.Stat(filepath.Join(wt, "node_modules", "left-pad", "index.js")); err != nil {
+		t.Fatalf("shared package not reachable through the link: %v", err)
+	}
+}
+
+func TestBootstrap_NoAutoLinkOptOut(t *testing.T) {
+	repo := t.TempDir()
+	wt := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(repo, "node_modules"), 0o755)
+	res, err := Bootstrap(context.Background(), repo, wt, Config{NoAutoLink: true}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Linked) != 0 {
+		t.Fatalf("NoAutoLink should skip linking, got %v", res.Linked)
+	}
+	if _, err := os.Lstat(filepath.Join(wt, "node_modules")); err == nil {
+		t.Fatal("node_modules should NOT have been linked when NoAutoLink is set")
+	}
+}
+
+func TestBootstrap_ExplicitLinkList(t *testing.T) {
+	repo := t.TempDir()
+	wt := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(repo, ".venv", "bin"), 0o755)
+	res, err := Bootstrap(context.Background(), repo, wt, Config{Link: []string{".venv"}}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Linked) != 1 || res.Linked[0] != ".venv" {
+		t.Fatalf("expected .venv linked, got %v", res.Linked)
+	}
+}

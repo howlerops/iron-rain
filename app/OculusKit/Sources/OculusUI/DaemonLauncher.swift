@@ -54,12 +54,22 @@ public final class DaemonLauncher: ObservableObject {
         // restarts/reinstalls and already-paired clients stay authorized (a fresh random secret each
         // launch rotated it and broke the phone pairing).
         p.arguments = ["serve", "--addr", "0.0.0.0:6000"]
-        p.standardOutput = FileHandle.nullDevice
-        let errPipe = Pipe()
-        p.standardError = errPipe // capture "bind: address already in use" etc. if it exits instantly
+        // CRITICAL: send the daemon's stdout/stderr to a LOG FILE, not a pipe held by the app. A pipe
+        // dies with the app — when you quit Iron Rain, the pipe's read end closes and the daemon's next
+        // log write gets SIGPIPE and the daemon is KILLED (the "closing the app stops the daemon" bug).
+        // A file is the daemon's own fd, so it survives app quit; the daemon keeps running and the app
+        // reconnects to it on next launch. We still read the file's tail to detect an instant-exit error.
+        let logURL = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".oculus/oculusd.log")
+        try? FileManager.default.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if !FileManager.default.fileExists(atPath: logURL.path) {
+            FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        }
+        let logHandle = try? FileHandle(forWritingTo: logURL)
+        try? logHandle?.seekToEnd()
+        p.standardOutput = logHandle ?? FileHandle.nullDevice
+        p.standardError = logHandle ?? FileHandle.nullDevice
         p.terminationHandler = { [weak self] _ in
-            let err = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let err = Self.tail(of: logURL, maxBytes: 2000).trimmingCharacters(in: .whitespacesAndNewlines)
             Task { @MainActor in
                 self?.managed = false
                 if !err.isEmpty { self?.lastSpawnError = err }
@@ -121,6 +131,18 @@ public final class DaemonLauncher: ObservableObject {
         managed = false
         running = false
         status = "stopped"
+    }
+
+    /// Reads the last `maxBytes` of a file as UTF-8 (for surfacing a daemon's instant-exit error from
+    /// its log without loading the whole file).
+    private nonisolated static func tail(of url: URL, maxBytes: Int) -> String {
+        guard let h = try? FileHandle(forReadingFrom: url) else { return "" }
+        defer { try? h.close() }
+        let end = (try? h.seekToEnd()) ?? 0
+        let start = end > UInt64(maxBytes) ? end - UInt64(maxBytes) : 0
+        try? h.seek(toOffset: start)
+        let data = (try? h.readToEnd()) ?? Data()
+        return String(data: data, encoding: .utf8) ?? ""
     }
 
     private func findOculusd() -> String? {
