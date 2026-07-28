@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -87,26 +88,38 @@ func detectOrStartOpenCode(ctx context.Context) string {
 	dctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	if servers, _ := discovery.FindOpenCodeServers(dctx); len(servers) > 0 {
+		log.Printf("opencode: found a running server at %s", servers[0].URL)
 		return servers[0].URL
 	}
+	// No running server — start one from the binary. Every failure below is logged so the in-app
+	// Daemon Logs reveal why opencode "isn't detected" (the #1 report is the binary not on PATH).
 	bin, err := exec.LookPath("opencode")
 	if err != nil {
+		log.Printf("opencode: NOT found on PATH (looked in %s). Install it or add its dir to PATH; then Re-scan.", os.Getenv("PATH"))
 		return ""
 	}
+	log.Printf("opencode: no server running — starting %s serve …", bin)
 	port := freePort()
 	if port == 0 {
+		log.Printf("opencode: couldn't allocate a local port")
 		return ""
 	}
+	// Capture stderr so a start failure has a reason in the log (was io.Discard → silent).
+	var errBuf bytes.Buffer
 	cmd := exec.Command(bin, "serve", "--hostname", "127.0.0.1", "--port", strconv.Itoa(port))
-	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
+	cmd.Stdout = io.Discard
+	cmd.Stderr = &errBuf
 	if err := cmd.Start(); err != nil {
+		log.Printf("opencode: failed to start %s: %v", bin, err)
 		return ""
 	}
 	url := fmt.Sprintf("http://127.0.0.1:%d", port)
 	if !waitOpenCodeReady(url, 12*time.Second) {
 		_ = cmd.Process.Kill()
+		log.Printf("opencode: started %s but it wasn't ready on %s within 12s: %s", bin, url, strings.TrimSpace(errBuf.String()))
 		return ""
 	}
+	log.Printf("opencode: started at %s", url)
 	return url
 }
 
@@ -140,9 +153,11 @@ func freePort() int {
 // TTY prompt. Returns the sidecar.mjs path, or "" if unavailable/declined.
 func detectOrSetupClaudeSidecar(mode setupMode) string {
 	if _, err := exec.LookPath("claude"); err != nil {
+		log.Printf("claude-code: `claude` NOT found on PATH — install the Claude CLI, then Re-scan.")
 		return ""
 	}
 	if _, err := exec.LookPath("node"); err != nil {
+		log.Printf("claude-code: `node` NOT found on PATH — the sidecar needs Node; install it, then Re-scan.")
 		return ""
 	}
 	// Already installed somewhere? Use it — but refresh it first so an UPGRADED daemon actually

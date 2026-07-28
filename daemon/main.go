@@ -600,6 +600,8 @@ func augmentPATH() {
 		filepath.Join(home, ".local", "bin"), filepath.Join(home, "go", "bin"),
 		filepath.Join(home, ".bun", "bin"), filepath.Join(home, ".deno", "bin"),
 		filepath.Join(home, ".cargo", "bin"),
+		filepath.Join(home, ".opencode", "bin"), // opencode's own installer dir
+		filepath.Join(home, ".npm-global", "bin"), filepath.Join(home, "node_modules", ".bin"),
 	} {
 		add(d)
 	}
