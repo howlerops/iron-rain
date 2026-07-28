@@ -150,3 +150,20 @@ func TestDefaultSchemaAndFallback(t *testing.T) {
 		t.Fatalf("status should be ready, got %q", cs[0].Status)
 	}
 }
+
+func TestStripGuideRoundTrip(t *testing.T) {
+	pre := Preamble()
+	user := "please summarize the failing tests"
+	combined := pre + user
+	if got := StripGuide(combined); got != user {
+		t.Fatalf("StripGuide did not recover the user text: %q", got)
+	}
+	// No guide → unchanged.
+	if got := StripGuide(user); got != user {
+		t.Fatalf("StripGuide altered guide-free text: %q", got)
+	}
+	// The preamble must actually be wrapped in the sentinels the app strips.
+	if !strings.Contains(pre, GuideOpen) || !strings.Contains(pre, GuideClose) {
+		t.Fatal("preamble missing sentinels")
+	}
+}

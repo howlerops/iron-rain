@@ -2151,6 +2151,22 @@ public final class Model: ObservableObject {
 
     // MARK: generative UI
 
+    /// The sentinels the daemon wraps the injected iron:ui guide in (see genui.Preamble). Kept in sync
+    /// with the Go side.
+    private static let uiGuideOpen = "⟦iron:ui-guide⟧"
+    private static let uiGuideClose = "⟦/iron:ui-guide⟧"
+
+    /// Removes the injected generative-UI guide from a message so it never shows in the transcript.
+    /// The guide is prepended to a session's first user turn; a provider that replays history echoes
+    /// it back, so we strip it on display. Safe on text without a guide.
+    static func stripUIGuide(_ s: String) -> String {
+        guard let start = s.range(of: uiGuideOpen), let end = s.range(of: uiGuideClose) else { return s }
+        guard start.lowerBound < end.upperBound else { return s }
+        var rest = String(s[end.upperBound...])
+        while let f = rest.first, f == "\n" || f == "\r" || f == " " || f == "\t" { rest.removeFirst() }
+        return String(s[..<start.lowerBound]) + rest
+    }
+
     /// Folds an incoming generative-UI component into the transcript. A component with the same
     /// stable `id` UPDATES in place (running skeleton → ready table); a new id appends a `.ui` row.
     /// Any in-flight streaming assistant text is sealed first so the component lands after it.
@@ -2280,7 +2296,8 @@ public final class Model: ObservableObject {
                     if let m = try? env.payload(as: SessionMessage.self), m.sessionID == sessionID {
                         bumpWatchdog()
                         let role: ChatMessage.Role = m.role == "user" ? .user : (m.role == "tool" ? .tool : .assistant)
-                        let trimmed = m.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let shown = Self.stripUIGuide(m.text) // hide the injected iron:ui guide from turn 1
+                        let trimmed = shown.trimmingCharacters(in: .whitespacesAndNewlines)
                         // Skip the echo of our own just-sent user turn (appended locally for instant feedback).
                         if role == .user, let last = messages.last, last.role == .user,
                            last.text.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed {
@@ -2292,14 +2309,14 @@ public final class Model: ObservableObject {
                             break
                         }
                         finalizeStreaming()
-                        messages.append(ChatMessage(role: role, text: m.text))
+                        messages.append(ChatMessage(role: role, text: shown))
                     } else if let m = try? env.payload(as: SessionMessage.self), childMessages[m.sessionID] != nil {
                         // A subscribed sub-agent's message — route into its own buffer, never the main
                         // transcript. Tool calls arrive as role=="tool" with Text=the tool name; keep
                         // them — they ARE the child's tool-call list.
                         let role: ChatMessage.Role = m.role == "user" ? .user : (m.role == "tool" ? .tool : .assistant)
                         finalizeChildStreaming(m.sessionID)
-                        childMessages[m.sessionID, default: []].append(ChatMessage(role: role, text: m.text))
+                        childMessages[m.sessionID, default: []].append(ChatMessage(role: role, text: Self.stripUIGuide(m.text)))
                     }
                 case MessageType.thinking:
                     if let t = try? env.payload(as: Thinking.self), t.sessionID == sessionID {

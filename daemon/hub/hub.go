@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/howlerops/oculus/daemon/agent"
+	"github.com/howlerops/oculus/daemon/genui"
 	"github.com/howlerops/oculus/daemon/agent/cli"
 	"github.com/howlerops/oculus/daemon/fsaccess"
 	"github.com/howlerops/oculus/daemon/accounts"
@@ -283,11 +284,14 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 	if len(req.Images) > 0 {
 		createPrompt = ""
 	}
-	// If this session is created WITH a first prompt (issue launch, loops, etc.), fold the workspace
-	// note in now and don't repeat it on later turns; otherwise it rides the first user send below.
-	if multiRepoNote != "" && createPrompt != "" {
-		createPrompt = multiRepoNote + createPrompt
-		multiRepoNote = ""
+	// One-shot prefix folded into the session's FIRST user turn only: the generative-UI guide (teaches
+	// every harness the ```iron:ui``` grammar — see genui.Preamble; the app hides it) plus any
+	// workspace note. If the session is created WITH a first prompt (issue launch, loops, etc.) it
+	// rides that; otherwise it rides the first user send below (via pendingContext).
+	firstTurnPrefix := genui.Preamble() + multiRepoNote
+	if firstTurnPrefix != "" && createPrompt != "" {
+		createPrompt = firstTurnPrefix + createPrompt
+		firstTurnPrefix = ""
 	}
 	log.Printf("session.create: starting %s in %s (plan=%v)…", req.Provider, cwd, req.Plan)
 	emit("provider", "Starting "+req.Provider+"…", 0, 0)
@@ -310,9 +314,9 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 	log.Printf("session.create: %s session %s started in %s", req.Provider, sess.ID(), time.Since(pc0).Round(time.Millisecond))
 	if len(req.Images) > 0 {
 		text := req.Prompt
-		if multiRepoNote != "" {
-			text = multiRepoNote + text
-			multiRepoNote = ""
+		if firstTurnPrefix != "" {
+			text = firstTurnPrefix + text
+			firstTurnPrefix = ""
 		}
 		_ = promptSession(ctx, sess, text, req.Images)
 	}
@@ -326,7 +330,7 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 	if req.Model != "" {
 		ms.model, ms.modelProvider = req.Model, req.ModelProvider
 	}
-	ms.pendingContext = multiRepoNote
+	ms.pendingContext = firstTurnPrefix
 	ms.mu.Unlock()
 	emit("ready", "Session ready", 0, 0)
 	log.Printf("session.create: DONE — session %s ready in %s", sess.ID(), time.Since(t0).Round(time.Millisecond))
