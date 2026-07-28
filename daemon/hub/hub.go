@@ -1085,6 +1085,46 @@ func (h *Hub) spawnFanout(ctx context.Context, req protocol.FanoutCreate) (proto
 	return res, nil
 }
 
+// spawnRemote starts an agent session ON a remote host over SSH. It reuses the generic CLI provider
+// with Command="ssh": the remote invocation is `cd <path> && <agentCommand> {prompt}`, so the remote
+// agent's stdout streams back through the normal session machinery (OSC status, etc.). The remote
+// box must have the agent installed and key-based ssh set up (BatchMode).
+func (h *Hub) spawnRemote(ctx context.Context, req protocol.RemoteRun) (*managedSession, error) {
+	h.mu.Lock()
+	reg := h.remotes
+	runner := h.sshRunner
+	h.mu.Unlock()
+	if reg == nil || runner == nil {
+		return nil, fmt.Errorf("remotes unavailable")
+	}
+	hst, ok := reg.Get(req.HostID)
+	if !ok {
+		return nil, fmt.Errorf("no such remote host")
+	}
+	if strings.TrimSpace(req.AgentCommand) == "" {
+		return nil, fmt.Errorf("remote run needs an agent command")
+	}
+	// Build: ssh <opts> <target> "cd '<path>' && <agentCommand> {prompt}". The CLI provider
+	// substitutes {prompt} into the final arg per turn.
+	remoteCmd := req.AgentCommand + " {prompt}"
+	if hst.RemotePath != "" {
+		remoteCmd = "cd '" + strings.ReplaceAll(hst.RemotePath, "'", `'\''`) + "' && " + remoteCmd
+	}
+	args := append([]string{}, runner.SSHOptions...)
+	args = append(args, hst.SSHTarget, remoteCmd)
+	prov := cli.NewProvider(cli.Config{Name: "ssh:" + hst.Name, Command: "ssh", Args: args})
+
+	sess, err := prov.Create(ctx, "", req.Prompt)
+	if err != nil {
+		return nil, fmt.Errorf("remote run: %v", err)
+	}
+	m := h.addSession(sess, sessionMeta{label: "remote: " + hst.Name, cwd: hst.RemotePath})
+	log.Printf("remote.run: started agent %q on %s (%s)", req.AgentCommand, hst.Name, hst.SSHTarget)
+	h.recordActivity(activity.Event{Kind: activity.KindStarted, SessionID: sess.ID(),
+		Title: "Remote agent started on " + hst.Name})
+	return m, nil
+}
+
 func (h *Hub) spawnChild(ctx context.Context, req protocol.SessionChild) (*managedSession, error) {
 	parent := h.managed(req.ParentSessionID)
 	if parent == nil {
@@ -1589,6 +1629,7 @@ func asyncDispatch(typ string) bool {
 		protocol.TypeRemoteList,          // ssh probe per host (network)
 		protocol.TypeRemoteUpsert,        // ssh probe (network)
 		protocol.TypeRemoteStatus,        // ssh git status/diff (network)
+		protocol.TypeRemoteRun,           // ssh agent session start (network)
 		protocol.TypeIssueLaunch,         // same startSession path as create
 		protocol.TypeWorktreeDiff,        // git diff
 		protocol.TypeWorktreeRemove,      // provider Stop/Close + git remove/prune
@@ -1969,6 +2010,18 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			res.Diff, _ = runner.GitDiff(ctx, hst)
 		}
 		h.sendOK(conn, env.ID, res)
+
+	case protocol.TypeRemoteRun:
+		var req protocol.RemoteRun
+		_ = env.Unmarshal(&req)
+		m, err := h.spawnRemote(ctx, req)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, m.info())
+		m.subscribe(conn)
+		go m.run()
 
 	case protocol.TypeSessionList:
 		h.mu.Lock()

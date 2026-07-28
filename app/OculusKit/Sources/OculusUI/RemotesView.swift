@@ -12,6 +12,7 @@ struct RemotesView: View {
     @State private var showAdd = false
     @State private var status: [String: RemoteStatus] = [:]
     @State private var loading: Set<String> = []
+    @State private var runHost: RemoteHost?   // host we're composing a remote agent run for
 
     var body: some View {
         VStack(spacing: 0) {
@@ -43,6 +44,9 @@ struct RemotesView: View {
         .sheet(isPresented: $showAdd) {
             AddRemoteSheet(model: model, palette: palette) { showAdd = false }
         }
+        .sheet(item: $runHost) { host in
+            RemoteRunSheet(model: model, palette: palette, host: host) { onClose(); runHost = nil }
+        }
     }
 
     private func hostCard(_ host: RemoteHost) -> some View {
@@ -67,6 +71,9 @@ struct RemotesView: View {
                     else { Label("Check worktree", systemImage: "arrow.clockwise") }
                 }
                 .buttonStyle(.bordered).controlSize(.small)
+                Button { runHost = host } label: { Label("Run agent here", systemImage: "play.circle") }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .disabled(host.reachable != true)
             }
             if let st = status[host.id] {
                 if let err = st.error, !err.isEmpty {
@@ -84,6 +91,48 @@ struct RemotesView: View {
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 10).fill(palette.secondary.opacity(0.4))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.border)))
+    }
+}
+
+/// Compose a remote agent run: the agent command to run on the box + the first prompt.
+struct RemoteRunSheet: View {
+    @ObservedObject var model: Model
+    let palette: OculusPalette
+    let host: RemoteHost
+    var onDone: () -> Void
+
+    @State private var command = "opencode run"
+    @State private var prompt = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Run agent on \(host.name)").font(.headline)
+                Spacer()
+                Button("Cancel") { onDone() }.keyboardShortcut(.cancelAction)
+            }
+            Text("Runs `\(command)` in \(host.remotePath) over SSH and streams it back. The agent must be installed on the remote.")
+                .font(.caption).foregroundStyle(palette.mutedForeground)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("AGENT COMMAND").font(.system(size: 10, weight: .semibold)).foregroundStyle(palette.mutedForeground)
+                TextField("opencode run / claude -p / codex exec", text: $command).textFieldStyle(.roundedBorder)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("TASK").font(.system(size: 10, weight: .semibold)).foregroundStyle(palette.mutedForeground)
+                TextEditor(text: $prompt).frame(height: 80)
+                    .padding(6).background(RoundedRectangle(cornerRadius: 8).fill(palette.secondary.opacity(0.5)))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(palette.border))
+            }
+            HStack {
+                Spacer()
+                Button {
+                    Task { await model.remoteRun(hostID: host.id, agentCommand: command, prompt: prompt); onDone() }
+                } label: { Label("Run remotely", systemImage: "play.circle") }
+                .buttonStyle(.borderedProminent).tint(palette.primary)
+                .disabled(command.trimmingCharacters(in: .whitespaces).isEmpty || prompt.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(20).frame(width: 480).background(palette.background)
     }
 }
 

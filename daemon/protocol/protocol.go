@@ -135,6 +135,7 @@ const (
 	TypeRemoteUpsert     = "remote.upsert"     // add/update a remote host (probes it)
 	TypeRemoteDelete     = "remote.delete"     // remove a remote host
 	TypeRemoteStatus     = "remote.status"     // git status/diff of a remote worktree over SSH
+	TypeRemoteRun        = "remote.run"        // start an agent SESSION on a remote host over SSH (streams output)
 
 	// responses
 	TypeOK    = "ok"
@@ -540,6 +541,15 @@ type RemoteStatus struct {
 	Status string `json:"status"` // porcelain
 	Diff   string `json:"diff"`
 	Error  string `json:"error,omitempty"`
+}
+
+// RemoteRun starts an agent session ON a remote host over SSH: `ssh <target> "cd <path> && <cmd>"`.
+// AgentCommand is the agent invocation to run remotely (e.g. "opencode run" or "claude -p"); the
+// prompt is appended. The resulting session streams the remote agent's output like any other.
+type RemoteRun struct {
+	HostID       string `json:"host_id"`
+	AgentCommand string `json:"agent_command"`
+	Prompt       string `json:"prompt,omitempty"`
 }
 
 // LogLine is one streamed daemon log line (event).

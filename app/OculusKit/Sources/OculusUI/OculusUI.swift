@@ -1461,6 +1461,16 @@ public final class Model: ObservableObject {
         guard client != nil else { return nil }
         return try? await request(MessageType.remoteStatus, payload: RemoteRef(id: id)).payload(as: RemoteStatus.self)
     }
+    /// Starts an agent session ON a remote host over SSH and opens it.
+    public func remoteRun(hostID: String, agentCommand: String, prompt: String) async {
+        guard client != nil else { return }
+        do {
+            let env = try await request(MessageType.remoteRun, payload: RemoteRun(hostID: hostID, agentCommand: agentCommand, prompt: prompt))
+            let s = try env.payload(as: Session.self)
+            await loadSessions()
+            await openSession(s.id)
+        } catch { setError("Couldn’t start remote agent", error.localizedDescription) }
+    }
 
     /// Saves a checkpoint of the current session's worktree (a rollback point on the timeline).
     public func saveCheckpoint(label: String = "") async {

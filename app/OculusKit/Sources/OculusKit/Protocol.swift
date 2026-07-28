@@ -63,6 +63,7 @@ public enum MessageType {
     public static let remoteUpsert = "remote.upsert"
     public static let remoteDelete = "remote.delete"
     public static let remoteStatus = "remote.status"
+    public static let remoteRun = "remote.run"
     public static let jiraSites = "jira.sites"
     public static let jiraSetSite = "jira.set_site"
     public static let worktreeCatchUp = "worktree.catch_up"
@@ -1101,6 +1102,15 @@ public struct RemoteStatus: Codable {
     public var status: String
     public var diff: String
     public var error: String?
+}
+public struct RemoteRun: Codable {
+    public var hostID: String
+    public var agentCommand: String
+    public var prompt: String?
+    enum CodingKeys: String, CodingKey { case hostID = "host_id"; case agentCommand = "agent_command"; case prompt }
+    public init(hostID: String, agentCommand: String, prompt: String? = nil) {
+        self.hostID = hostID; self.agentCommand = agentCommand; self.prompt = prompt
+    }
 }
 
 public struct IntegrationStatus: Codable {
