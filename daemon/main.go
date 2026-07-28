@@ -204,6 +204,14 @@ func serve(args []string) error {
 	if len(providers) == 0 {
 		fmt.Fprintln(os.Stderr, "  warning: no coding-agent providers detected (install opencode, claude-code, or pi and re-run) — serving anyway")
 	}
+	// Let the app trigger a rescan (provider.refresh) without a restart — re-detects harnesses on
+	// PATH. setupOff so a rescan never blocks on an interactive sidecar install. The PATH is logged
+	// so the in-app Daemon Logs reveal a PATH problem when a harness "isn't detected" on some Mac.
+	h.SetRedetect(func() {
+		log.Printf("provider.refresh: scanning with PATH=%s", os.Getenv("PATH"))
+		found := enableProviders(context.Background(), h, *opencodeURL, *claudeSidecar, *piBin, setupOff)
+		log.Printf("provider.refresh: detected %d provider(s): %v", len(found), found)
+	})
 	// Multi-account credentials: hot-swap which login/key new sessions use. Wired AFTER providers
 	// register so the CLI agents resolve the active account's env at each spawn.
 	h.SetAccounts(accounts.Load(accountsPath()))

@@ -746,6 +746,22 @@ func (s *session) Stop(ctx context.Context) error {
 	return s.p.postJSON(ctx, withDir("/session/"+s.id+"/abort", s.dir), map[string]any{}, nil)
 }
 
+// Delete permanently removes the session from the opencode server (DELETE /session/:id), so a
+// user-initiated delete truly deletes it — otherwise the session lingers server-side and reappears
+// when the app re-attaches on reconnect or rediscovers it. Implements agent.Deleter.
+func (s *session) Delete(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, s.p.baseURL+withDir("/session/"+s.id, s.dir), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := s.p.unary.Do(req)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
+}
+
 // withDir appends opencode's ?directory= query param (which scopes a call to a project
 // folder / worktree) when dir is non-empty; empty dir → the server's default directory.
 func withDir(path, dir string) string {

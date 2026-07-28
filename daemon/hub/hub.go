@@ -68,6 +68,7 @@ type Hub struct {
 	accounts      *accounts.Registry             // optional: multi-account credentials + active selection per provider
 	remotes       *sshremote.Registry            // optional: registered SSH remote hosts (remote worktrees)
 	sshRunner     *sshremote.Runner              // optional: executes git/agent ops on remotes over SSH
+	redetect      func()                         // optional: re-run agent-harness detection (provider.refresh)
 	loopEngine    *loops.Engine                  // optional: recurring autonomous ticket workflows
 	agentsPath    string                         // path to ~/.oculus/agents.json (custom CLI agents)
 	agentHidePath string                         // path to ~/.oculus/agent-visibility.json (hidden names)
@@ -560,6 +561,14 @@ func (h *Hub) SetAccounts(r *accounts.Registry) {
 			s.SetAccountEnv(func() map[string]string { return r.EnvFor(n) })
 		}
 	}
+}
+
+// SetRedetect installs the callback that re-runs agent-harness detection (opencode/claude-code/pi +
+// CLI agents on PATH), so a client can trigger a rescan without restarting the daemon.
+func (h *Hub) SetRedetect(f func()) {
+	h.mu.Lock()
+	h.redetect = f
+	h.mu.Unlock()
 }
 
 // SetRemotes attaches the SSH remote-host registry + runner (remote worktrees).
@@ -1362,6 +1371,7 @@ func (h *Hub) agentList() protocol.AgentList {
 			info.Kind = "custom"
 			info.Editable = true
 			info.Command, info.Args, info.ResumeArgs, info.Models = c.Command, c.Args, c.ResumeArgs, c.Models
+			info.Env = c.Env
 			if !info.Available {
 				info.Available = cli.Available(c.Command)
 			}
@@ -1643,6 +1653,7 @@ func asyncDispatch(typ string) bool {
 		protocol.TypeRemoteStatus,        // ssh git status/diff (network)
 		protocol.TypeRemoteRun,           // ssh agent session start (network)
 		protocol.TypeAccountQuota,        // provider API quota probe (network)
+		protocol.TypeProviderRefresh,     // re-detect harnesses on PATH (may start opencode)
 		protocol.TypeIssueLaunch,         // same startSession path as create
 		protocol.TypeWorktreeDiff,        // git diff
 		protocol.TypeWorktreeRemove,      // provider Stop/Close + git remove/prune
@@ -2085,6 +2096,17 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.SessionList{Sessions: list})
 
 	case protocol.TypeProviderList:
+		h.sendOK(conn, env.ID, protocol.ProviderList{Providers: h.providerNames()})
+
+	case protocol.TypeProviderRefresh:
+		h.mu.Lock()
+		redetect := h.redetect
+		h.mu.Unlock()
+		if redetect != nil {
+			log.Printf("provider.refresh: re-detecting agent harnesses on PATH")
+			redetect() // re-runs detection; Register overwrites by name (idempotent)
+		}
+		h.broadcastProviders() // push the (possibly new) set to every client
 		h.sendOK(conn, env.ID, protocol.ProviderList{Providers: h.providerNames()})
 
 	case protocol.TypeModelList:
@@ -3116,6 +3138,13 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		if m := h.managed(req.SessionID); m != nil {
 			m.markUserStopped() // intentional delete → run() drops the record (not a crash to preserve)
 			_ = m.sess.Stop(ctx) // interrupt any running turn
+			// Permanently delete server-side (opencode) so it can't be re-attached/re-discovered and
+			// reappear — the "deleted session keeps coming back" bug. Best-effort, before Close.
+			if d, ok := m.sess.(agent.Deleter); ok {
+				if err := d.Delete(ctx); err != nil {
+					log.Printf("session.stop %s: server-side delete failed: %v", req.SessionID, err)
+				}
+			}
 			_ = m.sess.Close()   // end the event stream -> run() -> removeSession (drops the record)
 			h.removeSession(req.SessionID)
 			if h.db != nil {

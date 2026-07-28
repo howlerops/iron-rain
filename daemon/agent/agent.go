@@ -53,6 +53,13 @@ type Attacher interface {
 	Attach(ctx context.Context, sessionID, cwd string) (Session, error)
 }
 
+// Deleter is an optional Session capability: permanently delete the session from the provider's
+// server (e.g. opencode's DELETE /session/:id), so a user-initiated delete truly removes it and it
+// can't be re-attached or re-discovered later. Providers without server-side state don't implement it.
+type Deleter interface {
+	Delete(ctx context.Context) error
+}
+
 // DirReporter is an optional Session capability: report the session's real working directory. Used
 // to heal a stale persisted cwd — e.g. opencode resolves a session's authoritative directory on
 // attach, and the hub writes it back so subsequent sends (partitioned by directory) hit the right one.

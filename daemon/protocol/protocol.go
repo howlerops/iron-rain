@@ -38,7 +38,8 @@ const (
 	TypeApprovalRespond     = "approval.respond"
 	TypeDiscover            = "discover.list"
 	TypeDeviceRegister      = "device.register"
-	TypeProviderList        = "provider.list" // agent providers registered on this daemon
+	TypeProviderList        = "provider.list"    // agent providers registered on this daemon
+	TypeProviderRefresh     = "provider.refresh" // re-detect agent harnesses on PATH (rescan) + rebroadcast the list
 	TypeAgentList           = "agent.list"    // full agent roster (native + detected + custom)
 	TypeAgentUpsert         = "agent.upsert"  // add/edit a custom CLI agent (persisted, live)
 	TypeAgentDelete         = "agent.delete"  // remove a custom CLI agent
@@ -1249,10 +1250,11 @@ type AgentInfo struct {
 	Available  bool     `json:"available"`
 	Editable   bool     `json:"editable"`
 	Hidden     bool     `json:"hidden"` // user hid it from the session pickers (still runnable)
-	Command    string   `json:"command,omitempty"`
-	Args       []string `json:"args,omitempty"`
-	ResumeArgs []string `json:"resume_args,omitempty"`
-	Models     []string `json:"models,omitempty"` // configured model names (custom CLI agents)
+	Command    string            `json:"command,omitempty"`
+	Args       []string          `json:"args,omitempty"`
+	ResumeArgs []string          `json:"resume_args,omitempty"`
+	Models     []string          `json:"models,omitempty"` // configured model names (custom CLI agents)
+	Env        map[string]string `json:"env,omitempty"`    // env overrides (e.g. config-file pointers)
 }
 
 // AgentList is the full agent roster returned by agent.list.

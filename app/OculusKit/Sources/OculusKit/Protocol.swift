@@ -18,6 +18,7 @@ public enum MessageType {
     public static let discover = "discover.list"
     public static let deviceRegister = "device.register"
     public static let providerList = "provider.list"
+    public static let providerRefresh = "provider.refresh"
     public static let agentList = "agent.list"
     public static let agentUpsert = "agent.upsert"
     public static let agentDelete = "agent.delete"
@@ -762,11 +763,12 @@ public struct AgentInfo: Codable, Identifiable, Hashable {
     public var args: [String]
     public var resumeArgs: [String]
     public var models: [String]
+    public var env: [String: String]
     public var id: String { name }
     public init(name: String = "", kind: String = "custom", available: Bool = false, editable: Bool = true,
-                hidden: Bool = false, command: String = "", args: [String] = [], resumeArgs: [String] = [], models: [String] = []) {
+                hidden: Bool = false, command: String = "", args: [String] = [], resumeArgs: [String] = [], models: [String] = [], env: [String: String] = [:]) {
         self.name = name; self.kind = kind; self.available = available; self.editable = editable
-        self.hidden = hidden; self.command = command; self.args = args; self.resumeArgs = resumeArgs; self.models = models
+        self.hidden = hidden; self.command = command; self.args = args; self.resumeArgs = resumeArgs; self.models = models; self.env = env
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -779,9 +781,10 @@ public struct AgentInfo: Codable, Identifiable, Hashable {
         args = try c.decodeIfPresent([String].self, forKey: .args) ?? []
         resumeArgs = try c.decodeIfPresent([String].self, forKey: .resumeArgs) ?? []
         models = try c.decodeIfPresent([String].self, forKey: .models) ?? []
+        env = try c.decodeIfPresent([String: String].self, forKey: .env) ?? [:]
     }
     enum CodingKeys: String, CodingKey {
-        case name, kind, available, editable, hidden, command, args, models
+        case name, kind, available, editable, hidden, command, args, models, env
         case resumeArgs = "resume_args"
     }
 }
@@ -794,10 +797,11 @@ public struct AgentUpsert: Codable {
     public var args: [String]
     public var resumeArgs: [String]?
     public var models: [String]?
-    public init(name: String, command: String, args: [String] = [], resumeArgs: [String]? = nil, models: [String]? = nil) {
-        self.name = name; self.command = command; self.args = args; self.resumeArgs = resumeArgs; self.models = models
+    public var env: [String: String]?   // e.g. point to a config file: OPENCODE_CONFIG=/path
+    public init(name: String, command: String, args: [String] = [], resumeArgs: [String]? = nil, models: [String]? = nil, env: [String: String]? = nil) {
+        self.name = name; self.command = command; self.args = args; self.resumeArgs = resumeArgs; self.models = models; self.env = env
     }
-    enum CodingKeys: String, CodingKey { case name, command, args, models; case resumeArgs = "resume_args" }
+    enum CodingKeys: String, CodingKey { case name, command, args, models, env; case resumeArgs = "resume_args" }
 }
 public struct AgentRef: Codable {
     public var name: String

@@ -71,6 +71,7 @@ public struct ManageAgentsView: View {
     @State private var editing: AgentInfo?
     @State private var creating = false
     @State private var errorText: String?
+    @State private var rescanning = false
 
     public init(model: Model, palette: OculusPalette) { self.model = model; self.palette = palette }
 
@@ -95,6 +96,17 @@ public struct ManageAgentsView: View {
             #endif
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        rescanning = true
+                        Task { await model.rescanAgents(); rescanning = false }
+                    } label: {
+                        if rescanning { ProgressView().controlSize(.small) }
+                        else { Label("Re-scan", systemImage: "arrow.clockwise") }
+                    }
+                    .help("Re-detect installed agents on PATH")
+                    .disabled(rescanning)
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button { creating = true } label: { Label("Add", systemImage: "plus") }
                 }
@@ -172,7 +184,10 @@ struct CustomAgentEditor: View {
     @State private var command: String
     @State private var argsText: String
     @State private var modelsText: String
+    @State private var envRows: [EnvRow]
     private let isNew: Bool
+
+    struct EnvRow: Identifiable { let id = UUID(); var key = ""; var value = "" }
 
     init(model: Model, palette: OculusPalette, agent: AgentInfo?, onError: @escaping (String?) -> Void) {
         self.model = model; self.palette = palette; self.onError = onError
@@ -181,6 +196,8 @@ struct CustomAgentEditor: View {
         _command = State(initialValue: agent?.command ?? "")
         _argsText = State(initialValue: (agent?.args ?? []).joined(separator: " "))
         _modelsText = State(initialValue: (agent?.models ?? []).joined(separator: ", "))
+        let env = agent?.env ?? [:]
+        _envRows = State(initialValue: env.isEmpty ? [EnvRow()] : env.sorted { $0.key < $1.key }.map { EnvRow(key: $0.key, value: $0.value) })
     }
 
     // Split on whitespace, but keep {prompt}/{cwd}/{model} tokens intact.
@@ -193,75 +210,126 @@ struct CustomAgentEditor: View {
             .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     }
 
+    private var parsedEnv: [String: String] {
+        var out: [String: String] = [:]
+        for r in envRows where !r.key.trimmingCharacters(in: .whitespaces).isEmpty { out[r.key.trimmingCharacters(in: .whitespaces)] = r.value }
+        return out
+    }
+    private var canSave: Bool {
+        !name.trimmingCharacters(in: .whitespaces).isEmpty && !command.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
     var body: some View {
-        NavigationStack {
-            Form {
-                Section("Agent") {
-                    TextField("Name (e.g. my-agent)", text: $name)
-                        .disabled(!isNew) // name is the key; editing keeps it stable
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled()
-                        #endif
-                    TextField("Command (e.g. codex, or /usr/local/bin/foo)", text: $command)
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled()
-                        #endif
-                }
-                Section("Arguments") {
-                    TextField("e.g.  exec {prompt}", text: $argsText, axis: .vertical)
-                        .lineLimit(1...3)
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled()
-                        #endif
-                    if !parsedArgs.isEmpty {
-                        HStack(spacing: 4) {
-                            ForEach(Array(parsedArgs.enumerated()), id: \.offset) { _, t in
-                                Text(t).font(.caption2.monospaced()).padding(.horizontal, 5).padding(.vertical, 1)
-                                    .background(Capsule().fill(palette.muted.opacity(0.5)))
-                                    .foregroundStyle(t == "{prompt}" || t == "{cwd}" ? palette.primary : palette.mutedForeground)
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Text(isNew ? "Add agent" : "Edit \(name)").font(.headline).foregroundStyle(palette.foreground)
+                Spacer()
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+            }
+            .padding(16)
+            Divider().overlay(palette.border)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    field("NAME") {
+                        TextField("my-agent", text: $name).textFieldStyle(.roundedBorder).disabled(!isNew)
+                            .plainInput()
+                    }
+                    field("COMMAND") {
+                        TextField("codex, or /usr/local/bin/foo", text: $command).textFieldStyle(.roundedBorder).plainInput()
+                    }
+                    field("ARGUMENTS", help: "{prompt} = your message · {cwd} = working dir · {model} = chosen model. Omit {prompt} and the message is appended last.") {
+                        TextField("exec {prompt}", text: $argsText, axis: .vertical).lineLimit(1...3).textFieldStyle(.roundedBorder).plainInput()
+                        if !parsedArgs.isEmpty {
+                            argChips
+                        }
+                    }
+                    field("MODELS", optional: true, help: "Comma-separated. They appear in the chat-header picker; put {model} in the arguments to pass the chosen one.") {
+                        TextField("gpt-5, o3, gemini-2.5-pro", text: $modelsText, axis: .vertical).lineLimit(1...2).textFieldStyle(.roundedBorder).plainInput()
+                    }
+                    field("ENVIRONMENT", optional: true, help: "Point the agent at a config file or set keys, e.g. OPENCODE_CONFIG=/path/to/config.json. Stored on the daemon host.") {
+                        ForEach($envRows) { $row in
+                            HStack(spacing: 8) {
+                                TextField("KEY", text: $row.key).textFieldStyle(.roundedBorder).frame(width: 190).plainInput()
+                                TextField("value", text: $row.value).textFieldStyle(.roundedBorder).plainInput()
                             }
                         }
+                        Button { envRows.append(EnvRow()) } label: { Label("Add variable", systemImage: "plus").font(.caption) }
+                            .buttonStyle(.plain).foregroundStyle(palette.primary)
                     }
-                    Text("`{prompt}` is replaced with your message, `{cwd}` with the working directory, and `{model}` with the chosen model. If you omit `{prompt}`, the message is appended as the last argument.")
-                        .font(.caption2).foregroundStyle(palette.mutedForeground)
+                    // Preview
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("PREVIEW").font(.system(size: 10.5, weight: .semibold)).tracking(0.8).foregroundStyle(palette.mutedForeground)
+                        Text("\(command.isEmpty ? "…" : command) \(parsedArgs.joined(separator: " "))")
+                            .font(.system(size: 12, design: .monospaced)).foregroundStyle(palette.foreground)
+                            .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                            .background(RoundedRectangle(cornerRadius: 6).fill(palette.secondary.opacity(0.5)))
+                            .textSelection(.enabled)
+                    }
                 }
-                Section("Models (optional)") {
-                    TextField("e.g.  gpt-5, o3, gemini-2.5-pro", text: $modelsText, axis: .vertical)
-                        .lineLimit(1...2)
-                        #if os(iOS)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled()
-                        #endif
-                    Text("Comma-separated model names. They appear in the chat-header picker; put `{model}` in the arguments above to pass the chosen one.")
-                        .font(.caption2).foregroundStyle(palette.mutedForeground)
-                }
-                Section {
-                    Text("Preview:  \(command.isEmpty ? "…" : command) \(parsedArgs.joined(separator: " "))")
-                        .font(.caption.monospaced()).foregroundStyle(palette.foreground)
-                }
+                .padding(16)
             }
-            .navigationTitle(isNew ? "Add agent" : "Edit \(name)")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        let a = AgentUpsert(name: name.trimmingCharacters(in: .whitespaces),
-                                            command: command.trimmingCharacters(in: .whitespaces),
-                                            args: parsedArgs,
-                                            models: parsedModels.isEmpty ? nil : parsedModels)
-                        Task {
-                            let err = await model.upsertAgent(a)
-                            if let err { onError(err) } else { dismiss() }
-                        }
-                    }
-                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || command.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
+
+            Divider().overlay(palette.border)
+            HStack {
+                Spacer()
+                Button { save() } label: { Text("Save").frame(minWidth: 60) }
+                    .buttonStyle(.borderedProminent).tint(palette.primary).disabled(!canSave)
+            }
+            .padding(16)
+        }
+        .background(palette.background)
+        #if os(macOS)
+        .frame(width: 500, height: 560)
+        #endif
+    }
+
+    private func save() {
+        let a = AgentUpsert(name: name.trimmingCharacters(in: .whitespaces),
+                            command: command.trimmingCharacters(in: .whitespaces),
+                            args: parsedArgs,
+                            models: parsedModels.isEmpty ? nil : parsedModels,
+                            env: parsedEnv.isEmpty ? nil : parsedEnv)
+        Task {
+            let err = await model.upsertAgent(a)
+            if let err { onError(err) } else { dismiss() }
+        }
+    }
+
+    /// A labeled field group: uppercase label, the field(s), and optional help text below.
+    @ViewBuilder private func field(_ label: String, optional: Bool = false, help: String? = nil,
+                                    @ViewBuilder _ content: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 5) {
+                Text(label).font(.system(size: 10.5, weight: .semibold)).tracking(0.8).foregroundStyle(palette.mutedForeground)
+                if optional { Text("optional").font(.system(size: 9)).foregroundStyle(palette.mutedForeground.opacity(0.7)) }
+            }
+            content()
+            if let help {
+                Text(help).font(.caption2).foregroundStyle(palette.mutedForeground).fixedSize(horizontal: false, vertical: true)
             }
         }
-        #if os(macOS)
-        .frame(width: 440, height: 460)
+    }
+
+    private var argChips: some View {
+        HStack(spacing: 4) {
+            ForEach(Array(parsedArgs.enumerated()), id: \.offset) { _, t in
+                Text(t).font(.caption2.monospaced()).padding(.horizontal, 5).padding(.vertical, 1)
+                    .background(Capsule().fill(palette.muted.opacity(0.5)))
+                    .foregroundStyle(t == "{prompt}" || t == "{cwd}" || t == "{model}" ? palette.primary : palette.mutedForeground)
+            }
+        }
+    }
+}
+
+private extension View {
+    /// No autocapitalization/autocorrect for command/arg/env fields (iOS); no-op on macOS.
+    func plainInput() -> some View {
+        #if os(iOS)
+        return self.textInputAutocapitalization(.never).autocorrectionDisabled()
+        #else
+        return self
         #endif
     }
 }

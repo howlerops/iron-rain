@@ -673,6 +673,10 @@ public final class Model: ObservableObject {
         // server broadcasts the updated session list.
         sessions.removeAll { $0.id == id }
         if sessionID == id { newSession() }
+        // Forget it as the auto-reopen target — otherwise the next reconnect re-opens (and
+        // re-attaches) the just-deleted session, so it reappears.
+        if defaults.string(forKey: lastSessionKey) == id { defaults.removeObject(forKey: lastSessionKey) }
+        sessionErrors[id] = nil
         do {
             let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.sessionStop,
                                           payload: SessionRef(sessionID: id))
@@ -863,6 +867,15 @@ public final class Model: ObservableObject {
         } else if !list.contains(newSessionProvider), let first = list.first {
             newSessionProvider = first
         }
+    }
+
+    /// Re-detects agent harnesses on the daemon's PATH (opencode/claude-code/pi + CLIs) without a
+    /// restart, then reloads the roster. Use when you've just installed an agent.
+    public func rescanAgents() async {
+        guard client != nil else { return }
+        if let resp = try? await request(MessageType.providerRefresh, payload: ProviderList()),
+           let pl = try? resp.payload(as: ProviderList.self) { applyProviders(pl.providers) }
+        await loadAgents()
     }
 
     /// Full agent roster for the management UI.
