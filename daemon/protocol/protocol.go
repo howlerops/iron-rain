@@ -124,6 +124,9 @@ const (
 	TypeActivityEvent    = "activity.event"    // event: one new activity item (finished/needs-you/error/loop)
 	TypeActivityMarkRead = "activity.markread" // mark activity items read (clears the needs-you badge)
 	TypeFanoutCreate     = "fanout.create"     // spawn N agents on the SAME prompt in isolated worktrees (compare + merge winner)
+	TypeCheckpointCreate = "checkpoint.create" // snapshot the session's worktree (a restore point on the timeline)
+	TypeCheckpointList   = "checkpoint.list"   // list a session's checkpoints
+	TypeCheckpointRestore = "checkpoint.restore" // roll the worktree back to a checkpoint
 
 	// responses
 	TypeOK    = "ok"
@@ -443,6 +446,30 @@ type FanoutCreate struct {
 type FanoutResult struct {
 	Group      string   `json:"group"`
 	SessionIDs []string `json:"session_ids"`
+}
+
+// Checkpoint is a restore point: a snapshot of a session's worktree at a point in time.
+type Checkpoint struct {
+	SHA   string `json:"sha"`
+	Label string `json:"label"`
+	TS    int64  `json:"ts"`
+}
+
+// CheckpointCreate snapshots a session's worktree with an optional label.
+type CheckpointCreate struct {
+	SessionID string `json:"session_id"`
+	Label     string `json:"label,omitempty"`
+}
+
+// CheckpointRestore rolls a session's worktree back to the given checkpoint.
+type CheckpointRestore struct {
+	SessionID string `json:"session_id"`
+	SHA       string `json:"sha"`
+}
+
+// CheckpointList is a session's checkpoints (newest first).
+type CheckpointList struct {
+	Checkpoints []Checkpoint `json:"checkpoints"`
 }
 
 // LogLine is one streamed daemon log line (event).

@@ -105,6 +105,7 @@ type managedSession struct {
 	respWatchdogGen  int  // generation counter so a stale watchdog can't fire after a newer prompt/response
 	userStopped      bool // the user explicitly stopped/removed this session (vs. an unexpected provider exit)
 	conflicted       bool // this worktree session's branch would conflict with the default branch (passive badge)
+	checkpoints      []protocol.Checkpoint // restore points snapshotted for this worktree session (newest last)
 }
 
 // markUserStopped records that the session's close is user-intended, so run()'s cleanup DELETES the

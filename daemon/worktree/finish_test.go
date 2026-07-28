@@ -110,6 +110,68 @@ func TestWouldConflict(t *testing.T) {
 	}
 }
 
+// TestSnapshotAndRestore proves checkpoints: snapshot the worktree at one point, keep working, then
+// restore tracked files back to the checkpoint — turning the durable timeline into a rollback UI.
+func TestSnapshotAndRestore(t *testing.T) {
+	repo := t.TempDir()
+	gitInit(t, repo) // f="x"
+	wt, err := Create(t.TempDir(), repo, "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	// Turn 1: edit f to v1, add a new tracked file, then CHECKPOINT.
+	if err := os.WriteFile(filepath.Join(wt.Path, "f"), []byte("v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Path, "g"), []byte("g1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cp, err := Snapshot(ctx, wt.Path)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if cp == "" {
+		t.Fatal("empty snapshot sha")
+	}
+
+	// Turn 2: make it worse — clobber f and g.
+	if err := os.WriteFile(filepath.Join(wt.Path, "f"), []byte("BROKEN\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Path, "g"), []byte("BROKEN\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Roll back to the checkpoint.
+	if err := RestoreSnapshot(ctx, wt.Path, cp); err != nil {
+		t.Fatalf("RestoreSnapshot: %v", err)
+	}
+	for name, want := range map[string]string{"f": "v1\n", "g": "g1\n"} {
+		got, err := os.ReadFile(filepath.Join(wt.Path, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if string(got) != want {
+			t.Errorf("after restore, %s = %q, want %q", name, got, want)
+		}
+	}
+}
+
+// TestSnapshotCleanTreeReturnsHead: a checkpoint on a clean tree resolves to HEAD (always restorable).
+func TestSnapshotCleanTreeReturnsHead(t *testing.T) {
+	repo := t.TempDir()
+	head := gitInit(t, repo)
+	sha, err := Snapshot(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if sha != head {
+		t.Errorf("clean-tree snapshot = %s, want HEAD %s", sha, head)
+	}
+}
+
 // TestDiff_ExcludesStderrWarnings verifies Diff returns only stdout, so git's
 // stderr warnings (e.g. CRLF conversion notices) never corrupt the diff text.
 func TestDiff_ExcludesStderrWarnings(t *testing.T) {

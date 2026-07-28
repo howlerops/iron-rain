@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -89,6 +90,75 @@ func WouldConflict(ctx context.Context, worktreePath, base string) ([]string, er
 		return paths, nil
 	}
 	return nil, fmt.Errorf("git merge-tree: %v: %s", err, strings.TrimSpace(errBuf.String()))
+}
+
+// Snapshot captures the worktree's CURRENT state (including uncommitted + untracked changes) as a
+// git commit object WITHOUT modifying the working tree or index — a named restore point on the turn
+// timeline. Returns the snapshot commit SHA. If the tree is clean it returns HEAD, so a checkpoint
+// always resolves to something restorable.
+func Snapshot(ctx context.Context, worktreePath string) (string, error) {
+	// Build the snapshot in a TEMP index so the real index + working tree are never touched:
+	//   read-tree HEAD → add -A (tracked + untracked) → write-tree → commit-tree.
+	// This captures the exact current file contents without staging anything for the user.
+	tmpIdx, err := os.CreateTemp("", "oculus-cp-index-*")
+	if err != nil {
+		return "", err
+	}
+	tmpIdx.Close()
+	defer os.Remove(tmpIdx.Name())
+	gitEnv := append(os.Environ(), "GIT_INDEX_FILE="+tmpIdx.Name())
+
+	run := func(args ...string) (string, error) {
+		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", worktreePath}, args...)...)
+		cmd.Env = gitEnv
+		var out, errb bytes.Buffer
+		cmd.Stdout = &out
+		cmd.Stderr = &errb
+		if err := cmd.Run(); err != nil {
+			return "", fmt.Errorf("git %s: %v: %s", args[0], err, strings.TrimSpace(errb.String()))
+		}
+		return strings.TrimSpace(out.String()), nil
+	}
+
+	if _, err := run("read-tree", "HEAD"); err != nil {
+		return "", err
+	}
+	if _, err := run("add", "-A"); err != nil {
+		return "", err
+	}
+	tree, err := run("write-tree")
+	if err != nil {
+		return "", err
+	}
+	head, _ := HeadCommit(worktreePath)
+	// Clean tree (snapshot tree == HEAD's tree) → no redundant commit; the restore point is HEAD.
+	if headTree, err := run("rev-parse", "HEAD^{tree}"); err == nil && headTree == tree {
+		return head, nil
+	}
+	args := []string{"commit-tree", tree, "-m", "oculus checkpoint"}
+	if head != "" {
+		args = []string{"commit-tree", tree, "-p", head, "-m", "oculus checkpoint"}
+	}
+	sha, err := run(args...)
+	if err != nil {
+		return "", err
+	}
+	// Keep the snapshot commit reachable so git gc can't drop it before a restore.
+	_ = exec.CommandContext(ctx, "git", "-C", worktreePath, "update-ref", "refs/oculus/checkpoints/"+sha, sha).Run()
+	return sha, nil
+}
+
+// RestoreSnapshot reverts the worktree's tracked files to the state captured in `sha` (from
+// Snapshot). Untracked files created after the snapshot are left in place (non-destructive to new
+// scratch files); tracked files are restored to the checkpoint content.
+func RestoreSnapshot(ctx context.Context, worktreePath, sha string) error {
+	var errBuf bytes.Buffer
+	cmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "checkout", sha, "--", ".")
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git checkout %s: %v: %s", sha[:min(len(sha), 8)], err, strings.TrimSpace(errBuf.String()))
+	}
+	return nil
 }
 
 // CommitAll stages and commits everything in the worktree (no-op if clean). Returns

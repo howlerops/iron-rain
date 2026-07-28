@@ -436,6 +436,15 @@ func randToken() string {
 	return hex.EncodeToString(b[:])
 }
 
+// reverseCheckpoints returns the checkpoints newest-first (they're stored oldest-first).
+func reverseCheckpoints(cps []protocol.Checkpoint) []protocol.Checkpoint {
+	out := make([]protocol.Checkpoint, len(cps))
+	for i, cp := range cps {
+		out[len(cps)-1-i] = cp
+	}
+	return out
+}
+
 // SetProjects attaches a project registry so clients can list/add/remove projects and
 // spawn sessions scoped to one.
 func (h *Hub) SetProjects(r *project.Registry) {
@@ -1482,6 +1491,8 @@ func asyncDispatch(typ string) bool {
 	switch typ {
 	case protocol.TypeSessionCreate, // worktree.Create + Bootstrap (setup hooks) + provider Create
 		protocol.TypeFanoutCreate,        // N× worktree.Create + provider Create (fan-out)
+		protocol.TypeCheckpointCreate,    // git snapshot (blocking)
+		protocol.TypeCheckpointRestore,   // git checkout (blocking)
 		protocol.TypeIssueLaunch,         // same startSession path as create
 		protocol.TypeWorktreeDiff,        // git diff
 		protocol.TypeWorktreeRemove,      // provider Stop/Close + git remove/prune
@@ -1721,6 +1732,55 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			return
 		}
 		h.sendOK(conn, env.ID, res)
+
+	case protocol.TypeCheckpointCreate:
+		var req protocol.CheckpointCreate
+		_ = env.Unmarshal(&req)
+		m := h.managed(req.SessionID)
+		if m == nil || m.meta.worktreePath == "" {
+			h.sendErr(conn, env.ID, "checkpoints need a worktree session")
+			return
+		}
+		sha, err := worktree.Snapshot(ctx, m.meta.worktreePath)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		cp := protocol.Checkpoint{SHA: sha, Label: req.Label, TS: time.Now().Unix()}
+		m.mu.Lock()
+		m.checkpoints = append(m.checkpoints, cp)
+		list := append([]protocol.Checkpoint(nil), m.checkpoints...)
+		m.mu.Unlock()
+		log.Printf("session %s: checkpoint saved (%s)", req.SessionID, sha[:min(len(sha), 8)])
+		h.sendOK(conn, env.ID, protocol.CheckpointList{Checkpoints: reverseCheckpoints(list)})
+
+	case protocol.TypeCheckpointList:
+		var req protocol.SessionRef
+		_ = env.Unmarshal(&req)
+		m := h.managed(req.SessionID)
+		if m == nil {
+			h.sendErr(conn, env.ID, "no such session")
+			return
+		}
+		m.mu.Lock()
+		list := append([]protocol.Checkpoint(nil), m.checkpoints...)
+		m.mu.Unlock()
+		h.sendOK(conn, env.ID, protocol.CheckpointList{Checkpoints: reverseCheckpoints(list)})
+
+	case protocol.TypeCheckpointRestore:
+		var req protocol.CheckpointRestore
+		_ = env.Unmarshal(&req)
+		m := h.managed(req.SessionID)
+		if m == nil || m.meta.worktreePath == "" {
+			h.sendErr(conn, env.ID, "checkpoints need a worktree session")
+			return
+		}
+		if err := worktree.RestoreSnapshot(ctx, m.meta.worktreePath, req.SHA); err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		log.Printf("session %s: rolled back to checkpoint %s", req.SessionID, req.SHA[:min(len(req.SHA), 8)])
+		h.sendOK(conn, env.ID, nil)
 
 	case protocol.TypeSessionList:
 		h.mu.Lock()

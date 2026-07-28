@@ -52,6 +52,9 @@ public enum MessageType {
     public static let activityEvent = "activity.event"
     public static let activityMarkRead = "activity.markread"
     public static let fanoutCreate = "fanout.create"
+    public static let checkpointCreate = "checkpoint.create"
+    public static let checkpointList = "checkpoint.list"
+    public static let checkpointRestore = "checkpoint.restore"
     public static let jiraSites = "jira.sites"
     public static let jiraSetSite = "jira.set_site"
     public static let worktreeCatchUp = "worktree.catch_up"
@@ -1007,6 +1010,25 @@ public struct FanoutResult: Codable {
     public var group: String
     public var sessionIDs: [String]
     enum CodingKeys: String, CodingKey { case group; case sessionIDs = "session_ids" }
+}
+
+/// A restore point: a snapshot of a session's worktree at a point in time.
+public struct Checkpoint: Codable, Identifiable, Equatable {
+    public var sha: String
+    public var label: String
+    public var ts: Int
+    public var id: String { sha }
+}
+public struct CheckpointList: Codable { public var checkpoints: [Checkpoint] }
+public struct CheckpointCreate: Codable {
+    public var sessionID: String; public var label: String?
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case label }
+    public init(sessionID: String, label: String? = nil) { self.sessionID = sessionID; self.label = label }
+}
+public struct CheckpointRestore: Codable {
+    public var sessionID: String; public var sha: String
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case sha }
+    public init(sessionID: String, sha: String) { self.sessionID = sessionID; self.sha = sha }
 }
 
 public struct IntegrationStatus: Codable {

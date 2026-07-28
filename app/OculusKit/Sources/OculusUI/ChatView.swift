@@ -169,10 +169,32 @@ public struct ChatView: View {
                             Label(model.busy ? "Recovering…" : "Recover session", systemImage: "bandage")
                         }
                         .disabled(model.busy)
+                        if isWorktreeSession {
+                            Divider()
+                            Button { Task { await model.saveCheckpoint() } } label: {
+                                Label("Save checkpoint", systemImage: "flag")
+                            }
+                            Menu {
+                                if model.checkpoints.isEmpty {
+                                    Text("No checkpoints yet")
+                                } else {
+                                    ForEach(model.checkpoints) { cp in
+                                        Button {
+                                            Task { await model.restoreCheckpoint(cp.sha) }
+                                        } label: {
+                                            Text(cp.label.isEmpty ? "Checkpoint \(cp.sha.prefix(7))" : cp.label)
+                                        }
+                                    }
+                                }
+                            } label: {
+                                Label("Roll back to…", systemImage: "arrow.uturn.backward")
+                            }
+                            .onAppear { Task { await model.loadCheckpoints() } }
+                        }
                     } label: {
                         Label("More", systemImage: "ellipsis.circle")
                     }
-                    .help("Session tools — Recover re-attaches a session whose messages stopped working (keeps all history).")
+                    .help("Session tools — Recover, and (worktree sessions) save/roll-back checkpoints.")
                 }
             }
             if isWorktreeSession {

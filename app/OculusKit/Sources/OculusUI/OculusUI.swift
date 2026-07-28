@@ -1407,6 +1407,36 @@ public final class Model: ObservableObject {
         }
     }
 
+    /// Checkpoints (restore points) for the active session's worktree — newest first.
+    @Published public var checkpoints: [Checkpoint] = []
+
+    /// Saves a checkpoint of the current session's worktree (a rollback point on the timeline).
+    public func saveCheckpoint(label: String = "") async {
+        guard let sid = sessionID, client != nil else { return }
+        do {
+            let env = try await request(MessageType.checkpointCreate, payload: CheckpointCreate(sessionID: sid, label: label.isEmpty ? nil : label))
+            checkpoints = (try? env.payload(as: CheckpointList.self))?.checkpoints ?? checkpoints
+            status = "Checkpoint saved"
+        } catch { setError("Couldn’t save checkpoint", error.localizedDescription) }
+    }
+
+    /// Loads the active session's checkpoints (call when opening the rollback menu).
+    public func loadCheckpoints() async {
+        guard let sid = sessionID, client != nil else { checkpoints = []; return }
+        if let env = try? await request(MessageType.checkpointList, payload: SessionRef(sessionID: sid)) {
+            checkpoints = (try? env.payload(as: CheckpointList.self))?.checkpoints ?? []
+        }
+    }
+
+    /// Rolls the active session's worktree back to a checkpoint (tracked files restored to that point).
+    public func restoreCheckpoint(_ sha: String) async {
+        guard let sid = sessionID, client != nil else { return }
+        do {
+            _ = try await request(MessageType.checkpointRestore, payload: CheckpointRestore(sessionID: sid, sha: sha))
+            status = "Rolled back to checkpoint"
+        } catch { setError("Couldn’t roll back", error.localizedDescription) }
+    }
+
     /// Recovers a "broken" session — one that opens but whose sends silently fail because the daemon
     /// bound it to the wrong directory partition. Re-attaches on the daemon, which re-resolves the
     /// session's real directory from the provider and heals the stored cwd, KEEPING all history (the
