@@ -2,8 +2,10 @@ package hub_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/howlerops/oculus/daemon/crypto"
 	"github.com/howlerops/oculus/daemon/hub"
@@ -25,9 +27,11 @@ func TestCheckpointE2E(t *testing.T) {
 	conn := connectClient(t, h, daemonKP)
 	r := newReader(conn)
 
-	// A worktree session (checkpoints require a worktree).
+	// A worktree session (checkpoints require a worktree). Unique workspace name so reruns don't
+	// collide on the shared ~/.oculus/worktrees base.
+	ws := fmt.Sprintf("cp-%d", time.Now().UnixNano())
 	send(t, conn, "c1", protocol.TypeSessionCreate, protocol.SessionCreate{
-		Provider: "fake", ProjectID: proj.ID, Worktree: true, WorkspaceName: "cp",
+		Provider: "fake", ProjectID: proj.ID, Worktree: true, WorkspaceName: ws,
 	})
 	var sess protocol.Session
 	if err := json.Unmarshal(r.waitOK(t, "c1"), &sess); err != nil {
