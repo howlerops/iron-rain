@@ -34,6 +34,7 @@ import (
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/push"
 	"github.com/howlerops/oculus/daemon/slack"
+	"github.com/howlerops/oculus/daemon/sshremote"
 	"github.com/howlerops/oculus/daemon/store"
 	"github.com/howlerops/oculus/daemon/transport"
 	"github.com/howlerops/oculus/daemon/worktree"
@@ -64,6 +65,8 @@ type Hub struct {
 	transcripts   *transcript.Store              // optional: durable append-only per-session transcript (never-lose-work)
 	activity      *activity.Store                // optional: cross-session activity feed (Activity destination backbone)
 	accounts      *accounts.Registry             // optional: multi-account credentials + active selection per provider
+	remotes       *sshremote.Registry            // optional: registered SSH remote hosts (remote worktrees)
+	sshRunner     *sshremote.Runner              // optional: executes git/agent ops on remotes over SSH
 	loopEngine    *loops.Engine                  // optional: recurring autonomous ticket workflows
 	agentsPath    string                         // path to ~/.oculus/agents.json (custom CLI agents)
 	agentHidePath string                         // path to ~/.oculus/agent-visibility.json (hidden names)
@@ -552,6 +555,38 @@ func (h *Hub) SetAccounts(r *accounts.Registry) {
 			s.SetAccountEnv(func() map[string]string { return r.EnvFor(n) })
 		}
 	}
+}
+
+// SetRemotes attaches the SSH remote-host registry + runner (remote worktrees).
+func (h *Hub) SetRemotes(reg *sshremote.Registry, runner *sshremote.Runner) {
+	h.mu.Lock()
+	h.remotes = reg
+	h.sshRunner = runner
+	h.mu.Unlock()
+}
+
+// remoteList builds the remote.list reply, probing reachability best-effort with a short bound.
+func (h *Hub) remoteList(ctx context.Context) protocol.RemoteList {
+	h.mu.Lock()
+	reg := h.remotes
+	runner := h.sshRunner
+	h.mu.Unlock()
+	out := protocol.RemoteList{Hosts: []protocol.RemoteHost{}}
+	if reg == nil {
+		return out
+	}
+	for _, hst := range reg.List() {
+		reachable := false
+		if runner != nil {
+			pctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+			reachable = runner.Probe(pctx, hst) == nil
+			cancel()
+		}
+		out.Hosts = append(out.Hosts, protocol.RemoteHost{
+			ID: hst.ID, Name: hst.Name, SSHTarget: hst.SSHTarget, RemotePath: hst.RemotePath, Reachable: reachable,
+		})
+	}
+	return out
 }
 
 // accountList builds the account.list reply: accounts flagged with the active selection + per-
@@ -1551,6 +1586,9 @@ func asyncDispatch(typ string) bool {
 		protocol.TypeFanoutCreate,        // N× worktree.Create + provider Create (fan-out)
 		protocol.TypeCheckpointCreate,    // git snapshot (blocking)
 		protocol.TypeCheckpointRestore,   // git checkout (blocking)
+		protocol.TypeRemoteList,          // ssh probe per host (network)
+		protocol.TypeRemoteUpsert,        // ssh probe (network)
+		protocol.TypeRemoteStatus,        // ssh git status/diff (network)
 		protocol.TypeIssueLaunch,         // same startSession path as create
 		protocol.TypeWorktreeDiff,        // git diff
 		protocol.TypeWorktreeRemove,      // provider Stop/Close + git remove/prune
@@ -1879,6 +1917,58 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		}
 		log.Printf("account: %s active account switched to %s", req.Provider, req.AccountID)
 		h.sendOK(conn, env.ID, h.accountList())
+
+	case protocol.TypeRemoteList:
+		h.sendOK(conn, env.ID, h.remoteList(ctx))
+
+	case protocol.TypeRemoteUpsert:
+		var hst protocol.RemoteHost
+		_ = env.Unmarshal(&hst)
+		h.mu.Lock()
+		reg := h.remotes
+		h.mu.Unlock()
+		if reg == nil {
+			h.sendErr(conn, env.ID, "remotes unavailable")
+			return
+		}
+		reg.Upsert(sshremote.Host{ID: hst.ID, Name: hst.Name, SSHTarget: hst.SSHTarget, RemotePath: hst.RemotePath})
+		h.sendOK(conn, env.ID, h.remoteList(ctx))
+
+	case protocol.TypeRemoteDelete:
+		var req protocol.RemoteRef
+		_ = env.Unmarshal(&req)
+		h.mu.Lock()
+		reg := h.remotes
+		h.mu.Unlock()
+		if reg != nil {
+			reg.Delete(req.ID)
+		}
+		h.sendOK(conn, env.ID, h.remoteList(ctx))
+
+	case protocol.TypeRemoteStatus:
+		var req protocol.RemoteRef
+		_ = env.Unmarshal(&req)
+		h.mu.Lock()
+		reg := h.remotes
+		runner := h.sshRunner
+		h.mu.Unlock()
+		if reg == nil || runner == nil {
+			h.sendErr(conn, env.ID, "remotes unavailable")
+			return
+		}
+		hst, ok := reg.Get(req.ID)
+		if !ok {
+			h.sendErr(conn, env.ID, "no such remote")
+			return
+		}
+		res := protocol.RemoteStatus{ID: req.ID}
+		if st, err := runner.GitStatus(ctx, hst); err != nil {
+			res.Error = err.Error()
+		} else {
+			res.Status = st
+			res.Diff, _ = runner.GitDiff(ctx, hst)
+		}
+		h.sendOK(conn, env.ID, res)
 
 	case protocol.TypeSessionList:
 		h.mu.Lock()

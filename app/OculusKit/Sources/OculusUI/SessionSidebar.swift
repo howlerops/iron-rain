@@ -99,6 +99,7 @@ struct SessionSidebar: View {
     var onOpenLoops: (() -> Void)? = nil
     var onOpenAgents: (() -> Void)? = nil
     var onOpenAccounts: (() -> Void)? = nil
+    var onOpenRemotes: (() -> Void)? = nil
     @AppStorage("oculus.appearance") private var appearance: Appearance = .system
     @State private var filter: SessionFilter = .all
     @State private var renamingSessionID: String?
@@ -339,6 +340,9 @@ struct SessionSidebar: View {
                 }
                 if let onOpenAccounts {
                     Button { onOpenAccounts() } label: { Label("Accounts & usage…", systemImage: "person.2.badge.key") }
+                }
+                if let onOpenRemotes {
+                    Button { onOpenRemotes() } label: { Label("Remote hosts…", systemImage: "server.rack") }
                 }
                 Picker(selection: $appearance) {
                     ForEach(Appearance.allCases) { a in

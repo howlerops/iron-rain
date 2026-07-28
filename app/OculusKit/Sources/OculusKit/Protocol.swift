@@ -59,6 +59,10 @@ public enum MessageType {
     public static let accountUpsert = "account.upsert"
     public static let accountDelete = "account.delete"
     public static let accountActivate = "account.activate"
+    public static let remoteList = "remote.list"
+    public static let remoteUpsert = "remote.upsert"
+    public static let remoteDelete = "remote.delete"
+    public static let remoteStatus = "remote.status"
     public static let jiraSites = "jira.sites"
     public static let jiraSetSite = "jira.set_site"
     public static let worktreeCatchUp = "worktree.catch_up"
@@ -1074,6 +1078,29 @@ public struct AccountRef: Codable {
     public var accountID: String
     enum CodingKeys: String, CodingKey { case accountID = "account_id" }
     public init(accountID: String) { self.accountID = accountID }
+}
+
+/// A registered SSH remote where a worktree/agent can run.
+public struct RemoteHost: Codable, Identifiable, Equatable {
+    public var id: String
+    public var name: String
+    public var sshTarget: String
+    public var remotePath: String
+    public var reachable: Bool?
+    enum CodingKeys: String, CodingKey {
+        case id; case name; case sshTarget = "ssh_target"; case remotePath = "remote_path"; case reachable
+    }
+    public init(id: String = "", name: String, sshTarget: String, remotePath: String, reachable: Bool? = nil) {
+        self.id = id; self.name = name; self.sshTarget = sshTarget; self.remotePath = remotePath; self.reachable = reachable
+    }
+}
+public struct RemoteList: Codable { public var hosts: [RemoteHost] }
+public struct RemoteRef: Codable { public var id: String; public init(id: String) { self.id = id } }
+public struct RemoteStatus: Codable {
+    public var id: String
+    public var status: String
+    public var diff: String
+    public var error: String?
 }
 
 public struct IntegrationStatus: Codable {

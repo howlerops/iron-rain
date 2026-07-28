@@ -46,6 +46,7 @@ import (
 	"github.com/howlerops/oculus/daemon/selfupdate"
 	"github.com/howlerops/oculus/daemon/server"
 	"github.com/howlerops/oculus/daemon/slack"
+	"github.com/howlerops/oculus/daemon/sshremote"
 	"github.com/howlerops/oculus/daemon/store"
 )
 
@@ -206,6 +207,8 @@ func serve(args []string) error {
 	// Multi-account credentials: hot-swap which login/key new sessions use. Wired AFTER providers
 	// register so the CLI agents resolve the active account's env at each spawn.
 	h.SetAccounts(accounts.Load(accountsPath()))
+	// SSH remote hosts: run/inspect a worktree on a remote box over SSH.
+	h.SetRemotes(sshremote.LoadRegistry(remotesPath()), sshremote.New())
 
 	// Re-own sessions that survived a previous run (opencode/claude sessions persist
 	// server-side) and periodically prune stale records with incremental auto-vacuum.
@@ -544,6 +547,14 @@ func accountsPath() string {
 		return "oculus-accounts.json"
 	}
 	return filepath.Join(home, ".oculus", "accounts.json")
+}
+
+func remotesPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "oculus-remotes.json"
+	}
+	return filepath.Join(home, ".oculus", "remotes.json")
 }
 
 func transcriptsDir() string {

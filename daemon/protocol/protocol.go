@@ -131,6 +131,10 @@ const (
 	TypeAccountUpsert    = "account.upsert"    // add/update a credential account
 	TypeAccountDelete    = "account.delete"    // remove a credential account
 	TypeAccountActivate  = "account.activate"  // set the active account for a provider (hot-swap)
+	TypeRemoteList       = "remote.list"       // list registered SSH remote hosts
+	TypeRemoteUpsert     = "remote.upsert"     // add/update a remote host (probes it)
+	TypeRemoteDelete     = "remote.delete"     // remove a remote host
+	TypeRemoteStatus     = "remote.status"     // git status/diff of a remote worktree over SSH
 
 	// responses
 	TypeOK    = "ok"
@@ -509,6 +513,33 @@ type AccountActivate struct {
 // AccountRef identifies an account (delete).
 type AccountRef struct {
 	AccountID string `json:"account_id"`
+}
+
+// RemoteHost is a registered SSH remote where a worktree/agent can run.
+type RemoteHost struct {
+	ID         string `json:"id,omitempty"`
+	Name       string `json:"name"`
+	SSHTarget  string `json:"ssh_target"`
+	RemotePath string `json:"remote_path"`
+	Reachable  bool   `json:"reachable,omitempty"` // last probe result (remote.list)
+}
+
+// RemoteList is a set of remote hosts.
+type RemoteList struct {
+	Hosts []RemoteHost `json:"hosts"`
+}
+
+// RemoteRef identifies a remote host (delete / status).
+type RemoteRef struct {
+	ID string `json:"id"`
+}
+
+// RemoteStatus is the git status + diff of a remote worktree fetched over SSH.
+type RemoteStatus struct {
+	ID     string `json:"id"`
+	Status string `json:"status"` // porcelain
+	Diff   string `json:"diff"`
+	Error  string `json:"error,omitempty"`
 }
 
 // LogLine is one streamed daemon log line (event).

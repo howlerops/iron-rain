@@ -205,7 +205,7 @@ struct SoftwareUpdateModifier: ViewModifier {
 
 /// The one shared sheet slot for the Loops / Agents panels (kept to a single `.sheet` so they
 /// don't collide with the New Session sheet).
-private enum PanelSheet: Int, Identifiable { case loops, agents, accounts; var id: Int { rawValue } }
+private enum PanelSheet: Int, Identifiable { case loops, agents, accounts, remotes; var id: Int { rawValue } }
 
 public struct RootView: View {
     @ObservedObject var store: DesktopStore
@@ -282,6 +282,8 @@ public struct RootView: View {
                             ManageAgentsView(model: model, palette: palette)
                         case .accounts:
                             AccountsView(model: model, palette: palette, onClose: { panel = nil })
+                        case .remotes:
+                            RemotesView(model: model, palette: palette, onClose: { panel = nil })
                         }
                     }
                     .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -394,7 +396,8 @@ public struct RootView: View {
                 SessionSidebar(store: store, model: model, selection: $selection, searchText: $searchText,
                                onOpenLoops: { destination = .loops },
                                onOpenAgents: { panel = .agents },
-                               onOpenAccounts: { panel = .accounts })
+                               onOpenAccounts: { panel = .accounts },
+                               onOpenRemotes: { panel = .remotes })
                     .navigationDestination(isPresented: $showSessionDetail) { ChatView(model: model) }
                     .toolbar {
                         ToolbarItem(placement: .topBarTrailing) {
@@ -491,6 +494,10 @@ public struct RootView: View {
                                subtitle: "Switch credentials · token/cost meter", symbol: "person.2.badge.key") {
             panel = .accounts
         })
+        out.append(PaletteItem(id: "act-remotes", kind: .action, title: "Remote hosts",
+                               subtitle: "Run a worktree on a remote box over SSH", symbol: "server.rack") {
+            panel = .remotes
+        })
         if model.needsYouCount > 0 {
             out.append(PaletteItem(id: "act-markread", kind: .action, title: "Mark all activity read",
                                    subtitle: "\(model.needsYouCount) need you", symbol: "checkmark.circle") {
@@ -536,7 +543,8 @@ public struct RootView: View {
                            updates: updates,
                            onOpenLoops: { destination = .loops },
                            onOpenAgents: { panel = .agents },
-                           onOpenAccounts: { panel = .accounts })
+                           onOpenAccounts: { panel = .accounts },
+                               onOpenRemotes: { panel = .remotes })
 
         case .loops:
             LoopsListColumn(model: model, palette: palette, selected: $selectedLoopID,

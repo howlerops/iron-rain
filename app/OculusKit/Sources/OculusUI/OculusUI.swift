@@ -1437,6 +1437,28 @@ public final class Model: ObservableObject {
         } catch { setError("Couldn’t switch account", error.localizedDescription) }
     }
 
+    /// SSH remote hosts (run/inspect a worktree on a remote box).
+    @Published public var remotes: [RemoteHost] = []
+    public func loadRemotes() async {
+        guard client != nil else { return }
+        if let env = try? await request(MessageType.remoteList, payload: Optional<Int>.none),
+           let rl = try? env.payload(as: RemoteList.self) { remotes = rl.hosts }
+    }
+    public func upsertRemote(_ h: RemoteHost) async {
+        guard client != nil else { return }
+        if let env = try? await request(MessageType.remoteUpsert, payload: h),
+           let rl = try? env.payload(as: RemoteList.self) { remotes = rl.hosts }
+    }
+    public func deleteRemote(_ id: String) async {
+        guard client != nil else { return }
+        if let env = try? await request(MessageType.remoteDelete, payload: RemoteRef(id: id)),
+           let rl = try? env.payload(as: RemoteList.self) { remotes = rl.hosts }
+    }
+    public func remoteStatus(_ id: String) async -> RemoteStatus? {
+        guard client != nil else { return nil }
+        return try? await request(MessageType.remoteStatus, payload: RemoteRef(id: id)).payload(as: RemoteStatus.self)
+    }
+
     /// Saves a checkpoint of the current session's worktree (a rollback point on the timeline).
     public func saveCheckpoint(label: String = "") async {
         guard let sid = sessionID, client != nil else { return }
