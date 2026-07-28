@@ -3,9 +3,11 @@ package hub
 import (
 	"fmt"
 	"log"
+	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/howlerops/oculus/daemon/activity"
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/transcript"
@@ -111,6 +113,25 @@ func (m *managedSession) markUserStopped() {
 	m.mu.Lock()
 	m.userStopped = true
 	m.mu.Unlock()
+}
+
+// activityTitle is a short human label for the session in the activity feed: the user-set name,
+// else a repo/branch-ish hint from the cwd, else a short id.
+func (m *managedSession) activityTitle() string {
+	if m.meta.label != "" {
+		return m.meta.label
+	}
+	if m.meta.branch != "" {
+		return m.meta.branch
+	}
+	if m.meta.cwd != "" {
+		return filepath.Base(m.meta.cwd)
+	}
+	id := m.sess.ID()
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
 }
 
 // subscriber owns one client's outbound queue plus the writer goroutine that drains it.
@@ -403,9 +424,24 @@ func (m *managedSession) run() {
 					log.Printf("session %s (%s): turn start", m.sess.ID(), m.sess.Provider())
 				case protocol.StatusIdle, protocol.StatusDone:
 					log.Printf("session %s (%s): turn end (%s)", m.sess.ID(), m.sess.Provider(), ss.Status)
+					// Record a "finished" activity item only when a real turn actually ran (saw deltas),
+					// so idle re-attaches don't spam the feed.
+					m.mu.Lock()
+					ran := m.wasRunning
+					m.mu.Unlock()
+					if ran {
+						m.hub.recordActivity(activity.Event{
+							Kind: activity.KindFinished, SessionID: m.sess.ID(), Provider: m.sess.Provider(),
+							Project: m.meta.cwd, Title: m.activityTitle() + " finished",
+						})
+					}
 				case protocol.StatusError:
 					log.Printf("session %s (%s): turn ERROR: %s", m.sess.ID(), m.sess.Provider(), ss.Detail)
 					_ = m.hub.tr().Append(m.sess.ID(), transcript.Entry{Kind: "status", Text: "error", Detail: ss.Detail})
+					m.hub.recordActivity(activity.Event{
+						Kind: activity.KindError, SessionID: m.sess.ID(), Provider: m.sess.Provider(),
+						Project: m.meta.cwd, Title: m.activityTitle() + " errored", Detail: ss.Detail, NeedsYou: true,
+					})
 				}
 				m.onStatus(ss)
 			}

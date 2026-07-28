@@ -21,6 +21,7 @@ import (
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/agent/cli"
 	"github.com/howlerops/oculus/daemon/fsaccess"
+	"github.com/howlerops/oculus/daemon/activity"
 	"github.com/howlerops/oculus/daemon/issues"
 	"github.com/howlerops/oculus/daemon/loghub"
 	"github.com/howlerops/oculus/daemon/telemetry"
@@ -60,6 +61,7 @@ type Hub struct {
 	logHub        *loghub.Hub                    // optional: live daemon-log stream (Developer log panel)
 	logSubs       map[*transport.Conn]bool       // clients subscribed to the log stream
 	transcripts   *transcript.Store              // optional: durable append-only per-session transcript (never-lose-work)
+	activity      *activity.Store                // optional: cross-session activity feed (Activity destination backbone)
 	loopEngine    *loops.Engine                  // optional: recurring autonomous ticket workflows
 	agentsPath    string                         // path to ~/.oculus/agents.json (custom CLI agents)
 	agentHidePath string                         // path to ~/.oculus/agent-visibility.json (hidden names)
@@ -509,6 +511,37 @@ func (h *Hub) SetTranscripts(t *transcript.Store) {
 	h.mu.Unlock()
 }
 
+// SetActivity attaches the cross-session activity store and fans each new event out to every client
+// as an activity.event broadcast (feeds the Activity destination, Needs-You inbox, and ticker).
+func (h *Hub) SetActivity(a *activity.Store) {
+	h.mu.Lock()
+	h.activity = a
+	h.mu.Unlock()
+	if a != nil {
+		a.SetListener(func(e activity.Event) {
+			h.broadcast(protocol.TypeActivityEvent, toProtoActivity(e))
+		})
+	}
+}
+
+// recordActivity records one cross-session event (no-op if the store isn't attached). Called from
+// the event pump (turn end/error), approvals (needs-you), and the loops engine.
+func (h *Hub) recordActivity(e activity.Event) {
+	h.mu.Lock()
+	a := h.activity
+	h.mu.Unlock()
+	if a != nil {
+		a.Record(e)
+	}
+}
+
+func toProtoActivity(e activity.Event) protocol.ActivityEvent {
+	return protocol.ActivityEvent{
+		ID: e.ID, TS: e.TS, Kind: e.Kind, SessionID: e.SessionID, Provider: e.Provider,
+		Project: e.Project, Title: e.Title, Detail: e.Detail, NeedsYou: e.NeedsYou, Read: e.Read,
+	}
+}
+
 // tr returns the transcript store (nil if not attached) without holding the lock at call sites.
 func (h *Hub) tr() *transcript.Store {
 	h.mu.Lock()
@@ -616,6 +649,10 @@ func (h *Hub) spawnLoopRun(lp loops.Loop, iss *loops.Issue) (string, error) {
 		ms.budgetUSD = lp.BudgetUSD
 		ms.mu.Unlock()
 		go ms.run()
+		h.recordActivity(activity.Event{
+			Kind: activity.KindLoopRun, SessionID: ms.sess.ID(), Provider: lp.Provider,
+			Title: "Loop “" + lp.Name + "” started a run",
+		})
 		return ms.sess.ID(), nil
 	}
 
@@ -656,6 +693,10 @@ func (h *Hub) spawnLoopRun(lp loops.Loop, iss *loops.Issue) (string, error) {
 		go h.writeBackStarted(full.Provider, full.ID, full.TeamID)
 	}
 	go ms.run()
+	h.recordActivity(activity.Event{
+		Kind: activity.KindLoopRun, SessionID: ms.sess.ID(), Provider: lp.Provider,
+		Title: "Loop “" + lp.Name + "” picked up " + iss.Key, Detail: iss.Title,
+	})
 	return ms.sess.ID(), nil
 }
 
@@ -1203,6 +1244,14 @@ func (h *Hub) pushApproval(ar protocol.ApprovalRequest) {
 		Category: "APPROVAL",
 		ThreadID: ar.SessionID,
 		Custom:   map[string]any{"approval_id": ar.ApprovalID, "session_id": ar.SessionID},
+	})
+	// An approval request is the canonical "needs you" signal — surface it in the Activity inbox.
+	title := "Agent needs approval"
+	if m := h.managed(ar.SessionID); m != nil {
+		title = m.activityTitle() + " needs approval"
+	}
+	h.recordActivity(activity.Event{
+		Kind: activity.KindNeedsInput, SessionID: ar.SessionID, Title: title, Detail: ar.Tool, NeedsYou: true,
 	})
 }
 
@@ -2775,6 +2824,29 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.mu.Lock()
 		delete(h.logSubs, conn)
 		h.mu.Unlock()
+		h.sendOK(conn, env.ID, nil)
+
+	case protocol.TypeActivityList:
+		h.mu.Lock()
+		a := h.activity
+		h.mu.Unlock()
+		out := protocol.ActivityList{Events: []protocol.ActivityEvent{}}
+		if a != nil {
+			for _, e := range a.Recent() {
+				out.Events = append(out.Events, toProtoActivity(e))
+			}
+		}
+		h.sendOK(conn, env.ID, out)
+
+	case protocol.TypeActivityMarkRead:
+		var req protocol.ActivityMarkRead
+		_ = env.Unmarshal(&req)
+		h.mu.Lock()
+		a := h.activity
+		h.mu.Unlock()
+		if a != nil {
+			a.MarkRead(req.IDs)
+		}
 		h.sendOK(conn, env.ID, nil)
 
 	case protocol.TypeLSPHover:

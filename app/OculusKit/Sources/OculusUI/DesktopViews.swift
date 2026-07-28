@@ -220,8 +220,17 @@ public struct RootView: View {
     @State private var showNewSession = false
     @State private var newSessionTakeOver = false
     @State private var selectedTab = 0
+    // Command Deck: the active top-level destination. macOS = nav-rail selection; iOS = bottom tab.
+    // iOS defaults to Activity (index-of .activity) — the phone is a triage inbox; macOS opens on Sessions.
+    #if os(macOS)
+    @State private var destination: Destination = .sessions
+    #else
+    @State private var destination: Destination = .activity
+    #endif
     @State private var searchText = ""
     @State private var reviewSessionID: String?
+    @State private var selectedLoopID: String?     // Loops destination: which loop the detail edits (nil = new/templates)
+    @State private var editingLoop = false          // Loops destination: detail shows the editor
     @AppStorage("oculus.appearance") private var appearance: Appearance = .system
     #if os(macOS)
     @StateObject private var launcher = DaemonLauncher()
@@ -311,28 +320,11 @@ public struct RootView: View {
     /// close/reopen. iOS keeps a bottom TabView, which is the right idiom there.
     @ViewBuilder private func mainSurface(_ model: Model) -> some View {
         #if os(macOS)
-        // The "no sessions" CTA is only correct once we're actually CONNECTED and the list is
-        // genuinely empty. While still connecting (e.g. right after a restart), show the split so
-        // the sidebar's "Connecting…" status is visible and sessions appear as they load — rather
-        // than a misleading empty-state that lingered until the user quit and reopened.
-        if model.sessions.isEmpty && model.connected {
-            Group {
-                if selectedTab == 1 {
-                    IssuesView(model: model, palette: palette, embedded: true) { selectedTab = 0 }
-                } else {
-                    EmptySessionsCTA(palette: palette,
-                                     onNew: { newSessionTakeOver = false; showNewSession = true },
-                                     onTakeOver: { newSessionTakeOver = true; showNewSession = true })
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(palette.background)
-            .toolbar { modeToolbar(model) }
-            .toolbarBackground(.visible, for: .windowToolbar) // unified flat bar (see detailPane)
-            .sheet(isPresented: $showNewSession) {
-                NewSessionView(model: model, palette: palette, initialTakeOver: newSessionTakeOver) { showNewSession = false }
-            }
-        } else {
+        // Command Deck always renders the split view — the destination rail (Sessions · Loops ·
+        // Fleet · Issues · Activity) plus the per-destination list and detail. Empty/connecting
+        // states are handled inside the sidebar list and the Sessions detail, so there's no second
+        // layout to keep in sync.
+        Group {
         // NavigationSplitView on macOS 26 ignores the height proposal and reports its own
         // ideal (~1884pt), which the window host then centers — so the sidebar's content
         // hangs above the viewport and can't scroll. A GeometryReader gives us the real
@@ -340,25 +332,22 @@ public struct RootView: View {
         // to it, overriding its runaway ideal.
         GeometryReader { proxy in
             NavigationSplitView {
-                SessionSidebar(store: store, model: model, selection: $selection, searchText: $searchText,
-                               onReview: { sid in reviewSessionID = sid; selectedTab = 2 },
-                               onTakeOver: { newSessionTakeOver = true; showNewSession = true },
-                               onCheckForUpdates: { checkForUpdates = true },
-                               loginAtLogin: loginItem.enabled,
-                               loginAtLoginError: loginItem.lastError,
-                               onToggleLoginAtLogin: { on in Task { await loginItem.setEnabled(on, launcher: launcher) } },
-                               updates: updates,
-                               onOpenLoops: { panel = .loops },
-                               onOpenAgents: { panel = .agents })
-                    .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 340)
+                // Command Deck sidebar: the persistent destination rail on top (Sessions · Loops ·
+                // Fleet · Issues · Activity + Needs-You), then the contextual list for the selected
+                // destination below it — so every capability is a first-glance destination, nothing
+                // is a modal sheet or a "⋯" menu item.
+                VStack(spacing: 0) {
+                    DestinationRail(destination: $destination, model: model, palette: palette)
+                    Divider().overlay(palette.border)
+                    deckList(model)
+                }
+                .background(palette.background)
+                .navigationSplitViewColumnWidth(min: 250, ideal: 290, max: 360)
             } detail: {
-                detailPane(model)
-                    // Clamp the detail column to the window height. The split view sizes to its
-                    // tallest column's ideal; ChatView's flexible (maxHeight:.infinity) empty
-                    // state measured as a runaway ~1884pt ideal and inflated the whole split
-                    // view (and thus the sidebar), while the fixed-height IssuesView did not.
-                    // Pinning the detail to proxy.size.height decouples the two so no detail
-                    // content can ever blow up the sidebar.
+                deckDetail(model)
+                    // Clamp the detail column to the window height (see original note): the split view
+                    // sizes to its tallest column's ideal; a flexible detail measured as a runaway
+                    // ideal and inflated the sidebar. Pinning decouples them.
                     .frame(height: proxy.size.height)
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
@@ -369,87 +358,151 @@ public struct RootView: View {
         }
         }
         #else
-        // iPhone is compact: a NavigationStack that PUSHES the chat when a session opens. (A
-        // NavigationSplitView only navigates via a List(selection:), but the sidebar rows are
-        // custom buttons, so tapping did nothing.) Push is driven by showSessionDetail, set from
-        // both a row tap (handleSelection) and a freshly-created session (onChange of currentSession).
-        TabView(selection: $selectedTab) {
+        // iPhone: the Command Deck collapses to a five-tab bar — the same five destinations, with
+        // Activity CENTERED and default, because the phone is a remote triage inbox ("what needs
+        // me?"). Each tab is its own NavigationStack (list → push detail). The needs-you count
+        // badges the Activity tab.
+        TabView(selection: $destination) {
+            // Sessions
             NavigationStack {
                 SessionSidebar(store: store, model: model, selection: $selection, searchText: $searchText,
-                               onOpenLoops: { panel = .loops },
+                               onOpenLoops: { destination = .loops },
                                onOpenAgents: { panel = .agents })
-                    .navigationDestination(isPresented: $showSessionDetail) {
-                        ChatView(model: model)
-                    }
+                    .navigationDestination(isPresented: $showSessionDetail) { ChatView(model: model) }
             }
             .onChange(of: selection) { handleSelection($0, model) }
             .onChange(of: model.currentSession?.id) { if $0 != nil { showSessionDetail = true } }
-            .onChange(of: model.startingSession) { if $0 { showSessionDetail = false } } // show the skeleton on the list, push when ready
+            .onChange(of: model.startingSession) { if $0 { showSessionDetail = false } }
             .sheet(isPresented: $showNewSession) {
                 NewSessionView(model: model, palette: palette, initialTakeOver: newSessionTakeOver) { showNewSession = false }
             }
-            .tabItem { Label("Sessions", systemImage: "bubble.left.and.bubble.right.fill") }
-            .tag(0)
+            .tabItem { Label("Sessions", systemImage: Destination.sessions.symbol) }
+            .tag(Destination.sessions)
 
-            IssuesView(model: model, palette: palette) { selectedTab = 0 }
-                .tabItem { Label("Issues", systemImage: "checklist") }
-                .tag(1)
-        }
-        #endif
-    }
-
-    /// The detail column plus the Sessions/Issues mode switch, which lives in the detail
-    /// toolbar (a segmented control centered in the wide detail titlebar) rather than the
-    /// narrow, layout-fragile sidebar top. It swaps the detail between the chat and issues.
-    @ViewBuilder private func detailPane(_ model: Model) -> some View {
-        Group {
-            switch selectedTab {
-            case 1:
-                IssuesView(model: model, palette: palette, embedded: true) { selectedTab = 0 }
-            case 2:
-                // Scope the file tree to the active session's workspace (per-session code view);
-                // fall back to browsing all roots when no session is open.
-                let codeSession = reviewSessionID ?? model.currentSession?.id
-                CodeSurface(model: model, sessionID: codeSession, reviewSessionID: reviewSessionID)
-                    .id((codeSession ?? "browse") + (reviewSessionID != nil ? ":review" : "")) // reload on session/target change
-            default:
-                ChatView(model: model)
+            // Loops
+            NavigationStack {
+                LoopsView(model: model, palette: palette,
+                          onOpenSession: { sid in openMobile(sid, model) }, onClose: {})
+                    .navigationTitle("Loops")
             }
-        }
-        // Stable identity per tab + a solid backing: switching the detail between IssuesView and
-        // ChatView changes the view TYPE, which the macOS NavigationSplitView detail could leave
-        // blank (white) without a distinct id; the background guarantees it's never bare white.
-        .id(selectedTab)
-        .background(palette.background)
-        #if os(macOS)
-        .toolbar { modeToolbar(model) }
-        // Flat, cohesive: force the toolbar's material to always show as ONE continuous bar
-        // (the native unified-titlebar look, sharing the window's sidebar material) instead of
-        // macOS 26's floating glass pills hovering over the clear titlebar — which read as a
-        // detached "floating nav bar" clashing with the flat content beneath.
-        .toolbarBackground(.visible, for: .windowToolbar)
-        // If the open session closes while Code is showing, fall back to Sessions.
-        .onChange(of: model.currentSession?.id) { sid in
-            if selectedTab == 2 && sid == nil && reviewSessionID == nil { selectedTab = 0 }
+            .tabItem { Label("Loops", systemImage: Destination.loops.symbol) }
+            .tag(Destination.loops)
+
+            // Activity (default / centered)
+            NavigationStack {
+                ActivityView(model: model, palette: palette, onOpen: { sid in openMobile(sid, model) })
+                    .navigationTitle("Activity")
+                    .navigationDestination(isPresented: $showSessionDetail) { ChatView(model: model) }
+            }
+            .tabItem { Label("Activity", systemImage: Destination.activity.symbol) }
+            .badge(model.needsYouCount)
+            .tag(Destination.activity)
+
+            // Fleet
+            NavigationStack {
+                FleetView(model: model, palette: palette, onOpen: { sid in openMobile(sid, model) }, onClose: {})
+                    .navigationTitle("Fleet")
+                    .navigationDestination(isPresented: $showSessionDetail) { ChatView(model: model) }
+            }
+            .tabItem { Label("Fleet", systemImage: Destination.fleet.symbol) }
+            .tag(Destination.fleet)
+
+            // Issues
+            IssuesView(model: model, palette: palette) { destination = .sessions }
+                .tabItem { Label("Issues", systemImage: Destination.issues.symbol) }
+                .tag(Destination.issues)
         }
         #endif
     }
+
+    #if !os(macOS)
+    /// Open a session from Activity/Fleet on iOS: switch to Sessions and push the chat.
+    private func openMobile(_ sid: String, _ model: Model) {
+        Task { await model.openSession(sid) }
+        destination = .sessions
+        showSessionDetail = true
+    }
+    #endif
 
     #if os(macOS)
-    /// The Sessions/Issues/Code segmented switch (Code only while a session is open — it's a
-    /// per-session view). Shared by the split view and the empty state.
-    @ToolbarContentBuilder private func modeToolbar(_ model: Model) -> some ToolbarContent {
-        ToolbarItem(placement: .principal) {
-            Picker("View", selection: $selectedTab) {
-                Text("Sessions").tag(0)
-                Text("Issues").tag(1)
-                if hasSession(model) {
-                    Text("Code").tag(2)
+    /// The sidebar's contextual LIST column, per destination. Sessions & Fleet share the session
+    /// list (the fleet IS the set of sessions); Loops gets a compact loop list; Issues a slim board
+    /// hint (its own project picker lives in the detail board); Activity is list-dominant.
+    @ViewBuilder private func deckList(_ model: Model) -> some View {
+        switch destination {
+        case .sessions, .fleet:
+            SessionSidebar(store: store, model: model, selection: $selection, searchText: $searchText,
+                           onReview: { sid in reviewSessionID = sid },
+                           onTakeOver: { newSessionTakeOver = true; showNewSession = true },
+                           onCheckForUpdates: { checkForUpdates = true },
+                           loginAtLogin: loginItem.enabled,
+                           loginAtLoginError: loginItem.lastError,
+                           onToggleLoginAtLogin: { on in Task { await loginItem.setEnabled(on, launcher: launcher) } },
+                           updates: updates,
+                           onOpenLoops: { destination = .loops },
+                           onOpenAgents: { panel = .agents })
+
+        case .loops:
+            LoopsListColumn(model: model, palette: palette, selected: $selectedLoopID,
+                            onOpen: { id in selectedLoopID = id; editingLoop = true },
+                            onNew: { selectedLoopID = nil; editingLoop = true })
+        case .issues:
+            DestinationHint(palette: palette, symbol: "checklist", title: "Issues",
+                            message: "Your tracker board is in the detail pane — filter by project, drag cards between real statuses, and open in Jira or Linear.")
+        case .activity:
+            ActivityView(model: model, palette: palette, onOpen: { sid in openFromActivity(sid, model) })
+
+        }
+    }
+
+    /// The DETAIL column, per destination. This is where the primary surface for each destination
+    /// lives — no modal sheets.
+    @ViewBuilder private func deckDetail(_ model: Model) -> some View {
+        Group {
+            switch destination {
+            case .sessions:
+                if let codeSession = codeTarget(model) {
+                    CodeSurface(model: model, sessionID: codeSession, reviewSessionID: reviewSessionID)
+                        .id((codeSession) + (reviewSessionID != nil ? ":review" : ""))
+                } else {
+                    ChatView(model: model)
+                }
+            case .fleet:
+                FleetView(model: model, palette: palette, onOpen: { sid in openFromActivity(sid, model) }, onClose: {})
+            case .loops:
+                LoopDetail(model: model, palette: palette, loopID: selectedLoopID, editing: editingLoop,
+                           onOpenSession: { sid in openFromActivity(sid, model) },
+                           onDone: { editingLoop = false })
+            case .issues:
+                IssuesView(model: model, palette: palette, embedded: true) { destination = .sessions }
+            case .activity:
+                if model.currentSession != nil {
+                    ChatView(model: model)
+                } else {
+                    DestinationHint(palette: palette, symbol: "waveform.path.ecg", title: "Activity",
+                                    message: "Pick an item on the left to jump to that session. Needs-you items are pinned to the top.")
                 }
             }
-            .pickerStyle(.segmented)
-            .frame(width: hasSession(model) ? 210 : 150)
         }
+        .id(destination)
+        .background(palette.background)
+        .toolbarBackground(.visible, for: .windowToolbar)
+        .onChange(of: model.currentSession?.id) { sid in
+            if destination == .sessions && sid == nil { reviewSessionID = nil }
+        }
+    }
+
+    /// Code view is a per-session sub-mode of Sessions, reached via the Review action.
+    private func codeTarget(_ model: Model) -> String? {
+        reviewSessionID
+    }
+
+    /// Jump to a session from Activity/Fleet: switch to Sessions and open it.
+    private func openFromActivity(_ sid: String, _ model: Model) {
+        destination = .sessions
+        reviewSessionID = nil
+        Task { await model.openSession(sid) }
+        showSessionDetail = true
     }
     #endif
 

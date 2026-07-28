@@ -206,7 +206,19 @@ struct SessionSidebar: View {
                 Section {
                     ForEach(group.items) { item in
                         let selected = model.sessionID == item.id
-                        Button { selection = item.id } label: {
+                        // Signifier is the action: a broken (errored/no-response) session RECONNECTS
+                        // on tap — routing the visible ✖ chip straight to Recover — then opens. A
+                        // healthy row just opens. This unifies Recover / Restart / reattach behind
+                        // the one affordance the user already sees.
+                        Button {
+                            if item.hasError {
+                                Task { await model.recoverSession(item.id) }
+                            } else if item.stopped {
+                                Task { await model.restartSession(item.id) }
+                            } else {
+                                selection = item.id
+                            }
+                        } label: {
                             SessionRow(item: item, active: selected,
                                        showProvider: group.showProvider, showProject: group.showProject,
                                        palette: palette)
@@ -596,9 +608,9 @@ private struct SessionRow: View {
             // terminal glyph for sessions started outside the app (discovered — clicking
             // resumes them). Managed idle sessions carry no chip; they're the plain default.
             if item.hasError {
-                // A background session whose last turn errored / got no response — flag it so it
-                // doesn't fail invisibly while you're looking at another session.
-                chip(icon: "exclamationmark.triangle.fill", text: "Check", tint: palette.destructive, filled: true)
+                // A background session whose last turn errored / got no response. The chip IS the
+                // fix — tapping the row reconnects it (recover, keeping history).
+                chip(icon: "xmark.octagon.fill", text: "Reconnect", tint: palette.destructive, filled: true)
             } else if item.isRunning {
                 chip(icon: "circle.fill", text: "Live", tint: palette.primary, filled: true)
             } else if item.stopped {

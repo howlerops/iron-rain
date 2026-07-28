@@ -168,6 +168,10 @@ public final class Model: ObservableObject {
     // Per-session error detail for BACKGROUND (non-active) sessions, so a session whose sends stopped
     // landing surfaces in the sidebar instead of failing invisibly while you're looking elsewhere.
     @Published public var sessionErrors: [String: String] = [:]
+    // Cross-session activity feed (Activity destination + Needs-You inbox + ticker). Newest first.
+    @Published public var activityFeed: [ActivityEvent] = []
+    /// Count of unread "needs you" items — drives the nav badge, the iOS tab badge, and the app icon.
+    public var needsYouCount: Int { activityFeed.filter { $0.needsYou && !$0.read }.count }
     // Last user message that failed to deliver, stashed so a per-message Retry can resend it verbatim.
     private var pendingRetry: (id: UUID, text: String, images: [ImageAttachment])?
     public var pendingProjectID: String?
@@ -400,6 +404,7 @@ public final class Model: ObservableObject {
         await listProviders() // reflect the daemon's real agent set in the picker
         await listHandoffs()  // seed the handoff index (live updates arrive via handoff.list)
         await loadLoops()     // recurring autonomous workflows
+        await loadActivity()  // cross-session feed + Needs-You inbox
         await loadTelemetryStatus() // reflect the daemon's diagnostics toggle
         // If a session was open when the socket dropped (e.g. the daemon restarted and forgot its
         // in-memory sessions), re-attach it so its transcript + prompts resume.
@@ -1456,6 +1461,24 @@ public final class Model: ObservableObject {
         if let resp = try? await request(MessageType.loopList, payload: Optional<Int>.none),
            let ll = try? resp.payload(as: LoopList.self) { loops = ll.loops; loopRuns = ll.runs }
     }
+
+    /// Loads the cross-session activity feed (newest first) — the Activity destination + Needs-You inbox.
+    public func loadActivity() async {
+        guard client != nil else { return }
+        if let resp = try? await request(MessageType.activityList, payload: Optional<Int>.none),
+           let al = try? resp.payload(as: ActivityList.self) {
+            activityFeed = al.events.sorted { $0.ts > $1.ts }
+        }
+    }
+
+    /// Marks activity items read (empty = all), clearing the Needs-You badge. Optimistic + persisted daemon-side.
+    public func markActivityRead(_ ids: [String] = []) async {
+        let target = Set(ids)
+        for i in activityFeed.indices where ids.isEmpty || target.contains(activityFeed[i].id) { activityFeed[i].read = true }
+        guard client != nil else { return }
+        _ = try? await client?.send(Protocol.encode(id: UUID().uuidString, type: MessageType.activityMarkRead,
+                                                     payload: ActivityMarkRead(ids: ids.isEmpty ? nil : ids)))
+    }
     public func upsertLoop(_ l: Loop) async {
         guard client != nil else { return }
         _ = try? await request(MessageType.loopUpsert, payload: l)
@@ -2134,6 +2157,12 @@ public final class Model: ObservableObject {
                     if let l = try? env.payload(as: LogLine.self) {
                         daemonLog.append(l.line)
                         if daemonLog.count > 2000 { daemonLog.removeFirst(daemonLog.count - 2000) }
+                    }
+                case MessageType.activityEvent: // new cross-session activity item → prepend to the feed
+                    if let e = try? env.payload(as: ActivityEvent.self) {
+                        activityFeed.removeAll { $0.id == e.id }
+                        activityFeed.insert(e, at: 0)
+                        if activityFeed.count > 500 { activityFeed.removeLast(activityFeed.count - 500) }
                     }
                 case MessageType.lspDiagnostics: // language server published diagnostics for a file
                     if let d = try? env.payload(as: LSPDiagnostics.self) {

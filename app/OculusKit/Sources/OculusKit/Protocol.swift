@@ -48,6 +48,9 @@ public enum MessageType {
     public static let logSubscribe = "log.subscribe"
     public static let logUnsubscribe = "log.unsubscribe"
     public static let logLine = "log.line"
+    public static let activityList = "activity.list"
+    public static let activityEvent = "activity.event"
+    public static let activityMarkRead = "activity.markread"
     public static let jiraSites = "jira.sites"
     public static let jiraSetSite = "jira.set_site"
     public static let worktreeCatchUp = "worktree.catch_up"
@@ -944,6 +947,35 @@ public struct LogHistory: Codable {
 /// One streamed daemon log line (log.line event).
 public struct LogLine: Codable {
     public var line: String
+}
+
+/// One cross-session activity item — the Activity feed, Needs-You inbox, and ticker all read these.
+public struct ActivityEvent: Codable, Identifiable, Equatable {
+    public var id: String
+    public var ts: Int
+    public var kind: String        // finished | needs_input | error | loop_run | loop_pr | started
+    public var sessionID: String?
+    public var provider: String?
+    public var project: String?
+    public var title: String
+    public var detail: String?
+    public var needsYou: Bool
+    public var read: Bool
+    enum CodingKeys: String, CodingKey {
+        case id; case ts; case kind; case sessionID = "session_id"; case provider
+        case project; case title; case detail; case needsYou = "needs_you"; case read
+    }
+}
+
+/// Reply to activity.list: the recent feed (oldest first).
+public struct ActivityList: Codable {
+    public var events: [ActivityEvent]
+}
+
+/// activity.markread payload; empty IDs = mark all read.
+public struct ActivityMarkRead: Codable {
+    public var ids: [String]?
+    public init(ids: [String]? = nil) { self.ids = ids }
 }
 
 public struct IntegrationStatus: Codable {

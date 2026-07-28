@@ -120,6 +120,9 @@ const (
 	TypeLogSubscribe     = "log.subscribe"     // start streaming the daemon's log to this client (replays recent)
 	TypeLogUnsubscribe   = "log.unsubscribe"   // stop streaming the daemon's log
 	TypeLogLine          = "log.line"          // event: one daemon log line
+	TypeActivityList     = "activity.list"     // request → recent cross-session activity events (the feed backbone)
+	TypeActivityEvent    = "activity.event"    // event: one new activity item (finished/needs-you/error/loop)
+	TypeActivityMarkRead = "activity.markread" // mark activity items read (clears the needs-you badge)
 
 	// responses
 	TypeOK    = "ok"
@@ -395,6 +398,30 @@ type Telemetry struct {
 // LogHistory is the reply to log.subscribe: the recently-buffered daemon log lines.
 type LogHistory struct {
 	Lines []string `json:"lines"`
+}
+
+// ActivityEvent is one cross-session activity item (Activity feed / Needs-You inbox / ticker).
+type ActivityEvent struct {
+	ID        string `json:"id"`
+	TS        int64  `json:"ts"`
+	Kind      string `json:"kind"` // finished | needs_input | error | loop_run | loop_pr | started
+	SessionID string `json:"session_id,omitempty"`
+	Provider  string `json:"provider,omitempty"`
+	Project   string `json:"project,omitempty"`
+	Title     string `json:"title"`
+	Detail    string `json:"detail,omitempty"`
+	NeedsYou  bool   `json:"needs_you"`
+	Read      bool   `json:"read"`
+}
+
+// ActivityList is the reply to activity.list: the recent feed (oldest first).
+type ActivityList struct {
+	Events []ActivityEvent `json:"events"`
+}
+
+// ActivityMarkRead marks items read; empty IDs = mark all read.
+type ActivityMarkRead struct {
+	IDs []string `json:"ids,omitempty"`
 }
 
 // LogLine is one streamed daemon log line (event).

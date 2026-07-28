@@ -33,6 +33,7 @@ import (
 	"github.com/howlerops/oculus/daemon/crypto"
 	"github.com/howlerops/oculus/daemon/discovery"
 	"github.com/howlerops/oculus/daemon/hub"
+	"github.com/howlerops/oculus/daemon/activity"
 	"github.com/howlerops/oculus/daemon/issues"
 	"github.com/howlerops/oculus/daemon/loghub"
 	"github.com/howlerops/oculus/daemon/telemetry"
@@ -166,6 +167,11 @@ func serve(args []string) error {
 	if tr := transcript.New(transcriptsDir()); tr != nil {
 		h.SetTranscripts(tr)
 		defer tr.Close()
+	}
+	// Cross-session activity feed (Activity destination / Needs-You inbox / ticker backbone): one
+	// durable typed event log every surface reads from, so they can never desync.
+	if act := activity.New(activityPath(), 500); act != nil {
+		h.SetActivity(act)
 	}
 	go tel.Run(context.Background())
 
@@ -533,6 +539,14 @@ func transcriptsDir() string {
 		return "oculus-transcripts"
 	}
 	return filepath.Join(home, ".oculus", "transcripts")
+}
+
+func activityPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "oculus-activity.jsonl"
+	}
+	return filepath.Join(home, ".oculus", "activity.jsonl")
 }
 
 func loopsPath() string {
