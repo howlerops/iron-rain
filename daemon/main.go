@@ -33,6 +33,7 @@ import (
 	"github.com/howlerops/oculus/daemon/agent/opencode"
 	"github.com/howlerops/oculus/daemon/crypto"
 	"github.com/howlerops/oculus/daemon/discovery"
+	"github.com/howlerops/oculus/daemon/genui"
 	"github.com/howlerops/oculus/daemon/hub"
 	"github.com/howlerops/oculus/daemon/accounts"
 	"github.com/howlerops/oculus/daemon/activity"
@@ -210,6 +211,14 @@ func serve(args []string) error {
 	providers := enableProviders(context.Background(), h, *opencodeURL, *claudeSidecar, *piBin, parseSetupMode(*claudeSetup))
 	if len(providers) == 0 {
 		fmt.Fprintln(os.Stderr, "  warning: no coding-agent providers detected (install opencode, claude-code, or pi and re-run) — serving anyway")
+	}
+	// Install the iron:ui generative-UI skill natively into each present harness (claude-code/pi skills
+	// dirs, codex AGENTS.md) so it lazy-loads there; harmless where absent. The first-turn injection
+	// stays as the universal fallback (opencode + one-shot CLIs).
+	if home, err := os.UserHomeDir(); err == nil {
+		if notes := genui.InstallNativeSkills(home); len(notes) > 0 {
+			log.Printf("iron:ui skill installed: %s", strings.Join(notes, "; "))
+		}
 	}
 	// Let the app trigger a rescan (provider.refresh) without a restart — re-detects harnesses on
 	// PATH. setupOff so a rescan never blocks on an interactive sidecar install. The PATH is logged

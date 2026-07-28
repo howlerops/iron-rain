@@ -65,24 +65,73 @@ func StripGuide(s string) string {
 	}
 }
 
-// MaterializeSkill installs the iron:ui skill natively for a session running in `cwd`, so a
-// skill-aware harness (claude-code and friends) loads it lazily instead of us paying the injection's
-// per-session tokens. It is CONSERVATIVE by design — it only writes where the harness's skill
-// infrastructure ALREADY exists (a `.claude` dir), so it never creates surprise directories or
-// mutates a repo that isn't using skills. Returns the paths written (may be empty). Idempotent:
-// rewrites only when the content differs. The first-turn injection remains the universal fallback.
-func MaterializeSkill(cwd string) []string {
-	if cwd == "" {
+// Marker sentinels for the codex/AGENTS.md managed block — matches codex's own convention of
+// HTML-comment-delimited managed sections, so our block is clearly ours, updatable, and removable.
+const (
+	markerBegin = "<!-- iron:ui BEGIN (managed by Iron Rain — safe to delete) -->"
+	markerEnd   = "<!-- iron:ui END -->"
+)
+
+// InstallNativeSkills installs the iron:ui skill into each PRESENT harness's native location under
+// `home`, so a skill-aware harness lazy-loads it instead of us paying the first-turn injection's
+// tokens. It is CONSERVATIVE and idempotent: each target is gated on that harness's own directory
+// already existing (never creates surprise trees), and a file is rewritten only when its content
+// differs. Returns human-readable notes for what changed. opencode has no global skills directory, so
+// it (and any harness we don't cover) relies on the first-turn injection, which remains universal.
+func InstallNativeSkills(home string) []string {
+	if home == "" {
 		return nil
 	}
-	var written []string
-	// claude-code: project-local .claude/skills/iron-ui/SKILL.md (only if .claude already exists).
-	if dir := filepath.Join(cwd, ".claude"); isDir(dir) {
-		if p, ok := writeSkillFile(filepath.Join(dir, "skills", "iron-ui", "SKILL.md")); ok {
-			written = append(written, p)
+	var notes []string
+	// claude-code + pi share the Agent Skills format (a SKILL.md under a skills dir). Install only if
+	// the harness's parent dir already exists.
+	for _, t := range []struct{ name, parent, skills string }{
+		{"claude-code", filepath.Join(home, ".claude"), filepath.Join(home, ".claude", "skills")},
+		{"pi", filepath.Join(home, ".pi", "agent"), filepath.Join(home, ".pi", "agent", "skills")},
+	} {
+		if !isDir(t.parent) {
+			continue
+		}
+		if p, ok := writeSkillFile(filepath.Join(t.skills, "iron-ui", "SKILL.md")); ok {
+			notes = append(notes, t.name+" → "+p)
 		}
 	}
-	return written
+	// codex reads a global ~/.codex/AGENTS.md and already uses managed marker blocks there, so we
+	// upsert our grammar as one clearly-delimited section rather than a skills folder.
+	if dir := filepath.Join(home, ".codex"); isDir(dir) {
+		path := filepath.Join(dir, "AGENTS.md")
+		if changed, err := upsertMarkerBlock(path, guideBody()); err == nil && changed {
+			notes = append(notes, "codex → "+path)
+		}
+	}
+	return notes
+}
+
+// upsertMarkerBlock ensures `path` contains exactly one iron:ui managed block wrapping `body`. It
+// appends the block if absent and replaces it in place if present (and stale), leaving the rest of the
+// file untouched. Returns whether the file changed. Creating the file is fine (codex's dir exists).
+func upsertMarkerBlock(path, body string) (bool, error) {
+	block := markerBegin + "\n" + body + "\n" + markerEnd
+	cur, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return false, err
+	}
+	s := string(cur)
+	i := strings.Index(s, markerBegin)
+	j := strings.Index(s, markerEnd)
+	var next string
+	if i >= 0 && j > i {
+		next = s[:i] + block + s[j+len(markerEnd):]
+	} else {
+		if s != "" && !strings.HasSuffix(s, "\n") {
+			s += "\n"
+		}
+		next = s + "\n" + block + "\n"
+	}
+	if next == s {
+		return false, nil
+	}
+	return true, os.WriteFile(path, []byte(next), 0o644)
 }
 
 // SyncRepoSkill mirrors the canonical skill.md into the repo's portable skills/ folder
