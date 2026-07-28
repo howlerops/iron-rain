@@ -548,7 +548,11 @@ struct SessionSidebar: View {
 
         for s in model.sessions {
             let isChild = !(s.parentID?.isEmpty ?? true)
-            let title = clean(s.subtask) ?? clean(s.name) ?? s.workspaceName ?? clean(s.title) ?? clean(discoveredTitles[s.id]) ?? s.folderName ?? "ses \(s.id.prefix(6))"
+            // Split into shorter chains — one long ?? expression made the Swift type-checker time out
+            // in Release builds.
+            let named = clean(s.subtask) ?? clean(s.name) ?? s.workspaceName
+            let titled = named ?? clean(s.title) ?? clean(discoveredTitles[s.id])
+            let title = titled ?? s.folderName ?? "ses \(s.id.prefix(6))"
             let key = s.projectID.flatMap { projectNames[$0] } ?? ((s.projectID?.isEmpty ?? true) ? "On this Mac" : s.projectID!)
             add(key, SidebarSession(id: s.id, title: title, provider: s.provider, projectName: key,
                                     branch: s.branch, isRunning: s.status == SessionStatusValue.running,
