@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	mrand "math/rand"
 	"strings"
@@ -123,6 +124,12 @@ func serve(args []string) error {
 	// Only `log` output is captured; the pairing-QR banner (printed with fmt) stays out of the stream.
 	lh := loghub.New(1000)
 	log.SetOutput(io.MultiWriter(os.Stderr, lh))
+
+	// Under launchd the daemon inherits a minimal PATH, so agent harnesses installed via nvm /
+	// homebrew (which live in ~/.zshrc, not the login-only path) aren't found — the "native agents
+	// aren't detected on my other Mac" bug. Merge in the user's real interactive-shell PATH + common
+	// tool dirs so LookPath finds opencode/claude/node/pi/codex/gemini regardless of how they run us.
+	augmentPATH()
 
 	// Keep the daemon in lockstep with releases: if a newer one exists, self-update + re-exec BEFORE
 	// binding, so every (re)start runs the latest. No-op for dev builds / non-installs. This is why
@@ -547,6 +554,67 @@ func integrationsPath() string {
 		return "oculus-integrations.json"
 	}
 	return filepath.Join(home, ".oculus", "integrations.json")
+}
+
+// augmentPATH merges the user's real interactive-login-shell PATH plus common tool directories into
+// this process's PATH, so agent-harness detection works even when the daemon runs under launchd with
+// a stripped-down PATH. Best-effort and idempotent (a dir already present isn't re-added).
+func augmentPATH() {
+	current := os.Getenv("PATH")
+	have := map[string]bool{}
+	var order []string
+	add := func(dir string) {
+		dir = strings.TrimSpace(dir)
+		if dir == "" || have[dir] {
+			return
+		}
+		if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+			return
+		}
+		have[dir] = true
+		order = append(order, dir)
+	}
+	for _, d := range filepath.SplitList(current) {
+		add(d)
+	}
+
+	// The user's real PATH from an interactive login shell — this is where nvm/homebrew set it
+	// (~/.zshrc is interactive-only, so a plain login shell would miss it). Bounded so a slow rc
+	// file can't hang startup.
+	if shell := os.Getenv("SHELL"); shell != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cmd := exec.CommandContext(ctx, shell, "-ilc", "printf %s \"$PATH\"")
+		out, err := cmd.Output()
+		cancel()
+		if err == nil {
+			for _, d := range filepath.SplitList(strings.TrimSpace(string(out))) {
+				add(d)
+			}
+		}
+	}
+
+	// Common macOS/Linux tool locations, as a backstop.
+	home, _ := os.UserHomeDir()
+	for _, d := range []string{
+		"/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/sbin",
+		filepath.Join(home, ".local", "bin"), filepath.Join(home, "go", "bin"),
+		filepath.Join(home, ".bun", "bin"), filepath.Join(home, ".deno", "bin"),
+		filepath.Join(home, ".cargo", "bin"),
+	} {
+		add(d)
+	}
+	// nvm-managed node versions (opencode/claude/codex are often npm-global there).
+	if matches, _ := filepath.Glob(filepath.Join(home, ".nvm", "versions", "node", "*", "bin")); len(matches) > 0 {
+		for _, d := range matches {
+			add(d)
+		}
+	}
+
+	merged := strings.Join(order, string(os.PathListSeparator))
+	if merged != current {
+		_ = os.Setenv("PATH", merged)
+		log.Printf("PATH augmented for agent detection (%d dirs)", len(order))
+	}
 }
 
 func accountsPath() string {

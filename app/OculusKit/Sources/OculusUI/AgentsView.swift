@@ -85,6 +85,26 @@ public struct ManageAgentsView: View {
                 Section {
                     Text("Detected agents are auto-found — native integrations plus any CLIs on your PATH. Tap the ☆ to set your DEFAULT harness (used for new sessions + chats). Turn one off to hide it from the pickers without removing it.")
                         .font(.caption).foregroundStyle(palette.mutedForeground)
+                    // Always-visible controls: check-for/detect agents + add a new one.
+                    HStack(spacing: 10) {
+                        Button {
+                            rescanning = true
+                            Task { await model.rescanAgents(); rescanning = false }
+                        } label: {
+                            if rescanning { ProgressView().controlSize(.small) }
+                            else { Label("Check for agents", systemImage: "arrow.clockwise") }
+                        }
+                        .buttonStyle(.bordered).disabled(rescanning)
+                        Button { creating = true } label: { Label("Add agent…", systemImage: "plus") }
+                            .buttonStyle(.bordered)
+                        Spacer()
+                    }
+                    // If nothing is actually available, the daemon can't see your agents on its PATH.
+                    if !model.agents.contains(where: { $0.available }) && !model.agents.isEmpty {
+                        Label("No agents are available — the daemon isn't finding them on its PATH. Tap Check for agents, then open Daemon Logs to see the PATH it searched.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
                 }
                 if !native.isEmpty { agentSection("Native", native, note: "Rich integrations") }
                 if !detected.isEmpty { agentSection("Detected on PATH", detected, note: "Auto-found CLIs") }
