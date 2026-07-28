@@ -74,6 +74,12 @@ struct Composer: View {
         .onChange(of: dictator.transcript) { newValue in
             if dictator.isRecording { draft = newValue }
         }
+        // Design Mode (or any tool) injects context into the draft via model.draftInsert.
+        .onChange(of: model.draftInsert) { text in
+            guard !text.isEmpty else { return }
+            draft = draft.isEmpty ? text : draft + "\n\n" + text
+            model.draftInsert = ""
+        }
         // Voice mode: a finished turn (busy → false) → speak the agent's reply, which then resumes
         // listening. Wire the send closure once the view appears.
         .onChange(of: model.busy) { nowBusy in

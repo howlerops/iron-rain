@@ -174,6 +174,9 @@ public final class Model: ObservableObject {
     public var needsYouCount: Int { activityFeed.filter { $0.needsYou && !$0.read }.count }
     // Last user message that failed to deliver, stashed so a per-message Retry can resend it verbatim.
     private var pendingRetry: (id: UUID, text: String, images: [ImageAttachment])?
+    /// Text to inject into the composer (Design-Mode picked-element block). The Composer observes
+    /// this, appends it to its draft, and clears it.
+    @Published public var draftInsert: String = ""
     public var pendingProjectID: String?
     public var pendingProjectIDs: [String]?  // multi-root workspace (multi-repo)
     public var pendingWorktree = false

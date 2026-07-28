@@ -233,6 +233,7 @@ public struct RootView: View {
     @State private var editingLoop = false          // Loops destination: detail shows the editor
     @State private var showPalette = false          // Cmd-K command palette
     @State private var showFanout = false           // Fan-out composer sheet
+    @State private var showDesign = false            // Design Mode (WebKit element picker) sheet
     @AppStorage("oculus.appearance") private var appearance: Appearance = .system
     #if os(macOS)
     @StateObject private var launcher = DaemonLauncher()
@@ -311,6 +312,11 @@ public struct RootView: View {
                     .sheet(isPresented: $showFanout) {
                         FanoutSheet(model: model, palette: palette, onClose: { showFanout = false })
                     }
+                    #if canImport(WebKit)
+                    .sheet(isPresented: $showDesign) {
+                        DesignModeView(model: model, palette: palette, initialURL: designURL(model), onClose: { showDesign = false })
+                    }
+                    #endif
             }
         }
         // CRITICAL: force the surface to FILL the window instead of sizing to the split
@@ -459,6 +465,13 @@ public struct RootView: View {
     }
     #endif
 
+    /// The initial Design-Mode URL: the active session's dev-server port if a setup hook allocated
+    /// one, else a sensible localhost default.
+    private func designURL(_ model: Model) -> String {
+        if let p = model.currentSession?.port, p > 0 { return "http://localhost:\(p)" }
+        return "http://localhost:3000"
+    }
+
     /// Shared session-open used by the palette (both platforms): go to Sessions and open it.
     private func openSessionNav(_ sid: String, _ model: Model) {
         destination = .sessions
@@ -498,6 +511,12 @@ public struct RootView: View {
                                subtitle: "Run a worktree on a remote box over SSH", symbol: "server.rack") {
             panel = .remotes
         })
+        #if canImport(WebKit)
+        out.append(PaletteItem(id: "act-design", kind: .action, title: "Design mode",
+                               subtitle: "Pick a UI element → HTML/CSS into the prompt", symbol: "cursorarrow.rays") {
+            showDesign = true
+        })
+        #endif
         if model.needsYouCount > 0 {
             out.append(PaletteItem(id: "act-markread", kind: .action, title: "Mark all activity read",
                                    subtitle: "\(model.needsYouCount) need you", symbol: "checkmark.circle") {
