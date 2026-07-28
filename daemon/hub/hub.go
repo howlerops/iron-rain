@@ -3150,6 +3150,13 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			if h.db != nil {
 				_ = h.db.SetName(req.SessionID, "") // clear the orphaned rename
 			}
+		} else {
+			// Not a LIVE session — it's a STOPPED/restartable record (e.g. a claude-code session that
+			// couldn't re-attach after a restart). Deleting it must still drop the durable record, or
+			// it re-appears from the store on every session.list — the "deleted session keeps coming
+			// back" bug for stopped sessions.
+			h.removeSession(req.SessionID)
+			log.Printf("session.stop %s: removed stopped/restartable record", req.SessionID)
 		}
 		h.sendOK(conn, env.ID, nil)
 		// Delete is permanent: tell every client to drop the row.
