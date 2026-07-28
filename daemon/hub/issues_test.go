@@ -68,6 +68,15 @@ func (f *fakeIssueProvider) CreateIssue(context.Context, issues.CreateIssueInput
 func (f *fakeIssueProvider) Projects(context.Context) ([]issues.Project, error) {
 	return []issues.Project{{ID: "team1", Name: "Engineering"}}, nil
 }
+func (f *fakeIssueProvider) Members(context.Context, string, string) ([]issues.User, error) {
+	return []issues.User{{ID: "u1", Name: "Ada"}}, nil
+}
+func (f *fakeIssueProvider) ProjectLabels(context.Context, string) ([]issues.Label, error) {
+	return []issues.Label{{ID: "l1", Name: "bug", Color: "#f00"}}, nil
+}
+func (f *fakeIssueProvider) ProjectCycles(context.Context, string) ([]issues.Cycle, error) {
+	return []issues.Cycle{{ID: "c1", Name: "Sprint 1", State: "active"}}, nil
+}
 
 // TestIssueLaunch: list assigned issues, then launch an agent on one — it runs in a
 // worktree on the issue's branch, links the ticket, and writes back (transition + comment).

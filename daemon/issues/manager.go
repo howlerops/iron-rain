@@ -273,6 +273,33 @@ func (m *Manager) Update(ctx context.Context, provider, issueID string, f Update
 	return p.Update(ctx, issueID, f)
 }
 
+// Members lists assignable users for the assignee picker (projectID = team/project, issueID = key).
+func (m *Manager) Members(ctx context.Context, provider, projectID, issueID string) ([]User, error) {
+	p := m.Provider(provider)
+	if p == nil {
+		return nil, fmt.Errorf("%s not connected", provider)
+	}
+	return p.Members(ctx, projectID, issueID)
+}
+
+// ProjectLabels lists a project/team's labels for the label picker.
+func (m *Manager) ProjectLabels(ctx context.Context, provider, projectID string) ([]Label, error) {
+	p := m.Provider(provider)
+	if p == nil {
+		return nil, fmt.Errorf("%s not connected", provider)
+	}
+	return p.ProjectLabels(ctx, projectID)
+}
+
+// ProjectCycles lists a project/team's sprints/cycles for the sprint picker.
+func (m *Manager) ProjectCycles(ctx context.Context, provider, projectID string) ([]Cycle, error) {
+	p := m.Provider(provider)
+	if p == nil {
+		return nil, fmt.Errorf("%s not connected", provider)
+	}
+	return p.ProjectCycles(ctx, projectID)
+}
+
 // AddComment posts a new comment on an issue (wraps the provider's Comment method).
 func (m *Manager) AddComment(ctx context.Context, provider, issueID, body string) error {
 	p := m.Provider(provider)

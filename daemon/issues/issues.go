@@ -26,6 +26,34 @@ type Issue struct {
 	CycleNumber int    `json:"cycle_number,omitempty"`
 	SprintName  string `json:"sprint_name,omitempty"`  // Jira active sprint (Linear reuses cycle)
 	SprintState string `json:"sprint_state,omitempty"` // "active" | "future" | "closed"
+	// Editable-field detail (set by Detail; enables full two-way editing).
+	AssigneeID string  `json:"assignee_id,omitempty"` // provider id of the assignee (for writes)
+	Labels     []Label `json:"labels,omitempty"`      // labels/tags currently on the issue
+	Estimate   float64 `json:"estimate,omitempty"`    // story points / estimate (0 = none)
+	DueDate    string  `json:"due_date,omitempty"`    // ISO date (YYYY-MM-DD), empty = none
+}
+
+// User is an assignable person on a project (assignee picker).
+type User struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Email  string `json:"email,omitempty"`
+	Avatar string `json:"avatar,omitempty"`
+}
+
+// Label is a tag/label on a project (label picker). Color is a hex string when the provider gives one.
+type Label struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Color string `json:"color,omitempty"`
+}
+
+// Cycle is a sprint (Jira) / cycle (Linear) on a project (sprint picker).
+type Cycle struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Number int    `json:"number,omitempty"`
+	State  string `json:"state,omitempty"` // active | future | closed
 }
 
 // State is a workflow state (a kanban column).
@@ -45,12 +73,18 @@ type Comment struct {
 	CreatedAt string `json:"created_at,omitempty"`
 }
 
-// UpdateFields is a partial issue edit: only non-nil fields are applied.
+// UpdateFields is a partial issue edit: only non-nil fields are applied. A pointer to a zero value is
+// meaningful (e.g. Estimate=0 clears points, DueDate="" clears the date, LabelIDs=[] clears labels).
 type UpdateFields struct {
 	Title       *string
 	Description *string
 	StateID     *string
 	Priority    *int
+	AssigneeID  *string   // "" unassigns
+	LabelIDs    *[]string // full replacement set ([] clears)
+	CycleID     *string   // sprint (Jira) / cycle (Linear) id; "" removes from sprint/cycle
+	Estimate    *float64  // 0 clears
+	DueDate     *string   // "YYYY-MM-DD"; "" clears
 }
 
 // CreateIssueInput is a new-ticket request. Project is a Jira project key / Linear team id;
@@ -104,6 +138,14 @@ type Provider interface {
 	CreateIssue(ctx context.Context, in CreateIssueInput) (Issue, error)
 	// Projects lists the projects/teams this provider exposes (board picker).
 	Projects(ctx context.Context) ([]Project, error)
+
+	// Members lists people who can be assigned (assignee picker). projectID is the team/project key;
+	// issueID is the issue key — Jira scopes assignability by issue, Linear by team.
+	Members(ctx context.Context, projectID, issueID string) ([]User, error)
+	// ProjectLabels lists the labels/tags available on a project/team (label picker).
+	ProjectLabels(ctx context.Context, projectID string) ([]Label, error)
+	// ProjectCycles lists a project/team's sprints (Jira) / cycles (Linear) (sprint picker).
+	ProjectCycles(ctx context.Context, projectID string) ([]Cycle, error)
 }
 
 // categoryFor normalizes a provider status type into our four buckets.

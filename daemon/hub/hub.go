@@ -899,12 +899,17 @@ func (h *Hub) issuesMgr() *issues.Manager {
 }
 
 func toProtoIssue(i issues.Issue) protocol.Issue {
+	labels := make([]protocol.IssueLabel, len(i.Labels))
+	for k, l := range i.Labels {
+		labels[k] = protocol.IssueLabel{ID: l.ID, Name: l.Name, Color: l.Color}
+	}
 	return protocol.Issue{
 		ID: i.ID, Key: i.Key, Title: i.Title, Body: i.Body, Status: i.Status,
 		Category: i.Category, Assignee: i.Assignee, URL: i.URL, Provider: i.Provider,
 		BranchName: i.BranchName, TeamID: i.TeamID, TeamName: i.TeamName, Priority: i.Priority, UpdatedAt: i.UpdatedAt,
 		CycleID: i.CycleID, CycleName: i.CycleName, CycleNumber: i.CycleNumber,
 		SprintName: i.SprintName, SprintState: i.SprintState,
+		AssigneeID: i.AssigneeID, Labels: labels, Estimate: i.Estimate, DueDate: i.DueDate,
 	}
 }
 
@@ -1680,6 +1685,9 @@ func asyncDispatch(typ string) bool {
 		protocol.TypeIssueProjects,       // tracker HTTP (per connected provider)
 		protocol.TypeIssueDetail,         // tracker HTTP
 		protocol.TypeIssueUpdate,         // tracker HTTP
+		protocol.TypeIssueMembers,        // tracker HTTP (assignee picker)
+		protocol.TypeIssueLabels,         // tracker HTTP (label picker)
+		protocol.TypeIssueCycles,         // tracker HTTP (sprint picker)
 		protocol.TypeIssueComment,        // tracker HTTP
 		protocol.TypeIssueCommentEdit,    // tracker HTTP
 		protocol.TypeIssueImage,          // tracker HTTP (image fetch)
@@ -2892,6 +2900,11 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			Description: req.Description,
 			StateID:     req.StateID,
 			Priority:    req.Priority,
+			AssigneeID:  req.AssigneeID,
+			LabelIDs:    req.LabelIDs,
+			CycleID:     req.CycleID,
+			Estimate:    req.Estimate,
+			DueDate:     req.DueDate,
 		})
 		if err != nil {
 			h.sendErr(conn, env.ID, err.Error())
@@ -2901,6 +2914,63 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		// Refresh the merged cache off the reply path so every device's board
 		// reflects the edit (fire-and-forget; the reply already went out).
 		go func() { _ = m.Refresh(context.Background()) }()
+
+	case protocol.TypeIssueMembers:
+		var req protocol.IssueMembersReq
+		_ = env.Unmarshal(&req)
+		m := h.issuesMgr()
+		if m == nil {
+			h.sendErr(conn, env.ID, "integrations not enabled")
+			return
+		}
+		users, err := m.Members(ctx, req.Provider, req.TeamID, req.IssueID)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		out := make([]protocol.IssueUser, len(users))
+		for i, u := range users {
+			out[i] = protocol.IssueUser{ID: u.ID, Name: u.Name, Email: u.Email, Avatar: u.Avatar}
+		}
+		h.sendOK(conn, env.ID, protocol.IssueMemberList{Members: out})
+
+	case protocol.TypeIssueLabels:
+		var req protocol.IssueLabelsReq
+		_ = env.Unmarshal(&req)
+		m := h.issuesMgr()
+		if m == nil {
+			h.sendErr(conn, env.ID, "integrations not enabled")
+			return
+		}
+		labels, err := m.ProjectLabels(ctx, req.Provider, req.TeamID)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		out := make([]protocol.IssueLabel, len(labels))
+		for i, l := range labels {
+			out[i] = protocol.IssueLabel{ID: l.ID, Name: l.Name, Color: l.Color}
+		}
+		h.sendOK(conn, env.ID, protocol.IssueLabelList{Labels: out})
+
+	case protocol.TypeIssueCycles:
+		var req protocol.IssueCyclesReq
+		_ = env.Unmarshal(&req)
+		m := h.issuesMgr()
+		if m == nil {
+			h.sendErr(conn, env.ID, "integrations not enabled")
+			return
+		}
+		cycles, err := m.ProjectCycles(ctx, req.Provider, req.TeamID)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		out := make([]protocol.IssueCycle, len(cycles))
+		for i, c := range cycles {
+			out[i] = protocol.IssueCycle{ID: c.ID, Name: c.Name, Number: c.Number, State: c.State}
+		}
+		h.sendOK(conn, env.ID, protocol.IssueCycleList{Cycles: out})
 
 	case protocol.TypeIssueComment:
 		var req protocol.IssueCommentAdd

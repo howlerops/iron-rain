@@ -77,6 +77,9 @@ const (
 	TypeIssueUpdate         = "issue.update"         // edit issue fields (partial)
 	TypeIssueComment        = "issue.comment"        // add a comment
 	TypeIssueCommentEdit    = "issue.comment.edit"   // edit an existing comment
+	TypeIssueMembers        = "issue.members"        // assignable users for a project/issue (assignee picker)
+	TypeIssueLabels         = "issue.labels"         // a project's labels (label picker)
+	TypeIssueCycles         = "issue.cycles"         // a project's sprints/cycles (sprint picker)
 	TypeIssueImage          = "issue.image"          // proxy an auth-gated attachment image
 
 	// Built-in editor file access — all paths validated against project roots + session cwds.
@@ -632,6 +635,58 @@ type Issue struct {
 	CycleNumber int    `json:"cycle_number,omitempty"`
 	SprintName  string `json:"sprint_name,omitempty"`  // Jira active sprint (Linear reuses cycle)
 	SprintState string `json:"sprint_state,omitempty"` // "active" | "future" | "closed"
+	// Editable-field detail (populated by issue.detail; drives full two-way editing).
+	AssigneeID string       `json:"assignee_id,omitempty"`
+	Labels     []IssueLabel `json:"labels,omitempty"`
+	Estimate   float64      `json:"estimate,omitempty"`
+	DueDate    string       `json:"due_date,omitempty"`
+}
+
+// IssueUser is an assignable person (assignee picker).
+type IssueUser struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Email  string `json:"email,omitempty"`
+	Avatar string `json:"avatar,omitempty"`
+}
+
+// IssueLabel is a tag/label (label picker + on-issue labels).
+type IssueLabel struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Color string `json:"color,omitempty"`
+}
+
+// IssueCycle is a sprint (Jira) / cycle (Linear) (sprint picker).
+type IssueCycle struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Number int    `json:"number,omitempty"`
+	State  string `json:"state,omitempty"`
+}
+
+// Picker requests (client → daemon) + list replies for the ticket editor.
+type IssueMembersReq struct {
+	Provider string `json:"provider"`
+	TeamID   string `json:"team_id"`
+	IssueID  string `json:"issue_id,omitempty"`
+}
+type IssueMemberList struct {
+	Members []IssueUser `json:"members"`
+}
+type IssueLabelsReq struct {
+	Provider string `json:"provider"`
+	TeamID   string `json:"team_id"`
+}
+type IssueLabelList struct {
+	Labels []IssueLabel `json:"labels"`
+}
+type IssueCyclesReq struct {
+	Provider string `json:"provider"`
+	TeamID   string `json:"team_id"`
+}
+type IssueCycleList struct {
+	Cycles []IssueCycle `json:"cycles"`
 }
 
 type IssueList struct {
@@ -723,12 +778,17 @@ type IssueProject struct {
 // IssueUpdate is a partial edit of an issue; only non-nil fields are applied. The
 // reply is the updated Issue.
 type IssueUpdate struct {
-	Provider    string  `json:"provider"`
-	IssueID     string  `json:"issue_id"`
-	Title       *string `json:"title,omitempty"`
-	Description *string `json:"description,omitempty"`
-	StateID     *string `json:"state_id,omitempty"`
-	Priority    *int    `json:"priority,omitempty"`
+	Provider    string    `json:"provider"`
+	IssueID     string    `json:"issue_id"`
+	Title       *string   `json:"title,omitempty"`
+	Description *string   `json:"description,omitempty"`
+	StateID     *string   `json:"state_id,omitempty"`
+	Priority    *int      `json:"priority,omitempty"`
+	AssigneeID  *string   `json:"assignee_id,omitempty"`
+	LabelIDs    *[]string `json:"label_ids,omitempty"`
+	CycleID     *string   `json:"cycle_id,omitempty"`
+	Estimate    *float64  `json:"estimate,omitempty"`
+	DueDate     *string   `json:"due_date,omitempty"`
 }
 
 // IssueCommentAdd adds a comment to an issue. The reply is the created IssueComment.

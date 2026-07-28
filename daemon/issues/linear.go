@@ -222,37 +222,50 @@ func (l *Linear) Projects(ctx context.Context) ([]Project, error) {
 
 // issueFields is the GraphQL selection shared by Detail and Update so both return a
 // fully-populated issue node.
-const issueFields = `id identifier title description url branchName priority updatedAt
-  state { id name type } team { id key name } cycle { id number name }`
+const issueFields = `id identifier title description url branchName priority updatedAt estimate dueDate
+  state { id name type } team { id key name } cycle { id number name }
+  assignee { id name } labels { nodes { id name color } }`
 
 // linearIssueNode mirrors issueFields for JSON decoding.
 type linearIssueNode struct {
-	ID          string `json:"id"`
-	Identifier  string `json:"identifier"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	URL         string `json:"url"`
-	BranchName  string `json:"branchName"`
-	Priority    int    `json:"priority"`
-	UpdatedAt   string `json:"updatedAt"`
+	ID          string  `json:"id"`
+	Identifier  string  `json:"identifier"`
+	Title       string  `json:"title"`
+	Description string  `json:"description"`
+	URL         string  `json:"url"`
+	BranchName  string  `json:"branchName"`
+	Priority    int     `json:"priority"`
+	UpdatedAt   string  `json:"updatedAt"`
+	Estimate    float64 `json:"estimate"`
+	DueDate     string  `json:"dueDate"`
 	State       struct {
 		ID, Name, Type string
 	} `json:"state"`
-	Team  struct{ ID, Key, Name string } `json:"team"`
-	Cycle struct {
+	Team     struct{ ID, Key, Name string } `json:"team"`
+	Cycle    struct {
 		ID     string `json:"id"`
 		Number int    `json:"number"`
 		Name   string `json:"name"`
 	} `json:"cycle"`
+	Assignee struct{ ID, Name string } `json:"assignee"`
+	Labels   struct {
+		Nodes []struct{ ID, Name, Color string } `json:"nodes"`
+	} `json:"labels"`
 }
 
 func (n linearIssueNode) toIssue() Issue {
+	labels := make([]Label, 0, len(n.Labels.Nodes))
+	for _, l := range n.Labels.Nodes {
+		labels = append(labels, Label{ID: l.ID, Name: l.Name, Color: l.Color})
+	}
 	return Issue{
 		ID: n.ID, Key: n.Identifier, Title: n.Title, Body: n.Description, URL: n.URL,
 		Status: n.State.Name, Category: categoryFor(n.State.Type),
 		Provider: "linear", BranchName: n.BranchName, TeamID: n.Team.ID, TeamName: n.Team.Name,
 		Priority: n.Priority, UpdatedAt: n.UpdatedAt,
 		CycleID: n.Cycle.ID, CycleNumber: n.Cycle.Number, CycleName: n.Cycle.Name,
+		AssigneeID: n.Assignee.ID, Assignee: n.Assignee.Name,
+		Estimate: n.Estimate, DueDate: n.DueDate, Labels: labels,
 	}
 }
 
@@ -315,6 +328,33 @@ func buildUpdateInput(f UpdateFields) map[string]any {
 	if f.Priority != nil {
 		input["priority"] = *f.Priority
 	}
+	if f.AssigneeID != nil {
+		if *f.AssigneeID == "" {
+			input["assigneeId"] = nil // unassign
+		} else {
+			input["assigneeId"] = *f.AssigneeID
+		}
+	}
+	if f.LabelIDs != nil {
+		input["labelIds"] = *f.LabelIDs // full replacement set ([] clears)
+	}
+	if f.CycleID != nil {
+		if *f.CycleID == "" {
+			input["cycleId"] = nil
+		} else {
+			input["cycleId"] = *f.CycleID
+		}
+	}
+	if f.Estimate != nil {
+		input["estimate"] = *f.Estimate
+	}
+	if f.DueDate != nil {
+		if *f.DueDate == "" {
+			input["dueDate"] = nil
+		} else {
+			input["dueDate"] = *f.DueDate
+		}
+	}
 	return input
 }
 
@@ -333,6 +373,94 @@ func (l *Linear) Update(ctx context.Context, issueID string, f UpdateFields) (Is
 		return Issue{}, err
 	}
 	return data.IssueUpdate.Issue.toIssue(), nil
+}
+
+// Members lists a team's members (assignee picker). teamID is the Linear team id.
+const membersQuery = `query($teamId: String!) { team(id: $teamId) {
+  members(first: 100) { nodes { id name email active } } } }`
+
+func (l *Linear) Members(ctx context.Context, teamID, _ string) ([]User, error) {
+	var data struct {
+		Team struct {
+			Members struct {
+				Nodes []struct {
+					ID, Name, Email string
+					Active          bool
+				} `json:"nodes"`
+			} `json:"members"`
+		} `json:"team"`
+	}
+	if err := l.gql(ctx, membersQuery, map[string]any{"teamId": teamID}, &data); err != nil {
+		return nil, err
+	}
+	out := make([]User, 0, len(data.Team.Members.Nodes))
+	for _, m := range data.Team.Members.Nodes {
+		if !m.Active {
+			continue
+		}
+		out = append(out, User{ID: m.ID, Name: m.Name, Email: m.Email})
+	}
+	return out, nil
+}
+
+// ProjectLabels lists a team's labels (label picker).
+const labelsQuery = `query($teamId: String!) { team(id: $teamId) {
+  labels(first: 200) { nodes { id name color } } } }`
+
+func (l *Linear) ProjectLabels(ctx context.Context, teamID string) ([]Label, error) {
+	var data struct {
+		Team struct {
+			Labels struct {
+				Nodes []struct{ ID, Name, Color string } `json:"nodes"`
+			} `json:"labels"`
+		} `json:"team"`
+	}
+	if err := l.gql(ctx, labelsQuery, map[string]any{"teamId": teamID}, &data); err != nil {
+		return nil, err
+	}
+	out := make([]Label, 0, len(data.Team.Labels.Nodes))
+	for _, lb := range data.Team.Labels.Nodes {
+		out = append(out, Label{ID: lb.ID, Name: lb.Name, Color: lb.Color})
+	}
+	return out, nil
+}
+
+// ProjectCycles lists a team's cycles (sprint picker). Newest first; the active cycle is flagged.
+const cyclesQuery = `query($teamId: String!) { team(id: $teamId) {
+  cycles(first: 20) { nodes { id name number startsAt endsAt completedAt } }
+  activeCycle { id } } }`
+
+func (l *Linear) ProjectCycles(ctx context.Context, teamID string) ([]Cycle, error) {
+	var data struct {
+		Team struct {
+			Cycles struct {
+				Nodes []struct {
+					ID, Name    string
+					Number      int
+					CompletedAt string `json:"completedAt"`
+				} `json:"nodes"`
+			} `json:"cycles"`
+			ActiveCycle struct{ ID string } `json:"activeCycle"`
+		} `json:"team"`
+	}
+	if err := l.gql(ctx, cyclesQuery, map[string]any{"teamId": teamID}, &data); err != nil {
+		return nil, err
+	}
+	out := make([]Cycle, 0, len(data.Team.Cycles.Nodes))
+	for _, c := range data.Team.Cycles.Nodes {
+		state := "future"
+		if c.CompletedAt != "" {
+			state = "closed"
+		} else if c.ID == data.Team.ActiveCycle.ID {
+			state = "active"
+		}
+		name := c.Name
+		if name == "" {
+			name = fmt.Sprintf("Cycle %d", c.Number)
+		}
+		out = append(out, Cycle{ID: c.ID, Name: name, Number: c.Number, State: state})
+	}
+	return out, nil
 }
 
 const commentUpdateMutation = `mutation($id: String!, $body: String!) {

@@ -6,8 +6,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +36,12 @@ type Jira struct {
 	accessToken  string
 	refreshToken string
 	onRefresh    func(access, refresh string) // persist rotated tokens
+
+	// Per-instance custom-field ids (sprint + story points), discovered once via /field and cached —
+	// their ids vary per site, so they can't be hardcoded. Guarded by mu.
+	fieldsDiscovered bool
+	sprintFieldID    string
+	pointsFieldID    string
 }
 
 // NewJira builds a Basic-auth Jira adapter. site is the Atlassian base URL, email + apiToken are
@@ -481,68 +489,92 @@ func (j *Jira) Projects(ctx context.Context) ([]Project, error) {
 // Detail fetches one issue with its comments and attachments. The sprint field id varies per
 // instance (customfield_10020 is the standard) and is parsed defensively so it never fails the read.
 func (j *Jira) Detail(ctx context.Context, issueKey string) (Issue, []Comment, []Attachment, error) {
-	var data struct {
-		ID     string `json:"id"`
-		Key    string `json:"key"`
-		Fields struct {
-			Summary     string          `json:"summary"`
-			Description json.RawMessage `json:"description"` // ADF object
-			Updated     string          `json:"updated"`
-			Sprint      json.RawMessage `json:"customfield_10020"`
-			Status      struct {
-				Name           string `json:"name"`
-				StatusCategory struct {
-					Key string `json:"key"`
-				} `json:"statusCategory"`
-			} `json:"status"`
-			Priority struct {
-				Name string `json:"name"`
-			} `json:"priority"`
-			Assignee struct {
-				DisplayName string `json:"displayName"`
-			} `json:"assignee"`
-			Project struct {
-				ID, Key, Name string
-			} `json:"project"`
-			Comment struct {
-				Comments []struct {
-					ID     string `json:"id"`
-					Author struct {
-						DisplayName string `json:"displayName"`
-					} `json:"author"`
-					Body    json.RawMessage `json:"body"` // ADF object
-					Created string          `json:"created"`
-				} `json:"comments"`
-			} `json:"comment"`
-			Attachment []struct {
-				ID       string `json:"id"`
-				Filename string `json:"filename"`
-				Content  string `json:"content"` // auth-gated download URL
-				MimeType string `json:"mimeType"`
-				Size     int    `json:"size"`
-			} `json:"attachment"`
-		} `json:"fields"`
+	// Discover the per-instance sprint + story-point field ids so we can request AND read them (best
+	// effort — a discovery failure just means those two fields are omitted, never a failed read).
+	_ = j.discoverFields(ctx)
+	fieldList := "summary,description,status,project,updated,priority,assignee,labels,duedate,comment,attachment"
+	if j.sprintFieldID != "" {
+		fieldList += "," + j.sprintFieldID
 	}
-	// Omit the sprint custom field here too (see ListAssigned) so a bad field id can't fail the read.
-	if err := j.do(ctx, http.MethodGet, "/rest/api/3/issue/"+issueKey+"?fields=summary,description,status,project,updated,priority,assignee,comment,attachment", nil, &data); err != nil {
+	if j.pointsFieldID != "" {
+		fieldList += "," + j.pointsFieldID
+	}
+	// Decode the fields blob twice: once into the typed struct for known fields, and once into a raw
+	// map so the per-instance sprint/points custom fields can be read by their discovered ids.
+	var top struct {
+		ID     string          `json:"id"`
+		Key    string          `json:"key"`
+		Fields json.RawMessage `json:"fields"`
+	}
+	if err := j.do(ctx, http.MethodGet, "/rest/api/3/issue/"+issueKey+"?fields="+fieldList, nil, &top); err != nil {
 		return Issue{}, nil, nil, err
 	}
-	sprintName, sprintState := jiraSprint(data.Fields.Sprint)
+	var f struct {
+		Summary     string          `json:"summary"`
+		Description json.RawMessage `json:"description"`
+		Updated     string          `json:"updated"`
+		Status      struct {
+			Name           string `json:"name"`
+			StatusCategory struct {
+				Key string `json:"key"`
+			} `json:"statusCategory"`
+		} `json:"status"`
+		Priority struct {
+			Name string `json:"name"`
+		} `json:"priority"`
+		Assignee struct {
+			AccountID   string `json:"accountId"`
+			DisplayName string `json:"displayName"`
+		} `json:"assignee"`
+		Labels  []string `json:"labels"`
+		DueDate string   `json:"duedate"`
+		Project struct {
+			ID, Key, Name string
+		} `json:"project"`
+		Comment struct {
+			Comments []struct {
+				ID     string `json:"id"`
+				Author struct {
+					DisplayName string `json:"displayName"`
+				} `json:"author"`
+				Body    json.RawMessage `json:"body"`
+				Created string          `json:"created"`
+			} `json:"comments"`
+		} `json:"comment"`
+		Attachment []struct {
+			ID       string `json:"id"`
+			Filename string `json:"filename"`
+			Content  string `json:"content"`
+			MimeType string `json:"mimeType"`
+			Size     int    `json:"size"`
+		} `json:"attachment"`
+	}
+	_ = json.Unmarshal(top.Fields, &f)
+	var custom map[string]json.RawMessage
+	_ = json.Unmarshal(top.Fields, &custom)
+
+	sprintName, sprintState := jiraSprint(custom[j.sprintFieldID])
+	labels := make([]Label, 0, len(f.Labels))
+	for _, s := range f.Labels {
+		labels = append(labels, Label{ID: s, Name: s})
+	}
 	issue := Issue{
-		ID: data.Key, Key: data.Key, Title: data.Fields.Summary, Body: adfToText(data.Fields.Description),
-		Status: data.Fields.Status.Name, Category: jiraCategory(data.Fields.Status.StatusCategory.Key),
-		Assignee: data.Fields.Assignee.DisplayName, Priority: jiraPriority(data.Fields.Priority.Name),
-		Provider: "jira", TeamID: data.Fields.Project.Key, TeamName: data.Fields.Project.Name,
-		BranchName: branchNameFor(data.Key, data.Fields.Summary),
-		URL:        j.base + "/browse/" + data.Key, UpdatedAt: data.Fields.Updated,
+		ID: top.Key, Key: top.Key, Title: f.Summary, Body: adfToText(f.Description),
+		Status: f.Status.Name, Category: jiraCategory(f.Status.StatusCategory.Key),
+		Assignee: f.Assignee.DisplayName, AssigneeID: f.Assignee.AccountID, Priority: jiraPriority(f.Priority.Name),
+		Provider: "jira", TeamID: f.Project.Key, TeamName: f.Project.Name,
+		BranchName: branchNameFor(top.Key, f.Summary),
+		URL:        j.base + "/browse/" + top.Key, UpdatedAt: f.Updated,
 		SprintName: sprintName, SprintState: sprintState,
+		Labels: labels, DueDate: f.DueDate, Estimate: jiraNumber(custom[j.pointsFieldID]),
 	}
-	comments := make([]Comment, 0, len(data.Fields.Comment.Comments))
-	for _, c := range data.Fields.Comment.Comments {
-		comments = append(comments, Comment{ID: c.ID, Author: c.Author.DisplayName, Body: adfToText(c.Body), CreatedAt: c.Created})
+	comments := make([]Comment, 0, len(f.Comment.Comments))
+	for _, c := range f.Comment.Comments {
+		// Pack the issue key so EditComment (which is issue-scoped in Jira) can recover it.
+		comments = append(comments, Comment{ID: top.Key + "|" + c.ID, Author: c.Author.DisplayName, Body: adfToText(c.Body), CreatedAt: c.Created})
 	}
-	attachments := make([]Attachment, 0, len(data.Fields.Attachment))
-	for _, a := range data.Fields.Attachment {
+	attachments := make([]Attachment, 0, len(f.Attachment))
+	for _, a := range f.Attachment {
 		attachments = append(attachments, Attachment{
 			ID: a.ID, Filename: a.Filename, URL: a.Content, Mime: a.MimeType, Size: a.Size,
 			IsImage: strings.HasPrefix(a.MimeType, "image/"),
@@ -551,18 +583,238 @@ func (j *Jira) Detail(ctx context.Context, issueKey string) (Issue, []Comment, [
 	return issue, comments, attachments, nil
 }
 
-// Update, EditComment, and FetchImage are not implemented for Jira yet; the daemon's
-// rich inspector targets Linear. They keep the Provider interface satisfied.
+// Update applies the non-nil fields of f to a Jira issue. Status changes are a TRANSITION in Jira
+// (not a field), so a StateID is routed through MoveToStatus; every other field is a PUT to the
+// issue's fields. Sprint + story points use per-instance custom-field ids discovered on demand. The
+// refreshed issue is returned via Detail so the UI reflects server-resolved values.
 func (j *Jira) Update(ctx context.Context, issueKey string, f UpdateFields) (Issue, error) {
-	return Issue{}, fmt.Errorf("not supported for jira yet")
+	// Status: a transition, handled separately from field edits.
+	if f.StateID != nil {
+		if err := j.MoveToStatus(ctx, issueKey, *f.StateID); err != nil {
+			return Issue{}, err
+		}
+	}
+	fields := map[string]any{}
+	if f.Title != nil {
+		fields["summary"] = *f.Title
+	}
+	if f.Description != nil {
+		fields["description"] = adfDoc(*f.Description)
+	}
+	if f.Priority != nil {
+		if *f.Priority > 0 {
+			fields["priority"] = map[string]any{"name": jiraPriorityName(*f.Priority)}
+		}
+	}
+	if f.AssigneeID != nil {
+		if *f.AssigneeID == "" {
+			fields["assignee"] = nil // unassign
+		} else {
+			fields["assignee"] = map[string]any{"accountId": *f.AssigneeID}
+		}
+	}
+	if f.LabelIDs != nil {
+		labels := *f.LabelIDs
+		if labels == nil {
+			labels = []string{}
+		}
+		fields["labels"] = labels // Jira labels are the label strings themselves
+	}
+	if f.DueDate != nil {
+		fields["duedate"] = *f.DueDate // "" clears
+	}
+	if f.CycleID != nil || f.Estimate != nil {
+		if err := j.discoverFields(ctx); err != nil {
+			return Issue{}, err
+		}
+		if f.CycleID != nil && j.sprintFieldID != "" {
+			if *f.CycleID == "" {
+				fields[j.sprintFieldID] = nil
+			} else if id, err := strconv.Atoi(*f.CycleID); err == nil {
+				fields[j.sprintFieldID] = id
+			}
+		}
+		if f.Estimate != nil && j.pointsFieldID != "" {
+			if *f.Estimate == 0 {
+				fields[j.pointsFieldID] = nil
+			} else {
+				fields[j.pointsFieldID] = *f.Estimate
+			}
+		}
+	}
+	if len(fields) > 0 {
+		if err := j.do(ctx, http.MethodPut, "/rest/api/3/issue/"+issueKey, map[string]any{"fields": fields}, nil); err != nil {
+			return Issue{}, err
+		}
+	}
+	issue, _, _, err := j.Detail(ctx, issueKey)
+	return issue, err
 }
 
+// discoverFields resolves + caches the per-instance sprint and story-point custom-field ids from
+// GET /field. Runs once; failures are non-fatal for fields we can't find (they're simply skipped).
+func (j *Jira) discoverFields(ctx context.Context) error {
+	j.mu.Lock()
+	done := j.fieldsDiscovered
+	j.mu.Unlock()
+	if done {
+		return nil
+	}
+	var fields []struct {
+		ID     string `json:"id"`
+		Name   string `json:"name"`
+		Schema struct {
+			Custom string `json:"custom"`
+			Type   string `json:"type"`
+		} `json:"schema"`
+	}
+	if err := j.do(ctx, http.MethodGet, "/rest/api/3/field", nil, &fields); err != nil {
+		return err
+	}
+	var sprintID, pointsID string
+	for _, fld := range fields {
+		switch {
+		case fld.Schema.Custom == "com.pyxis.greenhopper.jira:gh-sprint":
+			sprintID = fld.ID
+		case fld.Schema.Custom == "com.pyxis.greenhopper.jira:jsw-story-points" ||
+			fld.Name == "Story Points" || fld.Name == "Story point estimate":
+			if pointsID == "" {
+				pointsID = fld.ID
+			}
+		}
+	}
+	j.mu.Lock()
+	j.sprintFieldID, j.pointsFieldID, j.fieldsDiscovered = sprintID, pointsID, true
+	j.mu.Unlock()
+	return nil
+}
+
+// Members lists people assignable to the issue (assignee picker). projectID is the issue key here,
+// which scopes assignability to that issue's project + permissions.
+func (j *Jira) Members(ctx context.Context, projectKey, issueKey string) ([]User, error) {
+	var users []struct {
+		AccountID   string `json:"accountId"`
+		DisplayName string `json:"displayName"`
+		Email       string `json:"emailAddress"`
+		Active      bool   `json:"active"`
+	}
+	// Prefer issue-scoped assignability (respects the issue's project + security); fall back to the
+	// project when no issue key is supplied.
+	scope := "issueKey=" + url.QueryEscape(issueKey)
+	if issueKey == "" {
+		scope = "project=" + url.QueryEscape(projectKey)
+	}
+	path := "/rest/api/3/user/assignable/search?maxResults=100&" + scope
+	if err := j.do(ctx, http.MethodGet, path, nil, &users); err != nil {
+		return nil, err
+	}
+	out := make([]User, 0, len(users))
+	for _, u := range users {
+		if !u.Active {
+			continue
+		}
+		out = append(out, User{ID: u.AccountID, Name: u.DisplayName, Email: u.Email})
+	}
+	return out, nil
+}
+
+// ProjectLabels lists the site's labels (label picker). Jira labels are free-form global strings, so
+// each label's id is its own text.
+func (j *Jira) ProjectLabels(ctx context.Context, projectID string) ([]Label, error) {
+	var data struct {
+		Values []string `json:"values"`
+	}
+	if err := j.do(ctx, http.MethodGet, "/rest/api/3/label?maxResults=500", nil, &data); err != nil {
+		return nil, err
+	}
+	out := make([]Label, 0, len(data.Values))
+	for _, s := range data.Values {
+		out = append(out, Label{ID: s, Name: s})
+	}
+	return out, nil
+}
+
+// ProjectCycles lists the active + future sprints on the project's board (sprint picker). It resolves
+// the project's first board, then its sprints. Projects without a board (kanban/none) return nil.
+func (j *Jira) ProjectCycles(ctx context.Context, projectKey string) ([]Cycle, error) {
+	var boards struct {
+		Values []struct {
+			ID int `json:"id"`
+		} `json:"values"`
+	}
+	if err := j.do(ctx, http.MethodGet, "/rest/agile/1.0/board?maxResults=1&projectKeyOrId="+url.QueryEscape(projectKey), nil, &boards); err != nil {
+		return nil, err
+	}
+	if len(boards.Values) == 0 {
+		return nil, nil
+	}
+	var sprints struct {
+		Values []struct {
+			ID    int    `json:"id"`
+			Name  string `json:"name"`
+			State string `json:"state"`
+		} `json:"values"`
+	}
+	path := fmt.Sprintf("/rest/agile/1.0/board/%d/sprint?state=active,future&maxResults=50", boards.Values[0].ID)
+	if err := j.do(ctx, http.MethodGet, path, nil, &sprints); err != nil {
+		return nil, nil // board may not be scrum; treat as "no sprints" rather than an error
+	}
+	out := make([]Cycle, 0, len(sprints.Values))
+	for _, s := range sprints.Values {
+		out = append(out, Cycle{ID: strconv.Itoa(s.ID), Name: s.Name, State: s.State})
+	}
+	return out, nil
+}
+
+// EditComment replaces a comment body. Jira's comment-edit endpoint is issue-scoped, so the issue key
+// is packed into the comment id as "issueKey|commentId" by Detail and split back out here.
 func (j *Jira) EditComment(ctx context.Context, commentID, body string) error {
-	return fmt.Errorf("not supported for jira yet")
+	issueKey, id, ok := strings.Cut(commentID, "|")
+	if !ok {
+		return fmt.Errorf("jira: comment id missing issue key")
+	}
+	return j.do(ctx, http.MethodPut, "/rest/api/3/issue/"+issueKey+"/comment/"+id, adfCommentBody(body), nil)
 }
 
-func (j *Jira) FetchImage(ctx context.Context, url string) (string, []byte, error) {
-	return "", nil, fmt.Errorf("not supported for jira yet")
+// FetchImage GETs an auth-gated Jira attachment (same-origin as the site) and returns its bytes.
+func (j *Jira) FetchImage(ctx context.Context, rawURL string) (string, []byte, error) {
+	resp, err := j.send(ctx, http.MethodGet, strings.TrimPrefix(rawURL, j.base), nil)
+	if err != nil {
+		return "", nil, err
+	}
+	defer drainClose(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		return "", nil, fmt.Errorf("jira image: HTTP %s", resp.Status)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 25<<20))
+	if err != nil {
+		return "", nil, err
+	}
+	return resp.Header.Get("Content-Type"), data, nil
+}
+
+// adfDoc wraps plain text as a minimal ADF document (Jira descriptions/comments are ADF).
+func adfDoc(text string) map[string]any {
+	return map[string]any{
+		"type": "doc", "version": 1,
+		"content": []any{map[string]any{"type": "paragraph",
+			"content": []any{map[string]any{"type": "text", "text": text}}}},
+	}
+}
+
+// adfCommentBody is the body payload for a comment create/edit.
+func adfCommentBody(text string) map[string]any { return map[string]any{"body": adfDoc(text)} }
+
+// jiraNumber parses a numeric custom-field value (story points), returning 0 for null/absent/non-numeric.
+func jiraNumber(raw json.RawMessage) float64 {
+	if len(raw) == 0 {
+		return 0
+	}
+	var n float64
+	if err := json.Unmarshal(raw, &n); err != nil {
+		return 0
+	}
+	return n
 }
 
 // branchNameFor synthesizes a git branch name for a Jira issue (Linear provides its own).
