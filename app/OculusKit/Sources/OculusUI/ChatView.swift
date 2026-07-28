@@ -1174,8 +1174,17 @@ struct ChatMarkdownView: View {
                 var a = inline(t); a.font = scaled(headingSize(level)).bold()
                 out += a + AttributedString("\n")
             case .paragraph(let t):
-                var a = inline(t); a.font = bodyFont
-                out += a + AttributedString("\n")
+                // Preserve single newlines within a paragraph as HARD line breaks. Agent/LLM output
+                // uses them for structure (a bold label on its own line above its text); markdown's
+                // default soft-break would jam them together ("**Label**text"). This also makes the
+                // finalized render match what streamed as plain text, killing the end-of-turn "jump".
+                let plines = t.components(separatedBy: "\n")
+                for (li, ln) in plines.enumerated() {
+                    if li > 0 { out += AttributedString("\n") }
+                    var a = inline(ln); a.font = bodyFont
+                    out += a
+                }
+                out += AttributedString("\n")
             case .bullet(let items):
                 for it in items { var a = inline(it); a.font = bodyFont; out += AttributedString("•  ") + a + AttributedString("\n") }
             case .ordered(let items):

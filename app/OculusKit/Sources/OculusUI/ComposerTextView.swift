@@ -80,6 +80,14 @@ private struct Representable: NSViewRepresentable {
         tv.isVerticallyResizable = true
         tv.textContainer?.widthTracksTextView = true
         tv.autoresizingMask = [.width]
+        // Native writing aids for the prompt box: live spell-check, autocorrect, and inline text
+        // completion (⌥+Esc / F5 shows the word list; suggestions surface as you type).
+        tv.isContinuousSpellCheckingEnabled = true
+        tv.isAutomaticSpellingCorrectionEnabled = true
+        tv.isAutomaticTextCompletionEnabled = true
+        tv.isGrammarCheckingEnabled = true
+        tv.isAutomaticQuoteSubstitutionEnabled = false // don't smart-quote code snippets in a prompt
+        tv.isAutomaticDashSubstitutionEnabled = false
         tv.onSubmit = onSubmit
 
         let scroll = NSScrollView()
@@ -155,6 +163,11 @@ private struct Representable: UIViewRepresentable {
         tv.isScrollEnabled = true
         tv.textContainerInset = UIEdgeInsets(top: 7, left: 0, bottom: 7, right: 0)
         tv.textContainer.lineFragmentPadding = 0
+        // Native writing aids: autocorrect, spell-check, and the predictive/QuickType bar for the prompt.
+        tv.autocorrectionType = .yes
+        tv.spellCheckingType = .yes
+        tv.smartQuotesType = .no // keep code snippets in a prompt literal
+        tv.smartDashesType = .no
         tv.onSubmit = onSubmit
         tv.onTab = onTab; tv.onMoveUp = onMoveUp; tv.onMoveDown = onMoveDown
         return tv
