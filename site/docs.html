@@ -3,26 +3,30 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Iron Rain — Docs</title>
-<meta name="description" content="Documentation for Iron Rain: install the Mac daemon, pair your iPhone, connect coding agents, use it remotely, and the daemon CLI reference." />
+<title>Iron Rain — Features &amp; how it works</title>
+<meta name="description" content="What Iron Rain does: multi-provider agents on your Mac, remote from anywhere over an end-to-end-encrypted link, lock-screen approvals, rich chat with tools and sub-agents, generative UI, Jira/Linear tickets, a native IDE, fan-out/loops/heartbeat orchestration, cross-repo workspaces, and SSH remotes." />
 <link rel="icon" href="./assets/favicon.png" />
-<meta property="og:title" content="Iron Rain — Documentation" />
-<meta property="og:description" content="Install, pair, connect agents, remote access, and the daemon reference." />
+<meta property="og:title" content="Iron Rain — Features &amp; how it works" />
+<meta property="og:description" content="Real coding agents on your Mac, driven and approved from your Mac or iPhone. End-to-end encrypted. Your keys, your hardware." />
 <meta property="og:image" content="./assets/howlerops-icon-dark.png" />
+<meta name="theme-color" content="#09090a" media="(prefers-color-scheme: dark)" />
+<meta name="theme-color" content="#fafaf7" media="(prefers-color-scheme: light)" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Fira+Code:wght@400;700&display=swap" />
 <link rel="stylesheet" href="./style.css" />
 <style>
   /* Docs-only niceties layered on the shared .doc styles. */
   .doc .toc { border: 1px solid var(--border); border-radius: 12px; padding: 18px 22px; margin: 26px 0 40px; background: var(--bg-card, rgba(255,255,255,.02)); }
-  .doc .toc strong { display:block; font-size:.82rem; letter-spacing:.04em; text-transform:uppercase; color: var(--text-muted); margin-bottom:10px; }
+  .doc .toc strong { display:block; font-size:.82rem; letter-spacing:.04em; text-transform:uppercase; color: var(--muted); margin-bottom:10px; }
   .doc .toc ul { columns: 2; column-gap: 32px; margin: 0; padding: 0; list-style: none; }
   .doc .toc li { margin: 0 0 8px; break-inside: avoid; }
-  .doc .flagtable { width:100%; border-collapse: collapse; margin: 12px 0 8px; font-size:.95rem; }
-  .doc .flagtable td { border-top: 1px solid var(--border); padding: 9px 12px 9px 0; vertical-align: top; }
-  .doc .flagtable td:first-child { white-space: nowrap; width: 1%; }
-  .doc .flagtable code { color: var(--gold); }
   .doc h2 { scroll-margin-top: 84px; margin-top: 46px; }
-  .doc .note { border-left: 3px solid var(--gold); padding: 4px 0 4px 16px; margin: 16px 0; color: var(--text-muted); }
+  .doc .lead-in { color: var(--muted-med); font-size: 15px; margin: 2px 0 18px; }
+  .doc .note { border-left: 3px solid var(--gold); padding: 4px 0 4px 16px; margin: 16px 0; color: var(--muted); }
+  .doc .tags { list-style:none; margin: 14px 0 4px; padding:0; display:flex; flex-wrap:wrap; gap:8px; }
+  .doc .tags li { font-size:12.5px; font-weight:500; color: var(--muted-med); background: var(--card); border:1px solid var(--border); padding:4px 11px; border-radius:100px; }
+  .doc .cta-row { display:flex; gap:12px; flex-wrap:wrap; margin: 8px 0 4px; }
   @media (max-width: 640px) { .doc .toc ul { columns: 1; } }
 </style>
 </head>
@@ -41,161 +45,178 @@
 
 <main class="doc wrap">
   <a class="back" href="./index.html">← Back</a>
-  <h1>Documentation</h1>
-  <p class="updated">Drive, steer, and approve AI coding-agent sessions running on your Mac — from your iPhone or Mac. End-to-end encrypted. Your keys, your hardware.</p>
+  <h1>Features &amp; how it works</h1>
+  <p class="updated">Iron Rain is a native Apple (macOS + iOS) Agent Development Environment. It runs real coding agents on your Mac and lets you launch, watch, steer, and approve them from your Mac or iPhone, from anywhere — end-to-end encrypted, your hardware, your keys.</p>
 
   <nav class="toc" aria-label="Contents">
     <strong>On this page</strong>
     <ul>
-      <li><a href="#overview">Overview</a></li>
+      <li><a href="#how">How it fits together</a></li>
+      <li><a href="#providers">Providers &amp; models</a></li>
+      <li><a href="#remote">Remote &amp; security model</a></li>
+      <li><a href="#approvals">Approvals &amp; guardrails</a></li>
+      <li><a href="#chat">Chat, tools &amp; sub-agents</a></li>
+      <li><a href="#generative-ui">Generative UI</a></li>
+      <li><a href="#tickets">Tickets: Jira &amp; Linear</a></li>
+      <li><a href="#ide">IDE &amp; code surface</a></li>
+      <li><a href="#orchestration">Orchestration</a></li>
+      <li><a href="#workspaces">Workspaces &amp; remotes</a></li>
+      <li><a href="#command-deck">Command Deck</a></li>
+      <li><a href="#resilience">Resilience &amp; observability</a></li>
+      <li><a href="#privacy">Privacy</a></li>
       <li><a href="#install">Install</a></li>
-      <li><a href="#pairing">Pairing</a></li>
-      <li><a href="#remote">Remote access</a></li>
-      <li><a href="#agents">Agents &amp; providers</a></li>
-      <li><a href="#features">What you can do</a></li>
-      <li><a href="#integrations">Integrations</a></li>
-      <li><a href="#security">Security model</a></li>
-      <li><a href="#daemon">Daemon reference</a></li>
-      <li><a href="#troubleshooting">Troubleshooting</a></li>
     </ul>
   </nav>
 
-  <h2 id="overview">Overview</h2>
-  <p>Iron Rain is a native Apple app plus a lightweight Mac <strong>daemon</strong>. The daemon runs
-  coding agents (claude-code, opencode, and more) on <em>your</em> Mac, against <em>your</em> code,
-  using <em>your</em> subscriptions and keys. The iPhone/Mac app connects to it to watch sessions
-  stream, steer them mid-run, review diffs, and approve sensitive tool calls — locally or from
-  anywhere. Nothing runs in someone else's cloud; there is no per-seat compute and no middleman.</p>
+  <h2 id="how">How it fits together</h2>
+  <p>Two pieces: a native Apple app (macOS + iOS) and a lightweight Mac daemon. The daemon runs
+  coding agents on your Mac, against your code, using your subscriptions and keys. The app connects
+  to the daemon to start sessions, stream their work, steer them mid-run, review diffs, and approve
+  sensitive tool calls — over the LAN at home and through an end-to-end-encrypted relay when you're
+  away. Nothing runs in someone else's cloud. There is no per-seat compute and no middleman that can
+  read your sessions.</p>
+
+  <h2 id="providers">Providers &amp; models</h2>
+  <p>The daemon auto-detects the agents you already have and lists them in the new-session picker.
+  You pick a provider per session, and pick or switch the model inside it.</p>
+  <ul>
+    <li><strong>opencode</strong> — driven over its HTTP/SSE API (the daemon auto-detects or starts a
+    local <code>opencode serve</code>).</li>
+    <li><strong>claude-code</strong> — runs on your Claude subscription through a bundled Agent SDK
+    sidecar; no API key to wire up.</li>
+    <li><strong>pi</strong> — driven over its JSONL protocol.</li>
+    <li><strong>Custom CLI agents</strong> — codex, gemini, aider and friends run as terminal agents
+    when they're installed and signed in.</li>
+  </ul>
+  <p>Model selection is per session: pick a model when you start, switch it mid-session, and
+  configure provider-specific options. Iron Rain probes provider quotas and can hot-swap between
+  multiple accounts when one is throttled.</p>
+  <p class="note">An agent only works if its own tool is installed and authenticated. If a session
+  fails to start, Iron Rain tells you why instead of doing nothing.</p>
+
+  <h2 id="remote">Remote &amp; security model</h2>
+  <p>Iron Rain works off your home network with zero setup, and the security model is the same
+  wherever you are.</p>
+  <ul>
+    <li><strong>End-to-end encrypted.</strong> The channel key is derived from X25519 ECDH between
+    the app's and daemon's keypairs; traffic is sealed with ChaCha20-Poly1305. Only your paired
+    devices can read a session.</li>
+    <li><strong>Stateless relay.</strong> When you're away, the daemon holds an outbound connection
+    to a relay — Cloudflare Durable Objects as primary, Fly as fallback — that forwards only
+    ciphertext. No inbound ports open on your Mac.</li>
+    <li><strong>Races LAN + relays.</strong> At home the app connects directly over the LAN for the
+    lowest latency and falls back to the relay automatically when you leave. You never switch modes
+    by hand.</li>
+    <li><strong>APNs push.</strong> Session events reach your phone even when the app is closed.</li>
+  </ul>
+
+  <h2 id="approvals">Approvals &amp; guardrails</h2>
+  <p>When an agent wants to run a shell command, write a file, or push a commit, it pauses for you.</p>
+  <ul>
+    <li><strong>Lock-screen approvals.</strong> A push arrives; tap through to approve or deny the
+    tool call without unlocking into the app. The agent continues from exactly where it stopped.</li>
+    <li><strong>Spending guardrails.</strong> Set a cost budget per session; the run stops before it
+    overspends. Live cost and token meters show spend as it happens.</li>
+  </ul>
+
+  <h2 id="chat">Chat, tools &amp; sub-agents</h2>
+  <p>The chat surface is native, not a log tail.</p>
+  <ul>
+    <li><strong>Native composer</strong> with slash-command keyboard completion, per-session drafts,
+    autocorrect, and no smart-quotes when you're typing code.</li>
+    <li><strong>Streaming markdown and thinking</strong> rendered as it arrives.</li>
+    <li><strong>Rich inline tool cards</strong> — each tool call shows its command plus expandable
+    output, consistently across opencode, claude-code, and pi.</li>
+    <li><strong>Collapsible sub-agents</strong> — delegated sub-agents stream their own work inline,
+    so a fan-out or a delegated task reads as a nested thread you can expand.</li>
+  </ul>
+
+  <h2 id="generative-ui">Generative UI</h2>
+  <p>Agents can render native UI inline instead of dumping text. Through the <code>iron:ui</code>
+  skill — installed into each agent — a run can emit native tables, checklists, callouts, diffs, and
+  tappable choices that appear directly in the conversation. It works across every harness, down to a
+  plain CLI agent, so the same prompt gets a real interface no matter which provider ran it.</p>
+
+  <h2 id="tickets">Tickets: Jira &amp; Linear</h2>
+  <p>Full two-way editing for both trackers, not just a read-only list.</p>
+  <ul>
+    <li>Edit assignee, labels, sprint or cycle, estimate, due date, and comments straight from the
+    app.</li>
+    <li>A real-status <strong>Kanban board</strong> with drag-drop transitions, ticket creation, and
+    sprint / attachment handling.</li>
+    <li><strong>Issue → PR loops</strong> — turn an assigned issue into an agent session and land a
+    pull request, with provider-aware "Open in" for Jira and Linear.</li>
+  </ul>
+
+  <h2 id="ide">IDE &amp; code surface</h2>
+  <p>A native code surface scoped to the active session and project:</p>
+  <ul>
+    <li>Syntax-highlighted editor and a file tree.</li>
+    <li><strong>LSP</strong> — diagnostics, hover docs, go-to-definition, completion, and rename,
+    powered by the language servers on your Mac.</li>
+    <li>A native <strong>diff review</strong> you comment on to steer: leave a comment on a line and
+    it goes back to the agent as a prompt. Correct a mistake without opening a terminal.</li>
+  </ul>
+
+  <h2 id="orchestration">Orchestration</h2>
+  <p>Run more than one agent, and keep long jobs on the rails.</p>
+  <ul>
+    <li><strong>Parallel fan-out.</strong> Launch N agents on the same prompt in isolated worktrees,
+    let them race, then compare and merge the winner.</li>
+    <li><strong>Scoped sub-agents.</strong> Delegate a bounded piece of work to a sub-agent that
+    streams back inline.</li>
+    <li><strong>Heartbeat.</strong> An autonomous supervisor nudges a session toward completion
+    inside a cost budget, and stops it before problems compound.</li>
+    <li><strong>Checkpoints.</strong> Snapshot a worktree and roll back to it if a pass goes wrong.</li>
+    <li><strong>Loops.</strong> Recurring autonomous ticket workflows — watch for new to-do tickets
+    and have an agent plan, build, and open a PR, hands-free.</li>
+  </ul>
+
+  <h2 id="workspaces">Workspaces &amp; remotes</h2>
+  <ul>
+    <li><strong>Cross-repo workspaces.</strong> Run one job across several repos in one coordinated
+    flow, finishing with a PR per repo.</li>
+    <li><strong>Git worktrees</strong> give each session an isolated branch; worktrees now share
+    <code>node_modules</code> instead of reinstalling per tree.</li>
+    <li><strong>SSH remotes.</strong> Run and inspect a worktree on a remote box, with port-forward,
+    without leaving the app.</li>
+    <li><strong>Design Mode.</strong> An in-app browser element picker drops the selected element's
+    HTML/CSS straight into your prompt.</li>
+  </ul>
+
+  <h2 id="command-deck">Command Deck</h2>
+  <p>Five destinations — <strong>Sessions</strong>, <strong>Loops</strong>, <strong>Fleet</strong>,
+  <strong>Issues</strong>, and <strong>Activity</strong> — with a fleet dashboard that shows every
+  session across every paired Mac, an activity feed and a "needs you" inbox for anything waiting on
+  your approval or input, and a Cmd-K palette to jump anywhere.</p>
+
+  <h2 id="resilience">Resilience &amp; observability</h2>
+  <ul>
+    <li><strong>Write-ahead transcript</strong> so a session's history survives a crash or restart.</li>
+    <li><strong>No-response watchdog with self-heal</strong> that recovers a session when the agent
+    stream drops mid-turn, plus one-tap session recovery.</li>
+    <li><strong>Cost and token meters</strong> and provider quota probing, with multi-account
+    credential hot-swap when one account is throttled.</li>
+  </ul>
+
+  <h2 id="privacy">Privacy</h2>
+  <p>Iron Rain runs entirely on your hardware and uses your own agent subscriptions and keys. The
+  phone-to-Mac link is end-to-end encrypted, and there is no analytics or tracking by default.
+  Optional diagnostics are scrubbed and strictly opt-in. Read the
+  <a href="./privacy.html">full privacy policy</a> — it's short and plain-English.</p>
 
   <h2 id="install">Install</h2>
   <p><strong>Mac (app + daemon), one line:</strong></p>
   <p><code>curl -fsSL https://howlerops.github.io/iron-rain/install.sh | sh</code></p>
-  <p>This installs the Iron Rain Mac app and daemon and launches the app — no dependencies, no
-  terminal to keep open. The app auto-starts the daemon, which auto-detects your installed agents
-  and shows a pairing QR.</p>
+  <p>This installs the Iron Rain Mac app and daemon and launches the app. The app auto-starts the
+  daemon, which auto-detects your installed agents and shows a pairing QR to scan from your phone.</p>
   <p><strong>iPhone / iPad:</strong> Iron Rain for iOS is in beta via TestFlight — see
-  <a href="./support.html#testflight">joining the TestFlight</a>.</p>
-  <p><strong>Headless / Linux:</strong> the same command installs just the daemon and starts it
-  (log at <code>~/.oculus/oculusd.log</code>). It binds <code>0.0.0.0:6000</code> so the pairing QR
-  carries a reachable address.</p>
-  <p><strong>From source:</strong> <code>cd daemon &amp;&amp; go run . serve</code> (Go 1.26+).</p>
-
-  <h2 id="pairing">Pairing</h2>
-  <p>When the daemon starts it prints (and shows in the app) a <code>oculus://pair…</code> QR code.</p>
-  <ol>
-    <li>Open the Iron Rain app and tap <em>Scan QR code</em> (or paste the <code>oculus://pair…</code>
-    link under <em>Enter details manually</em>).</li>
-    <li>The app stores the pairing (the daemon's public key + your secret) and reconnects
-    automatically from then on — you only pair once.</li>
-    <li>Pair as many Macs as you like: name each one and switch between them in the app.</li>
-  </ol>
-  <p class="note">The pairing secret is persisted at <code>~/.oculus/secret</code>, so restarts and
-  reinstalls keep an already-paired device authorized.</p>
-
-  <h2 id="remote">Remote access (from anywhere)</h2>
-  <p>Iron Rain works off your home network with zero setup. Your daemon keeps an outbound connection
-  to a shared, end-to-end-encrypted <strong>relay</strong>, and the app reaches your Mac through it
-  when you're away — no port-forwarding, no inbound ports on your Mac. The relay only ever forwards
-  <em>ciphertext</em>; it can't read your sessions.</p>
-  <p>On your home network the app connects <strong>directly over the LAN</strong> for the lowest
-  latency, and falls back to the relay automatically when you leave — you never switch modes by
-  hand. Prefer LAN-only? Start the daemon with <code>--relay ""</code>.</p>
-
-  <h2 id="agents">Agents &amp; providers</h2>
-  <p>The daemon auto-detects the agents you already have installed and lists them in the new-session
-  picker. Supported today:</p>
-  <ul>
-    <li><strong>claude-code</strong> — runs on your existing <strong>Claude subscription</strong>
-    via a bundled sidecar (no API key needed; the daemon sets it up on first run). Supports plan
-    mode.</li>
-    <li><strong>opencode</strong> — the daemon auto-detects (or starts) a local
-    <code>opencode serve</code>. Supports plan mode.</li>
-    <li><strong>pi</strong> — detected on your <code>PATH</code>.</li>
-    <li><strong>Generic CLI agents</strong> — <strong>codex</strong>, <strong>gemini</strong>,
-    <strong>cursor-agent</strong>, <strong>aider</strong>, etc. are driven as terminal agents when
-    they're installed and authenticated.</li>
-  </ul>
-  <p class="note">An agent only works if its own tool is installed and signed in. If a session
-  produces an error like <em>"codex exited: exit status 1"</em> or an auth message, that's the
-  underlying CLI — install/sign into it, or pick another agent. If <em>starting</em> a session with a
-  provider fails (e.g. opencode isn't running), the app now tells you why instead of doing nothing.</p>
-
-  <h2 id="features">What you can do</h2>
-  <ul>
-    <li><strong>Lock-screen approvals</strong> — when an agent needs to run a sensitive tool, approve
-    or deny it from a push notification, without unlocking into the app.</li>
-    <li><strong>Heartbeat supervision</strong> — set a cost budget and let the daemon nudge a
-    long-running agent to keep going, checkpoint, or escalate to you — and stop it before problems
-    compound.</li>
-    <li><strong>Plan mode</strong> — have the agent propose a plan you approve before it touches
-    code (native agents).</li>
-    <li><strong>Mid-run steering</strong> — interrupt and redirect an agent while it's working.</li>
-    <li><strong>Mobile diff review</strong> — read the changes, and comment on a line to send that
-    feedback straight back to the agent as a prompt.</li>
-    <li><strong>Built-in IDE</strong> — a native file tree + syntax-highlighted editor with live
-    LSP diagnostics, hover, and go-to-definition, scoped to the active session.</li>
-    <li><strong>Cross-repo workspaces</strong> — run one agent across several repos on a shared
-    <code>oculus/&lt;name&gt;</code> branch, and finish with a coordinated PR per repo.</li>
-    <li><strong>Voice mode</strong> — talk to the agent hands-free; its replies are read back.</li>
-    <li><strong>Fleet view</strong> — see every session across every paired Mac at a glance.</li>
-  </ul>
-
-  <h2 id="integrations">Integrations</h2>
-  <ul>
-    <li><strong>Linear &amp; Jira</strong> — connect a tracker (OAuth, or a token), browse assigned
-    issues, and turn an issue straight into an agent session / PR.</li>
-    <li><strong>Slack</strong> — mirror agent events (finished, needs approval, failed) to a channel
-    via an Incoming Webhook (<code>--slack-webhook</code> or <code>~/.oculus/slack.json</code>).</li>
-    <li><strong>Push notifications</strong> — agent-finished / tests-failed / approval-needed alerts,
-    tap-to-open the session.</li>
-  </ul>
-
-  <h2 id="security">Security model</h2>
-  <ul>
-    <li><strong>End-to-end encrypted.</strong> The channel key is derived from X25519 ECDH between
-    your app's and daemon's keypairs; traffic is sealed with ChaCha20-Poly1305. Neither the relay
-    nor anyone on the network can read your sessions.</li>
-    <li><strong>Your keys, your hardware.</strong> Code and credentials never leave your Mac. The
-    daemon uses your Claude subscription / your API keys directly.</li>
-    <li><strong>No inbound ports.</strong> The daemon dials out; nothing listens on the public
-    internet. Files are only ever served within registered project roots and session working
-    directories (with symlink-escape guards).</li>
-    <li>Secrets live at <code>~/.oculus/</code> with <code>0600</code> permissions.</li>
-  </ul>
-
-  <h2 id="daemon">Daemon reference</h2>
-  <p>The daemon is <code>oculusd</code>. Start it with <code>oculusd serve [flags]</code>. The most
-  useful flags:</p>
-  <table class="flagtable">
-    <tr><td><code>--addr</code></td><td>Listen address (default <code>127.0.0.1:6000</code>; the installer uses <code>0.0.0.0:6000</code> so the QR carries your LAN IP).</td></tr>
-    <tr><td><code>--relay</code></td><td>Comma-separated relay URLs for remote access (the app races them + LAN). Empty = LAN-only. Defaults to the shared HowlerOps relays.</td></tr>
-    <tr><td><code>--public-url</code></td><td>Reachable base ws/wss URL to encode in the pairing QR (e.g. an ngrok tunnel). Defaults to a LAN URL derived from <code>--addr</code>.</td></tr>
-    <tr><td><code>--secret</code></td><td>Pairing secret clients must present. Omit to use the persisted <code>~/.oculus/secret</code>.</td></tr>
-    <tr><td><code>--name</code></td><td>Human name for this desktop shown in the app (default: hostname).</td></tr>
-    <tr><td><code>--opencode</code></td><td>URL of a running <code>opencode serve</code> (else auto-detected/started).</td></tr>
-    <tr><td><code>--pi</code></td><td>Path to the <code>pi</code> binary (else auto-detected on <code>PATH</code>).</td></tr>
-    <tr><td><code>--claude-setup</code></td><td>claude-code sidecar install when missing: <code>ask</code> | <code>auto</code> | <code>off</code> (default <code>ask</code>).</td></tr>
-    <tr><td><code>--slack-webhook</code></td><td>Slack Incoming Webhook to mirror agent events (or set it in <code>~/.oculus/slack.json</code>).</td></tr>
-    <tr><td><code>--apns-key</code></td><td>Path to an APNs auth key (<code>.p8</code>) to enable push, with <code>--apns-key-id</code> and <code>--apns-team-id</code>.</td></tr>
-  </table>
-  <p class="note">See all flags with <code>oculusd serve --help</code>.</p>
-
-  <h2 id="troubleshooting">Troubleshooting</h2>
-  <p><strong>Starting a session does nothing / shows an error.</strong> The selected agent's backend
-  isn't available. opencode needs a running <code>opencode serve</code> (the daemon usually starts
-  one — check it isn't blocked); codex/gemini/etc. must be installed and signed in. Pick an agent
-  that's set up (claude-code works on your Claude subscription with no extra setup).</p>
-  <p><strong>The daemon didn't start after install.</strong> The app shows a daemon status and a
-  button to (re)start it. From a terminal: <code>oculusd serve --addr 0.0.0.0:6000</code>
-  (log: <code>~/.oculus/oculusd.log</code>).</p>
-  <p><strong>"Pairing rejected: unauthorized".</strong> The app is using a stale secret — re-scan the
-  QR the daemon currently shows. The secret is persisted, so this usually only happens if
-  <code>~/.oculus/secret</code> was changed.</p>
-  <p><strong>Can't connect when away from home.</strong> Remote access needs the daemon reachable via
-  the relay — make sure the Mac is awake and the daemon is running (it reconnects to the relay on its
-  own). On the same network the app uses the LAN directly.</p>
-  <p><strong>"unknown type: …" after an update.</strong> An old daemon is still running. Re-run the
-  installer (it stops the old daemon) or restart <code>oculusd</code>.</p>
+  <a href="./support.html#testflight">joining the TestFlight</a>. For the full setup, pairing, remote
+  access, and daemon CLI reference, see <a href="./support.html">Support</a>.</p>
+  <div class="cta-row">
+    <a class="btn primary" href="./support.html#testflight">Join the TestFlight →</a>
+    <a class="btn ghost" href="https://github.com/howlerops/iron-rain">View on GitHub</a>
+  </div>
 
   <p class="updated" style="margin-top:40px">More questions? See <a href="./support.html">Support</a>
   or open an issue on
@@ -206,6 +227,9 @@
   <span>© <span id="y"></span> HowlerOps</span>
   <span><a href="./docs.html">Docs</a> · <a href="./privacy.html">Privacy</a> · <a href="./support.html">Support</a></span>
 </footer>
-<script>document.getElementById('y').textContent = new Date().getFullYear();</script>
+<script>document.getElementById('y').textContent = new Date().getFullYear();
+document.querySelectorAll('nav a, .site-footer a').forEach(function(a){
+  a.addEventListener('click', function(){var t=document.getElementById('navtoggle');if(t)t.checked=false;});
+});</script>
 </body>
 </html>

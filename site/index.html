@@ -3,11 +3,11 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Iron Rain — Approve AI agents from your iPhone</title>
+<title>Iron Rain — the native Apple Agent Development Environment</title>
 <link rel="icon" href="./assets/favicon.png" />
-<meta name="description" content="Iron Rain is a native Apple app to drive, steer, and approve AI coding-agent sessions (claude-code, opencode) running on your Mac — from your iPhone. End-to-end encrypted. Your keys. Your hardware." />
-<meta property="og:title" content="Iron Rain — Approve AI agents from your iPhone" />
-<meta property="og:description" content="Lock-screen approvals, mobile diff review, heartbeat supervision, and a built-in IDE. Your Mac, your keys, end-to-end encrypted." />
+<meta name="description" content="Iron Rain is a native macOS + iOS Agent Development Environment. Run real coding agents (opencode, claude-code, pi, or any CLI) on your own Mac, then launch, watch, steer, and approve them from anywhere. End-to-end encrypted. Your hardware, your keys." />
+<meta property="og:title" content="Iron Rain — the native Apple Agent Development Environment" />
+<meta property="og:description" content="Run opencode, claude-code, pi, and CLI agents on your Mac. Drive and approve them from your iPhone, from anywhere. Generative-UI chat, rich tool cards, full Jira/Linear editing, a built-in IDE, parallel fan-out, and autonomous loops — end-to-end encrypted." />
 <meta property="og:image" content="./assets/howlerops-icon-dark.png" />
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:image" content="./assets/howlerops-icon-dark.png" />
@@ -57,63 +57,73 @@
   </div>
   <div class="hero-eyebrow">
     <span class="eyebrow-dot" aria-hidden="true"></span>
-    iPhone + Mac &nbsp;·&nbsp; TestFlight Beta
+    Native macOS + iOS &nbsp;·&nbsp; Agent Development Environment
   </div>
   <h1 class="hero-h1">
-    Approve your AI agents<br />
-    from your iPhone.<br />
-    <em>Control them from your Mac.</em>
+    Run real coding agents<br />
+    on your own Mac.<br />
+    <em>Drive them from anywhere.</em>
   </h1>
   <p class="hero-lede">
-    Set a heartbeat budget, catch problems mid-run before they compound,
-    approve sensitive tool calls from your lock screen — all over an
-    end-to-end encrypted link to your own Mac.
-    Your code stays on your hardware. Your Claude subscription, your API keys.
-    No per-seat compute, no cloud middleman.
+    Iron Rain is a native Apple ADE for opencode, claude-code, pi, and any CLI agent.
+    Launch a session on your Mac, then watch it stream, steer it mid-run, and approve
+    its tool calls from your iPhone lock screen — over an end-to-end encrypted link.
+    Your hardware, your subscriptions, your keys. No cloud middleman, no per-seat compute.
   </p>
   <div class="hero-cta">
-    <a class="btn primary" href="./support.html#testflight">Join the TestFlight</a>
+    <a class="btn primary" href="#install">Install on your Mac</a>
     <a class="btn ghost" href="https://github.com/howlerops/iron-rain">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"/></svg>
       View on GitHub
     </a>
   </div>
   <ul class="hero-chips" aria-label="Key capabilities">
+    <li>opencode · claude-code · pi · CLI</li>
     <li>Lock-screen approvals</li>
-    <li>Heartbeat supervision</li>
-    <li>Mobile diff review</li>
+    <li>Generative-UI chat</li>
+    <li>Jira &amp; Linear editing</li>
     <li>Built-in IDE with LSP</li>
-    <li>Cross-repo workspaces</li>
+    <li>Parallel fan-out</li>
     <li>End-to-end encrypted</li>
   </ul>
 </section>
 
-<!-- ─── 2. The Problem ───────────────────────────────────────── -->
+<!-- ─── 2. What it is ────────────────────────────────────────── -->
 <section class="problem">
   <div class="wrap problem-inner">
     <div class="problem-text">
-      <span class="section-eyebrow">The problem</span>
-      <h2>Autonomous agents are powerful.<br /><em>Unsupervised,</em> they're risky.</h2>
+      <span class="section-eyebrow">What it is</span>
+      <h2>One app for the whole agent loop —<br /><em>desk to pocket.</em></h2>
       <p>
-        You kick off an AI coding job, step away, and come back to find it deleted
-        a table, committed a breaking change, or burned through your budget while
-        you weren't watching. Current tools either chain you to your desk
-        or give you no visibility at all once the job is running.
+        Most agent tools force a trade-off: cloud SaaS that rents you someone else's
+        sandbox and holds your keys, or a desktop plugin that chains you to your chair.
+        Iron Rain is neither. The agents run on <em>your</em> Mac, in your real filesystem,
+        on your existing subscriptions.
       </p>
       <p>
-        Iron Rain solves the supervision problem: it brings the entire agent loop
-        to your pocket with real controls — not just a notification that
-        something already went wrong.
+        A native app on both macOS and iOS gives you the same session everywhere:
+        write a prompt at your desk, keep watching from the train, approve a
+        <code>git push</code> from the coffee line. Every byte between phone and Mac
+        is end-to-end encrypted, and a stateless relay only ever forwards ciphertext.
       </p>
     </div>
     <div class="problem-cards">
       <div class="problem-card">
         <div class="pcard-icon" aria-hidden="true">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9h6v6H9z"/></svg>
         </div>
         <div>
-          <h3>Immediate control</h3>
-          <p>Pause, redirect, or kill a runaway agent before it compounds the mistake — from anywhere.</p>
+          <h3>Any agent, one interface</h3>
+          <p>opencode over HTTP/SSE, claude-code via the Agent SDK, pi over JSONL, plus any custom CLI — codex, gemini, aider. Auto-detected on install.</p>
+        </div>
+      </div>
+      <div class="problem-card">
+        <div class="pcard-icon" aria-hidden="true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 12s4-7 10-7 10 7 10 7"/><circle cx="12" cy="12" r="3"/><path d="M12 19v3M5 17l-2 2M19 17l2 2"/></svg>
+        </div>
+        <div>
+          <h3>Remote from anywhere</h3>
+          <p>The app races your LAN and encrypted relays (Cloudflare Durable Objects, Fly fallback) so a session reaches you at home, on Wi-Fi, or on cellular — with APNs push.</p>
         </div>
       </div>
       <div class="problem-card">
@@ -121,17 +131,8 @@
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
         </div>
         <div>
-          <h3>Explicit approval</h3>
-          <p>Every sensitive tool call — shell commands, file writes, git ops — requires your sign-off.</p>
-        </div>
-      </div>
-      <div class="problem-card">
-        <div class="pcard-icon" aria-hidden="true">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>
-        </div>
-        <div>
-          <h3>Spending guardrails</h3>
-          <p>Set a dollar budget. The heartbeat loop stops the agent before it overspends.</p>
+          <h3>Your hardware, your keys</h3>
+          <p>Nothing runs in our cloud. Your code, prompts, and credentials stay on your Mac. No analytics or tracking by default — diagnostics are scrubbed and opt-in.</p>
         </div>
       </div>
     </div>
@@ -143,28 +144,28 @@
   <div class="wrap">
     <div class="caps-header">
       <span class="section-eyebrow">Core capabilities</span>
-      <h2>Everything you need to run agents off-desk.</h2>
+      <h2>A real development environment, not a log tail.</h2>
     </div>
 
     <div class="cap-grid">
 
-      <!-- 01 Live session control -->
+      <!-- 01 Multi-provider sessions -->
       <article class="cap-card">
         <div class="cap-body">
           <span class="cap-num" aria-hidden="true">01</span>
-          <h3>Live session control</h3>
+          <h3>Multi-provider sessions</h3>
           <p>
-            Watch agent output stream in real time on your iPhone.
-            Pause a session mid-thought, redirect it with a new instruction,
-            or kill it outright — all without touching your Mac.
-            Push notifications alert you when a session finishes, errors, or needs input.
+            Start a session with opencode, claude-code, pi, or a custom CLI agent and
+            drive them all through the same native interface. Pick or switch the model
+            per session, hot-swap between multiple accounts, and let Iron Rain probe
+            each provider's remaining quota before you spend a token.
           </p>
         </div>
-        <figure class="cap-media" aria-label="Demo placeholder: live session control">
+        <figure class="cap-media" aria-label="Demo placeholder: multi-provider sessions">
           <div class="media-placeholder">
-            <span class="media-label">&#9654; demo: live session control</span>
+            <span class="media-label">&#9654; demo: provider &amp; model picker</span>
           </div>
-          <figcaption>Session stream with pause · redirect · kill controls</figcaption>
+          <figcaption>Per-session provider, model, and account selection</figcaption>
         </figure>
       </article>
 
@@ -174,99 +175,140 @@
           <span class="cap-num" aria-hidden="true">02</span>
           <h3>Approve from your lock screen</h3>
           <p>
-            When an agent needs to run a shell command, write a file, or push a commit,
-            a Live Activity appears on your lock screen.
-            Tap <strong>Allow</strong> or <strong>Deny</strong> — no unlock needed.
-            The agent waits, then continues from exactly where it stopped.
+            When an agent wants to run a shell command, write a file, or push a commit,
+            a push notification lands on your iPhone. Tap to open, then
+            <strong>Allow</strong> or <strong>Deny</strong> the exact tool call — the agent
+            waits and resumes from precisely where it paused. Cost budgets and spending
+            guardrails stop a runaway job before it overspends.
           </p>
         </div>
         <figure class="cap-media" aria-label="Demo placeholder: lock-screen approval">
           <div class="media-placeholder">
-            <span class="media-label">&#9654; demo: lock-screen approval</span>
+            <span class="media-label">&#9654; demo: tap-to-approve a tool call</span>
           </div>
-          <figcaption>Live Activity approval on iOS lock screen</figcaption>
+          <figcaption>Push-to-open approval with per-call Allow / Deny</figcaption>
         </figure>
       </article>
 
-      <!-- 03 Mobile diff review -->
+      <!-- 03 Generative-UI chat -->
       <article class="cap-card">
         <div class="cap-body">
           <span class="cap-num" aria-hidden="true">03</span>
-          <h3>Review diffs. Comment to steer.</h3>
+          <h3>Chat that renders itself</h3>
           <p>
-            Open the agent's git diff in a native diff renderer on your phone.
-            Leave a comment on any line — your comment becomes a prompt the agent
-            acts on immediately. Correct a mistake or redirect an approach
-            without opening a terminal or pulling up your laptop.
+            A native composer with slash-command completion, per-session drafts, and
+            code-safe typing (no smart quotes). Responses stream markdown and thinking,
+            with rich inline tool cards — the command plus expandable output — across every
+            harness. With generative UI (<code>iron:ui</code>), agents render native tables,
+            checklists, callouts, diffs, and tappable choices right in the thread, even from
+            a plain CLI.
           </p>
         </div>
-        <figure class="cap-media" aria-label="Demo placeholder: diff review with comment-to-prompt">
+        <figure class="cap-media" aria-label="Demo placeholder: generative-UI chat">
           <div class="media-placeholder">
-            <span class="media-label">&#9654; demo: diff review + comment-to-prompt</span>
+            <span class="media-label">&#9654; demo: rich tool cards + native UI blocks</span>
           </div>
-          <figcaption>Native diff view with inline comment → agent prompt</figcaption>
+          <figcaption>Streaming markdown, tool cards, and inline generative UI</figcaption>
         </figure>
       </article>
 
-      <!-- 04 Heartbeat + budgets -->
+      <!-- 04 Inline sub-agents -->
       <article class="cap-card">
         <div class="cap-body">
           <span class="cap-num" aria-hidden="true">04</span>
-          <h3>Autonomous heartbeat + cost budgets</h3>
+          <h3>Sub-agents you can watch</h3>
           <p>
-            Let an agent run a long job completely unattended.
-            The heartbeat loop keeps it going until the task is done, with configurable
-            nudge caps and a dollar budget so it never runs away.
-            Before context fills, the agent checkpoints its own progress and
-            hands off cleanly to the next pass — no lost work.
+            Delegate scoped work to sub-agents and see each one as a collapsible block
+            that streams its own progress inline. Expand a sub-agent to follow exactly
+            what it's doing, or collapse it and keep your eye on the main thread — no more
+            guessing what the swarm is up to.
+          </p>
+        </div>
+        <figure class="cap-media" aria-label="Demo placeholder: inline sub-agents">
+          <div class="media-placeholder">
+            <span class="media-label">&#9654; demo: collapsible inline sub-agents</span>
+          </div>
+          <figcaption>Delegated sub-agents streaming inside the parent session</figcaption>
+        </figure>
+      </article>
+
+      <!-- 05 Tickets -->
+      <article class="cap-card">
+        <div class="cap-body">
+          <span class="cap-num" aria-hidden="true">05</span>
+          <h3>Full Jira &amp; Linear editing</h3>
+          <p>
+            Not just read-only mirrors. Edit assignee, labels, sprint or cycle, estimate,
+            and due date; leave comments; and work a real-status Kanban board with drag-drop
+            transitions, ticket creation, sprints, and attachments — all inside the app.
+            Kick off issue&nbsp;&rarr;&nbsp;PR loops straight from a card.
+          </p>
+        </div>
+        <figure class="cap-media" aria-label="Demo placeholder: ticket editing">
+          <div class="media-placeholder">
+            <span class="media-label">&#9654; demo: Kanban board + two-way editing</span>
+          </div>
+          <figcaption>Real-status columns, drag-drop transitions, inline edits</figcaption>
+        </figure>
+      </article>
+
+      <!-- 06 Parallel fan-out -->
+      <article class="cap-card">
+        <div class="cap-body">
+          <span class="cap-num" aria-hidden="true">06</span>
+          <h3>Parallel fan-out &amp; loops</h3>
+          <p>
+            Race the same prompt across N agents in isolated git worktrees, then compare
+            the results and merge the winner. Take checkpoints to snapshot or roll back a
+            worktree. Set up Loops — recurring autonomous workflows that watch for new
+            tickets, plan, build, and open PRs hands-free.
+          </p>
+        </div>
+        <figure class="cap-media" aria-label="Demo placeholder: parallel fan-out">
+          <div class="media-placeholder">
+            <span class="media-label">&#9654; demo: N-agent fan-out + merge winner</span>
+          </div>
+          <figcaption>Isolated worktrees racing one prompt, with checkpoints</figcaption>
+        </figure>
+      </article>
+
+      <!-- 07 Heartbeat + budgets -->
+      <article class="cap-card">
+        <div class="cap-body">
+          <span class="cap-num" aria-hidden="true">07</span>
+          <h3>Autonomous heartbeat + budgets</h3>
+          <p>
+            Let a long job run unattended. The heartbeat loop nudges a session toward
+            completion within a dollar budget and a nudge cap, so it finishes the task
+            without running away. Live cost and token meters keep spend visible, and a
+            no-response watchdog self-heals a session when the agent stream drops mid-turn.
           </p>
         </div>
         <figure class="cap-media" aria-label="Demo placeholder: heartbeat supervision">
           <div class="media-placeholder">
-            <span class="media-label">&#9654; demo: heartbeat supervision + budget meter</span>
+            <span class="media-label">&#9654; demo: heartbeat + cost / token meters</span>
           </div>
-          <figcaption>Cost meter, token usage, and heartbeat progress tracker</figcaption>
+          <figcaption>Budget-bounded autonomy with self-healing recovery</figcaption>
         </figure>
       </article>
 
-      <!-- 05 Cross-repo workspaces -->
+      <!-- 08 Command Deck -->
       <article class="cap-card">
         <div class="cap-body">
-          <span class="cap-num" aria-hidden="true">05</span>
-          <h3>Cross-repo workspaces</h3>
+          <span class="cap-num" aria-hidden="true">08</span>
+          <h3>The Command Deck</h3>
           <p>
-            Tackle a task that spans multiple repositories in one coordinated job.
-            Each repo gets its own isolated git worktree and branch.
-            Per-project setup hooks copy your <code>.env</code>, install deps, and assign a port.
-            Ship the work as a coordinated set of PRs — one task, multiple repos, one flow.
+            Five destinations — Sessions, Loops, Fleet, Issues, and Activity — put every
+            running agent in one place. A fleet dashboard shows the whole swarm at a glance,
+            an activity feed collects a &ldquo;needs you&rdquo; inbox of everything waiting on
+            your input, and a Cmd-K palette jumps you anywhere in a keystroke.
           </p>
         </div>
-        <figure class="cap-media" aria-label="Demo placeholder: cross-repo workspace">
+        <figure class="cap-media" aria-label="Demo placeholder: command deck">
           <div class="media-placeholder">
-            <span class="media-label">&#9654; demo: cross-repo workspace</span>
+            <span class="media-label">&#9654; demo: fleet dashboard + needs-you inbox</span>
           </div>
-          <figcaption>Multi-repo workspace with parallel git worktrees</figcaption>
-        </figure>
-      </article>
-
-      <!-- 06 Plan mode + cost meters -->
-      <article class="cap-card">
-        <div class="cap-body">
-          <span class="cap-num" aria-hidden="true">06</span>
-          <h3>Plan mode, cost meters &amp; live to-do</h3>
-          <p>
-            Switch an agent into plan mode: it proposes what it intends to do,
-            you approve the plan before it touches a single file.
-            Live cost and token meters let you track spend in real time.
-            A live to-do list shows which tasks are in flight and which are done —
-            so you're never guessing what the agent is actually up to.
-          </p>
-        </div>
-        <figure class="cap-media" aria-label="Demo placeholder: plan mode and to-do list">
-          <div class="media-placeholder">
-            <span class="media-label">&#9654; demo: plan mode + live to-do</span>
-          </div>
-          <figcaption>Plan approval, cost meter, and live task checklist</figcaption>
+          <figcaption>Sessions · Loops · Fleet · Issues · Activity, plus Cmd-K</figcaption>
         </figure>
       </article>
 
@@ -279,32 +321,30 @@
   <div class="wrap ide-inner">
     <div class="ide-text">
       <span class="section-eyebrow">Built-in IDE</span>
-      <h2>Inspect and edit code without leaving the app.</h2>
+      <h2>Inspect, edit, and review code without leaving the app.</h2>
       <p>
-        Iron Rain ships a native code editor with full LSP support —
-        diagnostics, hover documentation, and go-to-definition,
-        powered by the same language servers running on your Mac.
-        A native diff renderer lets you review changes with the precision
-        of a desktop IDE.
+        Iron Rain ships a native syntax-highlighted editor with a file tree and full LSP
+        support — diagnostics, hover docs, go-to-definition, completion, and rename — powered
+        by the same language servers running on your Mac. It's scoped to the session and
+        project, so you see exactly the code the agent is touching.
       </p>
       <p>
-        Most mobile agent tools give you a log tail and a text field.
-        Iron Rain gives you a real editor, connected to the real language server,
-        showing real compiler errors in real time.
-        It's the part of the stack nobody else in the mobile-agent space has built.
+        Then review the change like a pull request: a native diff renderer lets you comment
+        on any line, and that comment becomes a prompt the agent acts on. Correct a mistake
+        or redirect an approach without opening a terminal or reaching for your laptop.
       </p>
       <ul class="ide-checklist" aria-label="IDE feature list">
         <li>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
-          Inline diagnostics (errors &amp; warnings) from the language server
+          Inline diagnostics, hover docs, go-to-definition &amp; rename from the language server
         </li>
         <li>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
-          Hover documentation &amp; go-to-definition across files
+          Native diff review — comment on a line to steer the agent
         </li>
         <li>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
-          Native diff renderer with syntax highlighting
+          Syntax-highlighted editor with a project file tree
         </li>
         <li>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
@@ -320,20 +360,64 @@
       <div class="media-placeholder media-placeholder--tall">
         <span class="media-label">&#9654; screenshot: built-in IDE with LSP</span>
       </div>
-      <figcaption>Native code editor with live diagnostics, hover docs, and diff view</figcaption>
+      <figcaption>Native editor with live diagnostics, hover docs, and diff review</figcaption>
     </figure>
   </div>
 </section>
 
-<!-- ─── 5. Why Iron Rain ─────────────────────────────────────── -->
+<!-- ─── 5. Workspaces ────────────────────────────────────────── -->
+<section class="ide">
+  <div class="wrap ide-inner">
+    <figure class="ide-media" aria-label="Workspaces screenshot placeholder">
+      <div class="media-placeholder media-placeholder--tall">
+        <span class="media-label">&#9654; screenshot: cross-repo workspace</span>
+      </div>
+      <figcaption>One task across many repos, each in its own worktree</figcaption>
+    </figure>
+    <div class="ide-text">
+      <span class="section-eyebrow">Workspaces</span>
+      <h2>Work that spans repos, machines, and the browser.</h2>
+      <p>
+        Group several repositories into one cross-repo workspace and run a coordinated job
+        across all of them. Each repo gets an isolated git worktree — and worktrees now share
+        <code>node_modules</code> instead of reinstalling, so spinning one up is fast.
+      </p>
+      <p>
+        Reach beyond your Mac with SSH remotes: run and inspect a worktree on another box,
+        port-forward included. And with Design Mode, an in-app browser element picker drops
+        the exact element's HTML and CSS straight into your prompt.
+      </p>
+      <ul class="ide-checklist" aria-label="Workspace feature list">
+        <li>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+          Cross-repo workspaces with isolated per-repo worktrees
+        </li>
+        <li>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+          Shared <code>node_modules</code> so worktrees start fast
+        </li>
+        <li>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+          SSH remotes — run a worktree on another box with port-forward
+        </li>
+        <li>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+          Design Mode: pick a browser element, send its HTML/CSS to the agent
+        </li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ─── 6. Why Iron Rain ─────────────────────────────────────── -->
 <section class="why">
   <div class="wrap">
     <div class="why-header">
       <span class="section-eyebrow">Why Iron Rain</span>
-      <h2>Built for developers who work away from their desk.</h2>
+      <h2>The parts other agent tools skip.</h2>
       <p class="why-sub">
-        Cloud SaaS agents and desktop IDE plugins both leave a gap.
-        Iron Rain closes it.
+        Cloud SaaS agents and desktop IDE plugins each leave a gap.
+        Iron Rain closes it — on your hardware, on both your devices.
       </p>
     </div>
 
@@ -349,85 +433,84 @@
         </thead>
         <tbody>
           <tr>
-            <td>Approve tool calls from iPhone lock screen</td>
-            <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
-            <td><span class="cmp-no">—</span></td>
-            <td><span class="cmp-no">—</span></td>
-          </tr>
-          <tr>
-            <td>Runs on your Mac, not cloud compute</td>
+            <td>Runs on your Mac, not rented cloud compute</td>
             <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
             <td><span class="cmp-no">—</span></td>
             <td><span class="cmp-yes">&#10003;</span></td>
           </tr>
           <tr>
-            <td>Your Claude subscription / API keys</td>
+            <td>Your own subscriptions &amp; API keys</td>
             <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
             <td><span class="cmp-no">—</span></td>
             <td><span class="cmp-yes">&#10003;</span></td>
           </tr>
           <tr>
-            <td>End-to-end encrypted phone↔Mac link</td>
+            <td>Approve tool calls from an iPhone lock screen</td>
+            <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
+            <td><span class="cmp-no">—</span></td>
+            <td><span class="cmp-no">—</span></td>
+          </tr>
+          <tr>
+            <td>Multi-provider — opencode, claude-code, pi, CLI</td>
+            <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
+            <td><span class="cmp-dim">single</span></td>
+            <td><span class="cmp-dim">varies</span></td>
+          </tr>
+          <tr>
+            <td>End-to-end encrypted phone&#8596;Mac link</td>
             <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
             <td><span class="cmp-dim">n/a</span></td>
             <td><span class="cmp-dim">local only</span></td>
           </tr>
           <tr>
-            <td>Mid-run steering &amp; redirect from phone</td>
-            <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
-            <td><span class="cmp-no">—</span></td>
-            <td><span class="cmp-no">—</span></td>
-          </tr>
-          <tr>
-            <td>Mobile diff review with comment-to-prompt</td>
-            <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
-            <td><span class="cmp-no">—</span></td>
-            <td><span class="cmp-no">—</span></td>
-          </tr>
-          <tr>
-            <td>Heartbeat supervision + dollar budget</td>
+            <td>Generative-UI chat &amp; rich inline tool cards</td>
             <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
             <td><span class="cmp-dim">varies</span></td>
             <td><span class="cmp-no">—</span></td>
           </tr>
           <tr>
-            <td>Built-in native code editor with LSP</td>
+            <td>Full two-way Jira / Linear editing</td>
+            <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
+            <td><span class="cmp-no">—</span></td>
+            <td><span class="cmp-no">—</span></td>
+          </tr>
+          <tr>
+            <td>Built-in native editor with LSP + diff review</td>
             <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
             <td><span class="cmp-no">—</span></td>
             <td><span class="cmp-yes">&#10003;</span></td>
           </tr>
           <tr>
-            <td>Cross-repo workspaces + git worktrees</td>
+            <td>Parallel fan-out across isolated worktrees</td>
             <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
             <td><span class="cmp-dim">varies</span></td>
             <td><span class="cmp-no">—</span></td>
           </tr>
           <tr>
-            <td>No per-seat cloud compute cost</td>
+            <td>Autonomous heartbeat + dollar budget</td>
             <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
+            <td><span class="cmp-dim">varies</span></td>
             <td><span class="cmp-no">—</span></td>
-            <td><span class="cmp-yes">&#10003;</span></td>
           </tr>
         </tbody>
       </table>
     </div>
     <p class="compare-note">
       Comparisons above reflect general categories of tooling, not specific companies.
-      Iron Rain works with claude-code, opencode, and pi.
+      Iron Rain works with opencode, claude-code, pi, and custom CLI agents.
     </p>
   </div>
 </section>
 
-<!-- ─── 6. Security & Trust ──────────────────────────────────── -->
+<!-- ─── 7. Security & Trust ──────────────────────────────────── -->
 <section class="trust">
   <div class="wrap">
     <div class="trust-header">
       <span class="section-eyebrow">Security &amp; trust</span>
       <h2>Your code never leaves your Mac.</h2>
       <p class="trust-sub">
-        Iron Rain is designed to be private by construction.
-        We cannot see your code, your prompts, or your keys —
-        because none of it ever reaches our servers.
+        Iron Rain is private by construction. We can't see your code, your prompts, or your
+        keys, because none of it ever reaches our servers — the relay only forwards ciphertext.
       </p>
     </div>
     <div class="trust-grid">
@@ -436,42 +519,40 @@
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
         </div>
         <h3>End-to-end encrypted</h3>
-        <p>The iOS app and Mac daemon negotiate encryption keys during pairing.
-        All session data is encrypted in transit — Iron Rain's relay, if used,
-        sees only opaque ciphertext.</p>
+        <p>The iOS app and Mac daemon establish keys with X25519 and encrypt every session
+        with ChaCha20-Poly1305. The relay — Cloudflare Durable Objects, with a Fly fallback —
+        forwards only opaque ciphertext.</p>
       </div>
       <div class="trust-card">
         <div class="trust-icon" aria-hidden="true">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
         </div>
         <h3>Runs on your hardware</h3>
-        <p>The coding agent runs on your Mac, in your environment,
-        using your filesystem. No cloud sandbox, no third-party compute
-        ever sees your source code.</p>
+        <p>The agent runs on your Mac, in your environment, against your real filesystem.
+        No cloud sandbox and no third-party compute ever touches your source.</p>
       </div>
       <div class="trust-card">
         <div class="trust-icon" aria-hidden="true">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="8" r="5"/><path d="M3 21a9 9 0 0118 0"/></svg>
         </div>
         <h3>Your subscription, your keys</h3>
-        <p>claude-code runs on your existing Claude subscription.
-        API keys, if needed for headless use, live on your Mac only —
-        never on our servers.</p>
+        <p>Agents run on your existing subscriptions. Any API keys live on your Mac only,
+        never on our servers, and multi-account credentials hot-swap on demand.</p>
       </div>
       <div class="trust-card">
         <div class="trust-icon" aria-hidden="true">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
         </div>
         <h3>No analytics, no tracking</h3>
-        <p>Iron Rain has no analytics, no ads, and no third-party trackers.
-        Read the <a href="./privacy.html">full privacy policy</a> —
+        <p>No ads, no third-party trackers, nothing on by default. Optional diagnostics are
+        scrubbed and strictly opt-in. Read the <a href="./privacy.html">full privacy policy</a> —
         it's short and plain-English.</p>
       </div>
     </div>
   </div>
 </section>
 
-<!-- ─── 7. Install ───────────────────────────────────────────── -->
+<!-- ─── 8. Install ───────────────────────────────────────────── -->
 <section id="install" class="install">
   <div class="wrap">
     <div class="install-header">
@@ -488,7 +569,7 @@
           <h3>Install on your Mac</h3>
           <p>One command installs the Iron Rain Mac app and daemon, then launches the app.
           It auto-detects opencode, claude-code, and pi, sets up the integration on first run,
-          and displays a pairing QR code to scan from your phone.</p>
+          and shows a pairing QR code to scan from your phone.</p>
           <pre class="cmd"><code>curl -fsSL https://howlerops.github.io/iron-rain/install.sh | sh</code></pre>
           <p class="step-note">
             Headless or Linux? The same command installs just the daemon
@@ -503,7 +584,7 @@
         <div class="step-body">
           <h3>Join the iOS TestFlight</h3>
           <p>Join the TestFlight beta, install the Iron Rain iOS app,
-          then scan the QR code displayed by the Mac app to pair your devices.
+          then scan the QR code shown by the Mac app to pair your devices.
           Everything after that is automatic.</p>
           <a class="btn primary" href="./support.html#testflight">Join the TestFlight &rarr;</a>
         </div>
