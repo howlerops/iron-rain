@@ -22,6 +22,7 @@ type stub struct {
 	events    chan string
 	connected chan struct{}
 	permCh    chan string
+	turnDone  chan struct{} // scenario signals the turn finished; POST /message returns only then (like real opencode)
 
 	mu          sync.Mutex
 	permResp    string
@@ -36,6 +37,7 @@ func newStub() *stub {
 		events:    make(chan string, 16),
 		connected: make(chan struct{}),
 		permCh:    make(chan string, 1),
+		turnDone:  make(chan struct{}, 1),
 	}
 }
 
@@ -87,6 +89,13 @@ func (s *stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.messageBody = string(body)
 		s.mu.Unlock()
 		go s.scenario()
+		// Real opencode blocks the message POST until the turn finishes — return only when the
+		// scenario signals done (or the request is torn down), so the adapter's POST-return idle
+		// backstop fires at the right time, not immediately.
+		select {
+		case <-s.turnDone:
+		case <-r.Context().Done():
+		}
 		w.WriteHeader(http.StatusOK)
 
 	case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/permissions/"):
@@ -115,6 +124,7 @@ func (s *stub) scenario() {
 	<-s.permCh // wait for the client's decision
 	s.events <- `{"type":"message.part.delta","properties":{"sessionID":"ses_test","field":"text","delta":" done"}}`
 	s.events <- `{"type":"session.idle","properties":{"sessionID":"ses_test"}}`
+	s.turnDone <- struct{}{} // let POST /message return (turn complete)
 }
 
 func TestOpenCodeProvider_E2E(t *testing.T) {

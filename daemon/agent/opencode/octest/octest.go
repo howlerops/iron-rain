@@ -18,6 +18,7 @@ type Stub struct {
 	events    chan string
 	connected chan struct{}
 	permCh    chan string
+	turnDone  chan struct{}
 
 	mu       sync.Mutex
 	permResp string
@@ -29,6 +30,7 @@ func New() *Stub {
 		events:    make(chan string, 16),
 		connected: make(chan struct{}),
 		permCh:    make(chan string, 1),
+		turnDone:  make(chan struct{}, 1),
 	}
 }
 
@@ -70,7 +72,13 @@ func (s *Stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/message"):
+		// Real opencode blocks the message POST until the turn finishes; mirror that so the adapter's
+		// POST-return idle backstop fires after the turn, not immediately.
 		go s.scenario()
+		select {
+		case <-s.turnDone:
+		case <-r.Context().Done():
+		}
 		w.WriteHeader(http.StatusOK)
 
 	case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/permissions/"):
@@ -99,4 +107,5 @@ func (s *Stub) scenario() {
 	<-s.permCh
 	s.events <- `{"type":"message.part.delta","properties":{"sessionID":"` + SessionID + `","field":"text","delta":"done"}}`
 	s.events <- `{"type":"session.idle","properties":{"sessionID":"` + SessionID + `"}}`
+	s.turnDone <- struct{}{} // let POST /message return (turn complete)
 }
