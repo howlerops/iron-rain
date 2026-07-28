@@ -13,7 +13,7 @@ import OculusKit
 struct UIComponentView: View {
     let component: UIComponent
     let palette: OculusPalette
-    var onAction: ((UIAction) -> Void)? = nil
+    var onAction: ((UIComponentAction) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -243,9 +243,9 @@ struct InteractiveProps: Decodable { let prompt: String?; let title: String?; le
 
 private struct InteractiveView: View {
     let props: InteractiveProps
-    let actions: [UIAction]
+    let actions: [UIComponentAction]
     let palette: OculusPalette
-    var onAction: ((UIAction) -> Void)? = nil
+    var onAction: ((UIComponentAction) -> Void)? = nil
     @State private var chosen: String?   // simple single-select feedback
 
     var body: some View {
@@ -278,12 +278,12 @@ private struct InteractiveView: View {
             }
         }
     }
-    private func fg(_ a: UIAction) -> Color { a.style == "destructive" ? .white : palette.foreground }
-    private func bg(_ a: UIAction) -> Color {
+    private func fg(_ a: UIComponentAction) -> Color { a.style == "destructive" ? .white : palette.foreground }
+    private func bg(_ a: UIComponentAction) -> Color {
         if a.style == "destructive" { return palette.destructive.opacity(0.9) }
         return chosen == a.id ? palette.primary.opacity(0.18) : palette.muted.opacity(0.35)
     }
-    private func border(_ a: UIAction) -> Color { a.style == "destructive" ? .clear : palette.border }
+    private func border(_ a: UIComponentAction) -> Color { a.style == "destructive" ? .clear : palette.border }
 }
 
 // MARK: - helpers

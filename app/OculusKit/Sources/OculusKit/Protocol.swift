@@ -506,7 +506,7 @@ public struct UIComponent: Codable, Identifiable, Equatable {
     public var schemaV: Int
     public var status: String            // running | ready | error
     public var props: JSONValue?
-    public var actions: [UIAction]?
+    public var actions: [UIComponentAction]?
     public var fallbackText: String
     enum CodingKeys: String, CodingKey {
         case sessionID = "session_id", messageID = "message_id", id, component
@@ -517,7 +517,7 @@ public struct UIComponent: Codable, Identifiable, Equatable {
 /// An allow-listed interaction a component may offer. `kind` is a whitelisted verb the CLIENT runs —
 /// never a command/RPC/URL: `prompt` (send a templated next user turn), `answer` (typed reply), or
 /// `permission` (resolve an approval via the native ApprovalSheet).
-public struct UIAction: Codable, Identifiable, Equatable {
+public struct UIComponentAction: Codable, Identifiable, Equatable {
     public var id: String
     public var kind: String              // prompt | answer | permission
     public var label: String?

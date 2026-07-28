@@ -35,6 +35,15 @@ public struct AllSessionsView: View {
     @State private var pendingWorktreeDelete: Session?
     /// A plain (non-worktree) session pending delete confirmation.
     @State private var pendingDelete: Session?
+    /// Multi-select for bulk management (checkbox column + bulk action bar).
+    @State private var selection: Set<String> = []
+    /// Drives the bulk-delete confirmation (worktree-aware).
+    @State private var pendingBulkDelete = false
+
+    /// Selected sessions that actually still exist, and how many carry a worktree (drives the
+    /// worktree-aware bulk delete prompt).
+    private var selectedSessions: [Session] { rows.filter { selection.contains($0.id) } }
+    private var selectedWorktreeCount: Int { selectedSessions.filter { $0.branch?.isEmpty == false }.count }
 
     private var rows: [Session] {
         var out = model.sessions.filter { $0.ephemeral != true }
@@ -66,6 +75,7 @@ public struct AllSessionsView: View {
         VStack(spacing: 0) {
             header
             Divider().overlay(palette.border)
+            if !selection.isEmpty { bulkBar; Divider().overlay(palette.border) }
             columnHeader
             Divider().overlay(palette.border.opacity(0.6))
             if rows.isEmpty {
@@ -112,6 +122,63 @@ public struct AllSessionsView: View {
         } message: { s in
             Text("“\(label(s))” will be removed. This ends the agent if it's still running.")
         }
+        // Bulk delete — one confirmation for the whole selection, worktree-aware.
+        .confirmationDialog(
+            "Delete \(selection.count) session\(selection.count == 1 ? "" : "s")?",
+            isPresented: $pendingBulkDelete, titleVisibility: .visible
+        ) {
+            if selectedWorktreeCount > 0 {
+                Button("Delete & remove \(selectedWorktreeCount) worktree\(selectedWorktreeCount == 1 ? "" : "s")", role: .destructive) {
+                    bulkDelete(removeWorktrees: true)
+                }
+                Button("Delete sessions only", role: .destructive) { bulkDelete(removeWorktrees: false) }
+            } else {
+                Button("Delete", role: .destructive) { bulkDelete(removeWorktrees: false) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(selectedWorktreeCount > 0
+                 ? "\(selectedWorktreeCount) of \(selection.count) carry a git worktree. Removing worktrees runs `git worktree remove` and deletes their checkouts from disk."
+                 : "This ends any agents that are still running.")
+        }
+    }
+
+    /// The action bar shown while a selection is active: count, select-all/none, clean-up-stopped,
+    /// and the worktree-aware bulk delete.
+    private var bulkBar: some View {
+        HStack(spacing: 12) {
+            Text("\(selection.count) selected").font(.caption.bold())
+            Button("Select all") { selection = Set(rows.map { $0.id }) }.font(.caption).buttonStyle(.plain)
+            Button("None") { selection = [] }.font(.caption).buttonStyle(.plain)
+            Spacer()
+            let stopped = rows.filter { $0.status == SessionStatusValue.stopped }
+            if !stopped.isEmpty {
+                Button { selection = Set(stopped.map { $0.id }) } label: {
+                    Label("Select stopped (\(stopped.count))", systemImage: "moon.zzz").font(.caption)
+                }.buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
+            }
+            Button(role: .destructive) { pendingBulkDelete = true } label: {
+                Label("Delete \(selection.count)", systemImage: "trash").font(.caption.bold())
+            }.buttonStyle(.plain).foregroundStyle(palette.destructive)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 8)
+        .background(palette.primary.opacity(0.08))
+    }
+
+    /// Deletes every selected session; worktree sessions either have their checkout removed (git
+    /// worktree remove) or just the record dropped, per the user's choice in the confirmation.
+    private func bulkDelete(removeWorktrees: Bool) {
+        let targets = selectedSessions
+        selection = []
+        Task {
+            for s in targets {
+                if removeWorktrees, s.branch?.isEmpty == false {
+                    await model.removeWorktree(s.id, force: true)
+                } else {
+                    await model.stopSession(s.id)
+                }
+            }
+        }
     }
 
     private var header: some View {
@@ -142,6 +209,7 @@ public struct AllSessionsView: View {
 
     private var columnHeader: some View {
         HStack(spacing: 10) {
+            Color.clear.frame(width: 22) // checkbox column
             sortButton("Name", .name).frame(maxWidth: .infinity, alignment: .leading)
             sortButton("Provider", .provider).frame(width: 90, alignment: .leading)
             sortButton("Status", .status).frame(width: 90, alignment: .leading)
@@ -169,6 +237,14 @@ public struct AllSessionsView: View {
 
     private func row(_ s: Session) -> some View {
         HStack(spacing: 10) {
+            Button {
+                if selection.contains(s.id) { selection.remove(s.id) } else { selection.insert(s.id) }
+            } label: {
+                Image(systemName: selection.contains(s.id) ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(selection.contains(s.id) ? palette.primary : palette.mutedForeground)
+                    .font(.body)
+            }
+            .buttonStyle(.plain).frame(width: 22)
             VStack(alignment: .leading, spacing: 2) {
                 Text(label(s)).font(.callout).lineLimit(1)
                 HStack(spacing: 6) {

@@ -425,7 +425,7 @@ struct MessageRow: View {
     var onRetry: (() -> Void)? = nil
     /// Fired when the user activates a generative-UI component's action (choice/confirm). The
     /// transcript wires this to Model.invokeUIAction.
-    var onUIAction: ((UIComponent, UIAction) -> Void)? = nil
+    var onUIAction: ((UIComponent, UIComponentAction) -> Void)? = nil
     // Mirror ChatMarkdownView's type prefs so the whole transcript (user bubble, thinking, streaming
     // plain text) shares the chosen font, not just finalized assistant markdown.
     @AppStorage("oculus.chatFontDesign") private var fontDesignRaw = ChatFontDesign.system.rawValue

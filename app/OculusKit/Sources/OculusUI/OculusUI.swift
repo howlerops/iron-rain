@@ -2166,7 +2166,7 @@ public final class Model: ObservableObject {
     /// The user activated a generative-UI action (choice/confirm). Sends ui.action to the daemon,
     /// which maps it to the NEXT user turn (prompt/answer) or resolves an approval (permission) — the
     /// component can never execute a tool directly. Optimistically echoes a prompt as a user message.
-    public func invokeUIAction(_ c: UIComponent, _ a: UIAction) async {
+    public func invokeUIAction(_ c: UIComponent, _ a: UIComponentAction) async {
         guard let client else { return }
         let invoke = UIActionInvoke(sessionID: c.sessionID, messageID: c.messageID, componentID: c.id,
                                     actionID: a.id, kind: a.kind, prompt: a.prompt)
