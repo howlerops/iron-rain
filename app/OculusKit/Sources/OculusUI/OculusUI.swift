@@ -1989,14 +1989,62 @@ public final class Model: ObservableObject {
     /// Updates the board cache in place so the change is reflected without a full reload.
     @discardableResult
     public func updateIssue(_ issue: Issue, title: String? = nil, description: String? = nil,
-                            stateID: String? = nil, priority: Int? = nil) async throws -> Issue {
+                            stateID: String? = nil, priority: Int? = nil,
+                            assigneeID: String? = nil, labelIDs: [String]? = nil,
+                            cycleID: String? = nil, estimate: Double? = nil, dueDate: String? = nil) async throws -> Issue {
         let updated = try await request(MessageType.issueUpdate,
             payload: IssueUpdate(provider: issue.provider, issueID: issue.id,
-                                 title: title, description: description, stateID: stateID, priority: priority))
+                                 title: title, description: description, stateID: stateID, priority: priority,
+                                 assigneeID: assigneeID, labelIDs: labelIDs, cycleID: cycleID,
+                                 estimate: estimate, dueDate: dueDate))
             .payload(as: Issue.self)
         if let i = issues.firstIndex(where: { $0.id == updated.id }) { issues[i] = updated }
         return updated
     }
+
+    // Ticket-editor pickers, cached per (provider, team) so reopening a ticket doesn't refetch. The
+    // caches are simple dictionaries keyed by "provider|team"; the inspector calls these on open.
+    @Published public var issueMembers: [String: [IssueUser]] = [:]
+    @Published public var issueLabelsCache: [String: [IssueLabel]] = [:]
+    @Published public var issueCyclesCache: [String: [IssueCycle]] = [:]
+    private func pickerKey(_ provider: String, _ team: String) -> String { "\(provider)|\(team)" }
+
+    /// Loads the assignable users for an issue's team (assignee picker), caching by team.
+    public func loadMembers(for issue: Issue) async {
+        guard let team = issue.teamID, !team.isEmpty else { return }
+        let key = pickerKey(issue.provider, team)
+        if issueMembers[key] != nil { return }
+        if let list = try? await request(MessageType.issueMembers,
+            payload: IssueMembersReq(provider: issue.provider, teamID: team, issueID: issue.id))
+            .payload(as: IssueMemberList.self) {
+            issueMembers[key] = list.members
+        }
+    }
+    /// Loads a team's labels (label picker), caching by team.
+    public func loadLabels(for issue: Issue) async {
+        guard let team = issue.teamID, !team.isEmpty else { return }
+        let key = pickerKey(issue.provider, team)
+        if issueLabelsCache[key] != nil { return }
+        if let list = try? await request(MessageType.issueLabels,
+            payload: IssueLabelsReq(provider: issue.provider, teamID: team))
+            .payload(as: IssueLabelList.self) {
+            issueLabelsCache[key] = list.labels
+        }
+    }
+    /// Loads a team's sprints/cycles (sprint picker), caching by team.
+    public func loadCycles(for issue: Issue) async {
+        guard let team = issue.teamID, !team.isEmpty else { return }
+        let key = pickerKey(issue.provider, team)
+        if issueCyclesCache[key] != nil { return }
+        if let list = try? await request(MessageType.issueCycles,
+            payload: IssueCyclesReq(provider: issue.provider, teamID: team))
+            .payload(as: IssueCycleList.self) {
+            issueCyclesCache[key] = list.cycles
+        }
+    }
+    public func members(for issue: Issue) -> [IssueUser] { issue.teamID.map { issueMembers[pickerKey(issue.provider, $0)] ?? [] } ?? [] }
+    public func labels(for issue: Issue) -> [IssueLabel] { issue.teamID.map { issueLabelsCache[pickerKey(issue.provider, $0)] ?? [] } ?? [] }
+    public func cycles(for issue: Issue) -> [IssueCycle] { issue.teamID.map { issueCyclesCache[pickerKey(issue.provider, $0)] ?? [] } ?? [] }
 
     /// Posts a new comment and returns it.
     public func addComment(_ issue: Issue, body: String) async throws -> IssueComment {

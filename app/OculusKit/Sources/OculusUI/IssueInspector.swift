@@ -57,6 +57,7 @@ struct IssueInspectorPanel: View {
                 VStack(alignment: .leading, spacing: 16) {
                     titleSection
                     metaSection
+                    editRow
                     Divider().overlay(palette.border)
                     descriptionSection
                     if !attachments.isEmpty {
@@ -156,10 +157,99 @@ struct IssueInspectorPanel: View {
             }
             .menuStyle(.borderlessButton).fixedSize()
 
-            if let a = current.assignee, !a.isEmpty { chip(a, systemImage: "person") }
-            if let cycle = current.cycleLabel { chip(cycle, systemImage: "arrow.triangle.2.circlepath") }
-            if let sprint = current.sprintName, !sprint.isEmpty { chip(sprint, systemImage: "flag.checkered") }
+            assigneeMenu
             Spacer()
+        }
+    }
+
+    /// Assignee picker — the team's assignable members (fetched live), plus Unassign.
+    private var assigneeMenu: some View {
+        Menu {
+            ForEach(model.members(for: current)) { u in
+                Button { Task { await saveAssignee(u.id) } } label: {
+                    if u.id == current.assigneeID { Label(u.name, systemImage: "checkmark") } else { Text(u.name) }
+                }
+            }
+            if model.members(for: current).isEmpty { Text("No assignable users").foregroundStyle(palette.mutedForeground) }
+            Divider()
+            Button { Task { await saveAssignee("") } } label: { Text("Unassign") }
+        } label: {
+            chip(current.assignee?.isEmpty == false ? current.assignee! : "Unassigned", systemImage: "person")
+        }
+        .menuStyle(.borderlessButton).fixedSize()
+    }
+
+    /// Second meta row: sprint/cycle · labels · estimate · due date — all editable.
+    private var editRow: some View {
+        HStack(spacing: 10) {
+            sprintMenu
+            labelsMenu
+            estimateMenu
+            dueDateControl
+            Spacer()
+        }
+    }
+
+    private var sprintMenu: some View {
+        Menu {
+            ForEach(model.cycles(for: current)) { c in
+                Button { Task { await saveCycle(c.id) } } label: {
+                    let mark = c.id == current.cycleID
+                    if mark { Label(cycleLabel(c), systemImage: "checkmark") } else { Text(cycleLabel(c)) }
+                }
+            }
+            if model.cycles(for: current).isEmpty { Text("No sprints").foregroundStyle(palette.mutedForeground) }
+            Divider()
+            Button { Task { await saveCycle("") } } label: { Text("Remove from sprint") }
+        } label: {
+            let label = current.cycleLabel ?? (current.sprintName?.isEmpty == false ? current.sprintName! : "No sprint")
+            chip(label, systemImage: "flag.checkered")
+        }
+        .menuStyle(.borderlessButton).fixedSize()
+    }
+
+    private var labelsMenu: some View {
+        Menu {
+            ForEach(model.labels(for: current)) { l in
+                Button { Task { await toggleLabel(l) } } label: {
+                    if currentLabelIDs.contains(l.id) { Label(l.name, systemImage: "checkmark") } else { Text(l.name) }
+                }
+            }
+            if model.labels(for: current).isEmpty { Text("No labels").foregroundStyle(palette.mutedForeground) }
+        } label: {
+            let names = (current.labels ?? []).map(\.name)
+            chip(names.isEmpty ? "Labels" : names.joined(separator: ", "), systemImage: "tag")
+        }
+        .menuStyle(.borderlessButton).fixedSize()
+    }
+
+    private var estimateMenu: some View {
+        Menu {
+            ForEach([1, 2, 3, 5, 8, 13], id: \.self) { pts in
+                Button { Task { await saveEstimate(Double(pts)) } } label: {
+                    if Int(current.estimate ?? 0) == pts { Label("\(pts) pts", systemImage: "checkmark") } else { Text("\(pts) pts") }
+                }
+            }
+            Divider()
+            Button { Task { await saveEstimate(0) } } label: { Text("No estimate") }
+        } label: {
+            let e = current.estimate ?? 0
+            chip(e > 0 ? "\(Int(e)) pts" : "Estimate", systemImage: "gauge.medium")
+        }
+        .menuStyle(.borderlessButton).fixedSize()
+    }
+
+    private var dueDateControl: some View {
+        HStack(spacing: 4) {
+            chip(current.dueDate?.isEmpty == false ? current.dueDate! : "Due date", systemImage: "calendar")
+                .overlay {
+                    DatePicker("", selection: dueDateBinding, displayedComponents: .date)
+                        .labelsHidden().blendMode(.destinationOver) // invisible hit-target over the chip
+                }
+            if current.dueDate?.isEmpty == false {
+                Button { Task { await saveDueDate("") } } label: { Image(systemName: "xmark.circle.fill").font(.caption2) }
+                    .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
+            }
         }
     }
 
@@ -336,6 +426,10 @@ struct IssueInspectorPanel: View {
             self.comments = detail.comments
             self.attachments = detail.attachments ?? []
             self.states = (try? await s) ?? []
+            // Warm the editor pickers (assignee/labels/sprint) in the background — cached per team.
+            Task { await model.loadMembers(for: detail.issue) }
+            Task { await model.loadLabels(for: detail.issue) }
+            Task { await model.loadCycles(for: detail.issue) }
         } catch {
             loadError = error.localizedDescription
         }
@@ -367,6 +461,55 @@ struct IssueInspectorPanel: View {
         do { current = try await model.updateIssue(current, priority: p) }
         catch { model.actionError = "Couldn’t change the priority.\n\n\(error.localizedDescription)" }
     }
+
+    private func saveAssignee(_ id: String) async {
+        do { current = try await model.updateIssue(current, assigneeID: id) }
+        catch { model.actionError = "Couldn’t change the assignee.\n\n\(error.localizedDescription)" }
+    }
+
+    private func saveCycle(_ id: String) async {
+        do { current = try await model.updateIssue(current, cycleID: id) }
+        catch { model.actionError = "Couldn’t change the sprint.\n\n\(error.localizedDescription)" }
+    }
+
+    /// Adds or removes a label, sending the full new set (both providers replace, not merge).
+    private func toggleLabel(_ l: IssueLabel) async {
+        var ids = currentLabelIDs
+        if ids.contains(l.id) { ids.removeAll { $0 == l.id } } else { ids.append(l.id) }
+        do { current = try await model.updateIssue(current, labelIDs: ids) }
+        catch { model.actionError = "Couldn’t change the labels.\n\n\(error.localizedDescription)" }
+    }
+
+    private func saveEstimate(_ pts: Double) async {
+        do { current = try await model.updateIssue(current, estimate: pts) }
+        catch { model.actionError = "Couldn’t change the estimate.\n\n\(error.localizedDescription)" }
+    }
+
+    private func saveDueDate(_ iso: String) async {
+        do { current = try await model.updateIssue(current, dueDate: iso) }
+        catch { model.actionError = "Couldn’t change the due date.\n\n\(error.localizedDescription)" }
+    }
+
+    // MARK: editor helpers
+
+    private var currentLabelIDs: [String] { (current.labels ?? []).map(\.id) }
+    private func cycleLabel(_ c: IssueCycle) -> String {
+        if !c.name.isEmpty { return c.name }
+        if let n = c.number, n > 0 { return "Cycle \(n)" }
+        return c.id
+    }
+    /// Binds the DatePicker to the issue's ISO due date (YYYY-MM-DD), saving on change.
+    private var dueDateBinding: Binding<Date> {
+        Binding(
+            get: { Self.isoFormatter.date(from: current.dueDate ?? "") ?? Date() },
+            set: { newDate in Task { await saveDueDate(Self.isoFormatter.string(from: newDate)) } }
+        )
+    }
+    private static let isoFormatter: DateFormatter = {
+        let f = DateFormatter(); f.calendar = Calendar(identifier: .iso8601)
+        f.dateFormat = "yyyy-MM-dd"; f.timeZone = TimeZone(identifier: "UTC")
+        return f
+    }()
 
     private func postComment() async {
         let body = newComment.trimmingCharacters(in: .whitespacesAndNewlines)

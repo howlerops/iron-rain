@@ -78,6 +78,9 @@ public enum MessageType {
     public static let issueUpdate = "issue.update"
     public static let issueComment = "issue.comment"
     public static let issueCommentEdit = "issue.comment.edit"
+    public static let issueMembers = "issue.members"
+    public static let issueLabels = "issue.labels"
+    public static let issueCycles = "issue.cycles"
     public static let issueImage = "issue.image"
     public static let issueColumns = "issue.columns"
     public static let issueMove = "issue.move"
@@ -1283,8 +1286,13 @@ public struct Issue: Codable, Identifiable, Hashable {
     public var teamName: String?
     public var sprintName: String?
     public var sprintState: String?
+    // Editable-field detail (populated by issue.detail; drives full two-way editing).
+    public var assigneeID: String?
+    public var labels: [IssueLabel]?
+    public var estimate: Double?
+    public var dueDate: String?
     enum CodingKeys: String, CodingKey {
-        case id, key, title, body, status, category, assignee, url, provider, priority
+        case id, key, title, body, status, category, assignee, url, provider, priority, labels, estimate
         case branchName = "branch_name"
         case teamID = "team_id"
         case updatedAt = "updated_at"
@@ -1294,6 +1302,8 @@ public struct Issue: Codable, Identifiable, Hashable {
         case teamName = "team_name"
         case sprintName = "sprint_name"
         case sprintState = "sprint_state"
+        case assigneeID = "assignee_id"
+        case dueDate = "due_date"
     }
     /// Display label for the issue's cycle/sprint, e.g. "Cycle 12" or a named cycle.
     public var cycleLabel: String? {
@@ -1312,6 +1322,36 @@ public struct IssueStatesReq: Codable {
     enum CodingKeys: String, CodingKey { case provider; case teamID = "team_id" }
 }
 public struct IssueStateList: Codable { public var states: [IssueState] }
+
+// MARK: - Ticket editor pickers: members / labels / cycles
+
+public struct IssueUser: Codable, Identifiable, Hashable {
+    public var id: String; public var name: String; public var email: String?; public var avatar: String?
+}
+public struct IssueLabel: Codable, Identifiable, Hashable {
+    public var id: String; public var name: String; public var color: String?
+}
+public struct IssueCycle: Codable, Identifiable, Hashable {
+    public var id: String; public var name: String; public var number: Int?; public var state: String?
+}
+public struct IssueMembersReq: Codable {
+    public var provider: String; public var teamID: String; public var issueID: String?
+    public init(provider: String, teamID: String, issueID: String? = nil) { self.provider = provider; self.teamID = teamID; self.issueID = issueID }
+    enum CodingKeys: String, CodingKey { case provider; case teamID = "team_id"; case issueID = "issue_id" }
+}
+public struct IssueMemberList: Codable { public var members: [IssueUser] }
+public struct IssueLabelsReq: Codable {
+    public var provider: String; public var teamID: String
+    public init(provider: String, teamID: String) { self.provider = provider; self.teamID = teamID }
+    enum CodingKeys: String, CodingKey { case provider; case teamID = "team_id" }
+}
+public struct IssueLabelList: Codable { public var labels: [IssueLabel] }
+public struct IssueCyclesReq: Codable {
+    public var provider: String; public var teamID: String
+    public init(provider: String, teamID: String) { self.provider = provider; self.teamID = teamID }
+    enum CodingKeys: String, CodingKey { case provider; case teamID = "team_id" }
+}
+public struct IssueCycleList: Codable { public var cycles: [IssueCycle] }
 
 // MARK: - Kanban board: columns / move / create / projects
 
@@ -1410,13 +1450,19 @@ public struct IssueUpdate: Codable {
     public var provider: String; public var issueID: String
     public var title: String?; public var description: String?
     public var stateID: String?; public var priority: Int?
-    public init(provider: String, issueID: String, title: String? = nil, description: String? = nil, stateID: String? = nil, priority: Int? = nil) {
+    // A PRESENT value is applied; nil means "leave unchanged". To CLEAR a field, send its empty value
+    // explicitly ("" to unassign / clear due date, 0 to clear estimate, [] to clear labels).
+    public var assigneeID: String?; public var labelIDs: [String]?
+    public var cycleID: String?; public var estimate: Double?; public var dueDate: String?
+    public init(provider: String, issueID: String, title: String? = nil, description: String? = nil, stateID: String? = nil, priority: Int? = nil, assigneeID: String? = nil, labelIDs: [String]? = nil, cycleID: String? = nil, estimate: Double? = nil, dueDate: String? = nil) {
         self.provider = provider; self.issueID = issueID
         self.title = title; self.description = description; self.stateID = stateID; self.priority = priority
+        self.assigneeID = assigneeID; self.labelIDs = labelIDs; self.cycleID = cycleID; self.estimate = estimate; self.dueDate = dueDate
     }
     enum CodingKeys: String, CodingKey {
-        case provider, title, description, priority
+        case provider, title, description, priority, estimate
         case issueID = "issue_id"; case stateID = "state_id"
+        case assigneeID = "assignee_id"; case labelIDs = "label_ids"; case cycleID = "cycle_id"; case dueDate = "due_date"
     }
 }
 
