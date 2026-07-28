@@ -529,11 +529,19 @@ type AccountRef struct {
 
 // RemoteHost is a registered SSH remote where a worktree/agent can run.
 type RemoteHost struct {
-	ID         string `json:"id,omitempty"`
-	Name       string `json:"name"`
-	SSHTarget  string `json:"ssh_target"`
-	RemotePath string `json:"remote_path"`
-	Reachable  bool   `json:"reachable,omitempty"` // last probe result (remote.list)
+	ID         string        `json:"id,omitempty"`
+	Name       string        `json:"name"`
+	SSHTarget  string        `json:"ssh_target"`
+	RemotePath string        `json:"remote_path"`
+	Reachable  bool          `json:"reachable,omitempty"` // last probe result (remote.list)
+	Forwards   []PortForward `json:"forwards,omitempty"`  // local↔remote port tunnels (e.g. dev server)
+}
+
+// PortForward tunnels a local port to a remote port over SSH (-L), so a remote dev server is
+// reachable at http://localhost:<LocalPort>.
+type PortForward struct {
+	LocalPort  int `json:"local_port"`
+	RemotePort int `json:"remote_port"`
 }
 
 // RemoteList is a set of remote hosts.

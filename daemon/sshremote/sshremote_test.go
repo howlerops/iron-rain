@@ -10,7 +10,8 @@ import (
 )
 
 func TestSSHArgsConstruction(t *testing.T) {
-	r := New()
+	// A fixed-option runner (no keepalive noise) so the invocation shape is exact.
+	r := &Runner{SSHOptions: []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=8"}}
 	h := Host{SSHTarget: "jacob@build-box", RemotePath: "/home/jacob/proj"}
 	args := r.sshArgs(h, "git status")
 	want := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "jacob@build-box", "git status"}
@@ -68,6 +69,87 @@ func TestRunErrorsWithoutTarget(t *testing.T) {
 		t.Fatal("expected error for empty ssh target")
 	}
 }
+
+func TestPortForwardArgsInInvocation(t *testing.T) {
+	r := &Runner{SSHOptions: []string{"-o", "BatchMode=yes"}}
+	h := Host{SSHTarget: "box", Forwards: []PortForward{{LocalPort: 3000, RemotePort: 3000}, {LocalPort: 8080, RemotePort: 80}}}
+	args := r.sshArgs(h, "true")
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "-L 3000:localhost:3000") {
+		t.Errorf("missing first forward: %v", args)
+	}
+	if !strings.Contains(joined, "-L 8080:localhost:80") {
+		t.Errorf("missing second forward: %v", args)
+	}
+	// Forwards come before the target, which is before the command.
+	iL := indexOf(args, "3000:localhost:3000")
+	iTarget := indexOf(args, "box")
+	if iL < 0 || iTarget < 0 || iL > iTarget {
+		t.Errorf("forwards must precede the target: %v", args)
+	}
+}
+
+func TestKeepaliveOptionsPresent(t *testing.T) {
+	joined := strings.Join(New().SSHOptions, " ")
+	if !strings.Contains(joined, "ServerAliveInterval=15") || !strings.Contains(joined, "ServerAliveCountMax=3") {
+		t.Errorf("keepalive options missing: %v", New().SSHOptions)
+	}
+}
+
+func TestRunWithRetryReconnectsThenSucceeds(t *testing.T) {
+	calls := 0
+	r := &Runner{
+		SSHOptions: []string{},
+		Retries:    2,
+		Exec: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			calls++
+			if calls < 3 {
+				return []byte("kex_exchange_identification: Connection closed by remote host"), errFake("connection closed")
+			}
+			return []byte("ok"), nil
+		},
+	}
+	out, err := r.RunWithRetry(context.Background(), Host{SSHTarget: "box"}, "true")
+	if err != nil {
+		t.Fatalf("should have recovered: %v", err)
+	}
+	if calls != 3 {
+		t.Errorf("expected 3 attempts (2 transient failures + success), got %d", calls)
+	}
+	if !strings.Contains(out, "ok") {
+		t.Errorf("out = %q", out)
+	}
+}
+
+func TestRunWithRetryDoesNotRetryRealFailure(t *testing.T) {
+	calls := 0
+	r := &Runner{
+		Retries: 3,
+		Exec: func(ctx context.Context, name string, args ...string) ([]byte, error) {
+			calls++
+			return []byte("fatal: not a git repository"), errFake("exit status 128")
+		},
+	}
+	if _, err := r.RunWithRetry(context.Background(), Host{SSHTarget: "box"}, "git status"); err == nil {
+		t.Fatal("expected the command failure to propagate")
+	}
+	if calls != 1 {
+		t.Errorf("a non-transient failure must not be retried; got %d calls", calls)
+	}
+}
+
+func indexOf(ss []string, sub string) int {
+	for i, s := range ss {
+		if strings.Contains(s, sub) {
+			return i
+		}
+	}
+	return -1
+}
+
+type errFake string
+
+func (e errFake) Error() string { return string(e) }
 
 // TestLoopbackGitStatus is a REAL integration test: if this machine can ssh to localhost
 // non-interactively, run GitStatus against a real local repo over ssh. Skipped where sshd/keys

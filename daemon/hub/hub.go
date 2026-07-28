@@ -583,8 +583,13 @@ func (h *Hub) remoteList(ctx context.Context) protocol.RemoteList {
 			reachable = runner.Probe(pctx, hst) == nil
 			cancel()
 		}
+		var fwds []protocol.PortForward
+		for _, f := range hst.Forwards {
+			fwds = append(fwds, protocol.PortForward{LocalPort: f.LocalPort, RemotePort: f.RemotePort})
+		}
 		out.Hosts = append(out.Hosts, protocol.RemoteHost{
-			ID: hst.ID, Name: hst.Name, SSHTarget: hst.SSHTarget, RemotePath: hst.RemotePath, Reachable: reachable,
+			ID: hst.ID, Name: hst.Name, SSHTarget: hst.SSHTarget, RemotePath: hst.RemotePath,
+			Reachable: reachable, Forwards: fwds,
 		})
 	}
 	return out
@@ -1105,14 +1110,14 @@ func (h *Hub) spawnRemote(ctx context.Context, req protocol.RemoteRun) (*managed
 	if strings.TrimSpace(req.AgentCommand) == "" {
 		return nil, fmt.Errorf("remote run needs an agent command")
 	}
-	// Build: ssh <opts> <target> "cd '<path>' && <agentCommand> {prompt}". The CLI provider
-	// substitutes {prompt} into the final arg per turn.
+	// Build: ssh <opts> <forwards> <target> "cd '<path>' && <agentCommand> {prompt}". The CLI
+	// provider substitutes {prompt} into the final arg per turn. Port forwards (from the host) tunnel
+	// a remote dev server to localhost so Design Mode / a browser can reach it during the run.
 	remoteCmd := req.AgentCommand + " {prompt}"
 	if hst.RemotePath != "" {
 		remoteCmd = "cd '" + strings.ReplaceAll(hst.RemotePath, "'", `'\''`) + "' && " + remoteCmd
 	}
-	args := append([]string{}, runner.SSHOptions...)
-	args = append(args, hst.SSHTarget, remoteCmd)
+	args := runner.SSHArgv(hst, remoteCmd)
 	prov := cli.NewProvider(cli.Config{Name: "ssh:" + hst.Name, Command: "ssh", Args: args})
 
 	sess, err := prov.Create(ctx, "", req.Prompt)
@@ -2006,7 +2011,11 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, "remotes unavailable")
 			return
 		}
-		reg.Upsert(sshremote.Host{ID: hst.ID, Name: hst.Name, SSHTarget: hst.SSHTarget, RemotePath: hst.RemotePath})
+		var fwds []sshremote.PortForward
+		for _, f := range hst.Forwards {
+			fwds = append(fwds, sshremote.PortForward{LocalPort: f.LocalPort, RemotePort: f.RemotePort})
+		}
+		reg.Upsert(sshremote.Host{ID: hst.ID, Name: hst.Name, SSHTarget: hst.SSHTarget, RemotePath: hst.RemotePath, Forwards: fwds})
 		h.sendOK(conn, env.ID, h.remoteList(ctx))
 
 	case protocol.TypeRemoteDelete:

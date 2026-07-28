@@ -62,6 +62,11 @@ struct RemotesView: View {
                     .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
             }
             Text(host.remotePath).font(.system(size: 11, design: .monospaced)).foregroundStyle(palette.mutedForeground)
+            if let fwds = host.forwards, !fwds.isEmpty {
+                Label(fwds.map { "localhost:\($0.localPort) → :\($0.remotePort)" }.joined(separator: ", "),
+                      systemImage: "arrow.left.arrow.right")
+                    .font(.system(size: 10, design: .monospaced)).foregroundStyle(palette.primary)
+            }
             HStack {
                 Button {
                     loading.insert(host.id)
@@ -144,6 +149,7 @@ struct AddRemoteSheet: View {
     @State private var name = ""
     @State private var target = ""
     @State private var path = ""
+    @State private var devPort = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -155,11 +161,16 @@ struct AddRemoteSheet: View {
             field("NAME", "Build box", $name)
             field("SSH TARGET", "user@host or an ~/.ssh/config alias", $target)
             field("REMOTE PATH", "/home/you/project", $path)
+            field("DEV SERVER PORT (optional)", "3000 — tunneled to localhost for Design Mode", $devPort)
             HStack {
                 Spacer()
                 Button {
+                    var fwds: [PortForward]? = nil
+                    if let p = Int(devPort.trimmingCharacters(in: .whitespaces)), p > 0 {
+                        fwds = [PortForward(localPort: p, remotePort: p)]
+                    }
                     Task {
-                        await model.upsertRemote(RemoteHost(name: name, sshTarget: target, remotePath: path))
+                        await model.upsertRemote(RemoteHost(name: name, sshTarget: target, remotePath: path, forwards: fwds))
                         onClose()
                     }
                 } label: { Text("Add host") }

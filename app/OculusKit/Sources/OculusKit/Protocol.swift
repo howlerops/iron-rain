@@ -1096,6 +1096,14 @@ public struct AccountRef: Codable {
     public init(accountID: String) { self.accountID = accountID }
 }
 
+/// A local↔remote port tunnel (ssh -L) so a remote dev server is reachable at localhost.
+public struct PortForward: Codable, Equatable {
+    public var localPort: Int
+    public var remotePort: Int
+    enum CodingKeys: String, CodingKey { case localPort = "local_port"; case remotePort = "remote_port" }
+    public init(localPort: Int, remotePort: Int) { self.localPort = localPort; self.remotePort = remotePort }
+}
+
 /// A registered SSH remote where a worktree/agent can run.
 public struct RemoteHost: Codable, Identifiable, Equatable {
     public var id: String
@@ -1103,11 +1111,12 @@ public struct RemoteHost: Codable, Identifiable, Equatable {
     public var sshTarget: String
     public var remotePath: String
     public var reachable: Bool?
+    public var forwards: [PortForward]?
     enum CodingKeys: String, CodingKey {
-        case id; case name; case sshTarget = "ssh_target"; case remotePath = "remote_path"; case reachable
+        case id; case name; case sshTarget = "ssh_target"; case remotePath = "remote_path"; case reachable; case forwards
     }
-    public init(id: String = "", name: String, sshTarget: String, remotePath: String, reachable: Bool? = nil) {
-        self.id = id; self.name = name; self.sshTarget = sshTarget; self.remotePath = remotePath; self.reachable = reachable
+    public init(id: String = "", name: String, sshTarget: String, remotePath: String, reachable: Bool? = nil, forwards: [PortForward]? = nil) {
+        self.id = id; self.name = name; self.sshTarget = sshTarget; self.remotePath = remotePath; self.reachable = reachable; self.forwards = forwards
     }
 }
 public struct RemoteList: Codable { public var hosts: [RemoteHost] }
