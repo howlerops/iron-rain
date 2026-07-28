@@ -91,6 +91,61 @@ public enum Appearance: Int, CaseIterable, Identifiable {
     }
 }
 
+/// User chat-typeface preference, persisted via `@AppStorage("oculus.chatFontDesign")`. Drives the
+/// transcript's reading font (assistant/user/thinking text) so the chat can feel like a document
+/// (serif), a terminal (mono), softer (rounded), or the platform default.
+public enum ChatFontDesign: Int, CaseIterable, Identifiable {
+    case system, rounded, serif, mono
+    public var id: Int { rawValue }
+    public var label: String {
+        switch self {
+        case .system: return "Default"
+        case .rounded: return "Rounded"
+        case .serif: return "Serif"
+        case .mono: return "Monospaced"
+        }
+    }
+    public var symbol: String {
+        switch self {
+        case .system: return "textformat"
+        case .rounded: return "textformat.alt"
+        case .serif: return "textformat.size"
+        case .mono: return "chevron.left.forwardslash.chevron.right"
+        }
+    }
+    public var design: Font.Design {
+        switch self {
+        case .system: return .default
+        case .rounded: return .rounded
+        case .serif: return .serif
+        case .mono: return .monospaced
+        }
+    }
+}
+
+/// User chat text-size preference, persisted via `@AppStorage("oculus.chatFontScale")` as a raw
+/// multiplier. A small closed set keeps the type ramp coherent (we scale every role by one factor).
+public enum ChatFontScale: Int, CaseIterable, Identifiable {
+    case small, standard, large, xlarge
+    public var id: Int { rawValue }
+    public var label: String {
+        switch self {
+        case .small: return "Small"
+        case .standard: return "Standard"
+        case .large: return "Large"
+        case .xlarge: return "Extra Large"
+        }
+    }
+    public var factor: CGFloat {
+        switch self {
+        case .small: return 0.9
+        case .standard: return 1.0
+        case .large: return 1.15
+        case .xlarge: return 1.3
+        }
+    }
+}
+
 extension Color {
     /// 0xRRGGBB integer initializer.
     public init(hex: UInt32, alpha: Double = 1.0) {

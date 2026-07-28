@@ -101,6 +101,8 @@ struct SessionSidebar: View {
     var onOpenAccounts: (() -> Void)? = nil
     var onOpenRemotes: (() -> Void)? = nil
     @AppStorage("oculus.appearance") private var appearance: Appearance = .system
+    @AppStorage("oculus.chatFontDesign") private var chatFontDesign = ChatFontDesign.system.rawValue
+    @AppStorage("oculus.chatFontScale") private var chatFontScale = ChatFontScale.standard.rawValue
     @State private var filter: SessionFilter = .all
     @State private var renamingSessionID: String?
     @State private var renameText = ""
@@ -356,6 +358,20 @@ struct SessionSidebar: View {
                     }
                 } label: {
                     Label("Appearance", systemImage: "circle.lefthalf.filled")
+                }
+                Picker(selection: $chatFontDesign) {
+                    ForEach(ChatFontDesign.allCases) { f in
+                        Label(f.label, systemImage: f.symbol).tag(f.rawValue)
+                    }
+                } label: {
+                    Label("Chat font", systemImage: "textformat")
+                }
+                Picker(selection: $chatFontScale) {
+                    ForEach(ChatFontScale.allCases) { s in
+                        Text(s.label).tag(s.rawValue)
+                    }
+                } label: {
+                    Label("Chat text size", systemImage: "textformat.size")
                 }
                 #if os(macOS)
                 if let onCheckForUpdates {

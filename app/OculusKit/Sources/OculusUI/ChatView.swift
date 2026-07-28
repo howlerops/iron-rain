@@ -422,6 +422,13 @@ struct MessageRow: View {
     let message: ChatMessage
     let palette: OculusPalette
     var onRetry: (() -> Void)? = nil
+    // Mirror ChatMarkdownView's type prefs so the whole transcript (user bubble, thinking, streaming
+    // plain text) shares the chosen font, not just finalized assistant markdown.
+    @AppStorage("oculus.chatFontDesign") private var fontDesignRaw = ChatFontDesign.system.rawValue
+    @AppStorage("oculus.chatFontScale") private var fontScaleRaw = ChatFontScale.standard.rawValue
+    private var chatDesign: Font.Design { ChatFontDesign(rawValue: fontDesignRaw)?.design ?? .default }
+    private var chatFactor: CGFloat { ChatFontScale(rawValue: fontScaleRaw)?.factor ?? 1.0 }
+    private var chatBody: Font { .system(size: 15 * chatFactor, design: chatDesign) }
 
     var body: some View {
         switch message.role {
@@ -430,6 +437,7 @@ struct MessageRow: View {
                 HStack {
                     Spacer(minLength: 40)
                     Text(message.text)
+                        .font(chatBody)
                         .foregroundStyle(palette.foreground)
                         .padding(.horizontal, 14).padding(.vertical, 9)
                         .background(palette.secondary)
@@ -466,7 +474,7 @@ struct MessageRow: View {
                 // snap to full markdown the instant the turn ends (the `else` below). Line breaks are
                 // preserved so lists/paragraphs still read naturally mid-stream.
                 Text(message.text)
-                    .font(.body)
+                    .font(chatBody)
                     .foregroundStyle(palette.foreground)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
@@ -477,7 +485,7 @@ struct MessageRow: View {
         case .thinking:
             HStack(alignment: .top, spacing: 6) {
                 Image(systemName: "brain").font(.caption2).padding(.top, 2)
-                Text(message.text).font(.callout).italic()
+                Text(message.text).font(.system(size: 13.5 * chatFactor, design: chatDesign)).italic()
                     .textSelection(.enabled)
             }
             .foregroundStyle(palette.mutedForeground)
@@ -813,6 +821,9 @@ struct SubAgentsStrip: View {
     @ObservedObject var model: Model
     let children: [Session]
     let palette: OculusPalette
+    /// Whole-strip collapse, persisted: with many lanes the strip can dominate the chat, so it folds
+    /// to a one-line summary (lane count · how many are working · total spend) and expands on demand.
+    @AppStorage("subAgentsStripCollapsed") private var collapsed = false
 
     /// Combined spend across the parent + all its sub-agents — delegation multiplies sessions, so
     /// the orchestrator watches the total, not just the active lane.
@@ -820,21 +831,41 @@ struct SubAgentsStrip: View {
         (model.currentSession?.costUSD ?? 0) + children.reduce(0) { $0 + ($1.costUSD ?? 0) }
     }
 
+    /// Sub-agents actively working right now — surfaced in the collapsed header so you still see
+    /// "something's happening" without expanding.
+    private var workingCount: Int {
+        children.filter { isRunning($0, model.heartbeats[$0.id]) }.count
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text("Sub-agents").font(.caption2.bold()).foregroundStyle(palette.mutedForeground)
-                Spacer()
-                Text(String(format: "total $%.3f · %d lanes", totalCost, children.count + 1))
-                    .font(.caption2.monospacedDigit()).foregroundStyle(palette.mutedForeground)
-            }
-            .padding(.horizontal, 12)
-            VStack(spacing: 6) {
-                ForEach(children) { child in
-                    childCard(child)
+            Button { withAnimation(.easeInOut(duration: 0.18)) { collapsed.toggle() } } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+                        .font(.caption2).foregroundStyle(palette.mutedForeground).frame(width: 10)
+                    Text("Sub-agents").font(.caption2.bold()).foregroundStyle(palette.mutedForeground)
+                    if workingCount > 0 {
+                        Text("\(workingCount) working")
+                            .font(.caption2.bold()).foregroundStyle(palette.primary)
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Capsule().fill(palette.primary.opacity(0.15)))
+                    }
+                    Spacer()
+                    Text(String(format: "total $%.3f · %d lanes", totalCost, children.count + 1))
+                        .font(.caption2.monospacedDigit()).foregroundStyle(palette.mutedForeground)
                 }
+                .padding(.horizontal, 12)
+                .contentShape(Rectangle())
             }
-            .padding(.horizontal, 12)
+            .buttonStyle(.plain)
+            if !collapsed {
+                VStack(spacing: 6) {
+                    ForEach(children) { child in
+                        childCard(child)
+                    }
+                }
+                .padding(.horizontal, 12)
+            }
         }
         .padding(.vertical, 7)
         .background(palette.secondary.opacity(0.35))
@@ -947,6 +978,13 @@ struct SubAgentsStrip: View {
 struct ChatMarkdownView: View {
     let text: String
     let palette: OculusPalette
+    // User type preferences (Settings → Chat font). Reading them here re-renders + re-parses when the
+    // user changes the font, and they participate in the cache key so a restyle doesn't serve a stale
+    // AttributedString built with the old font.
+    @AppStorage("oculus.chatFontDesign") private var fontDesignRaw = ChatFontDesign.system.rawValue
+    @AppStorage("oculus.chatFontScale") private var fontScaleRaw = ChatFontScale.standard.rawValue
+    private var design: Font.Design { ChatFontDesign(rawValue: fontDesignRaw)?.design ?? .default }
+    private var factor: CGFloat { ChatFontScale(rawValue: fontScaleRaw)?.factor ?? 1.0 }
 
     // ONE Text built from a single AttributedString — so a selection can span the whole message
     // (across paragraphs, lists, and code), not just one line. `.textSelection` then copies any
@@ -970,10 +1008,12 @@ struct ChatMarkdownView: View {
     private static let cacheLimit = 256
 
     private func attributed() -> AttributedString {
-        if let hit = Self.cache[text] { return hit }
+        // Font design + scale change the built runs, so they're part of the key.
+        let key = "\(fontDesignRaw)|\(fontScaleRaw)|\(text)"
+        if let hit = Self.cache[key] { return hit }
         let out = build()
         if Self.cache.count >= Self.cacheLimit { Self.cache.removeAll(keepingCapacity: true) }
-        Self.cache[text] = out
+        Self.cache[key] = out
         return out
     }
 
@@ -984,20 +1024,20 @@ struct ChatMarkdownView: View {
             if i > 0 { out += AttributedString("\n") } // blank line between blocks
             switch b {
             case .heading(let level, let t):
-                var a = inline(t); a.font = headingFont(level).bold()
+                var a = inline(t); a.font = scaled(headingSize(level)).bold()
                 out += a + AttributedString("\n")
             case .paragraph(let t):
-                var a = inline(t); a.font = .body
+                var a = inline(t); a.font = bodyFont
                 out += a + AttributedString("\n")
             case .bullet(let items):
-                for it in items { var a = inline(it); a.font = .body; out += AttributedString("•  ") + a + AttributedString("\n") }
+                for it in items { var a = inline(it); a.font = bodyFont; out += AttributedString("•  ") + a + AttributedString("\n") }
             case .ordered(let items):
-                for (idx, it) in items.enumerated() { var a = inline(it); a.font = .body; out += AttributedString("\(idx + 1).  ") + a + AttributedString("\n") }
+                for (idx, it) in items.enumerated() { var a = inline(it); a.font = bodyFont; out += AttributedString("\(idx + 1).  ") + a + AttributedString("\n") }
             case .code(let c):
-                var a = AttributedString(c); a.font = .system(.callout, design: .monospaced)
+                var a = AttributedString(c); a.font = .system(size: 13.5 * factor, design: .monospaced) // code is always mono
                 out += a + AttributedString("\n")
             case .image(let alt, let url):
-                var a = AttributedString(alt.isEmpty ? url : alt)
+                var a = AttributedString(alt.isEmpty ? url : alt); a.font = bodyFont
                 if let u = URL(string: url) { a.link = u; a.foregroundColor = palette.primary }
                 out += a + AttributedString("\n")
             case .rule:
@@ -1010,8 +1050,11 @@ struct ChatMarkdownView: View {
     private func inline(_ s: String) -> AttributedString {
         (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(s)
     }
-    private func headingFont(_ l: Int) -> Font {
-        switch l { case 1: return .title2; case 2: return .title3; case 3: return .headline; default: return .subheadline }
+    /// A body-sized font in the user's chosen design + scale.
+    private var bodyFont: Font { scaled(15) }
+    private func scaled(_ base: CGFloat) -> Font { .system(size: base * factor, design: design) }
+    private func headingSize(_ l: Int) -> CGFloat {
+        switch l { case 1: return 22; case 2: return 19; case 3: return 16.5; default: return 15 }
     }
     private func copyAll() {
         #if canImport(AppKit)
