@@ -9,6 +9,7 @@ import (
 
 	"github.com/howlerops/oculus/daemon/activity"
 	"github.com/howlerops/oculus/daemon/agent"
+	"github.com/howlerops/oculus/daemon/genui"
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/transcript"
 	"github.com/howlerops/oculus/daemon/transport"
@@ -100,6 +101,8 @@ type managedSession struct {
 	model            string          // active model id ("" = provider default)
 	modelProvider    string          // sub-provider/backend for the model
 	pendingContext   string          // one-shot note prepended to the FIRST user prompt (multi-repo layout)
+
+	seg genui.Segmenter // incremental scanner for ```iron:ui``` generative-UI fences in assistant text
 
 	awaitingResponse bool // a prompt was sent and no event has come back yet (drives the no-response watchdog)
 	respWatchdogGen  int  // generation counter so a stale watchdog can't fire after a newer prompt/response
@@ -335,6 +338,30 @@ func (m *managedSession) drop(s *subscriber) {
 	s.close()
 }
 
+// emitUIComponents broadcasts each generative-UI component the segmenter produced as its own
+// ui.component event (stamping the session id). Called from the event pump on assistant deltas.
+func (m *managedSession) emitUIComponents(sessionID string, comps []protocol.UIComponent) {
+	for _, c := range comps {
+		c.SessionID = sessionID
+		if raw, err := (agent.Event{Type: protocol.TypeUIComponent, Payload: c}).Encode(); err == nil {
+			m.broadcast(raw)
+		}
+	}
+}
+
+// flushUI finalizes the generative-UI segmenter at turn end: it emits any component/text held in a
+// closing fence and resets the segmenter for the next turn. Called on idle/done.
+func (m *managedSession) flushUI(sessionID string) {
+	fwd, comps := m.seg.Flush()
+	m.emitUIComponents(sessionID, comps)
+	if fwd != "" {
+		if raw, err := (agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: sessionID, Text: fwd}}).Encode(); err == nil {
+			m.broadcast(raw)
+		}
+	}
+	m.seg = genui.Segmenter{}
+}
+
 // broadcast records the event and enqueues it to every current subscriber without
 // blocking: a subscriber whose bounded queue is full is dropped rather than allowed to
 // stall the run() goroutine that pumps the provider's event stream.
@@ -439,6 +466,7 @@ func (m *managedSession) run() {
 					log.Printf("session %s (%s): turn start", m.sess.ID(), m.sess.Provider())
 				case protocol.StatusIdle, protocol.StatusDone:
 					log.Printf("session %s (%s): turn end (%s)", m.sess.ID(), m.sess.Provider(), ss.Status)
+					m.flushUI(ss.SessionID) // emit any component/text left in an open fence, reset for next turn
 					// Record a "finished" activity item only when a real turn actually ran (saw deltas),
 					// so idle re-attaches don't spam the feed.
 					m.mu.Lock()
@@ -459,6 +487,21 @@ func (m *managedSession) run() {
 					})
 				}
 				m.onStatus(ss)
+			}
+		}
+		// Generative UI: scan assistant text for ```iron:ui``` fences. Complete, valid fences are
+		// pulled OUT of the visible stream and re-emitted as normalized ui.component events; the rest
+		// of the text streams normally. Invalid/unknown blocks stay inline as code (never broken).
+		// This happens here, once, so every harness gets it for free.
+		if ev.Type == protocol.TypeOutputDelta {
+			if d, ok := ev.Payload.(protocol.OutputDelta); ok {
+				fwd, comps := m.seg.Feed(d.Text)
+				m.emitUIComponents(d.SessionID, comps)
+				if fwd == "" {
+					continue // fully absorbed into a fence; nothing to stream this delta
+				}
+				d.Text = fwd
+				ev.Payload = d
 			}
 		}
 		raw, err := ev.Encode()

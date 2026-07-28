@@ -2993,6 +2993,34 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		m.armResponseWatchdog()
 		h.sendOK(conn, env.ID, nil)
 
+	case protocol.TypeUIAction:
+		// A user activated a generative-UI component's action. Its ONLY effect is to start the next
+		// user turn (a component can never execute a tool or a destructive op directly). kind=prompt/
+		// answer deliver the templated text as a normal prompt; a permission kind would route through
+		// the approval system (deferred — fenced components don't carry an approval id yet).
+		var req protocol.UIActionInvoke
+		_ = env.Unmarshal(&req)
+		m := h.managed(req.SessionID)
+		if m == nil {
+			h.sendErr(conn, env.ID, "no such session")
+			return
+		}
+		if req.Kind == "prompt" || req.Kind == "answer" {
+			text := req.Prompt
+			if text == "" {
+				h.sendErr(conn, env.ID, "ui action has no prompt")
+				return
+			}
+			_ = h.tr().Append(req.SessionID, transcript.Entry{Kind: "user", Text: text})
+			log.Printf("session %s (%s): ui.action %q -> prompt (%d chars)", req.SessionID, m.sess.Provider(), req.ActionID, len(text))
+			if err := promptSession(ctx, m.sess, text, nil); err != nil {
+				h.sendErr(conn, env.ID, err.Error())
+				return
+			}
+			m.armResponseWatchdog()
+		}
+		h.sendOK(conn, env.ID, nil)
+
 	case protocol.TypeApprovalRespond:
 		var req protocol.ApprovalRespond
 		_ = env.Unmarshal(&req)
