@@ -118,6 +118,7 @@ const (
 	TypeSessionUsage     = "session.usage"     // token/cost usage for a session (event)
 	TypeSessionTodos     = "session.todos"     // the agent's live to-do list (event)
 	TypeSessionSubAgent  = "session.subagent"  // a sub-agent (opencode task etc.) started/finished under a parent
+	TypeSessionTool      = "session.tool"       // a tool call with its command + output (rich inline card)
 	TypeUIComponent      = "ui.component"      // event: a normalized generative-UI component (projected or fenced)
 	TypeUIAction         = "ui.action"         // client → daemon: user activated a UI component's action
 	TypeSessionHeartbeat = "session.heartbeat" // supervision state for a session (event)
@@ -1191,6 +1192,18 @@ type Todo struct {
 type SessionTodos struct {
 	SessionID string `json:"session_id"`
 	Todos     []Todo `json:"todos"`
+}
+
+// SessionTool is one tool call, surfaced as a rich inline card that separates the invocation
+// (Name + Title, e.g. "bash · ls -la") from its Output, instead of hiding it behind a "running…"
+// chip. Updated in place by ID: a running card gains its Output/Status when the tool completes.
+type SessionTool struct {
+	SessionID string `json:"session_id"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`             // tool name (bash, read, edit, task, …)
+	Title     string `json:"title,omitempty"`  // human summary of the invocation (opencode's tool title)
+	Output    string `json:"output,omitempty"` // result text (or error), shown on expand
+	Status    string `json:"status"`           // running | completed | error
 }
 
 // SubAgent announces the lifecycle of a sub-agent a session delegates to (e.g. opencode's `task`

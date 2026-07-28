@@ -2247,6 +2247,39 @@ public final class Model: ObservableObject {
         }
     }
 
+    /// Folds a rich tool call into a transcript (the active parent's, or a sub-agent's child buffer),
+    /// updating in place by the tool's stable id (running → completed+output) so a card fills in with
+    /// its result instead of hiding behind a "running…" chip.
+    private func applySessionTool(_ st: SessionTool) {
+        // MERGE into an existing card by id (a "running" event carries name+command, the later
+        // "completed" event may carry only the output), so neither overwrites the other's fields.
+        func merged(into old: ToolCall?) -> ToolCall {
+            ToolCall(id: st.id,
+                     name: st.name.isEmpty ? (old?.name ?? "") : st.name,
+                     title: (st.title?.isEmpty ?? true) ? (old?.title ?? "") : st.title!,
+                     output: (st.output?.isEmpty ?? true) ? (old?.output ?? "") : st.output!,
+                     status: st.status.isEmpty ? (old?.status ?? "running") : st.status)
+        }
+        if st.sessionID == sessionID {
+            bumpWatchdog()
+            if let idx = messages.firstIndex(where: { $0.role == .tool && $0.tool?.id == st.id }) {
+                messages[idx].tool = merged(into: messages[idx].tool)
+            } else {
+                finalizeStreaming()
+                messages.append(ChatMessage(role: .tool, text: st.name, tool: merged(into: nil)))
+            }
+        } else if childMessages[st.sessionID] != nil {
+            bumpWatchdog()
+            var buf = childMessages[st.sessionID] ?? []
+            if let idx = buf.firstIndex(where: { $0.role == .tool && $0.tool?.id == st.id }) {
+                buf[idx].tool = merged(into: buf[idx].tool)
+            } else {
+                buf.append(ChatMessage(role: .tool, text: st.name, tool: merged(into: nil)))
+            }
+            childMessages[st.sessionID] = buf
+        }
+    }
+
     /// Folds an incoming generative-UI component into the transcript. A component with the same
     /// stable `id` UPDATES in place (running skeleton → ready table); a new id appends a `.ui` row.
     /// Any in-flight streaming assistant text is sealed first so the component lands after it.
@@ -2531,6 +2564,10 @@ public final class Model: ObservableObject {
                     if let sa = try? env.payload(as: SubAgent.self) {
                         applySubAgent(sa)
                         bumpWatchdog() // a sub-agent spinning up means the parent is alive
+                    }
+                case MessageType.sessionTool: // a rich tool call (command + output) for the session or a sub-agent
+                    if let st = try? env.payload(as: SessionTool.self) {
+                        applySessionTool(st)
                     }
                 case MessageType.sessionHeartbeat: // supervision "on-track" state for a session
                     if let hb = try? env.payload(as: SessionHeartbeat.self) {

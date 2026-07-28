@@ -659,7 +659,7 @@ public struct RootView: View {
     private func pageTitle(_ model: Model) -> String {
         if destination == .sessions, model.codeReviewTarget == nil,
            let s = model.currentSession {
-            return s.name ?? s.title ?? "Session"
+            return s.name ?? s.title ?? s.folderName ?? "Session"
         }
         return destination.title
     }

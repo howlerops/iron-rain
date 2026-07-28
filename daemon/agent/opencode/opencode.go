@@ -314,7 +314,6 @@ type session struct {
 	msgRoles    map[string]string // messageID -> role (from message.updated)
 	emittedUser map[string]bool   // messageIDs already forwarded as a user turn
 	usageDone   map[string]bool   // messageIDs whose usage was already emitted (once per turn)
-	emittedTool map[string]bool   // tool part ids already surfaced inline (dedup)
 	childIDs    map[string]bool   // opencode sub-session ids whose parentID == s.id (sub-agents)
 	subStarted  map[string]bool   // sub-agent ids already announced (dedup the started card)
 }
@@ -522,6 +521,9 @@ func (s *session) handle(raw []byte) {
 				SessionID string `json:"sessionID"`
 				State     struct {
 					Status string `json:"status"`
+					Title  string `json:"title"`
+					Output string `json:"output"`
+					Error  string `json:"error"`
 				} `json:"state"`
 			} `json:"part"`
 		}
@@ -535,24 +537,25 @@ func (s *session) handle(raw []byte) {
 		target := pu.Part.SessionID // s.id for the parent turn; the child id for a sub-agent
 		switch pu.Part.Type {
 		case "tool":
-			// A tool that's running/completed → the agent is doing work; surface it as activity
-			// ("running bash") tagged to the right session (parent chip or sub-agent card).
-			if pu.Part.State.Status == "running" || pu.Part.State.Status == "completed" {
-				s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{
-					SessionID: target, Status: protocol.StatusRunning, Detail: "running " + pu.Part.Tool,
-				}})
-				// Surface the tool call INLINE (once per tool part). For the PARENT we skip `task` — the
-				// sub-agent gets its own inline card (from session.created) instead of a bare tool row.
+			st := pu.Part.State.Status
+			if st == "running" || st == "completed" || st == "error" {
+				// Keep the top activity chip for the parent's current tool.
+				if st != "error" {
+					s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{
+						SessionID: target, Status: protocol.StatusRunning, Detail: "running " + pu.Part.Tool,
+					}})
+				}
+				// Rich inline tool card, updated IN PLACE by part id (running → completed+output). The
+				// PARENT skips `task` — the sub-agent gets its own card (from session.created) instead.
 				if pu.Part.ID != "" && !(isParent && pu.Part.Tool == "task") {
-					if s.emittedTool == nil {
-						s.emittedTool = map[string]bool{}
+					output := pu.Part.State.Output
+					if st == "error" && pu.Part.State.Error != "" {
+						output = pu.Part.State.Error
 					}
-					if !s.emittedTool[pu.Part.ID] {
-						s.emittedTool[pu.Part.ID] = true
-						s.emit(agent.Event{Type: protocol.TypeSessionMessage, Payload: protocol.SessionMessage{
-							SessionID: target, Role: "tool", Text: toolLabel(pu.Part.Tool),
-						}})
-					}
+					s.emit(agent.Event{Type: protocol.TypeSessionTool, Payload: protocol.SessionTool{
+						SessionID: target, ID: pu.Part.ID, Name: pu.Part.Tool,
+						Title: pu.Part.State.Title, Output: output, Status: st,
+					}})
 				}
 			}
 		case "text":
@@ -688,21 +691,7 @@ func (s *session) handle(raw []byte) {
 		s.msgRoles = nil
 		s.emittedUser = nil
 		s.usageDone = nil
-		s.emittedTool = nil
 		s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusIdle}})
-	}
-}
-
-// toolLabel gives a tool call a short, human label for the inline transcript row. opencode's `task`
-// tool is a sub-agent, so it's labelled distinctly (the app renders sub-agents with their own style).
-func toolLabel(tool string) string {
-	switch tool {
-	case "task":
-		return "sub-agent"
-	case "":
-		return "tool"
-	default:
-		return tool
 	}
 }
 

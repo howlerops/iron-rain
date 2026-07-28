@@ -117,6 +117,7 @@ public enum MessageType {
     public static let uiComponent = "ui.component"   // event: a normalized generative-UI component
     public static let uiAction = "ui.action"         // client → daemon: user activated a UI action
     public static let sessionSubAgent = "session.subagent" // a sub-agent started/finished under a parent
+    public static let sessionTool = "session.tool"         // a tool call with its command + output
     public static let sessionHeartbeat = "session.heartbeat"
     public static let sessionAutonomy = "session.autonomy"
     public static let handoffList = "handoff.list"
@@ -496,6 +497,18 @@ public indirect enum JSONValue: Codable, Equatable {
         guard let data = try? JSONEncoder().encode(self) else { return nil }
         return try? JSONDecoder().decode(type, from: data)
     }
+}
+
+/// One tool call as a rich inline card: the invocation (name + title) is separated from its output,
+/// updated in place by `id` as the tool goes running → completed.
+public struct SessionTool: Codable, Equatable {
+    public var sessionID: String
+    public var id: String
+    public var name: String
+    public var title: String?
+    public var output: String?
+    public var status: String  // running | completed | error
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id", id, name, title, output, status }
 }
 
 /// Announces a sub-agent's lifecycle under a parent session (e.g. opencode's `task` tool). The app
@@ -1322,6 +1335,24 @@ public struct Issue: Codable, Identifiable, Hashable {
         if let n = cycleName, !n.isEmpty { return n }
         if let num = cycleNumber, num > 0 { return "Cycle \(num)" }
         return nil
+    }
+}
+
+extension Session {
+    /// A name derived from the working tree — the cwd's folder (or workspace name), with the worktree
+    /// branch appended when present. Used to auto-name a session that has no user/provider title,
+    /// instead of a meaningless "ses a1b2c3". Returns nil if no folder is known.
+    public var folderName: String? {
+        var folder: String?
+        if let w = workspaceName, !w.isEmpty {
+            folder = w
+        } else if let c = cwd, !c.isEmpty {
+            let last = (c as NSString).lastPathComponent
+            folder = (last.isEmpty || last == "/") ? nil : last
+        }
+        guard let f = folder else { return nil }
+        if let b = branch, !b.isEmpty { return "\(f) · \(b)" }
+        return f
     }
 }
 public struct IssueList: Codable { public var issues: [Issue] }

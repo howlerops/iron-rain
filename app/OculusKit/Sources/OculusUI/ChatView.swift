@@ -508,16 +508,21 @@ struct MessageRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.leading, 2)
         case .tool:
-            HStack(spacing: 8) {
-                Image(systemName: "wrench.and.screwdriver.fill").font(.caption2)
-                Text(message.text).font(.system(.caption, design: .monospaced))
+            if let call = message.tool {
+                ToolCallCard(call: call, palette: palette)
+            } else {
+                // Legacy plain tool note (approvals etc.).
+                HStack(spacing: 8) {
+                    Image(systemName: "wrench.and.screwdriver.fill").font(.caption2)
+                    Text(message.text).font(.system(.caption, design: .monospaced))
+                }
+                .foregroundStyle(palette.accentForeground)
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(palette.accent)
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.primary.opacity(0.25)))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
             }
-            .foregroundStyle(palette.accentForeground)
-            .padding(.horizontal, 12).padding(.vertical, 8)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(palette.accent)
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.primary.opacity(0.25)))
-            .clipShape(RoundedRectangle(cornerRadius: 10))
         case .subagent:
             // The rich inline card is rendered at the transcript level (it needs the live model); this
             // is a minimal fallback for any context that renders a MessageRow directly.
@@ -532,6 +537,68 @@ struct MessageRow: View {
             }
         }
     }
+}
+
+/// A tool call as a distinct, collapsible inline card — the invocation (icon · tool · command) reads
+/// separately from the agent's prose, and the OUTPUT expands on demand rather than hiding behind a
+/// "running…" chip. A running tool shows a spinner; completed/error show a result affordance.
+struct ToolCallCard: View {
+    let call: ToolCall
+    let palette: OculusPalette
+    @State private var expanded = false
+
+    private var running: Bool { call.status == "running" }
+    private var isError: Bool { call.status == "error" }
+    private var hasOutput: Bool { !call.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button { if hasOutput { expanded.toggle() } } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: icon).font(.caption2).foregroundStyle(tint).frame(width: 14)
+                    Text(call.name).font(.system(.caption, design: .monospaced).bold()).foregroundStyle(palette.foreground)
+                    if !call.title.isEmpty {
+                        Text(call.title).font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(palette.mutedForeground).lineLimit(1).truncationMode(.middle)
+                    }
+                    Spacer(minLength: 6)
+                    if running {
+                        ProgressView().controlSize(.mini)
+                    } else if hasOutput {
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 9)).foregroundStyle(palette.mutedForeground)
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if expanded, hasOutput {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    Text(call.output).font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(isError ? palette.destructive : palette.foreground)
+                        .textSelection(.enabled)
+                        .padding(.top, 6)
+                }
+                .frame(maxHeight: 220)
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(palette.secondary.opacity(0.3), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke((isError ? palette.destructive : palette.primary).opacity(running ? 0.4 : 0.2)))
+    }
+
+    private var icon: String {
+        switch call.name {
+        case "bash": return "terminal"
+        case "read": return "doc.text"
+        case "edit", "write": return "pencil"
+        case "grep", "glob", "list": return "magnifyingglass"
+        case "webfetch", "fetch": return "globe"
+        default: return "wrench.and.screwdriver"
+        }
+    }
+    private var tint: Color { isError ? palette.destructive : palette.primary }
 }
 
 struct TypingIndicator: View {

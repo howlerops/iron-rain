@@ -33,8 +33,11 @@ public struct ChatMessage: Identifiable, Equatable {
     /// Set only for `.subagent` rows: the sub-agent's session id, which keys its live streamed
     /// transcript in Model.childMessages / childActivity / subAgentStatus.
     public var subAgentID: String?
+    /// Set only for `.tool` rows sourced from a rich tool event — the invocation + its output,
+    /// updated in place by `tool.id` as the tool runs → completes.
+    public var tool: ToolCall?
 
-    public init(id: UUID = UUID(), role: Role, text: String, streaming: Bool = false, delivery: Delivery = .ok, component: UIComponent? = nil, subAgentID: String? = nil) {
+    public init(id: UUID = UUID(), role: Role, text: String, streaming: Bool = false, delivery: Delivery = .ok, component: UIComponent? = nil, subAgentID: String? = nil, tool: ToolCall? = nil) {
         self.id = id
         self.role = role
         self.text = text
@@ -42,5 +45,18 @@ public struct ChatMessage: Identifiable, Equatable {
         self.delivery = delivery
         self.component = component
         self.subAgentID = subAgentID
+        self.tool = tool
+    }
+}
+
+/// A tool invocation shown as a rich, collapsible card (name · title command · output).
+public struct ToolCall: Equatable {
+    public var id: String        // stable tool-part id (update in place)
+    public var name: String      // bash, read, edit, …
+    public var title: String     // human command summary
+    public var output: String    // result / error text
+    public var status: String    // running | completed | error
+    public init(id: String, name: String, title: String, output: String, status: String) {
+        self.id = id; self.name = name; self.title = title; self.output = output; self.status = status
     }
 }

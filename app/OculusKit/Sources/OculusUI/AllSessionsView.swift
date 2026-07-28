@@ -318,6 +318,7 @@ public struct AllSessionsView: View {
         if let n = s.name, !n.isEmpty { return n }
         if let t = s.title, !t.isEmpty { return t }
         if let st = s.subtask, !st.isEmpty { return st }
+        if let f = s.folderName { return f } // auto-name from the working tree (folder · branch)
         return "Session \(s.id.prefix(6))"
     }
     private func projectName(_ s: Session) -> String? {

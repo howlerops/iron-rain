@@ -172,11 +172,26 @@ type piEvent struct {
 	ToolName string         `json:"toolName"`
 	Title    string         `json:"title"`
 	Message  string         `json:"message"`
+	Output   string         `json:"output"`
 	Args     map[string]any `json:"args"`
 	Asst     struct {
 		Type  string `json:"type"`
 		Delta string `json:"delta"`
 	} `json:"assistantMessageEvent"`
+}
+
+// piToolSummary renders a short command line from a tool's args (command → path → pattern), so a
+// tool card reads "bash · npm test" instead of just the tool name.
+func piToolSummary(args map[string]any) string {
+	for _, k := range []string{"command", "file_path", "path", "pattern", "url", "query"} {
+		if v, ok := args[k].(string); ok && v != "" {
+			if len(v) > 200 {
+				return v[:200] + "…"
+			}
+			return v
+		}
+	}
+	return ""
 }
 
 // piMessageEnd is decoded separately from a message_end line (its "message" key is an object,
@@ -265,6 +280,10 @@ func (s *session) readLoop(stdout io.ReadCloser) {
 					s.emit(agent.Event{Type: protocol.TypeThinking, Payload: protocol.Thinking{SessionID: s.id, Text: e.Asst.Delta}})
 				}
 			}
+		case "tool_execution_end":
+			// Rich tool card gets its output + completes (paired to the start by id).
+			s.emit(agent.Event{Type: protocol.TypeSessionTool, Payload: protocol.SessionTool{
+				SessionID: s.id, ID: e.ID, Name: e.ToolName, Output: e.Output, Status: "completed"}})
 		case "tool_execution_start":
 			// pi has no native to-do tool; a valhalla-style extension can add one, and its
 			// call arrives here — surface it as the normalized session.todos.
@@ -272,6 +291,13 @@ func (s *session) readLoop(stdout io.ReadCloser) {
 				s.emit(agent.Event{Type: protocol.TypeSessionTodos, Payload: protocol.SessionTodos{SessionID: s.id, Todos: todos}})
 			}
 			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusRunning, Detail: "running " + e.ToolName}})
+			// Rich inline tool card (running) with a command summary; completed by tool_execution_end.
+			title := e.Title
+			if title == "" {
+				title = piToolSummary(e.Args)
+			}
+			s.emit(agent.Event{Type: protocol.TypeSessionTool, Payload: protocol.SessionTool{
+				SessionID: s.id, ID: e.ID, Name: e.ToolName, Title: title, Status: "running"}})
 		case "extension_ui_request":
 			// confirm (yes/no) and select (options) both gate an action — a plan-mode
 			// extension surfaces its plan through here, reusing the approval channel.

@@ -211,6 +211,8 @@ type outMsg struct {
 	Text         string        `json:"text,omitempty"`
 	Tool         string        `json:"tool,omitempty"`
 	Detail       string        `json:"detail,omitempty"`
+	Output       string        `json:"output,omitempty"`
+	Status       string        `json:"status,omitempty"`
 	Message      string        `json:"message,omitempty"`
 	InputTokens  int           `json:"input_tokens,omitempty"`
 	OutputTokens int           `json:"output_tokens,omitempty"`
@@ -317,6 +319,15 @@ func (s *session) readLoop(stdout io.ReadCloser) {
 			}
 		case "tool":
 			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusRunning, Detail: "running " + m.Tool}})
+		case "toolcall":
+			// Rich inline tool card: running carries the command (Detail), the later result carries
+			// Output. Same event the app renders for opencode, so claude-code gets card parity.
+			if m.Status != "" && m.Status != "running" {
+				s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusRunning, Detail: ""}})
+			}
+			s.emit(agent.Event{Type: protocol.TypeSessionTool, Payload: protocol.SessionTool{
+				SessionID: s.id, ID: m.ID, Name: m.Tool, Title: m.Detail, Output: m.Output, Status: m.Status,
+			}})
 		case "approval":
 			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusAwaitingApproval}})
 			s.emit(agent.Event{Type: protocol.TypeApprovalRequest, Payload: protocol.ApprovalRequest{ApprovalID: m.ID, SessionID: s.id, Tool: m.Tool, Detail: m.Detail}})

@@ -26,6 +26,25 @@ function send(obj) {
   process.stdout.write(JSON.stringify(obj) + "\n");
 }
 
+// toolSummary renders a short human command line from a tool's input (Bash → command, file tools →
+// path, search → pattern), so a tool card reads "Bash · npm test" instead of just the tool name.
+function toolSummary(name, input) {
+  if (!input || typeof input !== "object") return "";
+  const i = input;
+  const pick = i.command || i.file_path || i.path || i.pattern || i.url || i.query || i.prompt;
+  if (typeof pick === "string") return pick.length > 200 ? pick.slice(0, 200) + "…" : pick;
+  try { const s = JSON.stringify(i); return s.length > 160 ? s.slice(0, 160) + "…" : s; } catch { return ""; }
+}
+
+// toolResultText flattens a tool_result's content (string or array of text blocks) to plain text,
+// capped so a huge result can't flood the wire.
+function toolResultText(content) {
+  let text = "";
+  if (typeof content === "string") text = content;
+  else if (Array.isArray(content)) text = content.map((b) => (typeof b === "string" ? b : b?.text || "")).join("");
+  return text.length > 8000 ? text.slice(0, 8000) + "\n…(truncated)" : text;
+}
+
 // --- streaming user-input queue: the daemon pushes prompts over time ---
 let waiting = null;
 const pending = [];
@@ -169,6 +188,12 @@ try {
             if (block && typeof block === "object" && block.name === "TodoWrite") {
               latestTodoBlock = block;
             }
+            // Rich tool card: emit each tool_use with a human command summary (running). The
+            // matching output arrives later as a tool_result in a "user" message (see below).
+            if (block?.type === "tool_use" && block.id) {
+              send({ t: "toolcall", id: block.id, tool: String(block.name || "tool"),
+                     detail: toolSummary(block.name, block.input), status: "running" });
+            }
           }
           if (latestTodoBlock) {
             const todos = Array.isArray(latestTodoBlock.input?.todos) ? latestTodoBlock.input.todos : [];
@@ -179,6 +204,20 @@ try {
                 status: String(td?.status ?? "pending"),
               })),
             });
+          }
+        }
+        break;
+      }
+      case "user": {
+        // Tool results arrive as tool_result blocks in a user message — pair them to their tool_use
+        // by id and fill in the card's output.
+        const blocks = message.message?.content;
+        if (Array.isArray(blocks)) {
+          for (const block of blocks) {
+            if (block?.type === "tool_result" && block.tool_use_id) {
+              send({ t: "toolcall", id: block.tool_use_id, output: toolResultText(block.content),
+                     status: block.is_error ? "error" : "completed" });
+            }
           }
         }
         break;
