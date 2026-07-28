@@ -344,6 +344,61 @@ func (h *Hub) StartSessionPruning(ctx context.Context, interval, ttl time.Durati
 	}()
 }
 
+// StartConflictSweep periodically checks each worktree session for a would-be merge conflict with
+// its default branch and flips the session's `conflicted` flag, re-broadcasting the list on any
+// change — so a passive "conflict" badge appears without the user having to try a merge. Non-
+// destructive (git merge-tree). Cheap: only worktree sessions are checked, on a slow interval.
+func (h *Hub) StartConflictSweep(ctx context.Context, interval time.Duration) {
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				h.sweepConflicts(ctx)
+			}
+		}
+	}()
+}
+
+func (h *Hub) sweepConflicts(ctx context.Context) {
+	h.mu.Lock()
+	var wts []*managedSession
+	for _, m := range h.sessions {
+		if m.meta.worktreePath != "" {
+			wts = append(wts, m)
+		}
+	}
+	h.mu.Unlock()
+
+	changed := false
+	for _, m := range wts {
+		cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		paths, err := worktree.WouldConflict(cctx, m.meta.worktreePath, "")
+		cancel()
+		if err != nil {
+			continue // transient git error — leave the flag as-is
+		}
+		conflicted := len(paths) > 0
+		m.mu.Lock()
+		if m.conflicted != conflicted {
+			m.conflicted = conflicted
+			changed = true
+			if conflicted {
+				log.Printf("session %s: worktree now CONFLICTS with default branch (%v)", m.sess.ID(), paths)
+			} else {
+				log.Printf("session %s: worktree conflict resolved", m.sess.ID())
+			}
+		}
+		m.mu.Unlock()
+	}
+	if changed {
+		h.broadcastSessionList()
+	}
+}
+
 func (h *Hub) touchAndPrune(ttl time.Duration) {
 	h.mu.Lock()
 	db := h.db

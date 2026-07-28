@@ -42,6 +42,55 @@ func Diff(ctx context.Context, worktreePath, baseRef string) (string, error) {
 	return outBuf.String(), nil
 }
 
+// WouldConflict reports, NON-destructively, whether merging `base` (e.g. "main") into the
+// worktree's current branch would conflict — without touching the working tree or leaving a
+// mid-merge state (unlike CatchUp). It uses `git merge-tree --write-tree`, which computes the merge
+// in memory and exits non-zero with the conflicted paths listed when there are conflicts. This is
+// what drives the passive "conflict" status badge, so parallel agents on one repo don't silently
+// collide. Returns the conflicted paths (empty = clean merge). base defaults to the repo's default
+// branch when empty.
+func WouldConflict(ctx context.Context, worktreePath, base string) ([]string, error) {
+	if base == "" {
+		base = DefaultBranch(worktreePath)
+	}
+	// merge-tree --write-tree: exit 0 = clean, exit 1 = conflicts (with an "Informational messages"
+	// section listing conflicted files after a blank line), other = error. --name-only keeps the
+	// conflict section to bare paths.
+	cmd := exec.CommandContext(ctx, "git", "-C", worktreePath, "merge-tree", "--write-tree", "--name-only", "HEAD", base)
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	err := cmd.Run()
+	if err == nil {
+		return nil, nil // clean merge
+	}
+	if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 1 {
+		// Conflicts. Output format:
+		//   <tree-oid>
+		//   <conflicted file names, one per line>   (bare paths, via --name-only)
+		//   <blank line>
+		//   <human-readable informational messages>
+		// The paths are the lines BEFORE the blank line, minus the leading OID line.
+		out := outBuf.String()
+		head := out
+		if i := strings.Index(out, "\n\n"); i >= 0 {
+			head = out[:i]
+		}
+		lines := strings.Split(strings.TrimSpace(head), "\n")
+		var paths []string
+		for _, ln := range lines[1:] { // skip the tree-OID line
+			if p := strings.TrimSpace(ln); p != "" {
+				paths = append(paths, p)
+			}
+		}
+		if len(paths) == 0 {
+			return []string{"(conflict)"}, nil // conflicted but couldn't parse paths
+		}
+		return paths, nil
+	}
+	return nil, fmt.Errorf("git merge-tree: %v: %s", err, strings.TrimSpace(errBuf.String()))
+}
+
 // CommitAll stages and commits everything in the worktree (no-op if clean). Returns
 // whether a commit was made.
 func CommitAll(ctx context.Context, worktreePath, message string) (bool, error) {

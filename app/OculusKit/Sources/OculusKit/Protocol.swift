@@ -459,8 +459,9 @@ public struct Session: Codable, Identifiable {
     public var inputTokens: Int?
     public var outputTokens: Int?
     public var costUSD: Double?
+    public var conflicted: Bool? // worktree branch would conflict with the default branch
     enum CodingKeys: String, CodingKey {
-        case id, provider, status, title, name, cwd, branch, port, model, restartable
+        case id, provider, status, title, name, cwd, branch, port, model, restartable, conflicted
         case projectID = "project_id"
         case workspaceName = "workspace_name"
         case isWorkspace = "is_workspace"

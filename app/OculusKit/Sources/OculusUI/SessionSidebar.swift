@@ -18,6 +18,7 @@ private struct SidebarSession: Identifiable {
     let updatedAt: Date?
     var isChild: Bool = false // delegated sub-agent (shown with a ↳ marker)
     var hasError: Bool = false // a background session whose sends stopped landing (no-response/error)
+    var conflicted: Bool = false // worktree branch would conflict with the default branch
 }
 
 private struct SessionGroup: Identifiable {
@@ -519,7 +520,7 @@ struct SessionSidebar: View {
                                     branch: s.branch, isRunning: s.status == SessionStatusValue.running,
                                     stopped: s.status == SessionStatusValue.stopped,
                                     viewOnly: false, managed: true, updatedAt: date(s.updatedAt), isChild: isChild,
-                                    hasError: model.sessionErrors[s.id] != nil))
+                                    hasError: model.sessionErrors[s.id] != nil, conflicted: s.conflicted == true))
         }
         // Terminal-owned sessions discovered on the host are intentionally NOT shown here —
         // the sidebar lists only sessions started/opened in the app. Discovered sessions are
@@ -624,6 +625,11 @@ private struct SessionRow: View {
             // A solid chip to distinguish lifecycle at a glance: running (gold, live), or a
             // terminal glyph for sessions started outside the app (discovered — clicking
             // resumes them). Managed idle sessions carry no chip; they're the plain default.
+            if item.conflicted {
+                // Worktree branch conflicts with the default branch — flag it so parallel agents on
+                // one repo don't silently collide.
+                chip(icon: "arrow.triangle.merge", text: "Conflict", tint: Color(hex: 0xA071D6), filled: true)
+            }
             if item.hasError {
                 // A background session whose last turn errored / got no response. The chip IS the
                 // fix — tapping the row reconnects it (recover, keeping history).

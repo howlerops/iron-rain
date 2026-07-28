@@ -949,6 +949,9 @@ type Session struct {
 	InputTokens  int     `json:"input_tokens,omitempty"`
 	OutputTokens int     `json:"output_tokens,omitempty"`
 	CostUSD      float64 `json:"cost_usd,omitempty"`
+	// True when this worktree session's branch would conflict with the default branch (passive
+	// badge, computed by a periodic sweep) — so parallel agents on one repo don't silently collide.
+	Conflicted bool `json:"conflicted,omitempty"`
 }
 
 // SessionUsage is a usage update for one session (event). InputTokens/OutputTokens/CostUSD are

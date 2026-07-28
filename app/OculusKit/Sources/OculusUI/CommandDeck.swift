@@ -74,14 +74,18 @@ public enum AgentState {
         }
     }
 
-    /// Derive the display state for a session from its status + the Model's error map.
+    /// Derive the display state for a session from its status, conflict flag, + the Model's error
+    /// map. Priority: failed/needs-you (attention) > conflict > running > idle.
     @MainActor static func of(_ session: Session, model: Model) -> AgentState {
         if model.sessionErrors[session.id] != nil { return .failed }
         switch session.status {
-        case SessionStatusValue.running: return .running
-        case SessionStatusValue.awaitingApproval: return .needsYou
         case SessionStatusValue.error, "errored": return .failed
-        case SessionStatusValue.stopped: return .idle
+        case SessionStatusValue.awaitingApproval: return .needsYou
+        default: break
+        }
+        if session.conflicted == true { return .conflict }
+        switch session.status {
+        case SessionStatusValue.running: return .running
         default: return .idle
         }
     }

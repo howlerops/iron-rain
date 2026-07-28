@@ -104,6 +104,7 @@ type managedSession struct {
 	awaitingResponse bool // a prompt was sent and no event has come back yet (drives the no-response watchdog)
 	respWatchdogGen  int  // generation counter so a stale watchdog can't fire after a newer prompt/response
 	userStopped      bool // the user explicitly stopped/removed this session (vs. an unexpected provider exit)
+	conflicted       bool // this worktree session's branch would conflict with the default branch (passive badge)
 }
 
 // markUserStopped records that the session's close is user-intended, so run()'s cleanup DELETES the
@@ -226,6 +227,7 @@ func (m *managedSession) info() protocol.Session {
 	isWorkspace := len(m.meta.members) > 0
 	status := m.lastStatus
 	model, modelProvider := m.model, m.modelProvider
+	conflicted := m.conflicted
 	m.mu.Unlock()
 	if status == "" {
 		status = protocol.StatusRunning // freshly created — no status event yet
@@ -251,6 +253,7 @@ func (m *managedSession) info() protocol.Session {
 		InputTokens:   inTok,
 		OutputTokens:  outTok,
 		CostUSD:       cost,
+		Conflicted:    conflicted,
 	}
 }
 

@@ -209,6 +209,7 @@ func serve(args []string) error {
 	const sessionTTL = 7 * 24 * time.Hour
 	go h.RestoreSessions(context.Background(), sessionTTL)
 	h.StartSessionPruning(context.Background(), 6*time.Hour, sessionTTL)
+	h.StartConflictSweep(context.Background(), 45*time.Second) // passive merge-conflict badge for worktree sessions
 	h.StartHeartbeat(context.Background()) // supervise autonomous sessions (nudge/checkpoint/escalate)
 
 	// A long-running daemon (e.g. a launchd agent on a server) would otherwise never pick up a new

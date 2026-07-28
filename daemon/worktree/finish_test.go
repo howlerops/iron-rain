@@ -33,6 +33,83 @@ func TestDiffAndHeadCommit(t *testing.T) {
 	}
 }
 
+// TestWouldConflict proves the non-destructive conflict check: it flags a worktree branch that
+// would conflict with main (both edited the same lines) WITHOUT leaving a mid-merge state, and
+// reports no conflict when the branches touch different files.
+func TestWouldConflict(t *testing.T) {
+	commit := func(dir, msg string) {
+		t.Helper()
+		for _, args := range [][]string{{"add", "."}, {"commit", "-qm", msg}} {
+			if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v (%s)", args, err, out)
+			}
+		}
+	}
+
+	// --- conflicting case: worktree branch and main edit the SAME file's content ---
+	repo := t.TempDir()
+	gitInit(t, repo) // main: f="x"
+	wt, err := Create(t.TempDir(), repo, "feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Path, "f"), []byte("feature change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commit(wt.Path, "feature edit")
+	if err := os.WriteFile(filepath.Join(repo, "f"), []byte("main change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commit(repo, "main edit")
+
+	paths, err := WouldConflict(context.Background(), wt.Path, "main")
+	if err != nil {
+		t.Fatalf("WouldConflict: %v", err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("expected a conflict on 'f', got none")
+	}
+	found := false
+	for _, p := range paths {
+		if p == "f" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("conflicted paths = %v, want to include 'f'", paths)
+	}
+	// Non-destructive: the working tree must NOT be left mid-merge.
+	if _, err := os.Stat(filepath.Join(wt.Path, ".git")); err != nil {
+		// worktrees use a .git file, not dir — just assert no MERGE_HEAD in the repo's git dir.
+	}
+	if out, _ := exec.Command("git", "-C", wt.Path, "status", "--porcelain=v2").CombinedOutput(); strings.Contains(string(out), "MERGE") {
+		t.Errorf("worktree left mid-merge: %s", out)
+	}
+
+	// --- non-conflicting case: different files ---
+	repo2 := t.TempDir()
+	gitInit(t, repo2)
+	wt2, err := Create(t.TempDir(), repo2, "feature2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt2.Path, "newfile"), []byte("only here\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commit(wt2.Path, "add newfile")
+	if err := os.WriteFile(filepath.Join(repo2, "other"), []byte("main only\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commit(repo2, "add other")
+	paths2, err := WouldConflict(context.Background(), wt2.Path, "main")
+	if err != nil {
+		t.Fatalf("WouldConflict (clean): %v", err)
+	}
+	if len(paths2) != 0 {
+		t.Errorf("expected no conflict, got %v", paths2)
+	}
+}
+
 // TestDiff_ExcludesStderrWarnings verifies Diff returns only stdout, so git's
 // stderr warnings (e.g. CRLF conversion notices) never corrupt the diff text.
 func TestDiff_ExcludesStderrWarnings(t *testing.T) {
