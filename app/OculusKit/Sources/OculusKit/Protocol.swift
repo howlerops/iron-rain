@@ -160,11 +160,12 @@ public struct SessionCreate: Codable {
     public var budgetUSD: Double?
     public var model: String?
     public var modelProvider: String?
-    public init(provider: String, cwd: String? = nil, projectID: String? = nil, projectIDs: [String]? = nil, prompt: String? = nil, images: [ImageAttachment]? = nil, worktree: Bool? = nil, workspaceName: String? = nil, plan: Bool? = nil, autonomous: Bool? = nil, maxNudges: Int? = nil, budgetUSD: Double? = nil, model: String? = nil, modelProvider: String? = nil) {
-        self.provider = provider; self.cwd = cwd; self.projectID = projectID; self.projectIDs = projectIDs; self.prompt = prompt; self.images = images; self.worktree = worktree; self.workspaceName = workspaceName; self.plan = plan; self.autonomous = autonomous; self.maxNudges = maxNudges; self.budgetUSD = budgetUSD; self.model = model; self.modelProvider = modelProvider
+    public var ephemeral: Bool?
+    public init(provider: String, cwd: String? = nil, projectID: String? = nil, projectIDs: [String]? = nil, prompt: String? = nil, images: [ImageAttachment]? = nil, worktree: Bool? = nil, workspaceName: String? = nil, plan: Bool? = nil, autonomous: Bool? = nil, maxNudges: Int? = nil, budgetUSD: Double? = nil, model: String? = nil, modelProvider: String? = nil, ephemeral: Bool? = nil) {
+        self.provider = provider; self.cwd = cwd; self.projectID = projectID; self.projectIDs = projectIDs; self.prompt = prompt; self.images = images; self.worktree = worktree; self.workspaceName = workspaceName; self.plan = plan; self.autonomous = autonomous; self.maxNudges = maxNudges; self.budgetUSD = budgetUSD; self.model = model; self.modelProvider = modelProvider; self.ephemeral = ephemeral
     }
     enum CodingKeys: String, CodingKey {
-        case provider, cwd, prompt, images, worktree, plan, autonomous, model
+        case provider, cwd, prompt, images, worktree, plan, autonomous, model, ephemeral
         case projectID = "project_id"
         case projectIDs = "project_ids"
         case workspaceName = "workspace_name"
@@ -476,8 +477,9 @@ public struct Session: Codable, Identifiable {
     public var conflicted: Bool? // worktree branch would conflict with the default branch
     public var fanoutGroup: String?  // shared id when this is one of N agents racing the same prompt
     public var fanoutVariant: Int?   // 0-based variant index within the fan-out group
+    public var ephemeral: Bool?      // scratch "just chat" session (no project, not persisted)
     enum CodingKeys: String, CodingKey {
-        case id, provider, status, title, name, cwd, branch, port, model, restartable, conflicted
+        case id, provider, status, title, name, cwd, branch, port, model, restartable, conflicted, ephemeral
         case fanoutGroup = "fanout_group"
         case fanoutVariant = "fanout_variant"
         case projectID = "project_id"

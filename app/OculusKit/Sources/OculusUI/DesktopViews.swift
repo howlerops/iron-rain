@@ -505,6 +505,10 @@ public struct RootView: View {
                                subtitle: "Start an agent", symbol: "plus.circle") {
             newSessionTakeOver = false; showNewSession = true
         })
+        out.append(PaletteItem(id: "act-chat", kind: .action, title: "New chat",
+                               subtitle: "Ephemeral — just chat, no project", symbol: "bubble.left.and.text.bubble.right") {
+            Task { await model.startEphemeralChat() }
+        })
         out.append(PaletteItem(id: "act-newloop", kind: .action, title: "New loop",
                                subtitle: "Automate recurring work", symbol: "arrow.trianglehead.2.clockwise.rotate.90") {
             destination = .loops; selectedLoopID = nil; editingLoop = true

@@ -173,15 +173,26 @@ struct SessionSidebar: View {
         List {
             // Prominent New Session action right under the search bar — the primary way to start
             // one, so you don't have to hunt for the titlebar button.
-            Button { selection = Self.newSessionTag } label: {
-                Label("New session", systemImage: "plus")
-                    .font(.callout.weight(.medium))
-                    .foregroundStyle(palette.primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 6).padding(.horizontal, 8)
-                    .contentShape(Rectangle())
+            HStack(spacing: 4) {
+                Button { selection = Self.newSessionTag } label: {
+                    Label("New session", systemImage: "plus")
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(palette.primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 6).padding(.horizontal, 8)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                // Ephemeral "just chat" — no project, not saved. A quick scratch conversation.
+                Button { Task { await model.startEphemeralChat() } } label: {
+                    Label("Chat", systemImage: "bubble.left.and.text.bubble.right")
+                        .font(.callout.weight(.medium)).foregroundStyle(palette.mutedForeground)
+                        .padding(.vertical, 6).padding(.horizontal, 8)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Ephemeral chat — no project, not saved")
             }
-            .buttonStyle(.plain)
             .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 4, trailing: 6))
             .listRowSeparator(.hidden)
             .listRowBackground(Color.clear)

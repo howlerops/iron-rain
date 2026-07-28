@@ -237,6 +237,10 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 	}
 	meta.projectID = req.ProjectID
 	meta.cwd = cwd
+	meta.ephemeral = req.Ephemeral // scratch "just chat" session: not persisted
+	if meta.ephemeral && meta.label == "" {
+		meta.label = "Chat"
+	}
 	if req.Worktree {
 		name := req.WorkspaceName
 		if name == "" {
@@ -992,7 +996,9 @@ func (h *Hub) addSession(sess agent.Session, meta sessionMeta) *managedSession {
 	h.mu.Lock()
 	h.sessions[sess.ID()] = m
 	h.mu.Unlock()
-	h.persistSession(m) // durable record so it survives a daemon restart
+	if !meta.ephemeral {
+		h.persistSession(m) // durable record so it survives a daemon restart (ephemeral chats aren't kept)
+	}
 	return m
 }
 

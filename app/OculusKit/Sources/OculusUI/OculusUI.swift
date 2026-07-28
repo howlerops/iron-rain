@@ -1389,6 +1389,20 @@ public final class Model: ObservableObject {
         }
     }
 
+    /// Starts an EPHEMERAL "just chat" session — no project, not persisted (vanishes on restart, no
+    /// clutter). One tap → a ready conversational agent. Opens it immediately.
+    public func startEphemeralChat() async {
+        guard client != nil else { return }
+        status = "Starting chat…"
+        do {
+            let env = try await request(MessageType.sessionCreate,
+                                        payload: SessionCreate(provider: newSessionProvider, ephemeral: true))
+            let s = try env.payload(as: Session.self)
+            await loadSessions()
+            await openSession(s.id)
+        } catch { setError("Couldn’t start chat", error.localizedDescription) }
+    }
+
     /// Fan-out: spawn `count` agents on the SAME prompt, each in its own worktree, as one group —
     /// race several approaches, then compare and merge the winner. Returns the group id on success.
     @discardableResult

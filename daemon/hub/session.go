@@ -181,6 +181,9 @@ type sessionMeta struct {
 	// shared id and fanoutVariant its 0-based index.
 	fanoutGroup   string
 	fanoutVariant int
+
+	// ephemeral: a scratch "just chat" session — no project, NOT persisted to the store.
+	ephemeral bool
 }
 
 func newManagedSession(h *Hub, sess agent.Session, meta sessionMeta) *managedSession {
@@ -262,6 +265,7 @@ func (m *managedSession) info() protocol.Session {
 		Conflicted:    conflicted,
 		FanoutGroup:   m.meta.fanoutGroup,
 		FanoutVariant: m.meta.fanoutVariant,
+		Ephemeral:     m.meta.ephemeral,
 	}
 }
 

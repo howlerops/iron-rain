@@ -184,6 +184,7 @@ type SessionCreate struct {
 	BudgetUSD     float64           `json:"budget_usd,omitempty"`     // cost ceiling for auto-nudging (0 = default)
 	Model         string            `json:"model,omitempty"`          // model id to run with ("" = provider default)
 	ModelProvider string            `json:"model_provider,omitempty"` // sub-provider/backend for the model (opencode needs it)
+	Ephemeral     bool              `json:"ephemeral,omitempty"`      // a scratch "just chat" session: no project, NOT persisted (vanishes on restart)
 }
 
 // Project is a registered folder sessions can be spawned in (mirrors project.Project).
@@ -1103,6 +1104,8 @@ type Session struct {
 	// the shared group id and FanoutVariant is its 0-based index (so the app groups + labels them).
 	FanoutGroup   string `json:"fanout_group,omitempty"`
 	FanoutVariant int    `json:"fanout_variant,omitempty"`
+	// Ephemeral: a scratch "just chat" session (no project, not persisted) — the app can label/style it.
+	Ephemeral bool `json:"ephemeral,omitempty"`
 }
 
 // SessionUsage is a usage update for one session (event). InputTokens/OutputTokens/CostUSD are
