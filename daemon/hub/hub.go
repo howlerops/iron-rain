@@ -293,6 +293,12 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 		createPrompt = firstTurnPrefix + createPrompt
 		firstTurnPrefix = ""
 	}
+	// Native generative-UI skill: install iron:ui into the project's .claude/skills if that infra
+	// already exists, so a skill-aware harness lazy-loads it (cheaper than the injection). Conservative
+	// — never creates surprise dirs; the first-turn injection above covers everything else.
+	if written := genui.MaterializeSkill(cwd); len(written) > 0 {
+		log.Printf("session.create: installed iron:ui skill → %s", strings.Join(written, ", "))
+	}
 	log.Printf("session.create: starting %s in %s (plan=%v)…", req.Provider, cwd, req.Plan)
 	emit("provider", "Starting "+req.Provider+"…", 0, 0)
 	pc0 := time.Now()
