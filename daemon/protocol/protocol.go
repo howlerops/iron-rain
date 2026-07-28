@@ -131,6 +131,7 @@ const (
 	TypeAccountUpsert    = "account.upsert"    // add/update a credential account
 	TypeAccountDelete    = "account.delete"    // remove a credential account
 	TypeAccountActivate  = "account.activate"  // set the active account for a provider (hot-swap)
+	TypeAccountQuota     = "account.quota"      // probe an account's remaining rate-limit/quota from the provider API
 	TypeRemoteList       = "remote.list"       // list registered SSH remote hosts
 	TypeRemoteUpsert     = "remote.upsert"     // add/update a remote host (probes it)
 	TypeRemoteDelete     = "remote.delete"     // remove a remote host
@@ -509,6 +510,16 @@ type AccountList struct {
 type AccountActivate struct {
 	Provider  string `json:"provider"`
 	AccountID string `json:"account_id"`
+}
+
+// AccountQuota is the reply to account.quota: an account's remaining rate-limit/quota.
+type AccountQuota struct {
+	AccountID         string `json:"account_id"`
+	Available         bool   `json:"available"`
+	RequestsRemaining int    `json:"requests_remaining"`
+	TokensRemaining   int    `json:"tokens_remaining"`
+	ResetInSeconds    int    `json:"reset_in_seconds,omitempty"` // seconds until reset (0 = unknown)
+	Note              string `json:"note,omitempty"`
 }
 
 // AccountRef identifies an account (delete).

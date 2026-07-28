@@ -10,6 +10,8 @@ struct AccountsView: View {
     var onClose: () -> Void
 
     @State private var showAdd = false
+    @State private var quota: [String: AccountQuota] = [:]
+    @State private var checking: Set<String> = []
 
     private var byProvider: [(provider: String, accounts: [Account])] {
         let groups = Dictionary(grouping: model.accounts, by: { $0.provider })
@@ -76,6 +78,7 @@ struct AccountsView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(provider.uppercased()).font(.system(size: 10.5, weight: .semibold)).tracking(0.8).foregroundStyle(palette.mutedForeground)
             ForEach(accounts) { a in
+              VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 10) {
                     Image(systemName: a.active == true ? "largecircle.fill.circle" : "circle")
                         .foregroundStyle(a.active == true ? palette.primary : palette.mutedForeground)
@@ -86,6 +89,14 @@ struct AccountsView: View {
                         }
                     }
                     Spacer()
+                    Button {
+                        checking.insert(a.id)
+                        Task { quota[a.id] = await model.accountQuota(a.id); checking.remove(a.id) }
+                    } label: {
+                        if checking.contains(a.id) { ProgressView().controlSize(.small) }
+                        else { Text("Quota").font(.caption) }
+                    }
+                    .buttonStyle(.bordered).controlSize(.small)
                     if a.active == true {
                         Text("ACTIVE").font(.system(size: 9, weight: .bold)).tracking(0.5).foregroundStyle(palette.primary)
                     } else {
@@ -95,10 +106,35 @@ struct AccountsView: View {
                     Button { Task { await model.deleteAccount(a.id) } } label: { Image(systemName: "trash").font(.system(size: 11)) }
                         .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
                 }
-                .padding(.vertical, 7).padding(.horizontal, 10)
-                .background(RoundedRectangle(cornerRadius: 8).fill(palette.secondary.opacity(a.active == true ? 0.6 : 0.3)))
+                if let q = quota[a.id] { quotaRow(q) }
+              }
+              .padding(.vertical, 7).padding(.horizontal, 10)
+              .background(RoundedRectangle(cornerRadius: 8).fill(palette.secondary.opacity(a.active == true ? 0.6 : 0.3)))
             }
         }
+    }
+
+    private func quotaRow(_ q: AccountQuota) -> some View {
+        Group {
+            if !q.available {
+                Text(q.note ?? "Quota not available (subscription login or no API key).")
+                    .font(.system(size: 10)).foregroundStyle(palette.mutedForeground)
+            } else {
+                HStack(spacing: 10) {
+                    if q.requestsRemaining >= 0 {
+                        Text("\(q.requestsRemaining) req left").font(.system(size: 10, design: .monospaced))
+                    }
+                    if q.tokensRemaining >= 0 {
+                        Text("\(fmtTokens(q.tokensRemaining)) tok left").font(.system(size: 10, design: .monospaced))
+                    }
+                    if let r = q.resetInSeconds, r > 0 {
+                        Text("resets in \(r < 60 ? "\(r)s" : "\(r/60)m")").font(.system(size: 10, design: .monospaced))
+                    }
+                }
+                .foregroundStyle(palette.primary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var emptyState: some View {

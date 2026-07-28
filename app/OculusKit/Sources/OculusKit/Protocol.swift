@@ -59,6 +59,7 @@ public enum MessageType {
     public static let accountUpsert = "account.upsert"
     public static let accountDelete = "account.delete"
     public static let accountActivate = "account.activate"
+    public static let accountQuota = "account.quota"
     public static let remoteList = "remote.list"
     public static let remoteUpsert = "remote.upsert"
     public static let remoteDelete = "remote.delete"
@@ -1074,6 +1075,20 @@ public struct AccountActivate: Codable {
     public var provider: String; public var accountID: String
     enum CodingKeys: String, CodingKey { case provider; case accountID = "account_id" }
     public init(provider: String, accountID: String) { self.provider = provider; self.accountID = accountID }
+}
+
+/// An account's remaining rate-limit/quota, probed from the provider API.
+public struct AccountQuota: Codable, Equatable {
+    public var accountID: String
+    public var available: Bool
+    public var requestsRemaining: Int
+    public var tokensRemaining: Int
+    public var resetInSeconds: Int?
+    public var note: String?
+    enum CodingKeys: String, CodingKey {
+        case accountID = "account_id"; case available; case requestsRemaining = "requests_remaining"
+        case tokensRemaining = "tokens_remaining"; case resetInSeconds = "reset_in_seconds"; case note
+    }
 }
 public struct AccountRef: Codable {
     public var accountID: String

@@ -1439,6 +1439,11 @@ public final class Model: ObservableObject {
             applyAccountList(env)
         } catch { setError("Couldn’t switch account", error.localizedDescription) }
     }
+    /// Probes an account's remaining rate-limit/quota from the provider API.
+    public func accountQuota(_ id: String) async -> AccountQuota? {
+        guard client != nil else { return nil }
+        return try? await request(MessageType.accountQuota, payload: AccountRef(accountID: id)).payload(as: AccountQuota.self)
+    }
 
     /// SSH remote hosts (run/inspect a worktree on a remote box).
     @Published public var remotes: [RemoteHost] = []

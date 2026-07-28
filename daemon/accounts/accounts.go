@@ -60,6 +60,18 @@ func (r *Registry) List() []Account {
 	return append([]Account(nil), r.Accounts...)
 }
 
+// Get returns an account by id (ok=false if not found).
+func (r *Registry) Get(id string) (Account, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, a := range r.Accounts {
+		if a.ID == id {
+			return a, true
+		}
+	}
+	return Account{}, false
+}
+
 // ActiveID returns the active account id for a provider ("" if none).
 func (r *Registry) ActiveID(provider string) string {
 	r.mu.Lock()

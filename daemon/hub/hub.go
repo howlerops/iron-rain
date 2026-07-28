@@ -25,6 +25,7 @@ import (
 	"github.com/howlerops/oculus/daemon/activity"
 	"github.com/howlerops/oculus/daemon/issues"
 	"github.com/howlerops/oculus/daemon/loghub"
+	"github.com/howlerops/oculus/daemon/quota"
 	"github.com/howlerops/oculus/daemon/telemetry"
 	"github.com/howlerops/oculus/daemon/transcript"
 	"github.com/howlerops/oculus/daemon/loops"
@@ -1630,6 +1631,7 @@ func asyncDispatch(typ string) bool {
 		protocol.TypeRemoteUpsert,        // ssh probe (network)
 		protocol.TypeRemoteStatus,        // ssh git status/diff (network)
 		protocol.TypeRemoteRun,           // ssh agent session start (network)
+		protocol.TypeAccountQuota,        // provider API quota probe (network)
 		protocol.TypeIssueLaunch,         // same startSession path as create
 		protocol.TypeWorktreeDiff,        // git diff
 		protocol.TypeWorktreeRemove,      // provider Stop/Close + git remove/prune
@@ -1958,6 +1960,38 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		}
 		log.Printf("account: %s active account switched to %s", req.Provider, req.AccountID)
 		h.sendOK(conn, env.ID, h.accountList())
+
+	case protocol.TypeAccountQuota:
+		var req protocol.AccountRef
+		_ = env.Unmarshal(&req)
+		h.mu.Lock()
+		reg := h.accounts
+		h.mu.Unlock()
+		out := protocol.AccountQuota{AccountID: req.AccountID}
+		if reg == nil {
+			out.Note = "accounts unavailable"
+			h.sendOK(conn, env.ID, out)
+			return
+		}
+		a, ok := reg.Get(req.AccountID)
+		if !ok {
+			h.sendErr(conn, env.ID, "no such account")
+			return
+		}
+		q, err := quota.New().Probe(ctx, a.Provider, a.Env)
+		out.Available = q.Available
+		out.RequestsRemaining = q.RequestsRemaining
+		out.TokensRemaining = q.TokensRemaining
+		out.Note = q.Note
+		if !q.ResetAt.IsZero() {
+			if secs := int(time.Until(q.ResetAt).Seconds()); secs > 0 {
+				out.ResetInSeconds = secs
+			}
+		}
+		if err != nil && out.Note == "" {
+			out.Note = err.Error()
+		}
+		h.sendOK(conn, env.ID, out)
 
 	case protocol.TypeRemoteList:
 		h.sendOK(conn, env.ID, h.remoteList(ctx))
