@@ -2218,6 +2218,35 @@ public final class Model: ObservableObject {
         return String(s[..<start.lowerBound]) + rest
     }
 
+    /// Sub-agent lifecycle status by id ("started" | "done" | "error"), driving each inline card's
+    /// live/finished chrome.
+    @Published public var subAgentStatus: [String: String] = [:]
+    /// The session whose Code surface (file tree · editor · diff review) is open in the Sessions
+    /// detail; nil = the chat transcript. Promoted to the model so the chat toolbar's "Code / Review"
+    /// button and CodeSurface's own back button can both drive it (was a buried right-click only).
+    @Published public var codeReviewTarget: String?
+
+    /// Folds a sub-agent lifecycle event into the transcript. "started" inserts an inline collapsible
+    /// card (once) at the point the parent delegated, and readies its child buffers so the sub-agent's
+    /// forwarded output/tools stream into it; "done" seals it. Only for the active parent session.
+    private func applySubAgent(_ sa: SubAgent) {
+        guard sa.parentID == sessionID else { return }
+        subAgentStatus[sa.id] = sa.status
+        switch sa.status {
+        case "started":
+            if childMessages[sa.id] == nil { childMessages[sa.id] = [] }
+            if !messages.contains(where: { $0.role == .subagent && $0.subAgentID == sa.id }) {
+                finalizeStreaming()
+                let title = (sa.title?.isEmpty == false) ? sa.title! : "Sub-agent"
+                messages.append(ChatMessage(role: .subagent, text: title, subAgentID: sa.id))
+            }
+        case "done", "error":
+            finalizeChildStreaming(sa.id)
+            childActivity[sa.id] = nil
+        default: break
+        }
+    }
+
     /// Folds an incoming generative-UI component into the transcript. A component with the same
     /// stable `id` UPDATES in place (running skeleton → ready table); a new id appends a `.ui` row.
     /// Any in-flight streaming assistant text is sealed first so the component lands after it.
@@ -2255,6 +2284,7 @@ public final class Model: ObservableObject {
         childActivity.removeAll()
         expandedChildIDs.removeAll()
         subscribedChildIDs.removeAll()
+        subAgentStatus.removeAll()
     }
 
     /// Per-child version of appendAssistantDelta: fold streamed output into the child's last message
@@ -2362,9 +2392,9 @@ public final class Model: ObservableObject {
                         finalizeStreaming()
                         messages.append(ChatMessage(role: role, text: shown))
                     } else if let m = try? env.payload(as: SessionMessage.self), childMessages[m.sessionID] != nil {
-                        // A subscribed sub-agent's message — route into its own buffer, never the main
-                        // transcript. Tool calls arrive as role=="tool" with Text=the tool name; keep
-                        // them — they ARE the child's tool-call list.
+                        // A sub-agent's message — route into its own buffer, never the main transcript.
+                        // Tool calls arrive as role=="tool" with Text=the tool name; keep them.
+                        bumpWatchdog() // the active session's sub-agent is alive → parent isn't dead
                         let role: ChatMessage.Role = m.role == "user" ? .user : (m.role == "tool" ? .tool : .assistant)
                         finalizeChildStreaming(m.sessionID)
                         childMessages[m.sessionID, default: []].append(ChatMessage(role: role, text: Self.stripUIGuide(m.text)))
@@ -2380,6 +2410,7 @@ public final class Model: ObservableObject {
                         bumpWatchdog()
                         appendAssistantDelta(d.text)
                     } else if let d = try? env.payload(as: OutputDelta.self), childMessages[d.sessionID] != nil {
+                        bumpWatchdog() // sub-agent output = the parent is alive
                         appendChildDelta(d.sessionID, d.text)
                     }
                 case MessageType.sessionStatus:
@@ -2495,6 +2526,11 @@ public final class Model: ObservableObject {
                 case MessageType.uiComponent: // a normalized generative-UI component (projected or fenced)
                     if let c = try? env.payload(as: UIComponent.self), c.sessionID == sessionID {
                         applyUIComponent(c)
+                    }
+                case MessageType.sessionSubAgent: // a sub-agent started/finished under the active session
+                    if let sa = try? env.payload(as: SubAgent.self) {
+                        applySubAgent(sa)
+                        bumpWatchdog() // a sub-agent spinning up means the parent is alive
                     }
                 case MessageType.sessionHeartbeat: // supervision "on-track" state for a session
                     if let hb = try? env.payload(as: SessionHeartbeat.self) {

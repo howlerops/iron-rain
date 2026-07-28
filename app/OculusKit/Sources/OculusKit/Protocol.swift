@@ -116,6 +116,7 @@ public enum MessageType {
     public static let sessionTodos = "session.todos"
     public static let uiComponent = "ui.component"   // event: a normalized generative-UI component
     public static let uiAction = "ui.action"         // client → daemon: user activated a UI action
+    public static let sessionSubAgent = "session.subagent" // a sub-agent started/finished under a parent
     public static let sessionHeartbeat = "session.heartbeat"
     public static let sessionAutonomy = "session.autonomy"
     public static let handoffList = "handoff.list"
@@ -495,6 +496,17 @@ public indirect enum JSONValue: Codable, Equatable {
         guard let data = try? JSONEncoder().encode(self) else { return nil }
         return try? JSONDecoder().decode(type, from: data)
     }
+}
+
+/// Announces a sub-agent's lifecycle under a parent session (e.g. opencode's `task` tool). The app
+/// renders an inline collapsible card keyed by `id`; the child's output/tools then stream in tagged
+/// with sessionID == id (routed into childMessages[id]).
+public struct SubAgent: Codable {
+    public var parentID: String
+    public var id: String
+    public var title: String?
+    public var status: String  // started | done | error
+    enum CodingKeys: String, CodingKey { case parentID = "parent_id", id, title, status }
 }
 
 /// A normalized generative-UI element (see the generative-UI plan). The daemon projects it from a

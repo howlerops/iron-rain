@@ -315,6 +315,8 @@ type session struct {
 	emittedUser map[string]bool   // messageIDs already forwarded as a user turn
 	usageDone   map[string]bool   // messageIDs whose usage was already emitted (once per turn)
 	emittedTool map[string]bool   // tool part ids already surfaced inline (dedup)
+	childIDs    map[string]bool   // opencode sub-session ids whose parentID == s.id (sub-agents)
+	subStarted  map[string]bool   // sub-agent ids already announced (dedup the started card)
 }
 
 func (s *session) ID() string                 { return s.id }
@@ -443,6 +445,30 @@ func (s *session) handle(raw []byte) {
 		return
 	}
 	switch e.Type {
+	case "session.created", "session.updated":
+		// A sub-session whose parentID is us is a sub-agent (opencode's `task` tool). Track it so its
+		// events can be forwarded, and announce it once as an inline card in the parent transcript.
+		var se struct {
+			Info struct {
+				ID       string `json:"id"`
+				ParentID string `json:"parentID"`
+				Title    string `json:"title"`
+			} `json:"info"`
+		}
+		if json.Unmarshal(e.Properties, &se) != nil || se.Info.ParentID != s.id || se.Info.ID == "" {
+			return
+		}
+		if s.childIDs == nil {
+			s.childIDs = map[string]bool{}
+			s.subStarted = map[string]bool{}
+		}
+		s.childIDs[se.Info.ID] = true
+		if !s.subStarted[se.Info.ID] {
+			s.subStarted[se.Info.ID] = true
+			s.emit(agent.Event{Type: protocol.TypeSessionSubAgent, Payload: protocol.SubAgent{
+				ParentID: s.id, ID: se.Info.ID, Title: se.Info.Title, Status: "started"}})
+		}
+
 	case "message.updated":
 		// Record messageID -> role so we can tell user turns from assistant turns, and — for a
 		// completed assistant message — emit token/cost usage (opencode carries it on info).
@@ -499,37 +525,39 @@ func (s *session) handle(raw []byte) {
 				} `json:"state"`
 			} `json:"part"`
 		}
-		if json.Unmarshal(e.Properties, &pu) != nil || pu.Part.SessionID != s.id {
+		if json.Unmarshal(e.Properties, &pu) != nil {
 			return
 		}
+		isParent := pu.Part.SessionID == s.id
+		if !isParent && !s.childIDs[pu.Part.SessionID] {
+			return // not our session and not one of our sub-agents
+		}
+		target := pu.Part.SessionID // s.id for the parent turn; the child id for a sub-agent
 		switch pu.Part.Type {
 		case "tool":
-			// A tool that's running/completed → the agent is doing work; surface it as
-			// activity ("running bash") and mark the session running, which clears any
-			// pending approval on EVERY attached client once it's resolved.
+			// A tool that's running/completed → the agent is doing work; surface it as activity
+			// ("running bash") tagged to the right session (parent chip or sub-agent card).
 			if pu.Part.State.Status == "running" || pu.Part.State.Status == "completed" {
 				s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{
-					SessionID: s.id, Status: protocol.StatusRunning, Detail: "running " + pu.Part.Tool,
+					SessionID: target, Status: protocol.StatusRunning, Detail: "running " + pu.Part.Tool,
 				}})
-				// Also surface the tool call INLINE in the transcript (once per tool part), so tool use
-				// — and especially the `task` sub-agent — reads as part of the conversation instead of
-				// only a transient top chip. Deduped by part id so repeated updates don't re-append.
-				if pu.Part.ID != "" {
+				// Surface the tool call INLINE (once per tool part). For the PARENT we skip `task` — the
+				// sub-agent gets its own inline card (from session.created) instead of a bare tool row.
+				if pu.Part.ID != "" && !(isParent && pu.Part.Tool == "task") {
 					if s.emittedTool == nil {
 						s.emittedTool = map[string]bool{}
 					}
 					if !s.emittedTool[pu.Part.ID] {
 						s.emittedTool[pu.Part.ID] = true
 						s.emit(agent.Event{Type: protocol.TypeSessionMessage, Payload: protocol.SessionMessage{
-							SessionID: s.id, Role: "tool", Text: toolLabel(pu.Part.Tool),
+							SessionID: target, Role: "tool", Text: toolLabel(pu.Part.Tool),
 						}})
 					}
 				}
 			}
 		case "text":
-			// Forward USER turns (so every attached client shows a prompt from any client;
-			// assistant text streams via message.part.delta). Once per message.
-			if pu.Part.Text == "" || s.msgRoles[pu.Part.MessageID] != "user" {
+			// Forward USER turns (parent only; assistant text streams via message.part.delta). Once per message.
+			if !isParent || pu.Part.Text == "" || s.msgRoles[pu.Part.MessageID] != "user" {
 				return
 			}
 			if s.emittedUser == nil {
@@ -550,14 +578,26 @@ func (s *session) handle(raw []byte) {
 			Field     string `json:"field"`
 			Delta     string `json:"delta"`
 		}
-		if json.Unmarshal(e.Properties, &pr) != nil || pr.SessionID != s.id || pr.Delta == "" {
+		if json.Unmarshal(e.Properties, &pr) != nil || pr.Delta == "" {
 			return
+		}
+		// Parent text streams under s.id; a sub-agent's text streams under its own session id and is
+		// forwarded tagged to that id so the app routes it into the inline sub-agent card.
+		target := pr.SessionID
+		if pr.SessionID != s.id {
+			if !s.childIDs[pr.SessionID] {
+				return
+			}
+		} else {
+			target = s.id
 		}
 		switch pr.Field {
 		case "text":
-			s.emit(agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: s.id, Text: pr.Delta}})
+			s.emit(agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: target, Text: pr.Delta}})
 		case "reasoning":
-			s.emit(agent.Event{Type: protocol.TypeThinking, Payload: protocol.Thinking{SessionID: s.id, Text: pr.Delta}})
+			if target == s.id { // thinking only surfaced for the parent turn
+				s.emit(agent.Event{Type: protocol.TypeThinking, Payload: protocol.Thinking{SessionID: s.id, Text: pr.Delta}})
+			}
 		}
 
 	case "todo.updated":
@@ -631,7 +671,15 @@ func (s *session) handle(raw []byte) {
 		var pr struct {
 			SessionID string `json:"sessionID"`
 		}
-		if json.Unmarshal(e.Properties, &pr) != nil || pr.SessionID != s.id {
+		if json.Unmarshal(e.Properties, &pr) != nil {
+			return
+		}
+		// A sub-agent going idle → close its inline card (its own turn finished).
+		if pr.SessionID != s.id {
+			if s.childIDs[pr.SessionID] {
+				s.emit(agent.Event{Type: protocol.TypeSessionSubAgent, Payload: protocol.SubAgent{
+					ParentID: s.id, ID: pr.SessionID, Status: "done"}})
+			}
 			return
 		}
 		// The turn is done: no message is streaming, so the per-message role/dedup

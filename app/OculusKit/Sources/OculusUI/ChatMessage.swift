@@ -11,6 +11,7 @@ public struct ChatMessage: Identifiable, Equatable {
         case tool     // a tool invocation / result note
         case system   // session lifecycle, status, handoff
         case ui       // a normalized generative-UI component (see UIComponent)
+        case subagent // an inline, collapsible sub-agent card (its work streams into childMessages[id])
     }
 
     /// Delivery state for a USER message, so a send that never reached the agent is visibly marked
@@ -29,13 +30,17 @@ public struct ChatMessage: Identifiable, Equatable {
     /// Set only for `.ui` rows: the normalized generative-UI component to render. Its own string `id`
     /// (component.id) is stable within a message, so a `running` component updates in place to `ready`.
     public var component: UIComponent?
+    /// Set only for `.subagent` rows: the sub-agent's session id, which keys its live streamed
+    /// transcript in Model.childMessages / childActivity / subAgentStatus.
+    public var subAgentID: String?
 
-    public init(id: UUID = UUID(), role: Role, text: String, streaming: Bool = false, delivery: Delivery = .ok, component: UIComponent? = nil) {
+    public init(id: UUID = UUID(), role: Role, text: String, streaming: Bool = false, delivery: Delivery = .ok, component: UIComponent? = nil, subAgentID: String? = nil) {
         self.id = id
         self.role = role
         self.text = text
         self.streaming = streaming
         self.delivery = delivery
         self.component = component
+        self.subAgentID = subAgentID
     }
 }

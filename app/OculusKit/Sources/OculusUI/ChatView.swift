@@ -159,6 +159,14 @@ public struct ChatView: View {
                     .disabled(model.testRunning)
                     .help("Run tests")
                 }
+                // Code + change review: opens the session's file tree · editor · diff (CodeSurface).
+                // Previously only reachable via a right-click in the sidebar — now a first-class button.
+                ToolbarItem(placement: .automatic) {
+                    Button { model.codeReviewTarget = model.sessionID } label: {
+                        Label("Code & changes", systemImage: "chevron.left.forwardslash.chevron.right")
+                    }
+                    .help("Open this session's files and review its changes (code editor + diff).")
+                }
                 ToolbarItem(placement: .automatic) {
                     Button { showDelegate = true } label: {
                         Label("Delegate subtask", systemImage: "arrowshape.turn.up.right")
@@ -294,9 +302,13 @@ public struct ChatView: View {
             let content = ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     ForEach(model.messages) { msg in
-                        MessageRow(message: msg, palette: palette,
-                                   onRetry: msg.delivery == .failed ? { Task { await model.retryFailedMessage() } } : nil,
-                                   onUIAction: { c, a in Task { await model.invokeUIAction(c, a) } })
+                        if msg.role == .subagent, let sid = msg.subAgentID {
+                            InlineSubAgentCard(model: model, subAgentID: sid, title: msg.text, palette: palette)
+                        } else {
+                            MessageRow(message: msg, palette: palette,
+                                       onRetry: msg.delivery == .failed ? { Task { await model.retryFailedMessage() } } : nil,
+                                       onUIAction: { c, a in Task { await model.invokeUIAction(c, a) } })
+                        }
                     }
                     Color.clear.frame(height: 1).id("bottom")
                 }
@@ -496,19 +508,21 @@ struct MessageRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.leading, 2)
         case .tool:
-            // Sub-agents (opencode's `task` tool) read as a distinct inline row — a little agent badge
-            // rather than the wrench — so a delegated lane is obvious in the transcript flow.
-            let isSubAgent = message.text.hasPrefix("sub-agent")
             HStack(spacing: 8) {
-                Image(systemName: isSubAgent ? "person.2.fill" : "wrench.and.screwdriver.fill").font(.caption2)
-                Text(isSubAgent ? "Sub-agent delegated" : message.text).font(.system(.caption, design: .monospaced))
+                Image(systemName: "wrench.and.screwdriver.fill").font(.caption2)
+                Text(message.text).font(.system(.caption, design: .monospaced))
             }
             .foregroundStyle(palette.accentForeground)
             .padding(.horizontal, 12).padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(palette.accent)
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.primary.opacity(isSubAgent ? 0.45 : 0.25)))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.primary.opacity(0.25)))
             .clipShape(RoundedRectangle(cornerRadius: 10))
+        case .subagent:
+            // The rich inline card is rendered at the transcript level (it needs the live model); this
+            // is a minimal fallback for any context that renders a MessageRow directly.
+            Label(message.text.isEmpty ? "Sub-agent" : message.text, systemImage: "person.2.fill")
+                .font(.caption).foregroundStyle(palette.mutedForeground)
         case .system:
             Text(message.text).font(.caption).foregroundStyle(palette.mutedForeground)
                 .frame(maxWidth: .infinity, alignment: .center)
@@ -828,6 +842,61 @@ struct HandoffSheet: View {
 /// The orchestration cockpit: sub-agents delegated from the active session, each with its live
 /// heartbeat state + to-do progress, tap to open. Lets a human drive several lanes and see which
 /// need attention.
+/// An inline, collapsible sub-agent card that lives in the parent transcript at the point the parent
+/// delegated (opencode's `task` tool). Collapsed by default — a one-line header (agent badge · title ·
+/// live tool activity · running/done) — expanding to the sub-agent's OWN streamed transcript
+/// (childMessages[id]) so its work reads inline without leaving the conversation.
+struct InlineSubAgentCard: View {
+    @ObservedObject var model: Model
+    let subAgentID: String
+    let title: String
+    let palette: OculusPalette
+
+    private var running: Bool { model.subAgentStatus[subAgentID] != "done" && model.subAgentStatus[subAgentID] != "error" }
+    private var expanded: Bool { model.expandedChildIDs.contains(subAgentID) }
+    private var msgs: [ChatMessage] { model.childMessages[subAgentID] ?? [] }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button { model.toggleChildExpanded(subAgentID) } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2).foregroundStyle(palette.mutedForeground).frame(width: 10)
+                    Image(systemName: "person.2.fill").font(.caption2).foregroundStyle(palette.primary)
+                    Text(title).font(.caption.bold()).foregroundStyle(palette.foreground).lineLimit(1)
+                    if running {
+                        RunningPulseDot(color: .green, active: true)
+                        if let act = model.childActivity[subAgentID] {
+                            ToolActivityView(activity: act, palette: palette, compact: true)
+                        }
+                    } else {
+                        Text("done").font(.caption2).foregroundStyle(palette.mutedForeground)
+                    }
+                    Spacer()
+                    if !msgs.isEmpty { Text("\(msgs.count)").font(.caption2.monospacedDigit()).foregroundStyle(palette.mutedForeground) }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if expanded {
+                Divider().overlay(palette.border.opacity(0.5)).padding(.vertical, 6)
+                if msgs.isEmpty {
+                    Text(running ? "working…" : "no output").font(.caption2).italic()
+                        .foregroundStyle(palette.mutedForeground).padding(.vertical, 4).padding(.leading, 4)
+                } else {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(msgs) { m in MessageRow(message: m, palette: palette) }
+                    }
+                    .padding(.leading, 4)
+                }
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 9)
+        .background(palette.secondary.opacity(0.3), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.primary.opacity(running ? 0.4 : 0.2)))
+    }
+}
+
 struct SubAgentsStrip: View {
     @ObservedObject var model: Model
     let children: [Session]

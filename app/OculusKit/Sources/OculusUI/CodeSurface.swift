@@ -497,6 +497,12 @@ struct CodeSurface: View {
     @ViewBuilder private var sessionContextHeader: some View {
         let s = model.sessions.first { $0.id == sessionID }
         HStack(spacing: 7) {
+            // Back to the chat transcript (this surface is a per-session sub-mode of Sessions).
+            Button { model.codeReviewTarget = nil } label: {
+                Label("Chat", systemImage: "chevron.left").font(.caption)
+            }
+            .buttonStyle(.plain).foregroundStyle(palette.primary)
+            Divider().frame(height: 14)
             Image(systemName: s == nil ? "folder" : "chevron.left.forwardslash.chevron.right")
                 .font(.caption).foregroundStyle(s == nil ? palette.mutedForeground : palette.primary)
             VStack(alignment: .leading, spacing: 1) {

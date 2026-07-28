@@ -494,7 +494,9 @@ func (m *managedSession) run() {
 		// of the text streams normally. Invalid/unknown blocks stay inline as code (never broken).
 		// This happens here, once, so every harness gets it for free.
 		if ev.Type == protocol.TypeOutputDelta {
-			if d, ok := ev.Payload.(protocol.OutputDelta); ok {
+			// Only the PARENT session's own text goes through the fence segmenter — a sub-agent's
+			// forwarded delta (SessionID == child id) must not be fed into the parent's segmenter.
+			if d, ok := ev.Payload.(protocol.OutputDelta); ok && d.SessionID == m.sess.ID() {
 				fwd, comps := m.seg.Feed(d.Text)
 				m.emitUIComponents(d.SessionID, comps)
 				if fwd == "" {

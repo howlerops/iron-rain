@@ -228,7 +228,6 @@ public struct RootView: View {
     @State private var destination: Destination = .activity
     #endif
     @State private var searchText = ""
-    @State private var reviewSessionID: String?
     @State private var selectedLoopID: String?     // Loops destination: which loop the detail edits (nil = new/templates)
     @State private var editingLoop = false          // Loops destination: detail shows the editor
     @State private var showPalette = false          // Cmd-K command palette
@@ -435,6 +434,12 @@ public struct RootView: View {
                                onOpenRemotes: { panel = .remotes },
                                onManageSessions: { panel = .sessions })
                     .navigationDestination(isPresented: $showSessionDetail) { ChatView(model: model) }
+                    // Code & change review pushes over the chat when the toolbar button sets the target.
+                    .navigationDestination(isPresented: Binding(
+                        get: { model.codeReviewTarget != nil },
+                        set: { if !$0 { model.codeReviewTarget = nil } })) {
+                        CodeSurface(model: model, sessionID: model.codeReviewTarget, reviewSessionID: model.codeReviewTarget)
+                    }
                     .toolbar {
                         ToolbarItem(placement: .topBarTrailing) {
                             Button { showPalette = true } label: { Image(systemName: "magnifyingglass") }
@@ -506,7 +511,7 @@ public struct RootView: View {
     private func openSessionNav(_ sid: String, _ model: Model) {
         destination = .sessions
         #if os(macOS)
-        reviewSessionID = nil
+        model.codeReviewTarget = nil
         #endif
         Task { await model.openSession(sid) }
         showSessionDetail = true
@@ -587,7 +592,7 @@ public struct RootView: View {
         switch destination {
         case .sessions, .fleet:
             SessionSidebar(store: store, model: model, selection: $selection, searchText: $searchText,
-                           onReview: { sid in reviewSessionID = sid },
+                           onReview: { sid in model.codeReviewTarget = sid },
                            onTakeOver: { newSessionTakeOver = true; showNewSession = true },
                            onCheckForUpdates: { checkForUpdates = true },
                            loginAtLogin: loginItem.enabled,
@@ -620,8 +625,8 @@ public struct RootView: View {
             switch destination {
             case .sessions:
                 if let codeSession = codeTarget(model) {
-                    CodeSurface(model: model, sessionID: codeSession, reviewSessionID: reviewSessionID)
-                        .id((codeSession) + (reviewSessionID != nil ? ":review" : ""))
+                    CodeSurface(model: model, sessionID: codeSession, reviewSessionID: model.codeReviewTarget)
+                        .id((codeSession) + (model.codeReviewTarget != nil ? ":review" : ""))
                 } else {
                     ChatView(model: model)
                 }
@@ -646,13 +651,13 @@ public struct RootView: View {
         .background(palette.background)
         .toolbarBackground(.visible, for: .windowToolbar)
         .onChange(of: model.currentSession?.id) { sid in
-            if destination == .sessions && sid == nil { reviewSessionID = nil }
+            if destination == .sessions && sid == nil { model.codeReviewTarget = nil }
         }
     }
 
     /// The window title: the open session's name while chatting in Sessions, else the destination.
     private func pageTitle(_ model: Model) -> String {
-        if destination == .sessions, reviewSessionID == nil,
+        if destination == .sessions, model.codeReviewTarget == nil,
            let s = model.currentSession {
             return s.name ?? s.title ?? "Session"
         }
@@ -677,20 +682,20 @@ public struct RootView: View {
 
     /// Code view is a per-session sub-mode of Sessions, reached via the Review action.
     private func codeTarget(_ model: Model) -> String? {
-        reviewSessionID
+        model.codeReviewTarget
     }
 
     /// Jump to a session from Activity/Fleet: switch to Sessions and open it.
     private func openFromActivity(_ sid: String, _ model: Model) {
         destination = .sessions
-        reviewSessionID = nil
+        model.codeReviewTarget = nil
         Task { await model.openSession(sid) }
         showSessionDetail = true
     }
     #endif
 
     private func hasSession(_ model: Model) -> Bool {
-        model.currentSession != nil || reviewSessionID != nil
+        model.currentSession != nil || model.codeReviewTarget != nil
     }
 
     private func handleSelection(_ sel: String?, _ model: Model) {

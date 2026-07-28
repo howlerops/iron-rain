@@ -117,6 +117,7 @@ const (
 	TypeFSChange         = "fs.change"         // a watched file changed on disk
 	TypeSessionUsage     = "session.usage"     // token/cost usage for a session (event)
 	TypeSessionTodos     = "session.todos"     // the agent's live to-do list (event)
+	TypeSessionSubAgent  = "session.subagent"  // a sub-agent (opencode task etc.) started/finished under a parent
 	TypeUIComponent      = "ui.component"      // event: a normalized generative-UI component (projected or fenced)
 	TypeUIAction         = "ui.action"         // client → daemon: user activated a UI component's action
 	TypeSessionHeartbeat = "session.heartbeat" // supervision state for a session (event)
@@ -1190,6 +1191,16 @@ type Todo struct {
 type SessionTodos struct {
 	SessionID string `json:"session_id"`
 	Todos     []Todo `json:"todos"`
+}
+
+// SubAgent announces the lifecycle of a sub-agent a session delegates to (e.g. opencode's `task`
+// tool spawns a child session). The app renders an inline, collapsible card in the parent transcript
+// keyed by ID; the child's own output/tools then stream in tagged with SessionID == ID.
+type SubAgent struct {
+	ParentID string `json:"parent_id"`     // the delegating (parent) session
+	ID       string `json:"id"`            // the sub-agent's session id (its events carry this SessionID)
+	Title    string `json:"title,omitempty"`
+	Status   string `json:"status"`        // started | done | error
 }
 
 // UIComponent is a normalized generative-UI element the daemon projects from a harness — either from
