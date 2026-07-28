@@ -111,6 +111,8 @@ public enum MessageType {
 
     public static let sessionUsage = "session.usage"
     public static let sessionTodos = "session.todos"
+    public static let uiComponent = "ui.component"   // event: a normalized generative-UI component
+    public static let uiAction = "ui.action"         // client → daemon: user activated a UI action
     public static let sessionHeartbeat = "session.heartbeat"
     public static let sessionAutonomy = "session.autonomy"
     public static let handoffList = "handoff.list"
@@ -451,6 +453,97 @@ public struct ApprovalRespond: Codable {
 public struct ApprovalResolved: Codable {
     public var approvalID: String; public var decision: String
     enum CodingKeys: String, CodingKey { case approvalID = "approval_id"; case decision }
+}
+
+/// An opaque JSON value — used to carry a generative-UI component's `props` at the transport layer
+/// without the protocol knowing each component's shape. A component view decodes its typed props via
+/// `props.decoded(TableProps.self)`, so adding a component never touches this file.
+public indirect enum JSONValue: Codable, Equatable {
+    case null
+    case bool(Bool)
+    case number(Double)
+    case string(String)
+    case array([JSONValue])
+    case object([String: JSONValue])
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if c.decodeNil() { self = .null }
+        else if let b = try? c.decode(Bool.self) { self = .bool(b) }
+        else if let n = try? c.decode(Double.self) { self = .number(n) }
+        else if let s = try? c.decode(String.self) { self = .string(s) }
+        else if let a = try? c.decode([JSONValue].self) { self = .array(a) }
+        else if let o = try? c.decode([String: JSONValue].self) { self = .object(o) }
+        else { self = .null }
+    }
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case .null: try c.encodeNil()
+        case .bool(let b): try c.encode(b)
+        case .number(let n): try c.encode(n)
+        case .string(let s): try c.encode(s)
+        case .array(let a): try c.encode(a)
+        case .object(let o): try c.encode(o)
+        }
+    }
+    /// Re-encode this value and decode it into a typed struct (per-component props decoding).
+    public func decoded<T: Decodable>(_ type: T.Type) -> T? {
+        guard let data = try? JSONEncoder().encode(self) else { return nil }
+        return try? JSONDecoder().decode(type, from: data)
+    }
+}
+
+/// A normalized generative-UI element (see the generative-UI plan). The daemon projects it from a
+/// harness (tool events or a fenced ```iron:ui``` block); the client owns the native view. `props` is
+/// inert, decoded per (component, schemaV); `fallbackText` renders when the component/schema is
+/// unknown. `id` is stable within a message so a `running` skeleton updates in place to `ready`.
+public struct UIComponent: Codable, Identifiable, Equatable {
+    public var sessionID: String
+    public var messageID: String?
+    public var id: String
+    public var component: String
+    public var schemaV: Int
+    public var status: String            // running | ready | error
+    public var props: JSONValue?
+    public var actions: [UIAction]?
+    public var fallbackText: String
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id", messageID = "message_id", id, component
+        case schemaV = "schema_v", status, props, actions, fallbackText = "fallback_text"
+    }
+}
+
+/// An allow-listed interaction a component may offer. `kind` is a whitelisted verb the CLIENT runs —
+/// never a command/RPC/URL: `prompt` (send a templated next user turn), `answer` (typed reply), or
+/// `permission` (resolve an approval via the native ApprovalSheet).
+public struct UIAction: Codable, Identifiable, Equatable {
+    public var id: String
+    public var kind: String              // prompt | answer | permission
+    public var label: String?
+    public var style: String?            // default | destructive | cancel
+    public var prompt: String?
+    enum CodingKeys: String, CodingKey { case id, kind, label, style, prompt }
+}
+
+/// Sent when the user activates a component action. The daemon maps it to the next user turn
+/// (prompt/answer) or resolves an approval (permission) — never a direct tool/destructive op.
+public struct UIActionInvoke: Codable {
+    public var sessionID: String
+    public var messageID: String?
+    public var componentID: String
+    public var actionID: String
+    public var kind: String
+    public var prompt: String?
+    public var values: JSONValue?
+    public init(sessionID: String, messageID: String? = nil, componentID: String, actionID: String, kind: String, prompt: String? = nil, values: JSONValue? = nil) {
+        self.sessionID = sessionID; self.messageID = messageID; self.componentID = componentID
+        self.actionID = actionID; self.kind = kind; self.prompt = prompt; self.values = values
+    }
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id", messageID = "message_id", componentID = "component_id"
+        case actionID = "action_id", kind, prompt, values
+    }
 }
 public struct Session: Codable, Identifiable {
     public var id: String

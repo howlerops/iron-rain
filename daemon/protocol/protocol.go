@@ -114,6 +114,8 @@ const (
 	TypeFSChange         = "fs.change"         // a watched file changed on disk
 	TypeSessionUsage     = "session.usage"     // token/cost usage for a session (event)
 	TypeSessionTodos     = "session.todos"     // the agent's live to-do list (event)
+	TypeUIComponent      = "ui.component"      // event: a normalized generative-UI component (projected or fenced)
+	TypeUIAction         = "ui.action"         // client → daemon: user activated a UI component's action
 	TypeSessionHeartbeat = "session.heartbeat" // supervision state for a session (event)
 	TypeRunOutput        = "run.output"        // streamed line from a test/build run (event)
 	TypeRunResult        = "run.result"        // final pass/fail of a test/build run (event)
@@ -1128,6 +1130,48 @@ type Todo struct {
 type SessionTodos struct {
 	SessionID string `json:"session_id"`
 	Todos     []Todo `json:"todos"`
+}
+
+// UIComponent is a normalized generative-UI element the daemon projects from a harness — either from
+// a structured tool event (the projection registry: todos→checklist, changed-files→diff) or from a
+// fenced ```iron:ui``` block in assistant text. The model emits typed intent (a catalog component +
+// inert props); the CLIENT owns the native view. Props is opaque at transport and validated
+// daemon-side against the per-component schema; the client decodes it per (Component, SchemaV).
+// FallbackText is mandatory markdown so an unknown component or a newer schema degrades visibly.
+type UIComponent struct {
+	SessionID    string          `json:"session_id"`
+	MessageID    string          `json:"message_id,omitempty"` // groups the component under a message turn
+	ID           string          `json:"id"`                   // stable per message — enables in-place update
+	Component    string          `json:"component"`            // table | checklist | callout | diff | choice | confirm
+	SchemaV      int             `json:"schema_v"`             // per-component schema version (forward-compatible)
+	Status       string          `json:"status"`               // running | ready | error
+	Props        json.RawMessage `json:"props,omitempty"`      // inert, per-component; validated daemon-side
+	Actions      []UIAction      `json:"actions,omitempty"`    // allow-listed interaction verbs (choice/confirm)
+	FallbackText string          `json:"fallback_text"`        // mandatory markdown for unknown/older clients
+}
+
+// UIAction is an allow-listed interaction a UI component may offer. Kind is a whitelisted verb the
+// CLIENT executes — never a command/RPC/URL: "prompt" (send a templated next user turn), "answer"
+// (a typed reply to a request id), "permission" (resolve an approval via the native ApprovalSheet).
+type UIAction struct {
+	ID     string `json:"id"`
+	Kind   string `json:"kind"`             // prompt | answer | permission
+	Label  string `json:"label,omitempty"`
+	Style  string `json:"style,omitempty"`  // default | destructive | cancel (confirm buttons)
+	Prompt string `json:"prompt,omitempty"` // templated user-turn text sent for kind=="prompt"
+}
+
+// UIActionInvoke is sent when the user activates a UI component's action. The daemon maps it to the
+// NEXT USER TURN (kind=prompt/answer) or resolves an approval (kind=permission) — a component can
+// only ever start a bounded user turn, never execute a tool or a destructive op directly.
+type UIActionInvoke struct {
+	SessionID   string          `json:"session_id"`
+	MessageID   string          `json:"message_id,omitempty"`
+	ComponentID string          `json:"component_id"`
+	ActionID    string          `json:"action_id"`
+	Kind        string          `json:"kind"`
+	Prompt      string          `json:"prompt,omitempty"` // resolved templated text for kind=="prompt"
+	Values      json.RawMessage `json:"values,omitempty"` // selected option ids / form values
 }
 
 // SessionAutonomy toggles/re-arms heartbeat supervision for a session (client → daemon).
