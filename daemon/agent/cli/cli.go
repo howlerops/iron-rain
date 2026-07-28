@@ -18,6 +18,7 @@ import (
 	"sync"
 
 	"github.com/howlerops/oculus/daemon/agent"
+	"github.com/howlerops/oculus/daemon/osctitle"
 	"github.com/howlerops/oculus/daemon/protocol"
 )
 
@@ -184,7 +185,7 @@ func (s *session) runTurn(ctx context.Context, argv []string) {
 		s.fail(err)
 		return
 	}
-	s.stream(stdout)
+	s.stream(stdout, s.newTitleScanner())
 	if err := cmd.Wait(); err != nil && ctx.Err() == nil {
 		// A non-zero exit that wasn't from our Stop() — surface it as a trailing line, not a hard
 		// error, so partial output the agent already produced is preserved.
@@ -192,11 +193,16 @@ func (s *session) runTurn(ctx context.Context, argv []string) {
 	}
 }
 
-func (s *session) stream(r io.Reader) {
+func (s *session) stream(r io.Reader, titles *osctitle.Scanner) {
 	buf := make([]byte, 4096)
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
+			// Feed the RAW bytes (before ANSI stripping) to the OSC-title scanner so an agent's
+			// terminal title drives a live running/waiting/idle status — then strip for display.
+			if titles != nil {
+				titles.Write(buf[:n])
+			}
 			if txt := stripANSI(string(buf[:n])); txt != "" {
 				s.emit(agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: s.id, Text: txt}})
 			}
@@ -205,6 +211,27 @@ func (s *session) stream(r io.Reader) {
 			return
 		}
 	}
+}
+
+// newTitleScanner returns an OSC-title scanner that emits a SessionStatus whenever the agent's
+// terminal title implies a DIFFERENT status than last time (deduped) — giving arbitrary CLI/TUI
+// agents live running/waiting/idle signal without a bespoke adapter. Called from the single stream
+// goroutine, so its `last` state needs no lock.
+func (s *session) newTitleScanner() *osctitle.Scanner {
+	last := ""
+	return osctitle.New(func(title string) {
+		status := osctitle.Classify(title)
+		if status == last {
+			return
+		}
+		last = status
+		detail := s.cfg.Name
+		if status == osctitle.StatusRunning || status == osctitle.StatusWaiting {
+			detail = title // surface what it's doing / waiting on
+		}
+		s.emit(agent.Event{Type: protocol.TypeSessionStatus,
+			Payload: protocol.SessionStatus{SessionID: s.id, Status: status, Detail: detail}})
+	})
 }
 
 func (s *session) fail(err error) {

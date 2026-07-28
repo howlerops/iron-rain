@@ -84,6 +84,51 @@ loop:
 	}
 }
 
+// Deep integration test: a fake CLI agent that sets its terminal title (OSC) while it works must
+// drive live running/waiting statuses derived from those titles — the "OSC-title status for any CLI
+// agent" capability, end to end through Create → runTurn → stream → scanner → emitted events.
+func TestSession_OSCTitleDrivesStatus(t *testing.T) {
+	// Emits: title "editing main.go" (→ running), some output, then title "Approve edit? (y/n)"
+	// (→ awaiting_approval). \033=ESC \007=BEL.
+	script := `printf '\033]2;editing main.go\007'; printf 'doing work\n'; printf '\033]2;Approve edit? (y/n)\007'; printf 'more\n'`
+	p := NewProvider(Config{Name: "tui", Command: "sh", Args: []string{"-c", script}})
+	sess, err := p.Create(context.Background(), t.TempDir(), "go")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	var sawRunningTitle, sawWaiting bool
+	deadline := time.After(5 * time.Second)
+loop:
+	for {
+		select {
+		case ev, ok := <-sess.Events():
+			if !ok {
+				break loop
+			}
+			if e, ok := ev.Payload.(protocol.SessionStatus); ok {
+				switch e.Status {
+				case protocol.StatusRunning:
+					if e.Detail == "editing main.go" {
+						sawRunningTitle = true
+					}
+				case protocol.StatusAwaitingApproval:
+					sawWaiting = true
+				case protocol.StatusIdle:
+					sess.Close()
+				}
+			}
+		case <-deadline:
+			t.Fatal("timed out")
+		}
+	}
+	if !sawRunningTitle {
+		t.Error("never saw a running status carrying the OSC title 'editing main.go'")
+	}
+	if !sawWaiting {
+		t.Error("never saw an awaiting_approval status derived from the '(y/n)' title")
+	}
+}
+
 func TestSession_RejectsUnknownCommand(t *testing.T) {
 	p := NewProvider(Config{Name: "nope", Command: "definitely-not-a-real-binary-xyz", Args: []string{"{prompt}"}})
 	if _, err := p.Create(context.Background(), t.TempDir(), "x"); err == nil {
