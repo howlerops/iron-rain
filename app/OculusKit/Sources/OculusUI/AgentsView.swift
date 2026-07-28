@@ -82,7 +82,7 @@ public struct ManageAgentsView: View {
         NavigationStack {
             List {
                 Section {
-                    Text("Choose which agents appear when you start a session. Native integrations are richest; installed CLIs are auto-detected; add your own below. Turn an agent off to hide it from the pickers without removing it.")
+                    Text("Detected agents are auto-found — native integrations plus any CLIs on your PATH. Tap the ☆ to set your DEFAULT harness (used for new sessions + chats). Turn one off to hide it from the pickers without removing it.")
                         .font(.caption).foregroundStyle(palette.mutedForeground)
                 }
                 if !native.isEmpty { agentSection("Native", native, note: "Rich integrations") }
@@ -135,6 +135,19 @@ public struct ManageAgentsView: View {
                 }
             }
             Spacer()
+            // Choose this as the DEFAULT harness for new sessions + chats. Filled gold star = current
+            // default. Only available agents can be the default.
+            if a.available {
+                let isDefault = model.newSessionProvider == a.name
+                Button {
+                    model.setDefaultAgent(isDefault ? "" : a.name)
+                } label: {
+                    Image(systemName: isDefault ? "star.fill" : "star")
+                        .foregroundStyle(isDefault ? palette.primary : palette.mutedForeground)
+                }
+                .buttonStyle(.plain)
+                .help(isDefault ? "Default agent — tap to reset to auto" : "Set as default agent")
+            }
             if a.editable {
                 Button { editing = a } label: { Image(systemName: "pencil") }.buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
                 Button(role: .destructive) { Task { errorText = await model.deleteAgent(a.name) } } label: { Image(systemName: "trash") }

@@ -834,11 +834,35 @@ public final class Model: ObservableObject {
         }
     }
 
+    /// The user's preferred default agent harness (persisted). Empty = "auto" (first detected).
+    private var defaultAgentKey: String { "oculus.defaultAgent" }
+    public var defaultAgent: String {
+        get { defaults.string(forKey: defaultAgentKey) ?? "" }
+    }
+
+    /// Sets the preferred default agent harness for new sessions + chats (persisted). Pass "" to
+    /// reset to auto (first detected). Applies immediately if it's available.
+    public func setDefaultAgent(_ provider: String) {
+        defaults.set(provider, forKey: defaultAgentKey)
+        if provider.isEmpty {
+            newSessionProvider = providers.first ?? newSessionProvider
+        } else if providers.contains(provider) {
+            newSessionProvider = provider
+        }
+        objectWillChange.send()
+    }
+
     /// Adopt a provider set (from a request reply or an unsolicited provider.list broadcast) and keep
-    /// the default selection valid.
+    /// the default selection valid. Resolution order: the user's persisted preferred harness (if it's
+    /// actually detected) → the current selection (if still available) → the first detected harness.
     func applyProviders(_ list: [String]) {
         providers = list
-        if let first = list.first, !list.contains(newSessionProvider) { newSessionProvider = first }
+        let pref = defaultAgent
+        if !pref.isEmpty, list.contains(pref) {
+            newSessionProvider = pref
+        } else if !list.contains(newSessionProvider), let first = list.first {
+            newSessionProvider = first
+        }
     }
 
     /// Full agent roster for the management UI.
