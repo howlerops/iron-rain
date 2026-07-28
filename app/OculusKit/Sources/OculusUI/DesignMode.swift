@@ -15,6 +15,15 @@ public struct PickedElement: Codable, Equatable {
     public var html: String
     public var css: String
     public var text: String?
+    public var rect: PickRect? // element bounding box in view points (for the cropped screenshot)
+}
+
+/// The picked element's bounding box (CSS pixels / view points).
+public struct PickRect: Codable, Equatable {
+    public var x: Double
+    public var y: Double
+    public var width: Double
+    public var height: Double
 }
 
 /// Formats a picked element as a fenced prompt block the agent can act on. Pure + unit-tested.
@@ -62,8 +71,10 @@ let designPickerJS = """
     var el = ev.target; if (!el || el === hl) return;
     var cs = getComputedStyle(el), css = '';
     ['display','position','width','height','margin','padding','color','background','background-color','font','font-size','font-weight','border','border-radius','box-shadow','flex','grid','gap','align-items','justify-content'].forEach(function(p){ var v = cs.getPropertyValue(p); if (v) css += p+': '+v+';\\n'; });
+    var r = el.getBoundingClientRect();
     window.webkit.messageHandlers.oculusPick.postMessage({
-      selector: cssPath(el), html: el.outerHTML.slice(0, 4000), css: css, text: (el.innerText||'').slice(0,300)
+      selector: cssPath(el), html: el.outerHTML.slice(0, 4000), css: css, text: (el.innerText||'').slice(0,300),
+      rect: { x: r.left, y: r.top, width: r.width, height: r.height }
     });
   }
   document.addEventListener('mousemove', move, true);
@@ -72,25 +83,51 @@ let designPickerJS = """
 """
 
 #if canImport(WebKit)
+#if os(macOS)
+/// NSImage → PNG data.
+func pngData(from image: NSImage) -> Data? {
+    guard let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) else { return nil }
+    return rep.representation(using: .png, properties: [:])
+}
+#else
+/// UIImage → PNG data.
+func pngData(from image: UIImage) -> Data? { image.pngData() }
+#endif
+
 /// A WKWebView wrapper that loads a URL and, when picking is on, injects the element picker and
 /// reports the picked element back.
 struct DesignWebView {
     let url: URL
     @Binding var picking: Bool
     var onPick: (PickedElement) -> Void
+    /// A cropped PNG screenshot of the picked element (nil if the snapshot failed).
+    var onScreenshot: (Data?) -> Void
 
     final class Coordinator: NSObject, WKScriptMessageHandler {
         let onPick: (PickedElement) -> Void
-        init(onPick: @escaping (PickedElement) -> Void) { self.onPick = onPick }
+        let onScreenshot: (Data?) -> Void
+        init(onPick: @escaping (PickedElement) -> Void, onScreenshot: @escaping (Data?) -> Void) {
+            self.onPick = onPick; self.onScreenshot = onScreenshot
+        }
         func userContentController(_ c: WKUserContentController, didReceive message: WKScriptMessage) {
             guard message.name == "oculusPick",
                   let data = try? JSONSerialization.data(withJSONObject: message.body),
                   let el = try? JSONDecoder().decode(PickedElement.self, from: data) else { return }
             onPick(el)
+            // Capture a cropped screenshot of just the picked element's box.
+            if let wv = message.webView, let r = el.rect, r.width > 0, r.height > 0 {
+                let cfg = WKSnapshotConfiguration()
+                cfg.rect = CGRect(x: r.x, y: r.y, width: r.width, height: r.height)
+                wv.takeSnapshot(with: cfg) { image, _ in
+                    self.onScreenshot(image.flatMap(pngData(from:)))
+                }
+            } else {
+                onScreenshot(nil)
+            }
         }
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick) }
+    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick, onScreenshot: onScreenshot) }
 
     private func makeWebView(_ coordinator: Coordinator) -> WKWebView {
         let cfg = WKWebViewConfiguration()
@@ -129,6 +166,7 @@ struct DesignModeView: View {
     @State private var loadedURL: URL?
     @State private var picking = false
     @State private var lastPick: PickedElement?
+    @State private var lastShot: Data?
 
     init(model: Model, palette: OculusPalette, initialURL: String, onClose: @escaping () -> Void) {
         self.model = model; self.palette = palette; self.initialURL = initialURL; self.onClose = onClose
@@ -152,10 +190,12 @@ struct DesignModeView: View {
             Divider().overlay(palette.border)
 
             if let url = loadedURL {
-                DesignWebView(url: url, picking: $picking) { el in
+                DesignWebView(url: url, picking: $picking, onPick: { el in
                     lastPick = el
                     picking = false
-                }
+                }, onScreenshot: { data in
+                    lastShot = data
+                })
                 .frame(minHeight: 380)
             } else {
                 Text("Enter your dev-server URL to inspect the running app.")
@@ -165,6 +205,11 @@ struct DesignModeView: View {
             if let el = lastPick {
                 Divider().overlay(palette.border)
                 HStack(spacing: 10) {
+                    if let shot = lastShot, let img = platformImage(shot) {
+                        img.resizable().aspectRatio(contentMode: .fit)
+                            .frame(width: 48, height: 36).clipShape(RoundedRectangle(cornerRadius: 4))
+                            .overlay(RoundedRectangle(cornerRadius: 4).stroke(palette.border))
+                    }
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Picked: \(el.selector)").font(.system(size: 12, weight: .medium)).lineLimit(1)
                         if let t = el.text, !t.isEmpty { Text(t).font(.system(size: 10)).foregroundStyle(palette.mutedForeground).lineLimit(1) }
@@ -172,8 +217,9 @@ struct DesignModeView: View {
                     Spacer()
                     Button {
                         model.draftInsert = designPromptBlock(el)
+                        if let shot = lastShot { model.attachImage(mime: "image/png", data: shot) }
                         onClose()
-                    } label: { Label("Add to prompt", systemImage: "text.badge.plus") }
+                    } label: { Label(lastShot != nil ? "Add element + screenshot" : "Add to prompt", systemImage: "text.badge.plus") }
                         .buttonStyle(.borderedProminent).tint(palette.primary)
                 }
                 .padding(12).background(palette.secondary.opacity(0.4))
@@ -187,6 +233,14 @@ struct DesignModeView: View {
         var t = s.trimmingCharacters(in: .whitespaces)
         if !t.contains("://") { t = "http://" + t }
         return URL(string: t)
+    }
+
+    private func platformImage(_ data: Data) -> Image? {
+        #if os(macOS)
+        NSImage(data: data).map { Image(nsImage: $0) }
+        #else
+        UIImage(data: data).map { Image(uiImage: $0) }
+        #endif
     }
 }
 #endif

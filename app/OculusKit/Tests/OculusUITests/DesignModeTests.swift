@@ -39,4 +39,15 @@ final class DesignModeTests: XCTestCase {
         let block = designPromptBlock(PickedElement(selector: "x", html: "<x/>", css: "", text: "   "))
         XCTAssertFalse(block.contains("Visible text"))
     }
+
+    func testDecodesRectForScreenshotCrop() throws {
+        // The picker posts a rect used to crop the element screenshot.
+        let json = """
+        {"selector":"button","html":"<button/>","css":"","text":"Go","rect":{"x":12.5,"y":40,"width":120,"height":36}}
+        """.data(using: .utf8)!
+        let el = try JSONDecoder().decode(PickedElement.self, from: json)
+        XCTAssertEqual(el.rect?.x, 12.5)
+        XCTAssertEqual(el.rect?.width, 120)
+        XCTAssertEqual(el.rect?.height, 36)
+    }
 }
