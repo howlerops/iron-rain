@@ -98,6 +98,7 @@ struct SessionSidebar: View {
     /// Opens the Loops (recurring autonomous workflows) sheet.
     var onOpenLoops: (() -> Void)? = nil
     var onOpenAgents: (() -> Void)? = nil
+    var onOpenAccounts: (() -> Void)? = nil
     @AppStorage("oculus.appearance") private var appearance: Appearance = .system
     @State private var filter: SessionFilter = .all
     @State private var renamingSessionID: String?
@@ -335,6 +336,9 @@ struct SessionSidebar: View {
                 }
                 if let onOpenAgents {
                     Button { onOpenAgents() } label: { Label("Agents…", systemImage: "cpu") }
+                }
+                if let onOpenAccounts {
+                    Button { onOpenAccounts() } label: { Label("Accounts & usage…", systemImage: "person.2.badge.key") }
                 }
                 Picker(selection: $appearance) {
                     ForEach(Appearance.allCases) { a in

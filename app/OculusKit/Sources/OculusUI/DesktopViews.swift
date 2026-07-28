@@ -205,7 +205,7 @@ struct SoftwareUpdateModifier: ViewModifier {
 
 /// The one shared sheet slot for the Loops / Agents panels (kept to a single `.sheet` so they
 /// don't collide with the New Session sheet).
-private enum PanelSheet: Int, Identifiable { case loops, agents; var id: Int { rawValue } }
+private enum PanelSheet: Int, Identifiable { case loops, agents, accounts; var id: Int { rawValue } }
 
 public struct RootView: View {
     @ObservedObject var store: DesktopStore
@@ -280,6 +280,8 @@ public struct RootView: View {
                                       onClose: { panel = nil })
                         case .agents:
                             ManageAgentsView(model: model, palette: palette)
+                        case .accounts:
+                            AccountsView(model: model, palette: palette, onClose: { panel = nil })
                         }
                     }
                     .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -391,7 +393,8 @@ public struct RootView: View {
             NavigationStack {
                 SessionSidebar(store: store, model: model, selection: $selection, searchText: $searchText,
                                onOpenLoops: { destination = .loops },
-                               onOpenAgents: { panel = .agents })
+                               onOpenAgents: { panel = .agents },
+                               onOpenAccounts: { panel = .accounts })
                     .navigationDestination(isPresented: $showSessionDetail) { ChatView(model: model) }
                     .toolbar {
                         ToolbarItem(placement: .topBarTrailing) {
@@ -484,6 +487,10 @@ public struct RootView: View {
                                subtitle: "Race N agents, merge the winner", symbol: "square.grid.2x2") {
             showFanout = true
         })
+        out.append(PaletteItem(id: "act-accounts", kind: .action, title: "Accounts & usage",
+                               subtitle: "Switch credentials · token/cost meter", symbol: "person.2.badge.key") {
+            panel = .accounts
+        })
         if model.needsYouCount > 0 {
             out.append(PaletteItem(id: "act-markread", kind: .action, title: "Mark all activity read",
                                    subtitle: "\(model.needsYouCount) need you", symbol: "checkmark.circle") {
@@ -528,7 +535,8 @@ public struct RootView: View {
                            onToggleLoginAtLogin: { on in Task { await loginItem.setEnabled(on, launcher: launcher) } },
                            updates: updates,
                            onOpenLoops: { destination = .loops },
-                           onOpenAgents: { panel = .agents })
+                           onOpenAgents: { panel = .agents },
+                           onOpenAccounts: { panel = .accounts })
 
         case .loops:
             LoopsListColumn(model: model, palette: palette, selected: $selectedLoopID,

@@ -127,6 +127,10 @@ const (
 	TypeCheckpointCreate = "checkpoint.create" // snapshot the session's worktree (a restore point on the timeline)
 	TypeCheckpointList   = "checkpoint.list"   // list a session's checkpoints
 	TypeCheckpointRestore = "checkpoint.restore" // roll the worktree back to a checkpoint
+	TypeAccountList      = "account.list"      // list credential accounts + active selection + per-provider usage
+	TypeAccountUpsert    = "account.upsert"    // add/update a credential account
+	TypeAccountDelete    = "account.delete"    // remove a credential account
+	TypeAccountActivate  = "account.activate"  // set the active account for a provider (hot-swap)
 
 	// responses
 	TypeOK    = "ok"
@@ -470,6 +474,41 @@ type CheckpointRestore struct {
 // CheckpointList is a session's checkpoints (newest first).
 type CheckpointList struct {
 	Checkpoints []Checkpoint `json:"checkpoints"`
+}
+
+// Account is one named credential set for a provider (env overrides = API keys / config dirs).
+type Account struct {
+	ID       string            `json:"id"`
+	Provider string            `json:"provider"`
+	Name     string            `json:"name"`
+	Env      map[string]string `json:"env,omitempty"`
+	Active   bool              `json:"active,omitempty"` // is this the active account for its provider
+}
+
+// ProviderUsage is rolled-up token/cost usage for one provider across its sessions (the usage meter).
+type ProviderUsage struct {
+	Provider     string  `json:"provider"`
+	Sessions     int     `json:"sessions"`
+	InputTokens  int     `json:"input_tokens"`
+	OutputTokens int     `json:"output_tokens"`
+	CostUSD      float64 `json:"cost_usd"`
+}
+
+// AccountList is the reply to account.list: accounts (active-flagged) + per-provider usage.
+type AccountList struct {
+	Accounts []Account       `json:"accounts"`
+	Usage    []ProviderUsage `json:"usage"`
+}
+
+// AccountActivate selects the active account for a provider.
+type AccountActivate struct {
+	Provider  string `json:"provider"`
+	AccountID string `json:"account_id"`
+}
+
+// AccountRef identifies an account (delete).
+type AccountRef struct {
+	AccountID string `json:"account_id"`
 }
 
 // LogLine is one streamed daemon log line (event).

@@ -21,6 +21,7 @@ import (
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/agent/cli"
 	"github.com/howlerops/oculus/daemon/fsaccess"
+	"github.com/howlerops/oculus/daemon/accounts"
 	"github.com/howlerops/oculus/daemon/activity"
 	"github.com/howlerops/oculus/daemon/issues"
 	"github.com/howlerops/oculus/daemon/loghub"
@@ -62,6 +63,7 @@ type Hub struct {
 	logSubs       map[*transport.Conn]bool       // clients subscribed to the log stream
 	transcripts   *transcript.Store              // optional: durable append-only per-session transcript (never-lose-work)
 	activity      *activity.Store                // optional: cross-session activity feed (Activity destination backbone)
+	accounts      *accounts.Registry             // optional: multi-account credentials + active selection per provider
 	loopEngine    *loops.Engine                  // optional: recurring autonomous ticket workflows
 	agentsPath    string                         // path to ~/.oculus/agents.json (custom CLI agents)
 	agentHidePath string                         // path to ~/.oculus/agent-visibility.json (hidden names)
@@ -531,6 +533,62 @@ func (h *Hub) SetActivity(a *activity.Store) {
 			h.broadcast(protocol.TypeActivityEvent, toProtoActivity(e))
 		})
 	}
+}
+
+// SetAccounts attaches the credentials registry and wires every provider that supports per-account
+// env (the CLI agents) to resolve the ACTIVE account's env at each session spawn — so hot-swapping
+// an account in the app changes what new sessions run with. Call after providers are registered.
+func (h *Hub) SetAccounts(r *accounts.Registry) {
+	h.mu.Lock()
+	h.accounts = r
+	provs := make(map[string]agent.Provider, len(h.providers))
+	for name, p := range h.providers {
+		provs[name] = p
+	}
+	h.mu.Unlock()
+	for name, p := range provs {
+		if s, ok := p.(interface{ SetAccountEnv(func() map[string]string) }); ok {
+			n := name
+			s.SetAccountEnv(func() map[string]string { return r.EnvFor(n) })
+		}
+	}
+}
+
+// accountList builds the account.list reply: accounts flagged with the active selection + per-
+// provider usage rolled up from live sessions (the usage meter).
+func (h *Hub) accountList() protocol.AccountList {
+	h.mu.Lock()
+	reg := h.accounts
+	usage := map[string]*protocol.ProviderUsage{}
+	for _, m := range h.sessions {
+		m.mu.Lock()
+		prov := m.sess.Provider()
+		u := usage[prov]
+		if u == nil {
+			u = &protocol.ProviderUsage{Provider: prov}
+			usage[prov] = u
+		}
+		u.Sessions++
+		u.InputTokens += m.inTok
+		u.OutputTokens += m.outTok
+		u.CostUSD += m.costUSD
+		m.mu.Unlock()
+	}
+	h.mu.Unlock()
+
+	out := protocol.AccountList{Accounts: []protocol.Account{}, Usage: []protocol.ProviderUsage{}}
+	if reg != nil {
+		for _, a := range reg.List() {
+			out.Accounts = append(out.Accounts, protocol.Account{
+				ID: a.ID, Provider: a.Provider, Name: a.Name, Env: a.Env,
+				Active: reg.ActiveID(a.Provider) == a.ID,
+			})
+		}
+	}
+	for _, u := range usage {
+		out.Usage = append(out.Usage, *u)
+	}
+	return out
 }
 
 // recordActivity records one cross-session event (no-op if the store isn't attached). Called from
@@ -1781,6 +1839,46 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		}
 		log.Printf("session %s: rolled back to checkpoint %s", req.SessionID, req.SHA[:min(len(req.SHA), 8)])
 		h.sendOK(conn, env.ID, nil)
+
+	case protocol.TypeAccountList:
+		h.sendOK(conn, env.ID, h.accountList())
+
+	case protocol.TypeAccountUpsert:
+		var a protocol.Account
+		_ = env.Unmarshal(&a)
+		h.mu.Lock()
+		reg := h.accounts
+		h.mu.Unlock()
+		if reg == nil {
+			h.sendErr(conn, env.ID, "accounts unavailable")
+			return
+		}
+		reg.Upsert(accounts.Account{ID: a.ID, Provider: a.Provider, Name: a.Name, Env: a.Env})
+		h.sendOK(conn, env.ID, h.accountList())
+
+	case protocol.TypeAccountDelete:
+		var req protocol.AccountRef
+		_ = env.Unmarshal(&req)
+		h.mu.Lock()
+		reg := h.accounts
+		h.mu.Unlock()
+		if reg != nil {
+			reg.Delete(req.AccountID)
+		}
+		h.sendOK(conn, env.ID, h.accountList())
+
+	case protocol.TypeAccountActivate:
+		var req protocol.AccountActivate
+		_ = env.Unmarshal(&req)
+		h.mu.Lock()
+		reg := h.accounts
+		h.mu.Unlock()
+		if reg == nil || !reg.SetActive(req.Provider, req.AccountID) {
+			h.sendErr(conn, env.ID, "no such account for that provider")
+			return
+		}
+		log.Printf("account: %s active account switched to %s", req.Provider, req.AccountID)
+		h.sendOK(conn, env.ID, h.accountList())
 
 	case protocol.TypeSessionList:
 		h.mu.Lock()

@@ -1409,6 +1409,33 @@ public final class Model: ObservableObject {
 
     /// Checkpoints (restore points) for the active session's worktree — newest first.
     @Published public var checkpoints: [Checkpoint] = []
+    /// Multi-account credentials + per-provider usage meter (Accounts view).
+    @Published public var accounts: [Account] = []
+    @Published public var providerUsage: [ProviderUsage] = []
+
+    public func loadAccounts() async {
+        guard client != nil else { return }
+        if let env = try? await request(MessageType.accountList, payload: Optional<Int>.none),
+           let al = try? env.payload(as: AccountList.self) { accounts = al.accounts; providerUsage = al.usage }
+    }
+    private func applyAccountList(_ env: Envelope) {
+        if let al = try? env.payload(as: AccountList.self) { accounts = al.accounts; providerUsage = al.usage }
+    }
+    public func upsertAccount(_ a: Account) async {
+        guard client != nil else { return }
+        if let env = try? await request(MessageType.accountUpsert, payload: a) { applyAccountList(env) }
+    }
+    public func deleteAccount(_ id: String) async {
+        guard client != nil else { return }
+        if let env = try? await request(MessageType.accountDelete, payload: AccountRef(accountID: id)) { applyAccountList(env) }
+    }
+    public func activateAccount(provider: String, id: String) async {
+        guard client != nil else { return }
+        do {
+            let env = try await request(MessageType.accountActivate, payload: AccountActivate(provider: provider, accountID: id))
+            applyAccountList(env)
+        } catch { setError("Couldn’t switch account", error.localizedDescription) }
+    }
 
     /// Saves a checkpoint of the current session's worktree (a rollback point on the timeline).
     public func saveCheckpoint(label: String = "") async {

@@ -33,6 +33,7 @@ import (
 	"github.com/howlerops/oculus/daemon/crypto"
 	"github.com/howlerops/oculus/daemon/discovery"
 	"github.com/howlerops/oculus/daemon/hub"
+	"github.com/howlerops/oculus/daemon/accounts"
 	"github.com/howlerops/oculus/daemon/activity"
 	"github.com/howlerops/oculus/daemon/issues"
 	"github.com/howlerops/oculus/daemon/loghub"
@@ -202,6 +203,9 @@ func serve(args []string) error {
 	if len(providers) == 0 {
 		fmt.Fprintln(os.Stderr, "  warning: no coding-agent providers detected (install opencode, claude-code, or pi and re-run) — serving anyway")
 	}
+	// Multi-account credentials: hot-swap which login/key new sessions use. Wired AFTER providers
+	// register so the CLI agents resolve the active account's env at each spawn.
+	h.SetAccounts(accounts.Load(accountsPath()))
 
 	// Re-own sessions that survived a previous run (opencode/claude sessions persist
 	// server-side) and periodically prune stale records with incremental auto-vacuum.
@@ -532,6 +536,14 @@ func integrationsPath() string {
 		return "oculus-integrations.json"
 	}
 	return filepath.Join(home, ".oculus", "integrations.json")
+}
+
+func accountsPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "oculus-accounts.json"
+	}
+	return filepath.Join(home, ".oculus", "accounts.json")
 }
 
 func transcriptsDir() string {

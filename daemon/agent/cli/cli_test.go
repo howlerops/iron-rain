@@ -129,6 +129,42 @@ loop:
 	}
 }
 
+// TestSession_AccountEnvReachesProcess proves the multi-account wiring: the active account's env
+// overrides are merged into the spawned agent process's environment (so a per-account API key is
+// what the agent actually runs with).
+func TestSession_AccountEnvReachesProcess(t *testing.T) {
+	p := NewProvider(Config{Name: "envcho", Command: "sh", Args: []string{"-c", "printf %s \"$OCULUS_TEST_KEY\""}})
+	p.SetAccountEnv(func() map[string]string { return map[string]string{"OCULUS_TEST_KEY": "acct-secret-123"} })
+	sess, err := p.Create(context.Background(), t.TempDir(), "go")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	var output strings.Builder
+	deadline := time.After(5 * time.Second)
+loop:
+	for {
+		select {
+		case ev, ok := <-sess.Events():
+			if !ok {
+				break loop
+			}
+			switch e := ev.Payload.(type) {
+			case protocol.OutputDelta:
+				output.WriteString(e.Text)
+			case protocol.SessionStatus:
+				if e.Status == protocol.StatusIdle {
+					sess.Close()
+				}
+			}
+		case <-deadline:
+			t.Fatal("timed out")
+		}
+	}
+	if !strings.Contains(output.String(), "acct-secret-123") {
+		t.Errorf("agent process did not see the account env; output = %q", output.String())
+	}
+}
+
 func TestSession_RejectsUnknownCommand(t *testing.T) {
 	p := NewProvider(Config{Name: "nope", Command: "definitely-not-a-real-binary-xyz", Args: []string{"{prompt}"}})
 	if _, err := p.Create(context.Background(), t.TempDir(), "x"); err == nil {

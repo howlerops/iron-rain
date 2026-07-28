@@ -55,6 +55,10 @@ public enum MessageType {
     public static let checkpointCreate = "checkpoint.create"
     public static let checkpointList = "checkpoint.list"
     public static let checkpointRestore = "checkpoint.restore"
+    public static let accountList = "account.list"
+    public static let accountUpsert = "account.upsert"
+    public static let accountDelete = "account.delete"
+    public static let accountActivate = "account.activate"
     public static let jiraSites = "jira.sites"
     public static let jiraSetSite = "jira.set_site"
     public static let worktreeCatchUp = "worktree.catch_up"
@@ -1029,6 +1033,47 @@ public struct CheckpointRestore: Codable {
     public var sessionID: String; public var sha: String
     enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case sha }
     public init(sessionID: String, sha: String) { self.sessionID = sessionID; self.sha = sha }
+}
+
+/// A named credential set for a provider (env overrides = API keys / config dirs).
+public struct Account: Codable, Identifiable, Equatable {
+    public var id: String
+    public var provider: String
+    public var name: String
+    public var env: [String: String]?
+    public var active: Bool?
+    public init(id: String = "", provider: String, name: String, env: [String: String]? = nil, active: Bool? = nil) {
+        self.id = id; self.provider = provider; self.name = name; self.env = env; self.active = active
+    }
+}
+
+/// Rolled-up token/cost usage for one provider (the usage meter).
+public struct ProviderUsage: Codable, Identifiable {
+    public var provider: String
+    public var sessions: Int
+    public var inputTokens: Int
+    public var outputTokens: Int
+    public var costUSD: Double
+    public var id: String { provider }
+    enum CodingKeys: String, CodingKey {
+        case provider; case sessions; case inputTokens = "input_tokens"
+        case outputTokens = "output_tokens"; case costUSD = "cost_usd"
+    }
+}
+
+public struct AccountList: Codable {
+    public var accounts: [Account]
+    public var usage: [ProviderUsage]
+}
+public struct AccountActivate: Codable {
+    public var provider: String; public var accountID: String
+    enum CodingKeys: String, CodingKey { case provider; case accountID = "account_id" }
+    public init(provider: String, accountID: String) { self.provider = provider; self.accountID = accountID }
+}
+public struct AccountRef: Codable {
+    public var accountID: String
+    enum CodingKeys: String, CodingKey { case accountID = "account_id" }
+    public init(accountID: String) { self.accountID = accountID }
 }
 
 public struct IntegrationStatus: Codable {

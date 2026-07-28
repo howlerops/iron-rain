@@ -39,11 +39,20 @@ type Config struct {
 }
 
 // Provider adapts one Config to the agent.Provider interface.
-type Provider struct{ cfg Config }
+type Provider struct {
+	cfg Config
+	// accountEnv, when set, returns the active account's env overrides for this provider — merged
+	// into each new session's process env at spawn (multi-account hot-swap).
+	accountEnv func() map[string]string
+}
 
 // NewProvider wraps a Config as a provider. The provider's Name() is the config name, so it shows
 // up alongside claude-code/opencode/pi in the app's agent picker.
 func NewProvider(cfg Config) *Provider { return &Provider{cfg: cfg} }
+
+// SetAccountEnv installs the resolver for the active account's env overrides (called by the hub when
+// the accounts registry is wired). Applied to sessions created AFTER this is set.
+func (p *Provider) SetAccountEnv(f func() map[string]string) { p.accountEnv = f }
 
 func (p *Provider) Name() string                                     { return p.cfg.Name }
 func (p *Provider) List(context.Context) ([]protocol.Session, error) { return nil, nil }
@@ -65,14 +74,21 @@ func (p *Provider) Create(_ context.Context, cwd, prompt string) (agent.Session,
 	if _, err := exec.LookPath(p.cfg.Command); err != nil {
 		return nil, fmt.Errorf("cli agent %q: %q not found on PATH", p.cfg.Name, p.cfg.Command)
 	}
+	// Snapshot the active account's env at create time so the session uses the account that was
+	// active when it started (switching later affects new sessions, not running ones).
+	var acctEnv map[string]string
+	if p.accountEnv != nil {
+		acctEnv = p.accountEnv()
+	}
 	s := &session{
-		id:     p.cfg.Name + "_" + randID(),
-		cfg:    p.cfg,
-		cwd:    cwd,
-		model:  p.cfg.Model,
-		events: make(chan agent.Event, 64),
-		out:    make(chan agent.Event, 64),
-		done:   make(chan struct{}),
+		id:      p.cfg.Name + "_" + randID(),
+		cfg:     p.cfg,
+		cwd:     cwd,
+		model:   p.cfg.Model,
+		acctEnv: acctEnv,
+		events:  make(chan agent.Event, 64),
+		out:     make(chan agent.Event, 64),
+		done:    make(chan struct{}),
 	}
 	go s.pump()
 	if strings.TrimSpace(prompt) != "" {
@@ -88,6 +104,8 @@ type session struct {
 	events chan agent.Event // public; closed by pump when the session ends
 	out    chan agent.Event // internal; turn goroutines feed the pump
 	done   chan struct{}
+
+	acctEnv map[string]string // active account's env overrides, snapshotted at create
 
 	mu        sync.Mutex
 	running   bool
@@ -174,7 +192,8 @@ func (s *session) runTurn(ctx context.Context, argv []string) {
 
 	cmd := exec.CommandContext(ctx, s.cfg.Command, argv...)
 	cmd.Dir = s.cwd
-	cmd.Env = env(s.cfg.Env)
+	// Account env overrides the config env (so a per-account API key wins over any default).
+	cmd.Env = env(mergeEnv(s.cfg.Env, s.acctEnv))
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		s.fail(err)
@@ -292,6 +311,21 @@ func env(extra map[string]string) []string {
 		e = append(e, k+"="+v)
 	}
 	return e
+}
+
+// mergeEnv overlays `over` onto `base` (over wins). Either may be nil.
+func mergeEnv(base, over map[string]string) map[string]string {
+	if len(over) == 0 {
+		return base
+	}
+	out := make(map[string]string, len(base)+len(over))
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range over {
+		out[k] = v
+	}
+	return out
 }
 
 var ansiRE = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\r`)
