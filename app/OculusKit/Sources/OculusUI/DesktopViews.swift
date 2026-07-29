@@ -649,8 +649,11 @@ public struct RootView: View {
         .id(destination)
         .background(palette.background)
         .toolbarBackground(.visible, for: .windowToolbar)
-        .onChange(of: model.currentSession?.id) { sid in
-            if destination == .sessions && sid == nil { model.codeReviewTarget = nil }
+        .onChange(of: model.currentSession?.id) { _ in
+            // Switching sessions (id changed) must drop any open Code/Review detail — otherwise the
+            // pane keeps rendering the PREVIOUS session's code surface, which reads as a stale/white
+            // screen when going between sessions. (Was only cleared when the session went to nil.)
+            if destination == .sessions { model.codeReviewTarget = nil }
         }
     }
 
