@@ -132,6 +132,7 @@ const (
 	TypeActivityEvent    = "activity.event"    // event: one new activity item (finished/needs-you/error/loop)
 	TypeActivityMarkRead = "activity.markread" // mark activity items read (clears the needs-you badge)
 	TypeFanoutCreate     = "fanout.create"     // spawn N agents on the SAME prompt in isolated worktrees (compare + merge winner)
+	TypeFanoutResolve    = "fanout.resolve"    // tear down a fan-out group (keep the winner, discard the rest + worktrees)
 	TypeCheckpointCreate = "checkpoint.create" // snapshot the session's worktree (a restore point on the timeline)
 	TypeCheckpointList   = "checkpoint.list"   // list a session's checkpoints
 	TypeCheckpointRestore = "checkpoint.restore" // roll the worktree back to a checkpoint
@@ -465,6 +466,23 @@ type FanoutCreate struct {
 type FanoutResult struct {
 	Group      string   `json:"group"`
 	SessionIDs []string `json:"session_ids"`
+}
+
+// FanoutResolve tears down a fan-out group: every variant EXCEPT Keep (a session id to preserve, "" =
+// discard all) is stopped, deleted, and its worktree removed — so racing N approaches doesn't leave N
+// orphaned worktrees + sessions accumulating after you've picked a winner.
+type FanoutResolve struct {
+	Group string `json:"group"`
+	Keep  string `json:"keep,omitempty"`  // session id of the winner to preserve (optional)
+	Force bool   `json:"force,omitempty"` // remove worktrees even with uncommitted changes
+}
+
+// FanoutResolved reports which variants were torn down (and which winner was kept).
+type FanoutResolved struct {
+	Group     string   `json:"group"`
+	Kept      string   `json:"kept,omitempty"`
+	Removed   []string `json:"removed"`
+	Failed    []string `json:"failed,omitempty"` // variants whose teardown errored (e.g. dirty worktree without force)
 }
 
 // Checkpoint is a restore point: a snapshot of a session's worktree at a point in time.

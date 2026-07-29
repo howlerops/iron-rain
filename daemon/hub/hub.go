@@ -1127,6 +1127,70 @@ func (h *Hub) spawnFanout(ctx context.Context, req protocol.FanoutCreate) (proto
 	return res, nil
 }
 
+// resolveFanout ends a fan-out: it tears down every variant in the group EXCEPT the kept winner
+// (stop + server-side delete + worktree removal), so a decided race doesn't leave N orphaned
+// worktrees/sessions accumulating. Best-effort per variant — a dirty worktree without Force lands in
+// Failed rather than aborting the whole resolve.
+func (h *Hub) resolveFanout(ctx context.Context, req protocol.FanoutResolve) protocol.FanoutResolved {
+	out := protocol.FanoutResolved{Group: req.Group, Kept: req.Keep, Removed: []string{}}
+	// Snapshot the group's variants under lock (teardown mutates h.sessions, so don't iterate it live).
+	h.mu.Lock()
+	var variants []*managedSession
+	for _, m := range h.sessions {
+		if m.meta.fanoutGroup == req.Group && m.sess.ID() != req.Keep {
+			variants = append(variants, m)
+		}
+	}
+	h.mu.Unlock()
+	for _, m := range variants {
+		if err := h.teardownWorktreeSession(ctx, m, req.Force); err != nil {
+			log.Printf("fanout.resolve %s: variant %s teardown failed: %v", req.Group, m.sess.ID(), err)
+			out.Failed = append(out.Failed, m.sess.ID())
+			continue
+		}
+		out.Removed = append(out.Removed, m.sess.ID())
+	}
+	// The winner is no longer part of a race — drop its group tag so it reads as an ordinary session.
+	if req.Keep != "" {
+		if m := h.managed(req.Keep); m != nil {
+			m.mu.Lock()
+			m.meta.fanoutGroup = ""
+			m.mu.Unlock()
+			h.persistSession(m)
+		}
+	}
+	log.Printf("fanout.resolve %s: removed %d, kept %q, failed %d", req.Group, len(out.Removed), req.Keep, len(out.Failed))
+	return out
+}
+
+// teardownWorktreeSession stops a worktree session, deletes it server-side, and removes its worktree —
+// the shared teardown behind fanout.resolve. Returns the worktree-removal error (e.g. a dirty tree
+// without force) so the caller can report a partial failure; everything else is best-effort.
+func (h *Hub) teardownWorktreeSession(ctx context.Context, m *managedSession, force bool) error {
+	m.markUserStopped() // intentional delete → run() drops the durable record (not a crash to preserve)
+	_ = m.sess.Stop(ctx)
+	if d, ok := m.sess.(agent.Deleter); ok {
+		_ = d.Delete(ctx) // server-side delete so the variant can't be re-attached/re-discovered
+	}
+	_ = m.sess.Close()
+	if len(m.meta.members) > 0 {
+		if err := worktree.RemoveWorkspace(m.meta.cwd, m.meta.members, force); err != nil {
+			return err
+		}
+		for _, mem := range m.meta.members {
+			_ = worktree.Prune(mem.RepoRoot)
+		}
+	} else if m.meta.worktreePath != "" {
+		if err := worktree.Remove(m.meta.repoRoot, m.meta.worktreePath, force); err != nil {
+			return err
+		}
+		_ = worktree.Prune(m.meta.repoRoot)
+	}
+	h.releasePort(m.meta.port)
+	h.removeSession(m.sess.ID(), m)
+	return nil
+}
+
 // spawnRemote starts an agent session ON a remote host over SSH. It reuses the generic CLI provider
 // with Command="ssh": the remote invocation is `cd <path> && <agentCommand> {prompt}`, so the remote
 // agent's stdout streams back through the normal session machinery (OSC status, etc.). The remote
@@ -1667,6 +1731,7 @@ func asyncDispatch(typ string) bool {
 	switch typ {
 	case protocol.TypeSessionCreate, // worktree.Create + Bootstrap (setup hooks) + provider Create
 		protocol.TypeFanoutCreate,        // N× worktree.Create + provider Create (fan-out)
+		protocol.TypeFanoutResolve,       // N× provider Stop/Delete + git worktree remove/prune
 		protocol.TypeCheckpointCreate,    // git snapshot (blocking)
 		protocol.TypeCheckpointRestore,   // git checkout (blocking)
 		protocol.TypeRemoteList,          // ssh probe per host (network)
@@ -1917,6 +1982,15 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			return
 		}
 		h.sendOK(conn, env.ID, res)
+
+	case protocol.TypeFanoutResolve:
+		var req protocol.FanoutResolve
+		if err := env.Unmarshal(&req); err != nil || req.Group == "" {
+			h.sendErr(conn, env.ID, "bad fanout.resolve")
+			return
+		}
+		h.sendOK(conn, env.ID, h.resolveFanout(ctx, req))
+		h.broadcastSessionList() // the discarded variants are gone → refresh every client's list
 
 	case protocol.TypeCheckpointCreate:
 		var req protocol.CheckpointCreate

@@ -53,6 +53,7 @@ public enum MessageType {
     public static let activityEvent = "activity.event"
     public static let activityMarkRead = "activity.markread"
     public static let fanoutCreate = "fanout.create"
+    public static let fanoutResolve = "fanout.resolve"
     public static let checkpointCreate = "checkpoint.create"
     public static let checkpointList = "checkpoint.list"
     public static let checkpointRestore = "checkpoint.restore"
@@ -1147,6 +1148,26 @@ public struct FanoutResult: Codable {
     public var group: String
     public var sessionIDs: [String]
     enum CodingKeys: String, CodingKey { case group; case sessionIDs = "session_ids" }
+}
+
+/// fanout.resolve — end a fan-out group: tear down every variant except `keep` (the winner) + its
+/// worktree, so a decided race doesn't leave orphaned worktrees/sessions accumulating.
+public struct FanoutResolve: Codable {
+    public var group: String
+    public var keep: String?
+    public var force: Bool?
+    enum CodingKeys: String, CodingKey { case group; case keep; case force }
+    public init(group: String, keep: String? = nil, force: Bool? = nil) {
+        self.group = group; self.keep = keep; self.force = force
+    }
+}
+
+public struct FanoutResolved: Codable {
+    public var group: String
+    public var kept: String?
+    public var removed: [String]
+    public var failed: [String]?
+    enum CodingKeys: String, CodingKey { case group; case kept; case removed; case failed }
 }
 
 /// A restore point: a snapshot of a session's worktree at a point in time.

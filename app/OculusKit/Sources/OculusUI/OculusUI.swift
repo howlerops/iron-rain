@@ -1562,6 +1562,31 @@ public final class Model: ObservableObject {
         }
     }
 
+    /// Ends a fan-out group: keep `winner` (nil = discard all), tear down the rest + their worktrees.
+    /// Force removes even worktrees with uncommitted changes. Returns the count actually removed.
+    @discardableResult
+    public func resolveFanout(group: String, keep winner: String?, force: Bool = false) async -> Int {
+        guard client != nil else { return 0 }
+        busy = true; status = "Resolving fan-out…"
+        defer { busy = false }
+        do {
+            let env = try await request(MessageType.fanoutResolve,
+                                        payload: FanoutResolve(group: group, keep: winner, force: force ? true : nil))
+            let res = try env.payload(as: FanoutResolved.self)
+            if let failed = res.failed, !failed.isEmpty {
+                setError("Some variants weren’t removed",
+                         "\(failed.count) worktree(s) have uncommitted changes — resolve again with Force to discard them.")
+            } else {
+                status = "Fan-out resolved — removed \(res.removed.count)"
+            }
+            await loadSessions()
+            return res.removed.count
+        } catch {
+            setError("Couldn’t resolve fan-out", error.localizedDescription)
+            return 0
+        }
+    }
+
     /// Checkpoints (restore points) for the active session's worktree — newest first.
     @Published public var checkpoints: [Checkpoint] = []
     /// Multi-account credentials + per-provider usage meter (Accounts view).

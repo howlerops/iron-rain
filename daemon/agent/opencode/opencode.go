@@ -838,6 +838,7 @@ func (s *session) handle(raw []byte) {
 		s.usageDone = nil
 		s.childIDs = nil
 		s.subStarted = nil
+		s.turnActive.Store(false) // the turn is authoritatively done (covers the post-approval continuation)
 		s.approvalMu.Lock()
 		s.approvalSession = nil
 		s.approvalMu.Unlock()
@@ -997,6 +998,10 @@ func (s *session) Respond(ctx context.Context, approvalID, decision string) erro
 		delete(s.approvalSession, approvalID)
 	}
 	s.approvalMu.Unlock()
+	// Answering an approval RESUMES the turn. If the parent's POST already returned at the yield (so
+	// turnActive was cleared), re-arm it so a mid-turn SSE reconnect during the continuation still
+	// resyncs the latest output. It's cleared again on the parent's session.idle.
+	s.turnActive.Store(true)
 	return s.p.postJSON(ctx, withDir(fmt.Sprintf("/session/%s/permissions/%s", sid, approvalID), s.dir), map[string]string{"response": resp}, nil)
 }
 

@@ -62,6 +62,9 @@ func TestClassify(t *testing.T) {
 		"Approve edit to config.go?": StatusWaiting,
 		"proceed? (y/n)":             StatusWaiting,
 		"needs input":                StatusWaiting,
+		// A "?" MID-title is progress, not a prompt — must not falsely read as "needs you".
+		"Analyzing: what changed?next": StatusRunning,
+		"reading config?.yaml":         StatusRunning,
 	}
 	for title, want := range cases {
 		if got := Classify(title); got != want {

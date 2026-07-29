@@ -130,7 +130,10 @@ func Classify(title string) string {
 			return StatusWaiting
 		}
 	}
-	if strings.Contains(t, "?") {
+	// A title that ENDS in a question mark is a genuine prompt ("Overwrite file?"). A "?" anywhere in
+	// the title over-triggered — a progress message like "Analyzing: what changed?" or "Reading foo?bar"
+	// falsely marked the session "needs you". The explicit keywords above already catch phrased asks.
+	if strings.HasSuffix(t, "?") {
 		return StatusWaiting
 	}
 	for _, m := range []string{"idle", "done", "ready", "complete", "finished", "✓", "✔"} {

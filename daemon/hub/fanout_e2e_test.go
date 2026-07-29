@@ -106,6 +106,69 @@ func TestFanoutE2E(t *testing.T) {
 	}
 }
 
+// TestFanoutResolveTearsDownLosers: after racing 3 variants, resolving the group (keeping one)
+// removes the OTHER variants + their worktrees, so a decided fan-out doesn't leave orphans piling up.
+// The kept winner survives and is no longer tagged to the (now gone) group.
+func TestFanoutResolveTearsDownLosers(t *testing.T) {
+	repo := gitRepo(t)
+	reg, _ := project.Load(filepath.Join(t.TempDir(), "projects.json"))
+	proj, _ := reg.Add(repo)
+	h := hub.New()
+	h.Register(&cwdProvider{})
+	h.SetProjects(reg)
+	daemonKP, _ := crypto.GenerateKeyPair()
+	conn := connectClient(t, h, daemonKP)
+	r := newReader(conn)
+
+	send(t, conn, "f1", protocol.TypeFanoutCreate, protocol.FanoutCreate{
+		Provider: "fake", ProjectID: proj.ID, Prompt: "go", Count: 3,
+	})
+	var res protocol.FanoutResult
+	if err := json.Unmarshal(r.waitOK(t, "f1"), &res); err != nil {
+		t.Fatalf("fanout decode: %v", err)
+	}
+	if len(res.SessionIDs) != 3 {
+		t.Fatalf("want 3 variants, got %d", len(res.SessionIDs))
+	}
+	winner := res.SessionIDs[0]
+
+	// Resolve: keep the winner, discard the rest.
+	send(t, conn, "r1", protocol.TypeFanoutResolve, protocol.FanoutResolve{Group: res.Group, Keep: winner, Force: true})
+	var resolved protocol.FanoutResolved
+	if err := json.Unmarshal(r.waitOK(t, "r1"), &resolved); err != nil {
+		t.Fatalf("resolve decode: %v", err)
+	}
+	if len(resolved.Removed) != 2 {
+		t.Fatalf("resolve removed %d variants, want 2 (failed=%v)", len(resolved.Removed), resolved.Failed)
+	}
+
+	// The list must now contain ONLY the winner from that group, and it must be untagged.
+	send(t, conn, "l1", protocol.TypeSessionList, struct{}{})
+	var list protocol.SessionList
+	if err := json.Unmarshal(r.waitOK(t, "l1"), &list); err != nil {
+		t.Fatalf("list decode: %v", err)
+	}
+	inGroup, winnerLive, winnerUntagged := 0, false, false
+	for _, s := range list.Sessions {
+		if s.FanoutGroup == res.Group {
+			inGroup++
+		}
+		if s.ID == winner {
+			winnerLive = true
+			winnerUntagged = s.FanoutGroup == ""
+		}
+	}
+	if inGroup != 0 {
+		t.Errorf("group still has %d tagged sessions after resolve, want 0", inGroup)
+	}
+	if !winnerLive {
+		t.Error("winner was removed — resolve should keep it")
+	}
+	if !winnerUntagged {
+		t.Error("winner still carries the fan-out group tag after resolve")
+	}
+}
+
 // TestFanoutClampsAndValidates: count is clamped to >=2 and an empty prompt is rejected.
 func TestFanoutClampsAndValidates(t *testing.T) {
 	repo := gitRepo(t)

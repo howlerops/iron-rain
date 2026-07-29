@@ -35,6 +35,8 @@ public struct AllSessionsView: View {
     @State private var pendingWorktreeDelete: Session?
     /// A plain (non-worktree) session pending delete confirmation.
     @State private var pendingDelete: Session?
+    /// A fan-out variant chosen as the winner, pending "end the race, discard the others" confirmation.
+    @State private var pendingFanoutKeep: Session?
     /// Multi-select for bulk management (checkbox column + bulk action bar).
     @State private var selection: Set<String> = []
     /// Drives the bulk-delete confirmation (worktree-aware).
@@ -110,6 +112,19 @@ public struct AllSessionsView: View {
             Button("Cancel", role: .cancel) {}
         } message: { s in
             Text("“\(label(s))” is on branch \(s.branch ?? "?"). Removing the worktree runs `git worktree remove` and deletes its checkout from disk. Deleting the session only leaves the worktree in place.")
+        }
+        .confirmationDialog(
+            "End this fan-out?",
+            isPresented: Binding(get: { pendingFanoutKeep != nil }, set: { if !$0 { pendingFanoutKeep = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingFanoutKeep
+        ) { s in
+            Button("Keep this, discard the others", role: .destructive) {
+                if let g = s.fanoutGroup { Task { await model.resolveFanout(group: g, keep: s.id, force: true) } }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { s in
+            Text("Keeps “\(label(s))” and removes every other agent in this fan-out — deleting their sessions and worktree checkouts (including uncommitted changes). This can’t be undone.")
         }
         .confirmationDialog(
             "Delete this session?",
@@ -279,6 +294,12 @@ public struct AllSessionsView: View {
     private func rowMenu(_ s: Session) -> some View {
         Menu {
             Button { open(s) } label: { Label("Open", systemImage: "arrow.up.forward.app") }
+            if let g = s.fanoutGroup, !g.isEmpty {
+                Divider()
+                Button { pendingFanoutKeep = s } label: {
+                    Label("Keep this · end fan-out…", systemImage: "flag.checkered")
+                }
+            }
             Divider()
             if let b = s.branch, !b.isEmpty {
                 Button(role: .destructive) { pendingWorktreeDelete = s } label: {
