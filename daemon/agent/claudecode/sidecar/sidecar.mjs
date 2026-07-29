@@ -125,7 +125,12 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     }
   } else if (m.t === "stop") {
     ended = true;
-    pushInput(null);
+    pushInput(null); // end the input generator so the loop finishes after the current turn
+    // ...and INTERRUPT the in-flight turn so Stop actually aborts work-in-progress, not just prevents
+    // the next turn (without this, "stop" did nothing until the running turn finished on its own).
+    if (currentQuery && typeof currentQuery.interrupt === "function") {
+      try { currentQuery.interrupt(); } catch {}
+    }
   } else if (m.t === "model") {
     // Switch the model for subsequent turns (SDK setModel accepts an alias like "opus" or a full id).
     if (currentQuery && m.text) {
@@ -236,4 +241,10 @@ try {
   }
 } catch (e) {
   send({ t: "error", message: String((e && e.message) || e) });
+  // The query loop has thrown and is DEAD. The stdin readline would keep this process alive as a
+  // zombie that silently drops every future prompt (the "claude-code stopped responding to new
+  // messages" wedge). Emit idle so nothing is stuck "working", then exit — the daemon sees stdout
+  // EOF, reaps us, and surfaces the session as stopped/restartable so the user can Restart cleanly.
+  send({ t: "idle" });
+  process.exit(1);
 }

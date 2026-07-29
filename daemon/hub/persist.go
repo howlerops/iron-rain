@@ -128,6 +128,11 @@ func (h *Hub) RestoreSessions(ctx context.Context, ttl time.Duration) {
 				var pm persistedMeta
 				_ = json.Unmarshal([]byte(r.Meta), &pm)
 				m := h.addSession(sess, pm.toMeta())
+				// A re-attached session defaults to IDLE, not "running". opencode's /event has no replay,
+				// so an already-idle restored session would otherwise emit no status and show "working"
+				// forever (info() renders an unknown status as running). If it IS mid-turn server-side,
+				// the next real event flips it back to running.
+				m.seedStatus(protocol.StatusIdle)
 				go m.run()
 				restored++
 				continue
@@ -267,7 +272,9 @@ func (h *Hub) recoverSession(ctx context.Context, id string) (*managedSession, e
 	if err != nil {
 		return nil, err
 	}
-	return h.addSession(sess, meta), nil
+	m := h.addSession(sess, meta)
+	m.seedStatus(protocol.StatusIdle) // recovered session is idle until a real event says otherwise (see restore)
+	return m, nil
 }
 
 // stoppedSessions returns persisted records that aren't currently live as protocol.Session entries

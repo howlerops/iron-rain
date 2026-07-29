@@ -231,6 +231,18 @@ func (m *managedSession) lastActive() int64 {
 }
 
 // info renders the session's identity + grouping metadata for the wire.
+// seedStatus sets the initial rendered status for a session that was ATTACHED/RESTORED rather than
+// freshly created — so it doesn't fall through info()'s "no status yet → running" default and appear
+// stuck "working". Safe to call before run() starts; the first real status event overrides it.
+func (m *managedSession) seedStatus(status string) {
+	m.mu.Lock()
+	m.lastStatus = status
+	if status == protocol.StatusIdle || status == protocol.StatusDone {
+		m.turnEnded = true
+	}
+	m.mu.Unlock()
+}
+
 func (m *managedSession) info() protocol.Session {
 	m.mu.Lock()
 	updated := m.lastActivity.Unix()
@@ -442,7 +454,12 @@ func (m *managedSession) run() {
 		// full replayed history on every restart (unbounded bloat); full assistant-transcript
 		// persistence needs replay-dedup and is tracked separately.
 		if ev.Type == protocol.TypeSessionStatus {
-			if ss, ok := ev.Payload.(protocol.SessionStatus); ok {
+			// Only the PARENT session's OWN status drives its turn tracking, logging, "finished"
+			// activity, and onStatus. A sub-agent's forwarded status (SessionID == child id) would
+			// otherwise flip the parent's turnEnded/lastStatus, spam turn-end logs + activity, and flush
+			// the parent's UI fence every time a sub-agent idles. Child status is still broadcast below
+			// (for its inline card) — it just must not masquerade as the parent's turn state.
+			if ss, ok := ev.Payload.(protocol.SessionStatus); ok && (ss.SessionID == "" || ss.SessionID == m.sess.ID()) {
 				m.mu.Lock()
 				m.lastStatus = ss.Status
 				switch ss.Status {

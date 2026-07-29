@@ -187,11 +187,18 @@ func (s *session) startTurn(text string) {
 func (s *session) runTurn(ctx context.Context, argv []string) {
 	s.ratedThisTurn = false // fresh turn: allow one rate-limit surfacing
 	s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusRunning, Detail: s.cfg.Name}})
+	// A crash/non-zero exit (or a failed spawn) must end the turn as StatusError, not the default idle —
+	// otherwise a wedged/failed agent reads as a clean "Finished" and the user never knows it broke.
+	var turnErr error
 	defer func() {
 		s.mu.Lock()
 		s.running = false
 		s.mu.Unlock()
-		s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusIdle}})
+		if turnErr != nil {
+			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusError, Detail: s.cfg.Name + ": " + turnErr.Error()}})
+		} else {
+			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusIdle}})
+		}
 	}()
 
 	cmd := exec.CommandContext(ctx, s.cfg.Command, argv...)
@@ -200,19 +207,20 @@ func (s *session) runTurn(ctx context.Context, argv []string) {
 	cmd.Env = env(mergeEnv(s.cfg.Env, s.acctEnv))
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		s.fail(err)
+		turnErr = err
 		return
 	}
 	cmd.Stderr = cmd.Stdout // fold stderr into the streamed output (agents log progress there)
 	if err := cmd.Start(); err != nil {
-		s.fail(err)
+		turnErr = err
 		return
 	}
 	s.stream(stdout, s.newTitleScanner())
 	if err := cmd.Wait(); err != nil && ctx.Err() == nil {
-		// A non-zero exit that wasn't from our Stop() — surface it as a trailing line, not a hard
-		// error, so partial output the agent already produced is preserved.
+		// A non-zero exit that wasn't from our Stop(): keep the trailing line (preserves partial output)
+		// AND record it so the turn ends as an error rather than a silent success.
 		s.emit(agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: s.id, Text: "\n[" + s.cfg.Name + " exited: " + err.Error() + "]\n"}})
+		turnErr = err
 	}
 }
 
@@ -278,10 +286,6 @@ func (s *session) newTitleScanner() *osctitle.Scanner {
 		s.emit(agent.Event{Type: protocol.TypeSessionStatus,
 			Payload: protocol.SessionStatus{SessionID: s.id, Status: status, Detail: detail}})
 	})
-}
-
-func (s *session) fail(err error) {
-	s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusError, Detail: err.Error()}})
 }
 
 // Respond is a no-op: the generic adapter has no structured tool-approval channel. Native adapters

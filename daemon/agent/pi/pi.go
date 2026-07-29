@@ -86,8 +86,27 @@ func (p *Provider) Create(ctx context.Context, cwd, prompt string) (agent.Sessio
 	// it returns reaps the child and releases the stdin/stdout pipe fds. Without this the
 	// process lingers as a zombie and its fds/CommandContext watcher goroutine leak.
 	go func() {
-		s.readLoop(stdout)
-		_ = cmd.Wait()
+		sawIdle := s.readLoop(stdout)
+		err := cmd.Wait()
+		// Terminal status. A clean agent_end already emitted idle. Otherwise the stream ended without
+		// one: a non-zero exit we didn't initiate is a CRASH — surface it as an error so it isn't
+		// masked as a normal "Finished"; anything else is a plain idle backstop so the app unsticks.
+		shuttingDown := false
+		select {
+		case <-s.done:
+			shuttingDown = true // Close()/Stop() killed it — not a crash
+		default:
+		}
+		if !sawIdle && !shuttingDown {
+			if err != nil {
+				s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{
+					SessionID: s.id, Status: protocol.StatusError, Detail: "pi exited: " + err.Error()}})
+			} else {
+				s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{
+					SessionID: s.id, Status: protocol.StatusIdle}})
+			}
+		}
+		close(s.events)
 	}()
 	if prompt != "" {
 		_ = s.Prompt(ctx, prompt)
@@ -245,8 +264,10 @@ func todosFromToolArgs(toolName string, args map[string]any) ([]protocol.Todo, b
 	return out, len(out) > 0
 }
 
-func (s *session) readLoop(stdout io.ReadCloser) {
-	defer close(s.events)
+// readLoop drains pi's JSONL stdout and returns whether it observed a clean turn end (agent_end).
+// It does NOT close s.events or emit a terminal backstop — the caller does that AFTER cmd.Wait(), so a
+// non-zero exit can be surfaced as an error instead of being masked as a normal idle.
+func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool) {
 	sc := bufio.NewScanner(stdout) // \n framing only — pi-rpc-compliant
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	idle := false
@@ -318,9 +339,7 @@ func (s *session) readLoop(stdout io.ReadCloser) {
 			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusIdle}})
 		}
 	}
-	if !idle {
-		s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusIdle}})
-	}
+	return idle
 }
 
 func randID() string {
