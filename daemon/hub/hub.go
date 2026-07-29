@@ -1048,6 +1048,7 @@ func (h *Hub) removeSession(id string, owner *managedSession) {
 	if db != nil {
 		_ = db.DeleteSession(id)
 		_ = db.DeleteHandoff(id)
+		_ = db.DeleteTranscript(id) // drop the durable conversation too
 	}
 }
 

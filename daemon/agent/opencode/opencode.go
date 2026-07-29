@@ -272,6 +272,7 @@ func (s *session) replayHistory(ctx context.Context) {
 	defer resp.Body.Close()
 	var msgs []struct {
 		Info struct {
+			ID   string `json:"id"`
 			Role string `json:"role"`
 		} `json:"info"`
 		Parts []struct {
@@ -296,10 +297,12 @@ func (s *session) replayHistory(ctx context.Context) {
 				}
 			}
 		}
+		// MsgID carries opencode's stable message id so the durable transcript dedups this message
+		// when opencode re-replays its history on a later re-attach.
 		if text != "" {
-			s.emit(agent.Event{Type: protocol.TypeSessionMessage, Payload: protocol.SessionMessage{SessionID: s.id, Role: m.Info.Role, Text: text}})
+			s.emit(agent.Event{Type: protocol.TypeSessionMessage, Payload: protocol.SessionMessage{SessionID: s.id, Role: m.Info.Role, Text: text, MsgID: m.Info.ID}})
 		} else if tool != "" {
-			s.emit(agent.Event{Type: protocol.TypeSessionMessage, Payload: protocol.SessionMessage{SessionID: s.id, Role: "tool", Text: tool}})
+			s.emit(agent.Event{Type: protocol.TypeSessionMessage, Payload: protocol.SessionMessage{SessionID: s.id, Role: "tool", Text: tool, MsgID: m.Info.ID}})
 		}
 	}
 }
@@ -318,7 +321,10 @@ func (s *session) resyncLast(ctx context.Context) {
 	}
 	defer resp.Body.Close()
 	var msgs []struct {
-		Info  struct{ Role string } `json:"info"`
+		Info struct {
+			ID   string `json:"id"`
+			Role string `json:"role"`
+		} `json:"info"`
 		Parts []struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
@@ -338,7 +344,9 @@ func (s *session) resyncLast(ctx context.Context) {
 			}
 		}
 		if text != "" {
-			s.emit(agent.Event{Type: protocol.TypeSessionMessage, Payload: protocol.SessionMessage{SessionID: s.id, Role: "assistant", Text: text}})
+			// Same opencode message id as replayHistory emits → the durable transcript stores this
+			// turn once and dedups it when history is replayed on a later re-attach.
+			s.emit(agent.Event{Type: protocol.TypeSessionMessage, Payload: protocol.SessionMessage{SessionID: s.id, Role: "assistant", Text: text, MsgID: msgs[i].Info.ID}})
 		}
 		return
 	}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -86,6 +87,14 @@ type managedSession struct {
 	wasRunning      bool      // saw activity since the last idle (gates the "finished" push)
 	turnStartedAt   time.Time // when the current turn started running (for the "finished" push duration)
 	loopDoneNotified bool     // fired the "loop run finished" push once (loop sessions only)
+
+	// Durable-transcript state (touched ONLY by the run() goroutine, so no lock needed): a per-session
+	// sequence for ordering persisted events (seeded past any restored rows), the accumulated assistant
+	// delta text for the current turn, and whether a real assistant message was already persisted this
+	// turn (so the synthetic delta-accumulated one isn't a duplicate).
+	txSeq         int64
+	asstAccum     strings.Builder
+	asstPersisted bool
 
 	// Heartbeat supervision state (recorded from the event pump; read by the heartbeat tick).
 	lastStatus       string          // last session.status ("running"/"idle"/"awaiting_approval"/"error")
@@ -332,6 +341,17 @@ func (m *managedSession) subscribe(conn *transport.Conn) {
 	m.subs[conn] = s
 	replay := append([][]byte(nil), m.transcript...)
 	m.mu.Unlock()
+	// When the in-memory ring buffer is empty — a session RESTORED after a daemon restart (memory
+	// wiped) before it has streamed anything new — replay the DURABLE transcript from SQLite so the
+	// full history comes back for EVERY provider (not just opencode/claude, which also re-stream on
+	// attach). The live buffer stays authoritative once it has events (unchanged live/switch path).
+	if len(replay) == 0 {
+		if db := m.hub.db; db != nil {
+			if durable, err := db.Transcript(m.sess.ID()); err == nil && len(durable) > 0 {
+				replay = durable
+			}
+		}
+	}
 	go m.writeLoop(s, replay)
 }
 
@@ -407,6 +427,72 @@ func (m *managedSession) flushUI(sessionID string) {
 	m.seg = genui.Segmenter{}
 }
 
+// persistDurable writes a finalized transcript event to the durable store (SQLite) so a session's
+// history survives daemon restarts and ring-buffer trimming — for EVERY provider. Raw ~40ms deltas
+// are ACCUMULATED (not written per-token); only finalized messages / completed tool cards / errors
+// are written, keyed by the provider's message id (when known) for cross-restart dedup. Scoped to the
+// PARENT session's own events. run()-goroutine only (no lock needed for txSeq/asst*).
+func (m *managedSession) persistDurable(ev agent.Event, raw []byte) {
+	db := m.hub.db
+	if db == nil {
+		return
+	}
+	sid := m.sess.ID()
+	var msgID string
+	switch ev.Type {
+	case protocol.TypeSessionMessage:
+		msg, ok := ev.Payload.(protocol.SessionMessage)
+		if !ok || msg.SessionID != sid {
+			return
+		}
+		msgID = msg.MsgID
+		if msg.Role == "assistant" {
+			m.asstPersisted = true // a real assistant message → skip the synthetic delta one at turn end
+		}
+	case protocol.TypeSessionTool:
+		t, ok := ev.Payload.(protocol.SessionTool)
+		if !ok || t.SessionID != sid || (t.Status != "completed" && t.Status != "error") {
+			return // only the final tool state is durable
+		}
+		msgID = "tool:" + t.ID
+	case protocol.TypeSessionStatus:
+		ss, ok := ev.Payload.(protocol.SessionStatus)
+		if !ok || ss.SessionID != sid || ss.Status != protocol.StatusError {
+			return
+		}
+		// error marker: NULL id (each distinct)
+	case protocol.TypeOutputDelta:
+		if d, ok := ev.Payload.(protocol.OutputDelta); ok && d.SessionID == sid {
+			m.asstAccum.WriteString(d.Text) // accumulate the VISIBLE (post-fence) streamed text
+		}
+		return
+	default:
+		return
+	}
+	m.txSeq++
+	if _, err := db.AppendTranscript(sid, m.txSeq, msgID, raw); err != nil {
+		log.Printf("transcript: append %s failed: %v", sid, err)
+	}
+}
+
+// finalizeTurnTranscript runs on idle: if the turn streamed assistant text but no finalized assistant
+// SessionMessage was persisted (claude-code/pi/cli stream deltas only, never a finalized message),
+// persist a synthetic one so the durable transcript actually contains the reply. Resets per-turn
+// state. NULL msg id — those providers never re-stream history, so there's nothing to dedup against.
+func (m *managedSession) finalizeTurnTranscript() {
+	db := m.hub.db
+	text := m.asstAccum.String()
+	if db != nil && !m.asstPersisted && strings.TrimSpace(text) != "" {
+		ev := agent.Event{Type: protocol.TypeSessionMessage, Payload: protocol.SessionMessage{SessionID: m.sess.ID(), Role: "assistant", Text: text}}
+		if raw, err := ev.Encode(); err == nil {
+			m.txSeq++
+			_, _ = db.AppendTranscript(m.sess.ID(), m.txSeq, "", raw)
+		}
+	}
+	m.asstAccum.Reset()
+	m.asstPersisted = false
+}
+
 // broadcast records the event and enqueues it to every current subscriber without
 // blocking: a subscriber whose bounded queue is full is dropped rather than allowed to
 // stall the run() goroutine that pumps the provider's event stream.
@@ -443,6 +529,13 @@ func (m *managedSession) trimTranscript() {
 // run pumps the session's events until it ends: records approval ownership + pushes,
 // then broadcasts every event to all subscribers.
 func (m *managedSession) run() {
+	// Continue the durable-transcript sequence past any rows persisted before a daemon restart, so new
+	// events sort after the restored history instead of colliding with it.
+	if db := m.hub.db; db != nil {
+		if seq, err := db.MaxTranscriptSeq(m.sess.ID()); err == nil {
+			m.txSeq = seq
+		}
+	}
 	for ev := range m.sess.Events() {
 		// The turn is alive: any event back from the provider clears the no-response watchdog. A
 		// wrong-directory send produces NO events, so it never reaches here and the watchdog fires.
@@ -517,6 +610,7 @@ func (m *managedSession) run() {
 				case protocol.StatusIdle, protocol.StatusDone:
 					log.Printf("session %s (%s): turn end (%s)", m.sess.ID(), m.sess.Provider(), ss.Status)
 					m.flushUI(ss.SessionID) // emit any component/text left in an open fence, reset for next turn
+					m.finalizeTurnTranscript() // persist the turn's assistant reply if the provider only streamed deltas
 					// Record a "finished" activity item only when a real turn actually ran (saw deltas),
 					// so idle re-attaches don't spam the feed.
 					m.mu.Lock()
@@ -560,6 +654,7 @@ func (m *managedSession) run() {
 		if err != nil {
 			continue
 		}
+		m.persistDurable(ev, raw) // durable transcript (finalized events only; deltas accumulated)
 		m.broadcast(raw)
 	}
 	// The provider event stream ended. Distinguish an EXPLICIT user stop (drop the durable record)

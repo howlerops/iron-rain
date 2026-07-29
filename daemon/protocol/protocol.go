@@ -1122,6 +1122,10 @@ type SessionMessage struct {
 	SessionID string `json:"session_id"`
 	Role      string `json:"role"` // user | assistant | tool
 	Text      string `json:"text"`
+	// MsgID is the provider's stable message id when known (opencode). It lets the durable transcript
+	// dedup a message a provider re-streams when its history is replayed on re-attach. Omitted for
+	// providers/paths without a stable id (the transcript then keys such rows by sequence only).
+	MsgID string `json:"msg_id,omitempty"`
 }
 
 type SessionPrompt struct {

@@ -83,7 +83,27 @@ func (s *Store) migrate() error {
 	)`); err != nil {
 		return err
 	}
-	_, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS handoffs_cwd ON handoffs(cwd)`)
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS handoffs_cwd ON handoffs(cwd)`); err != nil {
+		return err
+	}
+	// Durable per-session transcript: the finalized conversation (user + assistant messages, completed
+	// tool cards, errors) as raw encoded protocol-event bytes, replayed to a (re)subscribing client
+	// instead of the memory-bound ring buffer — so history survives daemon restarts and long sessions,
+	// for EVERY provider (opencode/claude-code re-stream their history on attach and seed this; pi/cli
+	// have no history of their own, so this is their only durable record). msg_id is the provider's
+	// stable message id when known; a UNIQUE(session_id,msg_id) with INSERT OR IGNORE dedups a
+	// provider re-replaying its history on re-attach. NULL msg_id (status/synthetic) never dedups.
+	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS transcript_events (
+		session_id TEXT NOT NULL,
+		seq        INTEGER NOT NULL,
+		msg_id     TEXT,
+		raw        BLOB NOT NULL,
+		ts         INTEGER NOT NULL,
+		PRIMARY KEY(session_id, seq)
+	)`); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS transcript_msgid ON transcript_events(session_id, msg_id) WHERE msg_id IS NOT NULL`)
 	return err
 }
 
