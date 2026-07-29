@@ -27,14 +27,16 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"path/filepath"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/howlerops/oculus/daemon/agent"
+	"github.com/howlerops/oculus/daemon/discovery"
 	"github.com/howlerops/oculus/daemon/protocol"
 )
 
@@ -117,7 +119,127 @@ func (p *Provider) Models(ctx context.Context) ([]protocol.ModelInfo, error) {
 // resumed session's tool calls (edits, bash) target the right project (the SDK's resume runs
 // as a fresh process in the given directory, not the session's recorded one).
 func (p *Provider) Attach(ctx context.Context, sessionID, cwd string) (agent.Session, error) {
-	return p.start(ctx, cwd, sessionID, "attach", "", false)
+	sess, err := p.start(ctx, cwd, sessionID, "attach", "", false)
+	if err != nil {
+		return nil, err
+	}
+	// Take-over UX: the Agent SDK resume does NOT re-emit past messages, so without this the pane is
+	// EMPTY after attaching to a terminal claude session. Replay the tail of the on-disk transcript
+	// (~/.claude/projects/…/<uuid>.jsonl) as history so the conversation shows immediately.
+	if cs, ok := sess.(*session); ok && looksLikeUUID(sessionID) {
+		go cs.replayTranscript(sessionID)
+	}
+	return sess, nil
+}
+
+// looksLikeUUID reports whether id has the 8-4-4-4-12 hex shape of a claude session UUID.
+func looksLikeUUID(id string) bool {
+	if len(id) != 36 {
+		return false
+	}
+	for i, c := range id {
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// replayTranscriptMax bounds how many trailing messages a take-over replays (and how large any one
+// message may be) so attaching to a huge session stays fast and the transcript stays renderable.
+const (
+	replayTranscriptMax     = 200
+	replayTranscriptMsgSize = 20000
+)
+
+// replayTranscript reads the session's on-disk JSONL transcript and emits its trailing user/assistant
+// messages as SessionMessage events (MsgID = the line's uuid, so the durable transcript dedups a
+// re-attach). Best-effort: any parse hiccup just ends the replay.
+func (s *session) replayTranscript(uuid string) {
+	matches, _ := filepath.Glob(filepath.Join(discovery.DefaultClaudeProjectsDir(), "*", uuid+".jsonl"))
+	if len(matches) == 0 {
+		return
+	}
+	f, err := os.Open(matches[0])
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	type msg struct{ role, text, id string }
+	var tail []msg
+	r := bufio.NewReaderSize(f, 1<<20)
+	for {
+		line, err := r.ReadBytes('\n')
+		if len(line) > 1 {
+			var entry struct {
+				Type    string `json:"type"`
+				UUID    string `json:"uuid"`
+				Message struct {
+					Role    string          `json:"role"`
+					Content json.RawMessage `json:"content"`
+				} `json:"message"`
+			}
+			if json.Unmarshal(line, &entry) == nil && (entry.Type == "user" || entry.Type == "assistant") {
+				if text := transcriptText(entry.Message.Content); text != "" {
+					if len(text) > replayTranscriptMsgSize {
+						text = text[:replayTranscriptMsgSize] + "\n… [truncated]"
+					}
+					tail = append(tail, msg{role: entry.Message.Role, text: text, id: entry.UUID})
+					if len(tail) > replayTranscriptMax {
+						tail = tail[1:]
+					}
+				}
+			}
+		}
+		if err != nil {
+			break
+		}
+	}
+	for _, m := range tail {
+		role := m.role
+		if role == "" {
+			role = "assistant"
+		}
+		s.emit(agent.Event{Type: protocol.TypeSessionMessage, Payload: protocol.SessionMessage{
+			SessionID: s.id, Role: role, Text: m.text, MsgID: m.id,
+		}})
+	}
+}
+
+// transcriptText extracts the human-readable text from a transcript message's content: a plain
+// string, or the concatenated text blocks of a content array (tool_use/tool_result blocks skipped).
+func transcriptText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var str string
+	if json.Unmarshal(raw, &str) == nil {
+		return strings.TrimSpace(str)
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &blocks) != nil {
+		return ""
+	}
+	var out strings.Builder
+	for _, b := range blocks {
+		if b.Type == "text" && b.Text != "" {
+			if out.Len() > 0 {
+				out.WriteString("\n")
+			}
+			out.WriteString(b.Text)
+		}
+	}
+	return strings.TrimSpace(out.String())
 }
 
 func (p *Provider) start(ctx context.Context, cwd, id, mode, prompt string, plan bool) (agent.Session, error) {
@@ -135,7 +257,14 @@ func (p *Provider) start(ctx context.Context, cwd, id, mode, prompt string, plan
 	}
 	// Resume with claude's real session UUID (captured on create), not our cc_… id which it rejects.
 	if mode == "attach" {
-		if rid := p.resumeID(id); rid != "" {
+		rid := p.resumeID(id)
+		if rid == "" && looksLikeUUID(id) {
+			// A DISCOVERED session (take-over): its id came from the on-disk transcript filename and
+			// IS claude's real session UUID — resume it directly. Without this, take-over silently
+			// started a FRESH sidecar session with none of the conversation.
+			rid = id
+		}
+		if rid != "" {
 			cmd.Env = append(cmd.Env, "OCULUS_CLAUDE_RESUME="+rid)
 		}
 	}
@@ -187,6 +316,11 @@ type session struct {
 	writeMu   sync.Mutex
 	closeOnce sync.Once
 	done      chan struct{}
+
+	// events now has TWO senders (readLoop + the take-over transcript replay), so closing it must be
+	// mutually exclusive with sends: sendMu + closed make "send on closed channel" impossible.
+	sendMu sync.Mutex
+	closed bool
 }
 
 func (s *session) ID() string                 { return s.id }
@@ -284,14 +418,32 @@ func (s *session) Close() error {
 }
 
 func (s *session) emit(ev agent.Event) {
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
+	if s.closed {
+		return
+	}
 	select {
 	case s.events <- ev:
 	case <-s.done:
 	}
 }
 
+// closeEvents ends the event stream exactly once, excluding concurrent emitters — the readLoop is no
+// longer the only sender (replayTranscript emits from its own goroutine), so a bare close(s.events)
+// could panic a concurrent send and take the whole daemon down (it did).
+func (s *session) closeEvents() {
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
+	if s.closed {
+		return
+	}
+	s.closed = true
+	close(s.events)
+}
+
 func (s *session) readLoop(stdout io.ReadCloser) {
-	defer close(s.events)
+	defer s.closeEvents()
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	idle := false

@@ -31,6 +31,8 @@ func main() {
 	cwd := flag.String("cwd", os.TempDir(), "session working directory")
 	prompt := flag.String("prompt", "Reply with exactly: OK — nothing else.", "prompt to send")
 	timeout := flag.Duration("timeout", 180*time.Second, "overall pass deadline")
+	mode := flag.String("mode", "turn", "turn | discover | attach")
+	session := flag.String("session", "", "session id (mode=attach)")
 	flag.Parse()
 
 	pub, err := hex.DecodeString(*pubHex)
@@ -53,6 +55,86 @@ func main() {
 	}
 	defer conn.Close()
 	log.Printf("connected to %s", *ws)
+
+	switch *mode {
+	case "discover":
+		req, _ := protocol.Encode("d1", protocol.TypeDiscover, struct{}{})
+		if err := conn.Send(req); err != nil {
+			log.Fatal(err)
+		}
+		dl := time.After(*timeout)
+		for {
+			var raw []byte
+			done := make(chan error, 1)
+			go func() { var e error; raw, e = conn.Recv(); done <- e }()
+			select {
+			case e := <-done:
+				if e != nil {
+					log.Fatalf("recv: %v", e)
+				}
+			case <-dl:
+				log.Fatal("discover: timeout")
+			}
+			env, err := protocol.Decode(raw)
+			if err != nil {
+				continue
+			}
+			if env.ID == "d1" {
+				fmt.Printf("DISCOVER RESULT: %s\n", string(env.Payload))
+				return
+			}
+		}
+	case "attach":
+		replayed := 0
+		req, _ := protocol.Encode("a1", protocol.TypeSessionAttach, protocol.SessionAttach{
+			Provider: *provider, SessionID: *session, Cwd: *cwd,
+		})
+		if err := conn.Send(req); err != nil {
+			log.Fatal(err)
+		}
+		dl := time.After(*timeout)
+		for {
+			var raw []byte
+			done := make(chan error, 1)
+			go func() { var e error; raw, e = conn.Recv(); done <- e }()
+			select {
+			case e := <-done:
+				if e != nil {
+					log.Fatalf("recv: %v", e)
+				}
+			case <-dl:
+				log.Fatal("attach: TIMEOUT waiting for a reply/replay — this is what the app would experience")
+			}
+			env, err := protocol.Decode(raw)
+			if err != nil {
+				continue
+			}
+			switch env.Type {
+			case protocol.TypeOK:
+				if env.ID == "a1" {
+					log.Printf("attach OK: %.300s", string(env.Payload))
+				}
+			case protocol.TypeError:
+				log.Fatalf("attach ERROR: %s", string(env.Payload))
+			case protocol.TypeSessionMessage:
+				var m protocol.SessionMessage
+				_ = json.Unmarshal(env.Payload, &m)
+				replayed++
+				log.Printf("replayed %s msg (%d chars)", m.Role, len(m.Text))
+				if replayed >= 10 {
+					fmt.Printf("PASS: attach replayed %d history messages\n", replayed)
+					return
+				}
+			case protocol.TypeTurnState:
+				var ts protocol.TurnState
+				_ = json.Unmarshal(env.Payload, &ts)
+				log.Printf("turn.state → %s", ts.State)
+			case protocol.TypeSessionList:
+				fmt.Println("PASS: attach produced a session (session.list broadcast received)")
+				return
+			}
+		}
+	}
 
 	create, _ := protocol.Encode("c1", protocol.TypeSessionCreate, protocol.SessionCreate{
 		Provider: *provider, Cwd: *cwd, Prompt: *prompt, Ephemeral: true,

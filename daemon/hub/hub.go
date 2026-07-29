@@ -3359,6 +3359,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			return
 		}
 		m := h.addSession(sess, sessionMeta{})
+		m.seedStatus(protocol.StatusIdle) // an attached session is idle until a real event says otherwise
 		h.sendOK(conn, env.ID, m.info())
 		m.subscribe(conn)
 		go m.run()

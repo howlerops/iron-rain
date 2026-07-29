@@ -650,8 +650,10 @@ func (m *managedSession) run() {
 			if ss, ok := ev.Payload.(protocol.SessionStatus); ok && (ss.SessionID == "" || ss.SessionID == m.sess.ID()) {
 				m.mu.Lock()
 				m.lastStatus = ss.Status
+				startedTurn := false // log "turn start" only on the ended→running EDGE, not per-tool
 				switch ss.Status {
 				case protocol.StatusRunning:
+					startedTurn = m.turnEnded || !m.wasRunning
 					m.turnEnded = false
 				case protocol.StatusIdle, protocol.StatusDone:
 					m.turnEnded = true
@@ -668,7 +670,11 @@ func (m *managedSession) run() {
 				// the fix for "0 daemon logs during a whole Q&A session". Errors are always logged.
 				switch ss.Status {
 				case protocol.StatusRunning:
-					log.Printf("session %s (%s): turn start", m.sess.ID(), m.sess.Provider())
+					// opencode emits StatusRunning per TOOL CALL — logging each one flooded the log with
+					// dozens of identical "turn start" lines per turn and buried real signals.
+					if startedTurn {
+						log.Printf("session %s (%s): turn start", m.sess.ID(), m.sess.Provider())
+					}
 				case protocol.StatusIdle, protocol.StatusDone:
 					log.Printf("session %s (%s): turn end (%s)", m.sess.ID(), m.sess.Provider(), ss.Status)
 					m.flushUI(ss.SessionID) // emit any component/text left in an open fence, reset for next turn
