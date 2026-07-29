@@ -520,8 +520,8 @@ func (m *managedSession) run() {
 	stopped := m.userStopped
 	m.mu.Unlock()
 	if stopped {
-		m.hub.removeSession(m.sess.ID())
+		m.hub.removeSession(m.sess.ID(), m)
 	} else {
-		m.hub.detachSession(m.sess.ID())
+		m.hub.detachSession(m.sess.ID(), m)
 	}
 }

@@ -1026,8 +1026,16 @@ func (h *Hub) managed(id string) *managedSession {
 	return h.sessions[id]
 }
 
-func (h *Hub) removeSession(id string) {
+// removeSession drops a session from the live map + its durable record. `owner` guards against a
+// use-after-recover race: recoverSession closes the OLD binding (whose run() goroutine then calls this)
+// AFTER re-registering a FRESH managedSession under the same id — so we must only evict when the id
+// still points at THIS session. Pass nil to force removal (e.g. deleting a stopped/record-only session).
+func (h *Hub) removeSession(id string, owner *managedSession) {
 	h.mu.Lock()
+	if owner != nil && h.sessions[id] != owner {
+		h.mu.Unlock()
+		return // superseded by a recovered/restarted binding — don't clobber it
+	}
 	delete(h.sessions, id)
 	db := h.db
 	h.mu.Unlock()
@@ -1043,8 +1051,12 @@ func (h *Hub) removeSession(id string) {
 // crashed claude-code sidecar / exited CLI), but PRESERVES the durable record + handoff so it
 // resurfaces as a stopped/restartable session instead of vanishing from every device. Contrast
 // removeSession, which is the user-initiated permanent delete.
-func (h *Hub) detachSession(id string) {
+func (h *Hub) detachSession(id string, owner *managedSession) {
 	h.mu.Lock()
+	if owner != nil && h.sessions[id] != owner {
+		h.mu.Unlock()
+		return // a recovered/restarted binding already took this id — leave it live
+	}
 	_, existed := h.sessions[id]
 	delete(h.sessions, id)
 	h.mu.Unlock()
@@ -2544,7 +2556,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			_ = worktree.Prune(m.meta.repoRoot)
 		}
 		h.releasePort(m.meta.port) // return the worktree's reserved port to the pool
-		h.removeSession(req.SessionID)
+		h.removeSession(req.SessionID, m)
 		h.sendOK(conn, env.ID, protocol.SessionRef{SessionID: req.SessionID})
 
 	case protocol.TypeWorktreePR:
@@ -3248,7 +3260,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 				}
 			}
 			_ = m.sess.Close()   // end the event stream -> run() -> removeSession (drops the record)
-			h.removeSession(req.SessionID)
+			h.removeSession(req.SessionID, m)
 			if h.db != nil {
 				_ = h.db.SetName(req.SessionID, "") // clear the orphaned rename
 			}
@@ -3257,7 +3269,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			// couldn't re-attach after a restart). Deleting it must still drop the durable record, or
 			// it re-appears from the store on every session.list — the "deleted session keeps coming
 			// back" bug for stopped sessions.
-			h.removeSession(req.SessionID)
+			h.removeSession(req.SessionID, nil) // record-only (no live binding) → force removal
 			log.Printf("session.stop %s: removed stopped/restartable record", req.SessionID)
 		}
 		h.sendOK(conn, env.ID, nil)

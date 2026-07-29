@@ -401,6 +401,13 @@ type session struct {
 	statusMu   sync.Mutex // guards lastStatus (written by the SSE loop, read by the POST goroutine)
 	lastStatus string     // last session.status emitted — lets the POST-return idle backstop skip when awaiting approval
 
+	// approvalSession maps an opencode permission id -> the session that raised it. A `task` sub-agent
+	// raises permissions under its OWN (child) session id, but the hub records + routes the answer
+	// through the PARENT adapter — so Respond must POST the answer to the CHILD's session path, not the
+	// parent's, or the sub-agent blocks forever server-side (the whole fanout then never completes).
+	approvalMu      sync.Mutex
+	approvalSession map[string]string
+
 	// True while a turn's POST /message is in flight. Set by sendParts, read by readLoop so that a
 	// mid-turn SSE reconnect resyncs the latest assistant text (recovering anything produced during
 	// the silent gap) instead of only resuming live from the reconnect point.
@@ -739,8 +746,26 @@ func (s *session) handle(raw []byte) {
 			Patterns   []string        `json:"patterns"`
 			Metadata   json.RawMessage `json:"metadata"`
 		}
-		if json.Unmarshal(e.Properties, &perm) != nil || perm.SessionID != s.id {
+		// Accept permissions for THIS session AND for our `task` sub-agents (their sessionID is a child
+		// id). Dropping a sub-agent's permission (the old `!= s.id` reject) left the sub-agent blocked
+		// server-side forever → the parent's task tool never returned → the fanout never completed and
+		// the session was wedged with no restart able to clear it.
+		if json.Unmarshal(e.Properties, &perm) != nil {
 			return
+		}
+		isParentPerm := perm.SessionID == s.id
+		if !isParentPerm && !s.childIDs[perm.SessionID] {
+			return
+		}
+		// Remember which session this approval belongs to so Respond answers the RIGHT one (a sub-agent's
+		// answer must POST to the child's session path, not the parent's).
+		if perm.ID != "" {
+			s.approvalMu.Lock()
+			if s.approvalSession == nil {
+				s.approvalSession = map[string]string{}
+			}
+			s.approvalSession[perm.ID] = perm.SessionID
+			s.approvalMu.Unlock()
 		}
 		tool := perm.Permission
 		if tool == "" {
@@ -770,6 +795,15 @@ func (s *session) handle(raw []byte) {
 				detail = md.Command
 			}
 		}
+		// A sub-agent approval is prefixed so the user knows which lane is asking (it's shown in the
+		// parent transcript; the client's approval UI keys on the parent session id).
+		if !isParentPerm {
+			if detail != "" {
+				detail = "[sub-agent] " + detail
+			} else {
+				detail = "[sub-agent]"
+			}
+		}
 		s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusAwaitingApproval}})
 		s.emit(agent.Event{Type: protocol.TypeApprovalRequest, Payload: protocol.ApprovalRequest{ApprovalID: perm.ID, SessionID: s.id, Tool: tool, Detail: detail, Input: perm.Metadata}})
 
@@ -788,12 +822,25 @@ func (s *session) handle(raw []byte) {
 			}
 			return
 		}
-		// The turn is done: no message is streaming, so the per-message role/dedup
-		// bookkeeping is no longer needed. Dropping it here bounds these maps to at most
-		// one turn's worth of message IDs instead of growing for the session's lifetime.
+		// The PARENT turn is done → every `task` sub-agent it spawned is necessarily finished too. Seal
+		// them (idempotent) BEFORE emitting idle, so a sub-agent whose own session.idle was missed can't
+		// leave the app's "sub-agents still active" state wedged (which suppresses the no-response
+		// watchdog and keeps the lane spinning forever).
+		for childID := range s.childIDs {
+			s.emit(agent.Event{Type: protocol.TypeSessionSubAgent, Payload: protocol.SubAgent{
+				ParentID: s.id, ID: childID, Status: "done"}})
+		}
+		// The turn is done: no message is streaming, so the per-message role/dedup bookkeeping is no
+		// longer needed. Dropping it (plus the sub-agent tracking + any dangling approval routes) bounds
+		// these maps to one turn and prevents a NEXT turn from mis-routing on stale sub-agent ids.
 		s.msgRoles = nil
 		s.emittedUser = nil
 		s.usageDone = nil
+		s.childIDs = nil
+		s.subStarted = nil
+		s.approvalMu.Lock()
+		s.approvalSession = nil
+		s.approvalMu.Unlock()
 		s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusIdle}})
 	}
 }
@@ -802,7 +849,9 @@ func (s *session) emit(ev agent.Event) {
 	// Track the last status so the POST-return idle backstop knows whether the turn actually
 	// completed vs. parked on an approval.
 	if ev.Type == protocol.TypeSessionStatus {
-		if ss, ok := ev.Payload.(protocol.SessionStatus); ok {
+		if ss, ok := ev.Payload.(protocol.SessionStatus); ok && ss.SessionID == s.id {
+			// Only the PARENT's own status gates the POST-return idle backstop. A sub-agent's status
+			// (running/awaiting) must NOT poison lastStatus, or the parent's completion check misfires.
 			s.statusMu.Lock()
 			s.lastStatus = ss.Status
 			s.statusMu.Unlock()
@@ -936,7 +985,19 @@ func (s *session) Respond(ctx context.Context, approvalID, decision string) erro
 	case protocol.DecisionAlways:
 		resp = "always"
 	}
-	return s.p.postJSON(ctx, withDir(fmt.Sprintf("/session/%s/permissions/%s", s.id, approvalID), s.dir), map[string]string{"response": resp}, nil)
+	// Answer the session that actually raised this permission — a `task` sub-agent's approval must go
+	// to the CHILD session path, or it stays blocked server-side and the whole turn hangs. Sub-agents
+	// share the parent's directory, so s.dir is the correct ?directory= for both.
+	sid := s.id
+	s.approvalMu.Lock()
+	if s.approvalSession != nil {
+		if owner, ok := s.approvalSession[approvalID]; ok && owner != "" {
+			sid = owner
+		}
+		delete(s.approvalSession, approvalID)
+	}
+	s.approvalMu.Unlock()
+	return s.p.postJSON(ctx, withDir(fmt.Sprintf("/session/%s/permissions/%s", sid, approvalID), s.dir), map[string]string{"response": resp}, nil)
 }
 
 func (s *session) Stop(ctx context.Context) error {
