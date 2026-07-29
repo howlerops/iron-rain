@@ -107,22 +107,27 @@ private struct TableView: View {
                 Text(cap).font(.caption.bold()).foregroundStyle(palette.mutedForeground).padding(.bottom, 4)
             }
             ScrollView(.horizontal, showsIndicators: true) {
-                VStack(alignment: .leading, spacing: 0) {
-                    HStack(spacing: 0) {
+                // A real Grid, not per-row HStacks: HStack cells each sized to their own content, so
+                // columns never lined up across rows. Grid measures each column across ALL rows.
+                Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
+                    GridRow {
                         ForEach(Array(cols.enumerated()), id: \.offset) { _, c in
                             Text(c.label).font(.caption.bold()).foregroundStyle(palette.foreground)
-                                .frame(minWidth: 70, alignment: align(c.align)).padding(.horizontal, 8).padding(.vertical, 5)
+                                .frame(minWidth: 70, alignment: align(c.align))
+                                .padding(.horizontal, 8).padding(.vertical, 5)
+                                .background(palette.muted.opacity(0.3))
                         }
                     }
-                    .background(palette.muted.opacity(0.3))
                     Divider().overlay(palette.border)
                     ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                        HStack(spacing: 0) {
+                        GridRow {
                             ForEach(Array(cols.enumerated()), id: \.offset) { ci, c in
                                 Text(ci < row.count ? row[ci].displayString : "")
                                     .font(.caption.monospacedDigit()).foregroundStyle(palette.foreground)
-                                    .frame(minWidth: 70, alignment: align(c.align)).padding(.horizontal, 8).padding(.vertical, 4)
-                                    .lineLimit(1)
+                                    .frame(minWidth: 70, maxWidth: 380, alignment: align(c.align))
+                                    .padding(.horizontal, 8).padding(.vertical, 4)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .lineLimit(4)
                             }
                         }
                         Divider().overlay(palette.border.opacity(0.3))

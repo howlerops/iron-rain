@@ -606,10 +606,10 @@ struct IssueMarkdownView: View {
             }
         case .ordered(let items):
             VStack(alignment: .leading, spacing: 4) {
-                ForEach(Array(items.enumerated()), id: \.offset) { idx, it in
+                ForEach(Array(items.enumerated()), id: \.offset) { _, it in
                     HStack(alignment: .top, spacing: 8) {
-                        Text("\(idx + 1).").foregroundStyle(palette.mutedForeground).monospacedDigit()
-                        inline(it).font(.callout).fixedSize(horizontal: false, vertical: true)
+                        Text("\(it.num).").foregroundStyle(palette.mutedForeground).monospacedDigit()
+                        inline(it.text).font(.callout).fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
@@ -685,7 +685,7 @@ enum MarkdownBlock {
     case heading(level: Int, text: String)
     case paragraph(String)
     case bullet([String])
-    case ordered([String])
+    case ordered([(num: Int, text: String)])
     case code(String)
     case image(alt: String, url: String)
     case rule
@@ -742,13 +742,16 @@ enum MarkdownParser {
         return nil
     }
 
-    private static func ordered(_ s: String) -> String? {
+    private static func ordered(_ s: String) -> (num: Int, text: String)? {
         guard let dot = s.firstIndex(of: ".") else { return nil }
         let num = s[s.startIndex..<dot]
-        guard !num.isEmpty, num.allSatisfy(\.isNumber) else { return nil }
+        guard !num.isEmpty, num.allSatisfy(\.isNumber), let n = Int(num) else { return nil }
         let after = s.index(after: dot)
         guard after < s.endIndex, s[after] == " " else { return nil }
-        return String(s[s.index(after: after)...])
+        // Keep the SOURCE number: LLM output often interleaves lists with bullets/paragraphs, which
+        // splits one logical list into several blocks — renumbering each block from 1 made every
+        // item render as "1.".
+        return (n, String(s[s.index(after: after)...]))
     }
 
     /// Pulls standalone `![alt](url)` images out of a paragraph into their own blocks,

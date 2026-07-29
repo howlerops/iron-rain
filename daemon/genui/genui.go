@@ -120,6 +120,15 @@ func (s *Segmenter) consumeLine(line string) (string, protocol.UIComponent, bool
 		s.fenceBuf.Reset()
 		return "", protocol.UIComponent{}, false
 	}
+	// Lenient catch: a BARE one-line component JSON outside any fence. Models sometimes emit the
+	// iron:ui payload without the fence (seen in the wild: a raw {"component":"table",...} line
+	// printed as text). If the whole line parses as a valid known component, render it as one —
+	// anything that doesn't fully validate falls through untouched as ordinary text.
+	if strings.HasPrefix(fence, `{"component"`) && strings.HasSuffix(fence, "}") {
+		if comp, ok := parseComponent(fence); ok {
+			return "", comp, true
+		}
+	}
 	return line, protocol.UIComponent{}, false
 }
 

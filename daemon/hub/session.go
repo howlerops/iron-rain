@@ -602,7 +602,12 @@ func (m *managedSession) run() {
 		m.mu.Unlock()
 		if ev.Type == protocol.TypeApprovalRequest {
 			if ar, ok := ev.Payload.(protocol.ApprovalRequest); ok {
-				m.hub.recordApproval(ar.ApprovalID, m)
+				// A persisted ALWAYS rule answers it silently — permissions are asked ONCE, ever,
+				// not once per session. The request never reaches a client.
+				if m.hub.autoAllowApproval(m, ar) {
+					continue
+				}
+				m.hub.recordApproval(ar.ApprovalID, ar.Tool, m)
 				m.mu.Lock()
 				m.pendingApprovals++
 				m.mu.Unlock()

@@ -80,6 +80,9 @@ type Hub struct {
 	db            *store.Store                   // optional: durable local state (session names + records)
 	lsp           *lsp.Manager                   // language servers for the built-in editor (diagnostics/types)
 	runningTests  map[string]bool                // session ids with a test/build run in progress
+	approvalRulesPath string                     // path to ~/.oculus/approval-rules.json (persistent ALWAYS)
+	approvalAllow     map[string]bool            // provider|tool rules auto-allowed for every session
+	approvalTools     map[string]string          // approvalID -> tool (so an ALWAYS answer knows what to persist)
 	notifyPrefsPath string                       // path to ~/.oculus/notify.json (per-category push toggles)
 	notifyOff       map[string]bool              // push categories the user turned OFF (absent = enabled)
 	fanoutNotified  map[string]bool              // fan-out groups already notified as "all done" (fire once)
@@ -1382,9 +1385,13 @@ func (h *Hub) finishWorkspaceMember(ctx context.Context, mem worktree.Member, ti
 	return res
 }
 
-func (h *Hub) recordApproval(approvalID string, m *managedSession) {
+func (h *Hub) recordApproval(approvalID, tool string, m *managedSession) {
 	h.mu.Lock()
 	h.approvals[approvalID] = m
+	if h.approvalTools == nil {
+		h.approvalTools = map[string]string{}
+	}
+	h.approvalTools[approvalID] = tool
 	h.mu.Unlock()
 }
 
@@ -3306,7 +3313,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		_ = env.Unmarshal(&req)
 		h.mu.Lock()
 		m := h.approvals[req.ApprovalID]
+		tool := h.approvalTools[req.ApprovalID]
 		delete(h.approvals, req.ApprovalID)
+		delete(h.approvalTools, req.ApprovalID)
 		h.mu.Unlock()
 		if m == nil {
 			h.sendErr(conn, env.ID, "no such approval")
@@ -3320,6 +3329,11 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		if err := m.sess.Respond(ctx, req.ApprovalID, req.Decision); err != nil {
 			h.sendErr(conn, env.ID, err.Error())
 			return
+		}
+		// ALWAYS persists ACROSS sessions: every future session auto-allows this provider+tool, so
+		// permissions are truly asked once — not once per session.
+		if req.Decision == protocol.DecisionAlways {
+			h.rememberApprovalRule(m.sess.Provider(), tool)
 		}
 		h.sendOK(conn, env.ID, nil)
 		// Tell every client this approval was answered, so its card clears everywhere.

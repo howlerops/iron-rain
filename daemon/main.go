@@ -191,6 +191,7 @@ func serve(args []string) error {
 	h.EnableLoops(loopsPath())        // recurring autonomous ticket workflows
 	h.SetAgentsPath(agentsPath(), agentPrefsPath()) // custom CLI agents + picker visibility
 	h.SetNotifyPrefsPath(notifyPrefsPath())          // per-category push-notification toggles
+	h.SetApprovalRulesPath(approvalRulesPath())     // persistent "Always allow" (asked once, ever)
 	if len(issuesMgr.Connected()) > 0 {
 		go func() { _ = issuesMgr.Refresh(context.Background()) }() // initial fetch
 	}
@@ -556,6 +557,14 @@ func projectsPath() string {
 		return "oculus-projects.json"
 	}
 	return filepath.Join(home, ".oculus", "projects.json")
+}
+
+func approvalRulesPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "oculus-approval-rules.json"
+	}
+	return filepath.Join(home, ".oculus", "approval-rules.json")
 }
 
 func notifyPrefsPath() string {

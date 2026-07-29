@@ -311,13 +311,31 @@ public struct ChatView: View {
             // its flicker can't change the scroll height and shove the bottom.
             let content = ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    ForEach(model.messages) { msg in
+                    // Render WINDOW: a huge (taken-over) session opens instantly at the bottom by
+                    // laying out only the most recent messages; earlier history loads backwards on
+                    // demand. All messages stay in memory — this bounds LAYOUT, not data.
+                    if model.messages.count > visibleWindow {
+                        Button {
+                            visibleWindow += 150
+                        } label: {
+                            Label("Show earlier messages (\(model.messages.count - visibleWindow) more)", systemImage: "arrow.up.circle")
+                                .font(.caption).foregroundStyle(palette.mutedForeground)
+                                .frame(maxWidth: .infinity).padding(.vertical, 6)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    ForEach(Array(model.messages.suffix(visibleWindow))) { msg in
                         if msg.role == .subagent, let sid = msg.subAgentID {
                             InlineSubAgentCard(model: model, subAgentID: sid, title: msg.text, palette: palette)
                         } else {
                             MessageRow(message: msg, palette: palette,
                                        onRetry: msg.delivery == .failed ? { Task { await model.retryFailedMessage() } } : nil,
-                                       onUIAction: { c, a in Task { await model.invokeUIAction(c, a) } })
+                                       onUIAction: { c, a in Task { await model.invokeUIAction(c, a) } },
+                                       imageLoader: { path in
+                                           guard let b = try? await model.fsReadBytes(path) else { return nil }
+                                           return Data(base64Encoded: b.data)
+                                       })
                         }
                     }
                     Color.clear.frame(height: 1).id("bottom")
@@ -343,12 +361,16 @@ public struct ChatView: View {
             // which oscillated the view up/down during heavy multi-agent runs. After the window, native
             // bottom-anchoring alone follows streaming smoothly.
             .onAppear { armInitialAnchor(); anchorBottom(proxy) }
-            .onChange(of: model.sessionID) { _ in armInitialAnchor(); anchorBottom(proxy) }
+            .onChange(of: model.sessionID) { _ in visibleWindow = 80; armInitialAnchor(); anchorBottom(proxy) }
             .onChange(of: model.messages.count) { _ in
                 if Date() < initialAnchorDeadline { anchorBottom(proxy) }
             }
         }
     }
+
+    /// How many trailing messages the transcript LAYS OUT (see the window note above). Reset on
+    /// session switch so every open starts cheap; "Show earlier" grows it backwards.
+    @State private var visibleWindow = 80
 
     private func armInitialAnchor() {
         initialAnchorDeadline = Date().addingTimeInterval(1.5) // catch the post-open history burst only
@@ -484,6 +506,58 @@ public struct ChatView: View {
 
 // MARK: - Message row
 
+/// Renders the images a message REFERENCES by path ("[Image: source: /abs/path.png]" — the shape
+/// claude transcripts use for pasted screenshots) as inline thumbnails, loaded through the daemon
+/// (fs.readbytes) so they work from any device, not just the Mac that owns the files.
+struct InlineImagesView: View {
+    let paths: [String]
+    let palette: OculusPalette
+    let load: (String) async -> Data?
+    @State private var images: [String: CGImage] = [:]
+
+    static func imagePaths(in text: String) -> [String] {
+        guard text.contains("[Image: source: ") else { return [] }
+        var out: [String] = []
+        var rest = Substring(text)
+        while let r = rest.range(of: "[Image: source: ") {
+            rest = rest[r.upperBound...]
+            if let end = rest.firstIndex(of: "]") {
+                let p = String(rest[..<end]).trimmingCharacters(in: .whitespaces)
+                if p.hasPrefix("/") { out.append(p) }
+                rest = rest[rest.index(after: end)...]
+            } else { break }
+        }
+        return Array(out.prefix(6)) // bound the fan-out
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(paths, id: \.self) { p in
+                if let cg = images[p] {
+                    Image(decorative: cg, scale: 1)
+                        .resizable().scaledToFit()
+                        .frame(maxWidth: 420, maxHeight: 280)
+                        .clipShape(RoundedRectangle(cornerRadius: OculusRadius.sm))
+                        .overlay(RoundedRectangle(cornerRadius: OculusRadius.sm).stroke(palette.border))
+                } else {
+                    HStack(spacing: 6) {
+                        Image(systemName: "photo").font(.caption)
+                        Text((p as NSString).lastPathComponent).font(.caption2).lineLimit(1).truncationMode(.middle)
+                    }
+                    .foregroundStyle(palette.mutedForeground)
+                    .task {
+                        if images[p] == nil, let data = await load(p),
+                           let src = CGImageSourceCreateWithData(data as CFData, nil),
+                           let cg = CGImageSourceCreateImageAtIndex(src, 0, nil) {
+                            images[p] = cg
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 struct MessageRow: View {
     let message: ChatMessage
     let palette: OculusPalette
@@ -491,6 +565,8 @@ struct MessageRow: View {
     /// Fired when the user activates a generative-UI component's action (choice/confirm). The
     /// transcript wires this to Model.invokeUIAction.
     var onUIAction: ((UIComponent, UIComponentAction) -> Void)? = nil
+    /// Loads referenced-image bytes via the daemon (nil = inline images off, e.g. child transcripts).
+    var imageLoader: ((String) async -> Data?)? = nil
     // Mirror ChatMarkdownView's type prefs so the whole transcript (user bubble, thinking, streaming
     // plain text) shares the chosen font, not just finalized assistant markdown.
     @AppStorage("oculus.chatFontDesign") private var fontDesignRaw = ChatFontDesign.system.rawValue
@@ -518,6 +594,10 @@ struct MessageRow: View {
                             .stroke(message.delivery == .failed ? palette.destructive : palette.border))
                         .clipShape(RoundedRectangle(cornerRadius: OculusRadius.md))
                         .textSelection(.enabled)
+                }
+                if let load = imageLoader {
+                    let paths = InlineImagesView.imagePaths(in: message.text)
+                    if !paths.isEmpty { InlineImagesView(paths: paths, palette: palette, load: load) }
                 }
                 // Delivery badge: a failed send is visibly flagged + retryable instead of looking
                 // exactly like a delivered message (the silent-loss trap).
@@ -553,9 +633,15 @@ struct MessageRow: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
             } else {
-                ChatMarkdownView(text: message.text, palette: palette)
-                    .lineSpacing(chatLineSpacing)
-                    .textSelection(.enabled)
+                VStack(alignment: .leading, spacing: 8) {
+                    ChatMarkdownView(text: message.text, palette: palette)
+                        .lineSpacing(chatLineSpacing)
+                        .textSelection(.enabled)
+                    if let load = imageLoader {
+                        let paths = InlineImagesView.imagePaths(in: message.text)
+                        if !paths.isEmpty { InlineImagesView(paths: paths, palette: palette, load: load) }
+                    }
+                }
             }
         case .thinking:
             HStack(alignment: .top, spacing: 6) {
@@ -1341,7 +1427,9 @@ struct ChatMarkdownView: View {
             case .bullet(let items):
                 for it in items { var a = inline(it); a.font = bodyFont; out += AttributedString("•  ") + a + AttributedString("\n") }
             case .ordered(let items):
-                for (idx, it) in items.enumerated() { var a = inline(it); a.font = bodyFont; out += AttributedString("\(idx + 1).  ") + a + AttributedString("\n") }
+                // Use the SOURCE numbers — interleaved bullets split lists into blocks, and
+                // renumbering each block from 1 rendered every item as "1.".
+                for it in items { var a = inline(it.text); a.font = bodyFont; out += AttributedString("\(it.num).  ") + a + AttributedString("\n") }
             case .code(let c):
                 var a = AttributedString(c); a.font = .system(size: 13.5 * factor, design: .monospaced) // code is always mono
                 out += a + AttributedString("\n")
