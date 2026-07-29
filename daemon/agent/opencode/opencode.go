@@ -345,6 +345,10 @@ func (s *session) Probe(ctx context.Context) (bool, error) {
 	return true, nil // a user turn is pending or the assistant reply is still being produced
 }
 
+// SelfReplaying implements agent.Replayer: opencode re-streams history on every attach, so the hub
+// must not double it with the durable transcript.
+func (s *session) SelfReplaying() bool { return true }
+
 // Recover implements agent.Recoverer: re-fetch + re-emit the last assistant message (the turn's
 // result) when its streamed completion was lost.
 func (s *session) Recover(ctx context.Context) { s.resyncLast(ctx) }
@@ -737,7 +741,7 @@ func (s *session) handle(raw []byte) {
 				return
 			}
 			s.emittedUser[pu.Part.MessageID] = true
-			s.emit(agent.Event{Type: protocol.TypeSessionMessage, Payload: protocol.SessionMessage{SessionID: s.id, Role: "user", Text: pu.Part.Text}})
+			s.emit(agent.Event{Type: protocol.TypeSessionMessage, Payload: protocol.SessionMessage{SessionID: s.id, Role: "user", Text: pu.Part.Text, MsgID: pu.Part.MessageID}})
 		}
 
 	case "message.part.delta":

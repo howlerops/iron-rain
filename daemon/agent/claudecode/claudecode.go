@@ -132,6 +132,9 @@ func (p *Provider) Attach(ctx context.Context, sessionID, cwd string) (agent.Ses
 	return sess, nil
 }
 
+// SelfReplaying implements agent.Replayer: attach replays the on-disk JSONL transcript itself.
+func (s *session) SelfReplaying() bool { return true }
+
 // looksLikeUUID reports whether id has the 8-4-4-4-12 hex shape of a claude session UUID.
 func looksLikeUUID(id string) bool {
 	if len(id) != 36 {

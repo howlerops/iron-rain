@@ -46,6 +46,15 @@ type Prober interface {
 	Probe(ctx context.Context) (busy bool, err error)
 }
 
+// Replayer is a marker for Sessions whose provider RE-STREAMS the conversation history itself on
+// attach (opencode's replayHistory, claude-code's JSONL transcript replay). For these, the provider
+// is the single source of replay truth — the hub must NOT also replay its durable transcript, or
+// every message shows twice after a daemon restart (the "duplicated prompt" bug). pi/cli have no
+// self-replay, so the durable transcript remains their only history source.
+type Replayer interface {
+	SelfReplaying() bool
+}
+
 // Recoverer is an optional Session capability: re-fetch and re-emit a turn's final output over
 // Events() when its completion was missed (a lost stream event). Best-effort.
 type Recoverer interface {

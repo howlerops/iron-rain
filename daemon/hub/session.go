@@ -356,9 +356,18 @@ func (m *managedSession) subscribe(conn *transport.Conn) {
 	// full history comes back for EVERY provider (not just opencode/claude, which also re-stream on
 	// attach).
 	if len(replay) == 0 {
-		if db := m.hub.db; db != nil {
-			if durable, err := db.Transcript(m.sess.ID()); err == nil && len(durable) > 0 {
-				replay = durable
+		// Providers that RE-STREAM their own history on attach (opencode/claude-code) are the single
+		// source of replay truth — layering the durable transcript on top duplicated every message
+		// after a daemon restart. The durable replay is for providers with NO self-replay (pi/cli).
+		selfReplaying := false
+		if r, ok := m.sess.(agent.Replayer); ok {
+			selfReplaying = r.SelfReplaying()
+		}
+		if !selfReplaying {
+			if db := m.hub.db; db != nil {
+				if durable, err := db.Transcript(m.sess.ID()); err == nil && len(durable) > 0 {
+					replay = durable
+				}
 			}
 		}
 	}
