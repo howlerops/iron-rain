@@ -733,12 +733,28 @@ func (m *managedSession) run() {
 				ev.Payload = d
 			}
 		}
+		// Generative UI in FINALIZED text: replayed history and resync messages arrive whole (never
+		// through the delta segmenter), so their iron:ui payloads rendered as raw JSON forever.
+		// Extract components here and strip them from the text, exactly like the streaming path.
+		var extractedComps []protocol.UIComponent
+		if ev.Type == protocol.TypeSessionMessage {
+			if msg, ok := ev.Payload.(protocol.SessionMessage); ok && msg.SessionID == m.sess.ID() && msg.Role == "assistant" {
+				if cleaned, comps := genui.Extract(msg.Text); len(comps) > 0 {
+					msg.Text = cleaned
+					ev.Payload = msg
+					extractedComps = comps
+				}
+			}
+		}
 		raw, err := ev.Encode()
 		if err != nil {
 			continue
 		}
 		m.persistDurable(ev, raw) // durable transcript (finalized events only; deltas accumulated)
 		m.broadcast(raw)
+		if len(extractedComps) > 0 {
+			m.emitUIComponents(m.sess.ID(), extractedComps) // right after the cleaned message
+		}
 	}
 	// The provider event stream ended. Distinguish an EXPLICIT user stop (drop the durable record)
 	// from an UNEXPECTED provider exit — a crashed claude-code sidecar or an exited CLI process —

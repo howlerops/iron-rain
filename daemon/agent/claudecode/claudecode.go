@@ -123,17 +123,20 @@ func (p *Provider) Attach(ctx context.Context, sessionID, cwd string) (agent.Ses
 	if err != nil {
 		return nil, err
 	}
-	// Take-over UX: the Agent SDK resume does NOT re-emit past messages, so without this the pane is
-	// EMPTY after attaching to a terminal claude session. Replay the tail of the on-disk transcript
+	// The Agent SDK resume does NOT re-emit past messages, so without this the pane is EMPTY after
+	// attaching — for a discovered take-over AND for the daemon's own cc_ sessions restored after a
+	// restart (their uuid comes from the resume map). Replay the tail of the on-disk transcript
 	// (~/.claude/projects/…/<uuid>.jsonl) as history so the conversation shows immediately.
-	if cs, ok := sess.(*session); ok && looksLikeUUID(sessionID) {
-		go cs.replayTranscript(sessionID)
+	if cs, ok := sess.(*session); ok && cs.replayUUID != "" {
+		go cs.replayTranscript(cs.replayUUID)
 	}
 	return sess, nil
 }
 
-// SelfReplaying implements agent.Replayer: attach replays the on-disk JSONL transcript itself.
-func (s *session) SelfReplaying() bool { return true }
+// SelfReplaying implements agent.Replayer: true only when this attach can actually replay its JSONL
+// transcript (uuid known). When it can't, the hub's durable transcript is the history source —
+// claiming self-replay unconditionally left restored cc_ sessions with NO history at all.
+func (s *session) SelfReplaying() bool { return s.replayUUID != "" }
 
 // looksLikeUUID reports whether id has the 8-4-4-4-12 hex shape of a claude session UUID.
 func looksLikeUUID(id string) bool {
@@ -259,6 +262,7 @@ func (p *Provider) start(ctx context.Context, cwd, id, mode, prompt string, plan
 		cmd.Env = append(cmd.Env, "OCULUS_PLAN=1")
 	}
 	// Resume with claude's real session UUID (captured on create), not our cc_… id which it rejects.
+	replayUUID := ""
 	if mode == "attach" {
 		rid := p.resumeID(id)
 		if rid == "" && looksLikeUUID(id) {
@@ -269,6 +273,7 @@ func (p *Provider) start(ctx context.Context, cwd, id, mode, prompt string, plan
 		}
 		if rid != "" {
 			cmd.Env = append(cmd.Env, "OCULUS_CLAUDE_RESUME="+rid)
+			replayUUID = rid // the JSONL transcript lives under claude's REAL uuid, whatever our id is
 		}
 	}
 	cmd.Stderr = os.Stderr // surface sidecar errors
@@ -287,13 +292,14 @@ func (p *Provider) start(ctx context.Context, cwd, id, mode, prompt string, plan
 		return nil, err
 	}
 	s := &session{
-		id:     id,
-		p:      p,
-		events: make(chan agent.Event, 32),
-		stdin:  stdin,
-		cmd:    cmd,
-		cancel: cancel,
-		done:   make(chan struct{}),
+		id:         id,
+		replayUUID: replayUUID,
+		p:          p,
+		events:     make(chan agent.Event, 32),
+		stdin:      stdin,
+		cmd:        cmd,
+		cancel:     cancel,
+		done:       make(chan struct{}),
 	}
 	// readLoop returns on stdout EOF (which the ctx-cancel kill triggers); Wait() after
 	// it returns reaps the child and releases the stdin/stdout pipe fds without racing
@@ -324,6 +330,10 @@ type session struct {
 	// mutually exclusive with sends: sendMu + closed make "send on closed channel" impossible.
 	sendMu sync.Mutex
 	closed bool
+
+	// replayUUID is claude's real session uuid when this attach can replay its JSONL transcript
+	// ("" = it can't — the hub's durable transcript is then the history source, see SelfReplaying).
+	replayUUID string
 }
 
 func (s *session) ID() string                 { return s.id }

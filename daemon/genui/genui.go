@@ -142,6 +142,22 @@ func isFenceOpener(fence string) bool {
 	return info == fenceInfo
 }
 
+// Extract runs a FINALIZED text (a replayed history message, a resync) through the same
+// fence/bare-JSON recognition as the streaming segmenter, returning the cleaned text and any
+// components. Streaming deltas use Segmenter; this is for text that arrives whole and would
+// otherwise show its iron:ui payloads as raw JSON forever.
+func Extract(text string) (string, []protocol.UIComponent) {
+	if !strings.Contains(text, fenceInfo) && !strings.Contains(text, `{"component"`) {
+		return text, nil // fast path: nothing to extract
+	}
+	var s Segmenter
+	fwd, comps := s.Feed(text)
+	tail, more := s.Flush()
+	fwd += tail
+	comps = append(comps, more...)
+	return strings.TrimRight(fwd, "\n") + "\n", comps
+}
+
 // fenceComponent is the on-the-wire JSON a model emits inside an iron:ui fence.
 type fenceComponent struct {
 	Component    string             `json:"component"`
