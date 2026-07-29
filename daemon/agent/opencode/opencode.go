@@ -307,6 +307,48 @@ func (s *session) replayHistory(ctx context.Context) {
 	}
 }
 
+// Probe reports whether opencode is still actively working this session's turn — authoritative
+// provider truth for the hub's reconciler (used when the SSE stream goes quiet). Decided from the
+// session's message tail: a final assistant message with time.completed set means the turn is done;
+// a trailing user message (or an incomplete assistant one) means opencode is still working.
+func (s *session) Probe(ctx context.Context) (bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.p.baseURL+withDir("/session/"+s.id+"/message", s.dir), nil)
+	if err != nil {
+		return false, err
+	}
+	resp, err := s.p.unary.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("opencode probe: %s", resp.Status)
+	}
+	var msgs []struct {
+		Info struct {
+			Role string `json:"role"`
+			Time struct {
+				Completed int64 `json:"completed"`
+			} `json:"time"`
+		} `json:"info"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&msgs); err != nil {
+		return false, err
+	}
+	if len(msgs) == 0 {
+		return false, nil // nothing ever sent — idle
+	}
+	last := msgs[len(msgs)-1]
+	if last.Info.Role == "assistant" && last.Info.Time.Completed != 0 {
+		return false, nil // the turn's reply is complete — idle
+	}
+	return true, nil // a user turn is pending or the assistant reply is still being produced
+}
+
+// Recover implements agent.Recoverer: re-fetch + re-emit the last assistant message (the turn's
+// result) when its streamed completion was lost.
+func (s *session) Recover(ctx context.Context) { s.resyncLast(ctx) }
+
 // resyncLast fetches the session's LAST assistant message and emits its full text, so a turn whose
 // streaming deltas were missed (the SSE stream dropped/stalled while opencode kept working) still
 // shows its result. The app replaces the partial streamed message with this authoritative text.

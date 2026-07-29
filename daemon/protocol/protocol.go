@@ -133,6 +133,7 @@ const (
 	TypeActivityMarkRead = "activity.markread" // mark activity items read (clears the needs-you badge)
 	TypeFanoutCreate     = "fanout.create"     // spawn N agents on the SAME prompt in isolated worktrees (compare + merge winner)
 	TypeFanoutResolve    = "fanout.resolve"    // tear down a fan-out group (keep the winner, discard the rest + worktrees)
+	TypeTurnState        = "turn.state"       // daemon-authoritative turn lifecycle + heartbeat (the client renders, never infers)
 	TypeNotifyPrefsGet   = "notify.prefs.get"  // list toggleable push-notification types + their on/off state
 	TypeNotifyPrefsSet   = "notify.prefs.set"  // enable/disable one push-notification type
 	TypeCheckpointCreate = "checkpoint.create" // snapshot the session's worktree (a restore point on the timeline)
@@ -485,6 +486,28 @@ type FanoutResolved struct {
 	Kept      string   `json:"kept,omitempty"`
 	Removed   []string `json:"removed"`
 	Failed    []string `json:"failed,omitempty"` // variants whose teardown errored (e.g. dirty worktree without force)
+}
+
+// TurnChild is one sub-agent's state within a parent turn.
+type TurnChild struct {
+	ID    string `json:"id"`
+	State string `json:"state"` // running | done | error
+	Title string `json:"title,omitempty"`
+}
+
+// TurnState is the daemon-owned truth about a session's current turn: pushed on every transition and
+// as a ~10s heartbeat while a turn is open. The client renders it verbatim — it runs NO liveness
+// timers. "abandoned" is the ONLY state that may render as "no response", and only the daemon (via
+// provider probes) can declare it.
+type TurnState struct {
+	SessionID   string      `json:"session_id"`
+	TurnID      string      `json:"turn_id"`
+	State       string      `json:"state"` // running | awaiting_approval | idle | error | abandoned
+	StartedAt   int64       `json:"started_at,omitempty"`    // unix seconds
+	LastEventAt int64       `json:"last_event_at,omitempty"` // unix seconds of the last provider event
+	Detail      string      `json:"detail,omitempty"`        // e.g. "running bash"
+	Reason      string      `json:"reason,omitempty"`        // for error/abandoned
+	Children    []TurnChild `json:"children,omitempty"`      // sub-agents of this turn
 }
 
 // NotifyPref is one toggleable push-notification type. NotifyPrefs is the full labeled catalog with

@@ -56,6 +56,7 @@ public enum MessageType {
     public static let fanoutResolve = "fanout.resolve"
     public static let notifyPrefsGet = "notify.prefs.get"
     public static let notifyPrefsSet = "notify.prefs.set"
+    public static let turnState = "turn.state"
     public static let checkpointCreate = "checkpoint.create"
     public static let checkpointList = "checkpoint.list"
     public static let checkpointRestore = "checkpoint.restore"
@@ -1170,6 +1171,33 @@ public struct FanoutResolved: Codable {
     public var removed: [String]
     public var failed: [String]?
     enum CodingKeys: String, CodingKey { case group; case kept; case removed; case failed }
+}
+
+/// One sub-agent's state within a parent turn (turn.state children).
+public struct TurnChild: Codable, Identifiable, Equatable {
+    public var id: String
+    public var state: String // running | done | error
+    public var title: String?
+    enum CodingKeys: String, CodingKey { case id; case state; case title }
+}
+
+/// The daemon's authoritative truth about a session's current turn — pushed on every transition and
+/// as a ~10s heartbeat while a turn is open. The client renders this verbatim and runs no liveness
+/// timers of its own.
+public struct TurnState: Codable, Equatable {
+    public var sessionID: String
+    public var turnID: String
+    public var state: String // running | awaiting_approval | idle | error | abandoned
+    public var startedAt: Int?
+    public var lastEventAt: Int?
+    public var detail: String?
+    public var reason: String?
+    public var children: [TurnChild]?
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"; case turnID = "turn_id"; case state
+        case startedAt = "started_at"; case lastEventAt = "last_event_at"
+        case detail; case reason; case children
+    }
 }
 
 /// One toggleable push-notification type. NotifyPrefs is the labeled catalog with each type's state.

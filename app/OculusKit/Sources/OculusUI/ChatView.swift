@@ -363,6 +363,11 @@ public struct ChatView: View {
                 // (mid-stream, the text itself is the activity). Now carries the concrete command/path
                 // so you actually see WHAT it's doing, not just "Running a command".
                 ToolActivityView(activity: model.activity, palette: palette, detail: model.activityDetail)
+                // Daemon-vouched patience: while the Turn Engine says the provider is alive but quiet,
+                // say so honestly ("still working · 47s since output") instead of ever guessing a timeout.
+                if let last = model.turn?.lastEventAt, model.turn?.state == SessionStatusValue.running {
+                    QuietAgeBadge(since: Date(timeIntervalSince1970: TimeInterval(last)), palette: palette)
+                }
             }
             Spacer(minLength: 0)
         }
@@ -670,6 +675,23 @@ struct ElapsedLabel: View {
     static func format(_ s: TimeInterval) -> String {
         let t = max(0, Int(s))
         return t < 60 ? "\(t)s" : String(format: "%d:%02d", t / 60, t % 60)
+    }
+}
+
+/// "still working · 47s since output" — shown while the daemon's Turn Engine vouches the agent is
+/// alive but it hasn't produced output for a bit. Honest patience instead of a guessed timeout;
+/// only renders once the quiet stretch is noticeable.
+struct QuietAgeBadge: View {
+    let since: Date
+    let palette: OculusPalette
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { ctx in
+            let age = ctx.date.timeIntervalSince(since)
+            if age > 20 {
+                Text("still working · \(ElapsedLabel.format(age)) since output")
+                    .font(.caption2).foregroundStyle(palette.mutedForeground)
+            }
+        }
     }
 }
 

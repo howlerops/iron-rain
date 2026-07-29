@@ -37,6 +37,21 @@ type Session interface {
 	Close() error
 }
 
+// Prober is an optional Session capability: authoritatively report whether the underlying agent is
+// still WORKING a turn (independent of the event stream). The hub's reconciler probes when the
+// stream goes quiet: busy → keep waiting forever (no false timeout); not busy → the completion event
+// was lost, recover + close the turn. Network-backed providers (opencode) implement this; subprocess
+// providers don't need to (their stream-end IS authoritative).
+type Prober interface {
+	Probe(ctx context.Context) (busy bool, err error)
+}
+
+// Recoverer is an optional Session capability: re-fetch and re-emit a turn's final output over
+// Events() when its completion was missed (a lost stream event). Best-effort.
+type Recoverer interface {
+	Recover(ctx context.Context)
+}
+
 // Provider creates and lists sessions for one agent backend.
 type Provider interface {
 	Name() string

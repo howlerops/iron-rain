@@ -88,6 +88,16 @@ type managedSession struct {
 	turnStartedAt   time.Time // when the current turn started running (for the "finished" push duration)
 	loopDoneNotified bool     // fired the "loop run finished" push once (loop sessions only)
 
+	// Turn Engine state (see turn.go) — guarded by m.mu. turnPhase "" = no open turn.
+	turnID         string
+	turnPhase      string // running | awaiting_approval while open
+	turnStarted    time.Time
+	turnLastEvent  time.Time
+	turnDetail     string
+	turnKids       map[string]*protocol.TurnChild
+	turnStopLoop   chan struct{}
+	turnProbeFails int
+
 	// Durable-transcript state (touched ONLY by the run() goroutine, so no lock needed): a per-session
 	// sequence for ordering persisted events (seeded past any restored rows), the accumulated assistant
 	// delta text for the current turn, and whether a real assistant message was already persisted this
@@ -554,6 +564,10 @@ func (m *managedSession) run() {
 		}
 	}
 	for ev := range m.sess.Events() {
+		m.noteTurnEvent() // every provider event = liveness for the Turn Engine
+		if sa, ok := ev.Payload.(protocol.SubAgent); ok && ev.Type == protocol.TypeSessionSubAgent && sa.ParentID == m.sess.ID() {
+			m.turnOnChild(sa) // sub-agents are children of the turn
+		}
 		// The turn is alive: any event back from the provider clears the no-response watchdog. A
 		// wrong-directory send produces NO events, so it never reaches here and the watchdog fires.
 		m.mu.Lock()
@@ -648,6 +662,7 @@ func (m *managedSession) run() {
 					})
 				}
 				m.onStatus(ss)
+				m.turnOnStatus(ss) // Turn Engine: own status drives the turn state machine
 			}
 		}
 		// Generative UI: scan assistant text for ```iron:ui``` fences. Complete, valid fences are
@@ -681,6 +696,9 @@ func (m *managedSession) run() {
 	m.mu.Lock()
 	stopped := m.userStopped
 	m.mu.Unlock()
+	// The provider stream ended with a turn still open → the turn can never complete. Close it as
+	// abandoned so no client is left with an eternal spinner. (No-op if the turn already closed.)
+	m.closeTurn("abandoned", "the agent's event stream ended")
 	if stopped {
 		m.hub.removeSession(m.sess.ID(), m)
 	} else {

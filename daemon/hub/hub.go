@@ -3253,6 +3253,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		// fails (wrong directory → opencode 2xx-no-op, provider outage), the text is already on disk
 		// and recoverable — it can never vaporize the way it did in the 6-hour-loss incident.
 		_ = h.tr().Append(req.SessionID, transcript.Entry{Kind: "user", Text: text})
+		m.openTurn("") // Turn Engine: a turn is now in flight (heartbeats + reconciler start)
 		log.Printf("session %s (%s): prompt received (%d chars)", req.SessionID, m.sess.Provider(), len(text))
 		if err := promptSession(ctx, m.sess, text, req.Images); err != nil {
 			log.Printf("session %s: prompt send FAILED: %v", req.SessionID, err)
@@ -3287,6 +3288,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 				return
 			}
 			_ = h.tr().Append(req.SessionID, transcript.Entry{Kind: "user", Text: text})
+			m.openTurn("")
 			log.Printf("session %s (%s): ui.action %q -> prompt (%d chars)", req.SessionID, m.sess.Provider(), req.ActionID, len(text))
 			if err := promptSession(ctx, m.sess, text, nil); err != nil {
 				h.sendErr(conn, env.ID, err.Error())

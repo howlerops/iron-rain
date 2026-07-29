@@ -199,15 +199,6 @@ public final class Model: ObservableObject {
     private var pendingRequests: [String: CheckedContinuation<Envelope, Error>] = [:]
     /// Decoded tracker images keyed by URL (fetched through the daemon; auth-gated).
     private var imageCache: [String: Data] = [:]
-    /// Fires if a prompt gets no response within the window (dead/orphaned session). A single poll
-    /// loop compares `busy` against `watchdogDeadline` — bumping just moves the deadline (O(1)).
-    private var watchdogTask: Task<Void, Never>?
-    private var watchdogDeadline: Date = .distantFuture
-    /// True after the no-response watchdog fired but before the agent proved it's still alive. Lets a
-    /// late burst of output SELF-HEAL the session (clear the false "No response" alarm and resume)
-    /// instead of leaving it stuck — the exact failure on big multi-agent opencode turns that go
-    /// quiet while children work, then come back.
-    private var stalled = false
     /// Wall-clock of the last live event (any parent OR sub-agent delta/tool/status). Bumped at the
     /// single event choke point (`bumpWatchdog`). Drives the softer, earlier "stream may be stuck"
     /// hint — distinct from the hard no-response watchdog — so a silently half-open socket (the app
@@ -542,7 +533,6 @@ public final class Model: ObservableObject {
         messages.append(ChatMessage(id: msgID, role: .user, text: shown, delivery: .sending))
         pendingRetry = (msgID, trimmed, imgs)
         busy = true
-        stalled = false // fresh turn — don't inherit a prior stall's self-heal state
         pendingImages = []
         pendingFiles = []
         if let sid = sessionID {
@@ -560,7 +550,7 @@ public final class Model: ObservableObject {
                                                                      plan: pendingPlan ? true : nil))
                 try await client.send(env)
                 markDelivery(msgID, .ok)
-                armWatchdog()
+                noteActivity()
             } catch {
                 markDelivery(msgID, .failed)
                 setError("Couldn’t start the session", error.localizedDescription)
@@ -579,7 +569,7 @@ public final class Model: ObservableObject {
             _ = try await request(MessageType.sessionPrompt,
                                   payload: SessionPrompt(sessionID: sid, text: text, images: images.isEmpty ? nil : images))
             if let messageID { markDelivery(messageID, .ok) }
-            armWatchdog()
+            noteActivity()
         } catch {
             let msg = error.localizedDescription.lowercased()
             if allowReattach, msg.contains("no such session") || msg.contains("no session"),
@@ -647,7 +637,7 @@ public final class Model: ObservableObject {
         messages.removeAll()
         busy = false
         pendingApproval = nil
-        cancelWatchdog()
+        stopStallLoop()
         do {
             let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.sessionAttach,
                                           payload: SessionAttach(provider: s.provider, sessionID: s.id, url: nil, cwd: s.cwd))
@@ -655,95 +645,71 @@ public final class Model: ObservableObject {
         } catch { /* best-effort; the user can resend to trigger a mid-send re-attach */ }
     }
 
-    /// Arms the no-response watchdog: if the agent produces nothing within the window while
-    /// we're still "busy", clear the spinner and prompt a retry. Any live event cancels it.
-    // The watchdog is a deadline + ONE poll loop, not a Task per event. Bumping it is O(1) (just move
-    // the deadline) — critical because bumpWatchdog fires on every streamed token from the parent AND
-    // every sub-agent, so a Task-per-bump churned the scheduler hard once sub-agent streaming landed.
-    private func armWatchdog(seconds: Double = 180) {
-        watchdogDeadline = Date().addingTimeInterval(seconds)
-        startWatchdogLoop()
+    // MARK: liveness — Turn Engine cutover
+    // The DAEMON now owns turn liveness (`turn.state` transitions + ~10s heartbeats, backed by
+    // provider probes) — the client runs NO timer that can declare an agent dead. The one clock left
+    // watches for missing FRAMES (heartbeats included): silence past ~4 heartbeats means the
+    // CONNECTION is suspect → show the "stream may be stuck · Reconnect" hint. It never fabricates
+    // "no response"; only a daemon-declared `abandoned` turn renders that.
+
+    /// The daemon's authoritative state for the active session's turn (nil = none seen yet).
+    @Published public var turn: TurnState?
+
+    /// Every frame for the active session funnels through here: keeps the connection-health clock
+    /// fed, clears the swap loader, and un-flags a suspected stall.
+    private func noteActivity() {
+        lastEventAt = Date()
+        if streamMaybeStalled { streamMaybeStalled = false }
+        if sessionLoading { sessionLoading = false }
+        startStallLoop()
     }
 
-    private func startWatchdogLoop() {
-        guard watchdogTask == nil else { return }
-        watchdogTask = Task { [weak self] in
+    private var stallTask: Task<Void, Never>?
+    /// Heartbeats arrive every ~10s while a turn is open — 45s of NOTHING means the pipe is suspect.
+    private let stallAfter: TimeInterval = 45
+
+    private func startStallLoop() {
+        guard stallTask == nil else { return }
+        stallTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 2_000_000_000) // check every 2s — granularity is negligible vs the 180s+ window
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
                 guard let self else { return }
-                if self.busy, Date() >= self.watchdogDeadline { self.watchdogFired() }
-                // Softer, earlier signal than the no-response watchdog: busy but no bytes for a while →
-                // hint the stream may be half-open so the user can Reconnect without restarting the app.
-                let stale = self.busy && Date().timeIntervalSince(self.lastEventAt) > self.streamStaleAfter
+                let stale = self.busy && Date().timeIntervalSince(self.lastEventAt) > self.stallAfter
                 if stale != self.streamMaybeStalled { self.streamMaybeStalled = stale }
             }
         }
     }
 
-    /// Push the no-response deadline out on live activity (O(1)). A real mid-turn stall (no events past
-    /// the window) still surfaces "no response". The window is roomy (180s), and far longer (600s)
-    /// while a tool/sub-agent is active since an opencode `task` sub-agent can legitimately go quiet.
-    private func bumpWatchdog() {
-        if sessionLoading { sessionLoading = false } // first event arrived → swap is loaded
-        lastEventAt = Date()                 // a byte arrived → the stream is live
-        if streamMaybeStalled { streamMaybeStalled = false } // heal the soft "stuck" hint on any activity
-        resumeIfStalled() // any live event means the agent is alive — heal a prior false alarm
-        guard busy else { cancelWatchdog(); return }
-        watchdogDeadline = Date().addingTimeInterval(activity != nil ? 600 : 180)
-        startWatchdogLoop() // ensure the poll loop is running (no-op if it already is)
+    private func stopStallLoop() {
+        stallTask?.cancel(); stallTask = nil
+        if streamMaybeStalled { streamMaybeStalled = false }
     }
 
-    /// How long to wait with ZERO events (parent or sub-agent) before hinting the stream may be stuck.
-    /// Roomy enough that a legitimately quiet tool (a long build) rarely trips it; short enough that a
-    /// dead half-open socket surfaces a Reconnect long before the 180s no-response watchdog.
-    private let streamStaleAfter: TimeInterval = 45
-
-    private func cancelWatchdog() {
-        watchdogDeadline = .distantFuture
-        watchdogTask?.cancel(); watchdogTask = nil
-        if streamMaybeStalled { streamMaybeStalled = false } // turn ended → no stale hint
-    }
-
-    /// True while any sub-agent (opencode `task`) is still running under this session. The parent turn
-    /// is legitimately blocked on them, and their events stream under CHILD ids — so the parent must
-    /// never be declared "no response" while they work.
-    private var hasActiveSubAgents: Bool {
-        subAgentStatus.values.contains { $0 != "done" && $0 != "error" }
-    }
-
-    private func watchdogFired() {
-        guard busy else { return }
-        // Never cry "no response" while sub-agents are actively working — re-arm generously instead.
-        if hasActiveSubAgents {
-            watchdogDeadline = Date().addingTimeInterval(600)
-            return
+    /// Applies the daemon's authoritative turn state — the replacement for the old client watchdog.
+    /// Patience is unbounded while the daemon says `running`; "No response" exists ONLY as the
+    /// daemon's `abandoned` verdict (provider probe failed repeatedly), never as a client guess.
+    private func applyTurnState(_ ts: TurnState) {
+        guard ts.sessionID == sessionID else { return }
+        noteActivity()
+        turn = ts
+        switch ts.state {
+        case SessionStatusValue.running:
+            busy = true
+        case SessionStatusValue.awaitingApproval:
+            busy = false
+        case "abandoned":
+            busy = false
+            activity = nil
+            finalizeStreaming()
+            if let r = pendingRetry { markDelivery(r.id, .failed) }
+            let reason = (ts.reason?.isEmpty == false) ? ts.reason! : "The agent stopped responding."
+            let note = "⚠️ \(reason)"
+            if messages.last?.text != note { messages.append(ChatMessage(role: .system, text: note)) }
+            setError("No response from the agent", reason)
+            status = "No response"
+        default: // idle | error — session.status events already finalize the UI for these
+            busy = false
         }
-        busy = false
-        stalled = true // arm self-heal: if output resumes, we clear this alarm instead of staying stuck
-        activity = nil
-        finalizeStreaming()
-        // Mark the in-flight message failed (retryable) and leave a PERSISTENT transcript marker, so
-        // scrolling back shows the send stalled instead of the timeline silently healing over it.
-        if let r = pendingRetry { markDelivery(r.id, .failed) }
-        let note = "⚠️ No response from the agent — your message may not have reached it. It’s kept above; tap Retry or send again."
-        if messages.last?.text != note { messages.append(ChatMessage(role: .system, text: note)) }
-        setError("No response from the agent", "It may have stopped or its backend may be unreachable — retry the message, or check the agent.")
-        status = "No response"
-    }
-
-    /// The watchdog fired, but the agent then produced fresh output/activity — it wasn't dead, just
-    /// slow. Clear the false "No response" alarm, drop the transient marker, restore the delivery
-    /// badge, and resume the spinner so the session heals instead of staying stuck behind the error.
-    private func resumeIfStalled() {
-        guard stalled else { return }
-        stalled = false
-        busy = true
-        status = "Working"
-        if actionErrorTitle == "No response from the agent" { actionError = nil }
-        if let last = messages.last, last.role == .system, last.text.hasPrefix("⚠️ No response") {
-            messages.removeLast()
-        }
-        if let r = pendingRetry { markDelivery(r.id, .ok) } // it did land after all
     }
 
     /// Deletes a daemon-managed session: halts its agent (which ends the session server-side)
@@ -1108,7 +1074,7 @@ public final class Model: ObservableObject {
     /// with a new prompt (mid-run steering).
     public func interrupt() async {
         guard let client, let sid = sessionID else { return }
-        cancelWatchdog()
+        stopStallLoop()
         busy = false
         activity = nil
         finalizeStreaming()
@@ -1437,6 +1403,7 @@ public final class Model: ObservableObject {
             currentSession = s
             messages.removeAll()
             todos = []; pendingApproval = nil; busy = false; lastDiff = nil
+            turn = nil // stopped session has no live turn
             clearChildState()
             UserDefaults.standard.set(id, forKey: lastSessionKey)
             return
@@ -1449,6 +1416,7 @@ public final class Model: ObservableObject {
         pendingApproval = nil
         busy = false
         lastDiff = nil
+        turn = nil // the new session's turn.state will repopulate
         sessionLoading = true // loader until the replayed transcript arrives (smooth swap, not a blank pane)
         clearChildState() // a new parent session starts with no expanded/subscribed children
         UserDefaults.standard.set(id, forKey: lastSessionKey) // remember for auto-reopen next launch
@@ -2398,7 +2366,7 @@ public final class Model: ObservableObject {
                      startedAt: old?.startedAt ?? Date()) // keep the original clock across merges
         }
         if st.sessionID == sessionID {
-            bumpWatchdog()
+            noteActivity()
             if let idx = messages.firstIndex(where: { $0.role == .tool && $0.tool?.id == st.id }) {
                 messages[idx].tool = merged(into: messages[idx].tool)
             } else {
@@ -2406,7 +2374,7 @@ public final class Model: ObservableObject {
                 messages.append(ChatMessage(role: .tool, text: st.name, tool: merged(into: nil)))
             }
         } else if childMessages[st.sessionID] != nil {
-            bumpWatchdog()
+            noteActivity()
             var buf = childMessages[st.sessionID] ?? []
             if let idx = buf.firstIndex(where: { $0.role == .tool && $0.tool?.id == st.id }) {
                 buf[idx].tool = merged(into: buf[idx].tool)
@@ -2574,7 +2542,7 @@ public final class Model: ObservableObject {
                     }
                 case MessageType.sessionMessage:
                     if let m = try? env.payload(as: SessionMessage.self), m.sessionID == sessionID {
-                        bumpWatchdog()
+                        noteActivity()
                         let role: ChatMessage.Role = m.role == "user" ? .user : (m.role == "tool" ? .tool : .assistant)
                         let shown = Self.stripUIGuide(m.text) // hide the injected iron:ui guide from turn 1
                         let trimmed = shown.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2603,7 +2571,7 @@ public final class Model: ObservableObject {
                     } else if let m = try? env.payload(as: SessionMessage.self), childMessages[m.sessionID] != nil {
                         // A sub-agent's message — route into its own buffer, never the main transcript.
                         // Tool calls arrive as role=="tool" with Text=the tool name; keep them.
-                        bumpWatchdog() // the active session's sub-agent is alive → parent isn't dead
+                        noteActivity() // the active session's sub-agent is alive → parent isn't dead
                         let role: ChatMessage.Role = m.role == "user" ? .user : (m.role == "tool" ? .tool : .assistant)
                         finalizeChildStreaming(m.sessionID)
                         childMessages[m.sessionID, default: []].append(ChatMessage(role: role, text: Self.stripUIGuide(m.text)))
@@ -2612,21 +2580,21 @@ public final class Model: ObservableObject {
                     if let t = try? env.payload(as: Thinking.self), t.sessionID == sessionID {
                         appendThinkingDelta(t.text)
                         busy = true
-                        bumpWatchdog() // reset AFTER busy=true so a mid-turn stall is still caught
+                        noteActivity() // reset AFTER busy=true so a mid-turn stall is still caught
                     }
                 case MessageType.outputDelta:
                     if let d = try? env.payload(as: OutputDelta.self), d.sessionID == sessionID {
-                        bumpWatchdog()
+                        noteActivity()
                         appendAssistantDelta(d.text)
                     } else if let d = try? env.payload(as: OutputDelta.self), childMessages[d.sessionID] != nil {
-                        bumpWatchdog() // sub-agent output = the parent is alive
+                        noteActivity() // sub-agent output = the parent is alive
                         appendChildDelta(d.sessionID, d.text)
                     }
                 case MessageType.sessionStatus:
                     if let ss = try? env.payload(as: SessionStatus.self), ss.sessionID == sessionID {
                         // Any status for the active session clears its background-error badge.
                         sessionErrors[ss.sessionID] = nil
-                        bumpWatchdog() // re-arms while running; no-ops once busy clears on idle/done below
+                        noteActivity() // re-arms while running; no-ops once busy clears on idle/done below
                         status = ss.status
                         activity = ss.detail
                         switch ss.status {
@@ -2656,7 +2624,7 @@ public final class Model: ObservableObject {
                         // A sub-agent's status — drives its inline card's activity chip. It ALSO keeps the
                         // parent watchdog alive: a long sub-agent "Reading" emits status, not deltas, so
                         // without this the parent could falsely time out while the sub-agent works.
-                        bumpWatchdog()
+                        noteActivity()
                         switch ss.status {
                         case SessionStatusValue.idle, SessionStatusValue.done, SessionStatusValue.error, "errored":
                             childActivity[ss.sessionID] = nil
@@ -2680,7 +2648,7 @@ public final class Model: ObservableObject {
                     }
                 case MessageType.approvalRequest:
                     if let ar = try? env.payload(as: ApprovalRequest.self), ar.sessionID == sessionID {
-                        cancelWatchdog()
+                        stopStallLoop()
                         pendingApproval = ar
                         refreshLiveActivity()
                     }
@@ -2696,6 +2664,8 @@ public final class Model: ObservableObject {
                         pendingApproval = nil
                         refreshLiveActivity()
                     }
+                case MessageType.turnState:
+                    if let ts = try? env.payload(as: TurnState.self) { applyTurnState(ts) }
                 case MessageType.sessionList:
                     // PROACTIVE broadcast the daemon sends after any session create/delete/restore/
                     // model change. Without handling it here the sidebar only refreshed on an explicit
@@ -2746,7 +2716,7 @@ public final class Model: ObservableObject {
                 case MessageType.sessionSubAgent: // a sub-agent started/finished under the active session
                     if let sa = try? env.payload(as: SubAgent.self) {
                         applySubAgent(sa)
-                        bumpWatchdog() // a sub-agent spinning up means the parent is alive
+                        noteActivity() // a sub-agent spinning up means the parent is alive
                     }
                 case MessageType.sessionTool: // a rich tool call (command + output) for the session or a sub-agent
                     if let st = try? env.payload(as: SessionTool.self) {
@@ -2784,7 +2754,7 @@ public final class Model: ObservableObject {
                 connected = false
                 status = "Disconnected"
                 busy = false
-                cancelWatchdog()
+                stopStallLoop()
                 refreshLiveActivity(ended: true)
             }
         }
