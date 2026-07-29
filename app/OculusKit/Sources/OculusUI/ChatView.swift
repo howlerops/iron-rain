@@ -63,6 +63,12 @@ public struct ChatView: View {
                 sessionErrorView(err) // a broken/errored session shows WHY, not a blank pane
             } else if model.messages.isEmpty && model.sessionLoading {
                 sessionLoadingView // smooth swap: a loader while the transcript replays, not white
+            } else if model.transcriptSettling {
+                // History is still bursting in. Keep the scroll view UNBUILT until it settles, then
+                // create it once — fully formed and natively anchored at the bottom — instead of the
+                // old behavior: an empty scroll view anchored at nothing, hundreds of appends pushing
+                // content down, and per-append scrollTo calls visibly "scrolling through history".
+                sessionLoadingView
             } else {
                 transcript
                 typingBar // pinned below the scroll so its flicker never shifts the transcript

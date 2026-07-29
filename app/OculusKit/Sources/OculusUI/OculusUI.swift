@@ -659,6 +659,7 @@ public final class Model: ObservableObject {
     /// fed, clears the swap loader, and un-flags a suspected stall.
     private func noteActivity() {
         lastEventAt = Date()
+        bumpSettle()
         if streamMaybeStalled { streamMaybeStalled = false }
         if sessionLoading { sessionLoading = false }
         startStallLoop()
@@ -1404,6 +1405,7 @@ public final class Model: ObservableObject {
             messages.removeAll()
             todos = []; pendingApproval = nil; busy = false; lastDiff = nil
             turn = nil // stopped session has no live turn
+            finishSettling()
             clearChildState()
             UserDefaults.standard.set(id, forKey: lastSessionKey)
             return
@@ -1417,7 +1419,8 @@ public final class Model: ObservableObject {
         busy = false
         lastDiff = nil
         turn = nil // the new session's turn.state will repopulate
-        sessionLoading = true // loader until the replayed transcript arrives (smooth swap, not a blank pane)
+        sessionLoading = true
+        beginSettling() // hide the transcript until the replay burst lands, then reveal at the bottom // loader until the replayed transcript arrives (smooth swap, not a blank pane)
         clearChildState() // a new parent session starts with no expanded/subscribed children
         UserDefaults.standard.set(id, forKey: lastSessionKey) // remember for auto-reopen next launch
         if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.sessionSubscribe, payload: SessionRef(sessionID: id)) {
@@ -1433,6 +1436,43 @@ public final class Model: ObservableObject {
     /// session (bumpWatchdog) or by armLoadTimeout when the session has no history.
     @Published public var sessionLoading = false
     private var loadToken = 0
+
+    /// True while a just-opened session's history is REPLAYING. The chat hides the scroll view behind
+    /// the loader until the burst settles, then builds it once — fully formed, natively anchored at
+    /// the bottom — instead of visibly scrolling through history as appends land one by one.
+    @Published public var transcriptSettling = false
+    private var settleTask: Task<Void, Never>?
+    private var settleCapTask: Task<Void, Never>?
+
+    /// Debounced by every incoming frame while settling: 160ms of quiet = the replay burst is done.
+    /// A 1.5s cap guarantees the transcript always reveals (e.g. opening mid-stream, where deltas
+    /// never pause).
+    private func bumpSettle() {
+        guard transcriptSettling else { return }
+        settleTask?.cancel()
+        settleTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 160_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.finishSettling()
+        }
+    }
+
+    private func beginSettling() {
+        transcriptSettling = true
+        bumpSettle() // even zero replay events reveals after one quiet window
+        settleCapTask?.cancel()
+        settleCapTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.finishSettling()
+        }
+    }
+
+    private func finishSettling() {
+        settleTask?.cancel(); settleTask = nil
+        settleCapTask?.cancel(); settleCapTask = nil
+        if transcriptSettling { transcriptSettling = false }
+    }
     private func armLoadTimeout() {
         loadToken &+= 1
         let tok = loadToken
