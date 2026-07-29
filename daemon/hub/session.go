@@ -333,24 +333,41 @@ func (m *managedSession) info() protocol.Session {
 // the replay followed by live events, so no client's socket blocks the event pump.
 func (m *managedSession) subscribe(conn *transport.Conn) {
 	m.mu.Lock()
-	if _, ok := m.subs[conn]; ok {
-		m.mu.Unlock()
-		return
-	}
-	s := &subscriber{conn: conn, ch: make(chan []byte, outboundBuffer), done: make(chan struct{})}
-	m.subs[conn] = s
 	replay := append([][]byte(nil), m.transcript...)
+	existing, already := m.subs[conn]
+	s := existing
+	if !already {
+		s = &subscriber{conn: conn, ch: make(chan []byte, outboundBuffer), done: make(chan struct{})}
+		m.subs[conn] = s
+	}
 	m.mu.Unlock()
 	// When the in-memory ring buffer is empty — a session RESTORED after a daemon restart (memory
 	// wiped) before it has streamed anything new — replay the DURABLE transcript from SQLite so the
 	// full history comes back for EVERY provider (not just opencode/claude, which also re-stream on
-	// attach). The live buffer stays authoritative once it has events (unchanged live/switch path).
+	// attach).
 	if len(replay) == 0 {
 		if db := m.hub.db; db != nil {
 			if durable, err := db.Transcript(m.sess.ID()); err == nil && len(durable) > 0 {
 				replay = durable
 			}
 		}
+	}
+	if already {
+		// The client RE-subscribed to a session it already had a subscription for — this is a session
+		// SWITCH (the app cleared its transcript view on open, or switched away and back). Previously we
+		// returned early here with NO replay, so the pane stayed blank and "the data never reloaded".
+		// Re-send the transcript to the SAME subscriber (its writeLoop drains s.ch) so the conversation
+		// repopulates. Runs in a goroutine so a full outbound buffer can't stall the event pump.
+		go func() {
+			for _, raw := range replay {
+				select {
+				case s.ch <- raw:
+				case <-s.done:
+					return
+				}
+			}
+		}()
+		return
 	}
 	go m.writeLoop(s, replay)
 }

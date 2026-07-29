@@ -59,6 +59,10 @@ public struct ChatView: View {
             if !model.todos.isEmpty { TodoBar(todos: model.todos, palette: palette) }
             if model.messages.isEmpty && model.sessionID == nil {
                 emptyState
+            } else if model.messages.isEmpty, let err = sessionLoadError {
+                sessionErrorView(err) // a broken/errored session shows WHY, not a blank pane
+            } else if model.messages.isEmpty && model.sessionLoading {
+                sessionLoadingView // smooth swap: a loader while the transcript replays, not white
             } else {
                 transcript
                 typingBar // pinned below the scroll so its flicker never shifts the transcript
@@ -419,6 +423,38 @@ public struct ChatView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.horizontal, 32)
+    }
+
+    /// The active session's load/background error, if any — so a broken session shows WHY instead of a
+    /// blank pane when you switch to it.
+    private var sessionLoadError: String? {
+        guard let sid = model.sessionID else { return nil }
+        return model.sessionErrors[sid]
+    }
+
+    /// Shown while a just-opened session's transcript is replaying — makes a swap read as "loading…"
+    /// instead of a white flash.
+    private var sessionLoadingView: some View {
+        VStack(spacing: OculusSpace.md) {
+            ProgressView().controlSize(.large)
+            Text("Loading conversation…").font(.callout).foregroundStyle(palette.mutedForeground)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func sessionErrorView(_ err: String) -> some View {
+        VStack(spacing: OculusSpace.md) {
+            Image(systemName: "exclamationmark.triangle.fill").font(.largeTitle).foregroundStyle(palette.destructive)
+            Text("Couldn’t load this session").font(.headline).foregroundStyle(palette.foreground)
+            Text(err).font(.callout).foregroundStyle(palette.mutedForeground)
+                .multilineTextAlignment(.center).frame(maxWidth: 420).fixedSize(horizontal: false, vertical: true)
+            Button { if let id = model.sessionID { Task { await model.recoverSession(id) } } } label: {
+                Label("Recover session", systemImage: "bandage")
+            }
+            .buttonStyle(.borderedProminent).tint(palette.primary).disabled(model.busy)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(OculusSpace.xl)
     }
 
     private var statusLabel: String {

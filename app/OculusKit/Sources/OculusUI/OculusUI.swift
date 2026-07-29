@@ -684,6 +684,7 @@ public final class Model: ObservableObject {
     /// the window) still surfaces "no response". The window is roomy (180s), and far longer (600s)
     /// while a tool/sub-agent is active since an opencode `task` sub-agent can legitimately go quiet.
     private func bumpWatchdog() {
+        if sessionLoading { sessionLoading = false } // first event arrived → swap is loaded
         lastEventAt = Date()                 // a byte arrived → the stream is live
         if streamMaybeStalled { streamMaybeStalled = false } // heal the soft "stuck" hint on any activity
         resumeIfStalled() // any live event means the agent is alive — heal a prior false alarm
@@ -1448,13 +1449,30 @@ public final class Model: ObservableObject {
         pendingApproval = nil
         busy = false
         lastDiff = nil
+        sessionLoading = true // loader until the replayed transcript arrives (smooth swap, not a blank pane)
         clearChildState() // a new parent session starts with no expanded/subscribed children
         UserDefaults.standard.set(id, forKey: lastSessionKey) // remember for auto-reopen next launch
         if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.sessionSubscribe, payload: SessionRef(sessionID: id)) {
             try? await client.send(env)
         }
+        armLoadTimeout() // a session with NO history streams no replay events — stop the loader after a beat
         await loadCommands(sessionID: id)
         await loadModels(sessionID: id)
+    }
+
+    /// True while a just-opened session waits for its replayed transcript — drives the in-chat loader
+    /// so a swap reads as "loading…" instead of a blank pane. Cleared on the first event for the
+    /// session (bumpWatchdog) or by armLoadTimeout when the session has no history.
+    @Published public var sessionLoading = false
+    private var loadToken = 0
+    private func armLoadTimeout() {
+        loadToken &+= 1
+        let tok = loadToken
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_800_000_000)
+            guard let self, tok == self.loadToken else { return }
+            self.sessionLoading = false
+        }
     }
 
     /// Expands/collapses a sub-agent's inline transcript. On first expand, subscribes to the child
