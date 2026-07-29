@@ -84,6 +84,8 @@ type managedSession struct {
 	inTok, outTok   int       // cumulative token usage across the session
 	costUSD         float64   // cumulative cost (USD)
 	wasRunning      bool      // saw activity since the last idle (gates the "finished" push)
+	turnStartedAt   time.Time // when the current turn started running (for the "finished" push duration)
+	loopDoneNotified bool     // fired the "loop run finished" push once (loop sessions only)
 
 	// Heartbeat supervision state (recorded from the event pump; read by the heartbeat tick).
 	lastStatus       string          // last session.status ("running"/"idle"/"awaiting_approval"/"error")
@@ -185,6 +187,10 @@ type sessionMeta struct {
 	fanoutGroup   string
 	fanoutVariant int
 
+	// loopName is set when this session is a run of a recurring autonomous loop — used to fire the
+	// "loop run finished" push once the run completes.
+	loopName string
+
 	// ephemeral: a scratch "just chat" session — no project, NOT persisted to the store.
 	ephemeral bool
 }
@@ -204,14 +210,41 @@ func (m *managedSession) onStatus(ss protocol.SessionStatus) {
 	}
 	switch ss.Status {
 	case protocol.StatusRunning:
+		if !m.wasRunning {
+			m.turnStartedAt = time.Now() // start of a fresh turn — time it for the finished summary
+		}
 		m.wasRunning = true
 		m.mu.Unlock()
 	case protocol.StatusIdle, protocol.StatusDone:
 		finished := m.wasRunning
 		m.wasRunning = false
+		// Capture a compact summary for the "finished" push: how long it ran, to-do progress, spend.
+		var dur time.Duration
+		if !m.turnStartedAt.IsZero() {
+			dur = time.Since(m.turnStartedAt)
+		}
+		done, total := 0, len(m.latestTodos)
+		for _, td := range m.latestTodos {
+			if td.Status == "completed" {
+				done++
+			}
+		}
+		cost := m.costUSD
+		group := m.meta.fanoutGroup
+		loopName := m.meta.loopName
+		loopDone := loopName != "" && !m.loopDoneNotified && finished
+		if loopDone {
+			m.loopDoneNotified = true
+		}
 		m.mu.Unlock()
 		if finished {
-			m.hub.pushAgentFinished(m.sess.ID(), label)
+			m.hub.pushAgentFinished(m.sess.ID(), label, dur, done, total, cost)
+		}
+		if group != "" {
+			m.hub.checkFanoutDone(group) // last variant idle → "fan-out finished"
+		}
+		if loopDone {
+			m.hub.pushLoopDone(m.sess.ID(), loopName) // the loop run's work completed
 		}
 	case protocol.StatusError:
 		m.wasRunning = false

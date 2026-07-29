@@ -364,7 +364,7 @@ struct SessionSidebar: View {
                     Label("Appearance", systemImage: "circle.lefthalf.filled")
                 }
                 Picker(selection: $chatFontDesign) {
-                    ForEach(ChatFontDesign.allCases) { f in
+                    ForEach(ChatFontDesign.displayOrder) { f in
                         Label(f.label, systemImage: f.symbol).tag(f.rawValue)
                     }
                 } label: {
@@ -377,6 +377,21 @@ struct SessionSidebar: View {
                 } label: {
                     Label("Chat text size", systemImage: "textformat.size")
                 }
+                Menu {
+                    if model.notifyPrefs.isEmpty {
+                        Text("Loading…")
+                    } else {
+                        ForEach(model.notifyPrefs) { p in
+                            Button { Task { await model.setNotifyPref(p.key, enabled: !p.enabled) } } label: {
+                                // A checkmark = enabled (menus can't host a real Toggle inline).
+                                if p.enabled { Label(p.label, systemImage: "checkmark") } else { Text(p.label) }
+                            }
+                        }
+                    }
+                } label: {
+                    Label("Notifications", systemImage: "bell")
+                }
+                .onAppear { Task { await model.loadNotifyPrefs() } }
                 #if os(macOS)
                 if let onCheckForUpdates {
                     Button { onCheckForUpdates() } label: { Label("Check for updates…", systemImage: "arrow.down.circle") }

@@ -190,6 +190,7 @@ func serve(args []string) error {
 	h.SetIssues(issuesMgr)
 	h.EnableLoops(loopsPath())        // recurring autonomous ticket workflows
 	h.SetAgentsPath(agentsPath(), agentPrefsPath()) // custom CLI agents + picker visibility
+	h.SetNotifyPrefsPath(notifyPrefsPath())          // per-category push-notification toggles
 	if len(issuesMgr.Connected()) > 0 {
 		go func() { _ = issuesMgr.Refresh(context.Background()) }() // initial fetch
 	}
@@ -555,6 +556,14 @@ func projectsPath() string {
 		return "oculus-projects.json"
 	}
 	return filepath.Join(home, ".oculus", "projects.json")
+}
+
+func notifyPrefsPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "oculus-notify.json"
+	}
+	return filepath.Join(home, ".oculus", "notify.json")
 }
 
 func integrationsPath() string {

@@ -52,7 +52,9 @@ public struct ChatView: View {
         VStack(spacing: 0) {
             if isWorktreeSession { worktreeBanner }
             if isStopped { stoppedBanner }
-            FleetStrip(model: model, palette: palette) // whole-fleet awareness while chatting
+            // (Removed the top-of-chat "Fleet" awareness strip — it auto-appeared whenever any OTHER
+            // session was active and read as if THIS session had become a fleet. Other sessions live in
+            // the sidebar + the Fleet destination; the chat now stays focused on the one conversation.)
             if !children.isEmpty { SubAgentsStrip(model: model, children: children, palette: palette) }
             if !model.todos.isEmpty { TodoBar(todos: model.todos, palette: palette) }
             if model.messages.isEmpty && model.sessionID == nil {
@@ -142,6 +144,7 @@ public struct ChatView: View {
                 }
             }
             if model.sessionID != nil {
+                // Autonomy stays inline — it's a MODE whose on/off state should read at a glance.
                 ToolbarItem(placement: .automatic) {
                     Button { Task { await model.setAutonomy(!model.autonomous) } } label: {
                         Label(model.autonomous ? "Autonomous on" : "Autonomous off",
@@ -152,37 +155,26 @@ public struct ChatView: View {
                           ? "The heartbeat keeps this session going until its to-dos are done. Tap to stop."
                           : "Let the heartbeat nudge this session to keep going until done.")
                 }
-                ToolbarItem(placement: .automatic) {
-                    Button { Task { await model.runTests() } } label: {
-                        Label("Run tests", systemImage: Self.runTestsSymbol)
-                    }
-                    .disabled(model.testRunning)
-                    .help("Run tests")
-                }
-                // Code + change review: opens the session's file tree · editor · diff (CodeSurface).
-                // Previously only reachable via a right-click in the sidebar — now a first-class button.
-                ToolbarItem(placement: .automatic) {
-                    Button { model.codeReviewTarget = model.sessionID } label: {
-                        Label("Code & changes", systemImage: "chevron.left.forwardslash.chevron.right")
-                    }
-                    .help("Open this session's files and review its changes (code editor + diff).")
-                }
-                #if canImport(WebKit)
-                ToolbarItem(placement: .automatic) {
-                    Button { model.designRequested = true } label: {
-                        Label("Browser / Design", systemImage: "safari")
-                    }
-                    .help("Open the in-app browser (Design Mode): pick a UI element to drop its HTML/CSS into the prompt.")
-                }
-                #endif
-                ToolbarItem(placement: .automatic) {
-                    Button { showDelegate = true } label: {
-                        Label("Delegate subtask", systemImage: "arrowshape.turn.up.right")
-                    }
-                    .help("Delegate a subtask — spawn a scoped sub-agent, seeded from this session's handoff.")
-                }
+                // Everything else folds into ONE labeled menu (was 4 bare icons in the header) — the
+                // items carry text labels so it's clear what each does, unlike hover-only tooltips.
                 ToolbarItem(placement: .automatic) {
                     Menu {
+                        Button { model.codeReviewTarget = model.sessionID } label: {
+                            Label("Code & changes", systemImage: "chevron.left.forwardslash.chevron.right")
+                        }
+                        #if canImport(WebKit)
+                        Button { model.designRequested = true } label: {
+                            Label("Browser / Design", systemImage: "safari")
+                        }
+                        #endif
+                        Button { Task { await model.runTests() } } label: {
+                            Label(model.testRunning ? "Running tests…" : "Run tests", systemImage: Self.runTestsSymbol)
+                        }
+                        .disabled(model.testRunning)
+                        Button { showDelegate = true } label: {
+                            Label("Delegate subtask", systemImage: "arrowshape.turn.up.right")
+                        }
+                        Divider()
                         Button {
                             if let id = model.sessionID { Task { await model.recoverSession(id) } }
                         } label: {
@@ -214,7 +206,7 @@ public struct ChatView: View {
                     } label: {
                         Label("More", systemImage: "ellipsis.circle")
                     }
-                    .help("Session tools — Recover, and (worktree sessions) save/roll-back checkpoints.")
+                    .help("Session tools — code & changes, run tests, browser, delegate, recover, checkpoints.")
                 }
             }
             if isWorktreeSession {
@@ -459,6 +451,9 @@ struct MessageRow: View {
     private var chatDesign: Font.Design { ChatFontDesign(rawValue: fontDesignRaw)?.design ?? .default }
     private var chatFactor: CGFloat { ChatFontScale(rawValue: fontScaleRaw)?.factor ?? 1.0 }
     private var chatBody: Font { .system(size: 15 * chatFactor, design: chatDesign) }
+    // Real leading — transcript prose was rendered with default (tight) line spacing, which read
+    // cramped. ~4pt (scaled) opens it up so multi-line answers breathe like a document.
+    private var chatLineSpacing: CGFloat { 4 * chatFactor }
 
     var body: some View {
         switch message.role {
@@ -468,12 +463,13 @@ struct MessageRow: View {
                     Spacer(minLength: 40)
                     Text(message.text)
                         .font(chatBody)
+                        .lineSpacing(chatLineSpacing)
                         .foregroundStyle(palette.foreground)
-                        .padding(.horizontal, 14).padding(.vertical, 9)
+                        .padding(.horizontal, OculusSpace.md).padding(.vertical, OculusSpace.sm)
                         .background(palette.secondary)
-                        .overlay(RoundedRectangle(cornerRadius: 16)
+                        .overlay(RoundedRectangle(cornerRadius: OculusRadius.md)
                             .stroke(message.delivery == .failed ? palette.destructive : palette.border))
-                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        .clipShape(RoundedRectangle(cornerRadius: OculusRadius.md))
                         .textSelection(.enabled)
                 }
                 // Delivery badge: a failed send is visibly flagged + retryable instead of looking
@@ -505,17 +501,19 @@ struct MessageRow: View {
                 // preserved so lists/paragraphs still read naturally mid-stream.
                 Text(message.text)
                     .font(chatBody)
+                    .lineSpacing(chatLineSpacing)
                     .foregroundStyle(palette.foreground)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
             } else {
                 ChatMarkdownView(text: message.text, palette: palette)
+                    .lineSpacing(chatLineSpacing)
                     .textSelection(.enabled)
             }
         case .thinking:
             HStack(alignment: .top, spacing: 6) {
                 Image(systemName: "brain").font(.caption2).padding(.top, 2)
-                Text(message.text).font(.system(size: 13.5 * chatFactor, design: chatDesign)).italic()
+                Text(message.text).font(.system(size: 13.5 * chatFactor, design: chatDesign)).italic().lineSpacing(chatLineSpacing)
                     .textSelection(.enabled)
             }
             .foregroundStyle(palette.mutedForeground)

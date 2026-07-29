@@ -54,6 +54,8 @@ public enum MessageType {
     public static let activityMarkRead = "activity.markread"
     public static let fanoutCreate = "fanout.create"
     public static let fanoutResolve = "fanout.resolve"
+    public static let notifyPrefsGet = "notify.prefs.get"
+    public static let notifyPrefsSet = "notify.prefs.set"
     public static let checkpointCreate = "checkpoint.create"
     public static let checkpointList = "checkpoint.list"
     public static let checkpointRestore = "checkpoint.restore"
@@ -1168,6 +1170,26 @@ public struct FanoutResolved: Codable {
     public var removed: [String]
     public var failed: [String]?
     enum CodingKeys: String, CodingKey { case group; case kept; case removed; case failed }
+}
+
+/// One toggleable push-notification type. NotifyPrefs is the labeled catalog with each type's state.
+public struct NotifyPref: Codable, Identifiable {
+    public var key: String
+    public var label: String
+    public var detail: String?
+    public var enabled: Bool
+    public var id: String { key }
+    enum CodingKeys: String, CodingKey { case key; case label; case detail; case enabled }
+}
+public struct NotifyPrefs: Codable {
+    public var prefs: [NotifyPref]
+    enum CodingKeys: String, CodingKey { case prefs }
+}
+public struct NotifyPrefSet: Codable {
+    public var key: String
+    public var enabled: Bool
+    enum CodingKeys: String, CodingKey { case key; case enabled }
+    public init(key: String, enabled: Bool) { self.key = key; self.enabled = enabled }
 }
 
 /// A restore point: a snapshot of a session's worktree at a point in time.

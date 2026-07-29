@@ -434,6 +434,7 @@ public final class Model: ObservableObject {
         await loadLoops()     // recurring autonomous workflows
         await loadActivity()  // cross-session feed + Needs-You inbox
         await loadTelemetryStatus() // reflect the daemon's diagnostics toggle
+        await loadNotifyPrefs()     // per-type push-notification toggles
         // If a session was open when the socket dropped (e.g. the daemon restarted and forgot its
         // in-memory sessions), re-attach it so its transcript + prompts resume.
         await reopenCurrentSession()
@@ -1587,6 +1588,27 @@ public final class Model: ObservableObject {
         }
     }
 
+    /// Per-type push-notification toggles (loaded from the daemon; edited in Settings → Notifications).
+    @Published public var notifyPrefs: [NotifyPref] = []
+
+    public func loadNotifyPrefs() async {
+        guard client != nil else { return }
+        if let env = try? await request(MessageType.notifyPrefsGet, payload: Optional<Int>.none),
+           let np = try? env.payload(as: NotifyPrefs.self) {
+            notifyPrefs = np.prefs
+        }
+    }
+
+    /// Flips one notification type on/off; optimistically updates the local list, then persists.
+    public func setNotifyPref(_ key: String, enabled: Bool) async {
+        guard client != nil else { return }
+        if let i = notifyPrefs.firstIndex(where: { $0.key == key }) { notifyPrefs[i].enabled = enabled }
+        if let env = try? await request(MessageType.notifyPrefsSet, payload: NotifyPrefSet(key: key, enabled: enabled)),
+           let np = try? env.payload(as: NotifyPrefs.self) {
+            notifyPrefs = np.prefs
+        }
+    }
+
     /// Checkpoints (restore points) for the active session's worktree — newest first.
     @Published public var checkpoints: [Checkpoint] = []
     /// Multi-account credentials + per-provider usage meter (Accounts view).
@@ -2656,6 +2678,12 @@ public final class Model: ObservableObject {
                         pendingApproval = nil
                         refreshLiveActivity()
                     }
+                case MessageType.sessionList:
+                    // PROACTIVE broadcast the daemon sends after any session create/delete/restore/
+                    // model change. Without handling it here the sidebar only refreshed on an explicit
+                    // reload — so a 2nd session (or a restored set) never appeared until a manual
+                    // refresh. Update the list live.
+                    if let sl = try? env.payload(as: SessionList.self) { sessions = sl.sessions }
                 case MessageType.issueList: // broadcast from the 60s tracker poll
                     if let il = try? env.payload(as: IssueList.self) {
                         issues = il.issues

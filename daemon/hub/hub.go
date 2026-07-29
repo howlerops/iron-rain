@@ -80,6 +80,9 @@ type Hub struct {
 	db            *store.Store                   // optional: durable local state (session names + records)
 	lsp           *lsp.Manager                   // language servers for the built-in editor (diagnostics/types)
 	runningTests  map[string]bool                // session ids with a test/build run in progress
+	notifyPrefsPath string                       // path to ~/.oculus/notify.json (per-category push toggles)
+	notifyOff       map[string]bool              // push categories the user turned OFF (absent = enabled)
+	fanoutNotified  map[string]bool              // fan-out groups already notified as "all done" (fire once)
 
 	pushTimeout     time.Duration // per-Notify deadline for the approval push fan-out
 	pushConcurrency int           // cap on concurrent in-flight pushes
@@ -765,7 +768,7 @@ func (h *Hub) spawnLoopRun(lp loops.Loop, iss *loops.Issue) (string, error) {
 			Provider: lp.Provider, ProjectID: projectID, ProjectIDs: projectIDs, Prompt: prompt,
 			Worktree: lp.Worktree, Plan: lp.Plan, Autonomous: true, BudgetUSD: lp.BudgetUSD, WorkspaceName: branch,
 		}
-		ms, err := h.startSession(context.Background(), create, sessionMeta{}, nil)
+		ms, err := h.startSession(context.Background(), create, sessionMeta{loopName: lp.Name}, nil)
 		if err != nil {
 			return "", err
 		}
@@ -794,7 +797,7 @@ func (h *Hub) spawnLoopRun(lp loops.Loop, iss *loops.Issue) (string, error) {
 	}
 	branch := "loop/" + iss.Key
 	prompt := fmt.Sprintf("You are running autonomously as part of a loop. Work on ticket %s — %s.\nPlan the approach first, then implement it end to end and open a PR when done.", iss.Key, iss.Title)
-	meta := sessionMeta{issueKey: iss.Key}
+	meta := sessionMeta{issueKey: iss.Key, loopName: lp.Name}
 	if full != nil {
 		prompt = fmt.Sprintf("You are running autonomously as part of a loop. Work on %s — %s\n\n%s\n\n%s\n\nPlan the approach first, then implement it end to end and open a PR when done.", full.Key, full.Title, full.Body, full.URL)
 		meta = sessionMeta{issueID: full.ID, issueKey: full.Key, issueProvider: full.Provider}
@@ -959,6 +962,7 @@ func New() *Hub {
 		providers:       map[string]agent.Provider{},
 		sessions:        map[string]*managedSession{},
 		approvals:       map[string]*managedSession{},
+		fanoutNotified:  map[string]bool{},
 		clients:         map[*transport.Conn]*hubClient{},
 		logSubs:         map[*transport.Conn]bool{},
 		autoProjects:    true, // on by default; disable with --auto-projects=false
@@ -1161,6 +1165,43 @@ func (h *Hub) resolveFanout(ctx context.Context, req protocol.FanoutResolve) pro
 	}
 	log.Printf("fanout.resolve %s: removed %d, kept %q, failed %d", req.Group, len(out.Removed), req.Keep, len(out.Failed))
 	return out
+}
+
+// checkFanoutDone fires the "fan-out finished" push once, when EVERY variant in the group has reached
+// idle/done. Called when any grouped session goes idle.
+func (h *Hub) checkFanoutDone(group string) {
+	if group == "" {
+		return
+	}
+	h.mu.Lock()
+	if h.fanoutNotified[group] {
+		h.mu.Unlock()
+		return
+	}
+	var members []*managedSession
+	for _, m := range h.sessions {
+		if m.meta.fanoutGroup == group {
+			members = append(members, m)
+		}
+	}
+	allIdle := len(members) > 0
+	for _, m := range members {
+		m.mu.Lock()
+		st := m.lastStatus
+		m.mu.Unlock()
+		if st != protocol.StatusIdle && st != protocol.StatusDone {
+			allIdle = false
+			break
+		}
+	}
+	if allIdle {
+		h.fanoutNotified[group] = true
+	}
+	count := len(members)
+	h.mu.Unlock()
+	if allIdle {
+		h.pushFanoutDone(group, count)
+	}
 }
 
 // teardownWorktreeSession stops a worktree session, deletes it server-side, and removes its worktree —
@@ -1561,14 +1602,69 @@ func (h *Hub) pushApproval(ar protocol.ApprovalRequest) {
 	})
 }
 
-// pushAgentFinished notifies that an agent turn completed while you're away.
-func (h *Hub) pushAgentFinished(sessionID, label string) {
+// pushAgentFinished notifies that an agent turn completed, with a compact summary of the run
+// (duration · to-do progress · spend) instead of a bare "done".
+func (h *Hub) pushAgentFinished(sessionID, label string, dur time.Duration, todosDone, todosTotal int, cost float64) {
 	title := "Agent finished"
 	if label != "" {
 		title = label + " finished"
 	}
+	// Body: "5/5 tasks · 3m12s · $0.42" — only the parts we actually have.
+	var parts []string
+	if todosTotal > 0 {
+		parts = append(parts, fmt.Sprintf("%d/%d tasks", todosDone, todosTotal))
+	}
+	if dur >= time.Second {
+		parts = append(parts, dur.Round(time.Second).String())
+	}
+	if cost > 0 {
+		parts = append(parts, fmt.Sprintf("$%.2f", cost))
+	}
+	body := "Tap to review"
+	if len(parts) > 0 {
+		body = strings.Join(parts, " · ") + " — tap to review"
+	}
 	h.pushNotify(push.Notification{
-		Title: title, Body: "The agent is done — tap to review", Category: "AGENT_FINISHED",
+		Title: title, Body: body, Category: "AGENT_FINISHED",
+		ThreadID: sessionID, Custom: map[string]any{"session_id": sessionID},
+	})
+}
+
+// pushPRFinished notifies that a session opened a PR / finished its worktree branch — a real
+// end-of-task milestone, not just a turn ending.
+func (h *Hub) pushPRFinished(sessionID, label, prURL string) {
+	title := "PR ready"
+	if label != "" {
+		title = label + ": PR ready"
+	}
+	body := "The agent opened a pull request — tap to review"
+	if prURL != "" {
+		body = prURL
+	}
+	h.pushNotify(push.Notification{
+		Title: title, Body: body, Category: "PR_FINISHED",
+		ThreadID: sessionID, Custom: map[string]any{"session_id": sessionID, "url": prURL},
+	})
+}
+
+// pushFanoutDone notifies that every agent in a fan-out group has completed.
+func (h *Hub) pushFanoutDone(group string, count int) {
+	h.pushNotify(push.Notification{
+		Title: "Fan-out finished",
+		Body:  fmt.Sprintf("All %d agents are done — tap to compare and merge the winner", count),
+		Category: "FANOUT_DONE",
+		ThreadID: "fanout-" + group, Custom: map[string]any{"fanout_group": group},
+	})
+}
+
+// pushLoopDone notifies that an autonomous loop run completed.
+func (h *Hub) pushLoopDone(sessionID, loopName string) {
+	title := "Loop run finished"
+	if loopName != "" {
+		title = loopName + ": run finished"
+	}
+	h.pushNotify(push.Notification{
+		Title: title, Body: "An autonomous loop run completed — tap to review", Category: "LOOP_DONE",
 		ThreadID: sessionID, Custom: map[string]any{"session_id": sessionID},
 	})
 }
@@ -1624,7 +1720,11 @@ func (h *Hub) pushNotify(notif push.Notification) {
 	n := h.notifier
 	sc := h.slack
 	tokens := append([]string(nil), h.pushTokens...)
+	off := h.notifyOff[notif.Category] // user turned this category off
 	h.mu.Unlock()
+	if off {
+		return // this notification type is disabled in the user's Notifications settings
+	}
 	// Mirror to Slack (if configured) independently of APNs — a team may want Slack visibility
 	// without any paired phones. Fire-and-forget with a bounded context.
 	if sc != nil {
@@ -1991,6 +2091,18 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		}
 		h.sendOK(conn, env.ID, h.resolveFanout(ctx, req))
 		h.broadcastSessionList() // the discarded variants are gone → refresh every client's list
+
+	case protocol.TypeNotifyPrefsGet:
+		h.sendOK(conn, env.ID, h.notifyPrefs())
+
+	case protocol.TypeNotifyPrefsSet:
+		var req protocol.NotifyPrefSet
+		if err := env.Unmarshal(&req); err != nil || req.Key == "" {
+			h.sendErr(conn, env.ID, "bad notify.prefs.set")
+			return
+		}
+		h.setNotifyPref(req.Key, req.Enabled)
+		h.sendOK(conn, env.ID, h.notifyPrefs())
 
 	case protocol.TypeCheckpointCreate:
 		var req protocol.CheckpointCreate
@@ -2600,6 +2712,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		for _, mem := range m.meta.members {
 			results = append(results, h.finishWorkspaceMember(ctx, mem, title, req.Body))
 		}
+		h.pushPRFinished(req.SessionID, m.activityTitle(), "") // notify: workspace PRs opened
 		h.sendOK(conn, env.ID, protocol.WorkspacePR{SessionID: req.SessionID, Title: title, Body: req.Body, Members: results})
 
 	case protocol.TypeWorktreeRemove:
@@ -2662,6 +2775,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		if url != "" && m.meta.issueID != "" {
 			go h.writeBackPR(m.meta.issueProvider, m.meta.issueID, url) // close the loop on the linked ticket
 		}
+		h.pushPRFinished(req.SessionID, m.activityTitle(), url) // notify: end-of-task milestone reached
 		h.sendOK(conn, env.ID, protocol.WorktreePRResult{SessionID: req.SessionID, Branch: branch, Pushed: true, URL: url})
 
 	case protocol.TypeWorktreeConflicts:

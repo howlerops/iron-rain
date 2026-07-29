@@ -133,6 +133,8 @@ const (
 	TypeActivityMarkRead = "activity.markread" // mark activity items read (clears the needs-you badge)
 	TypeFanoutCreate     = "fanout.create"     // spawn N agents on the SAME prompt in isolated worktrees (compare + merge winner)
 	TypeFanoutResolve    = "fanout.resolve"    // tear down a fan-out group (keep the winner, discard the rest + worktrees)
+	TypeNotifyPrefsGet   = "notify.prefs.get"  // list toggleable push-notification types + their on/off state
+	TypeNotifyPrefsSet   = "notify.prefs.set"  // enable/disable one push-notification type
 	TypeCheckpointCreate = "checkpoint.create" // snapshot the session's worktree (a restore point on the timeline)
 	TypeCheckpointList   = "checkpoint.list"   // list a session's checkpoints
 	TypeCheckpointRestore = "checkpoint.restore" // roll the worktree back to a checkpoint
@@ -483,6 +485,22 @@ type FanoutResolved struct {
 	Kept      string   `json:"kept,omitempty"`
 	Removed   []string `json:"removed"`
 	Failed    []string `json:"failed,omitempty"` // variants whose teardown errored (e.g. dirty worktree without force)
+}
+
+// NotifyPref is one toggleable push-notification type. NotifyPrefs is the full labeled catalog with
+// each type's current on/off state (notify.prefs.get); NotifyPrefSet flips one (notify.prefs.set).
+type NotifyPref struct {
+	Key     string `json:"key"`   // the APNs category, e.g. "AGENT_FINISHED"
+	Label   string `json:"label"` // human name for the settings row
+	Detail  string `json:"detail,omitempty"`
+	Enabled bool   `json:"enabled"`
+}
+type NotifyPrefs struct {
+	Prefs []NotifyPref `json:"prefs"`
+}
+type NotifyPrefSet struct {
+	Key     string `json:"key"`
+	Enabled bool   `json:"enabled"`
 }
 
 // Checkpoint is a restore point: a snapshot of a session's worktree at a point in time.

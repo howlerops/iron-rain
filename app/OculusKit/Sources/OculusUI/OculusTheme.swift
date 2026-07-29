@@ -92,14 +92,38 @@ public enum Appearance: Int, CaseIterable, Identifiable {
 }
 
 /// User chat-typeface preference, persisted via `@AppStorage("oculus.chatFontDesign")`. Drives the
+/// A single spacing scale for the whole app, so padding/gaps stop being hand-picked magic numbers
+/// (which made left edges jitter as you scanned). Use these everywhere instead of literals.
+public enum OculusSpace {
+    public static let xxs: CGFloat = 2
+    public static let xs: CGFloat = 4
+    public static let sm: CGFloat = 8
+    public static let md: CGFloat = 12
+    public static let lg: CGFloat = 16 // the standard content gutter — every full-width container uses this
+    public static let xl: CGFloat = 24
+    public static let xxl: CGFloat = 32
+}
+
+/// A single corner-radius scale (was 6/8/10/12/16/18 scattered ad-hoc).
+public enum OculusRadius {
+    public static let sm: CGFloat = 8   // chips, small controls, tool cards
+    public static let md: CGFloat = 12  // message bubbles, panels
+    public static let lg: CGFloat = 16  // large cards / sheets
+    public static let pill: CGFloat = 999
+}
+
 /// transcript's reading font (assistant/user/thinking text) so the chat can feel like a document
 /// (serif), a terminal (mono), softer (rounded), or the platform default.
 public enum ChatFontDesign: Int, CaseIterable, Identifiable {
     case system, rounded, serif, mono
     public var id: Int { rawValue }
+    /// Display order for the picker — SF sans first (the right default for a dev tool), mono next
+    /// (common for reading code), then the niche rounded/serif. Kept separate from the raw case order
+    /// so persisted preferences (stored by rawValue) don't shift when we reorder the menu.
+    public static var displayOrder: [ChatFontDesign] { [.system, .mono, .rounded, .serif] }
     public var label: String {
         switch self {
-        case .system: return "Default"
+        case .system: return "Sans (default)"
         case .rounded: return "Rounded"
         case .serif: return "Serif"
         case .mono: return "Monospaced"
