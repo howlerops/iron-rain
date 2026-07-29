@@ -237,8 +237,13 @@ func (s *Store) PruneSessions(cutoff int64) (int, error) {
 		return 0, err
 	}
 	n, _ := res.RowsAffected()
+	// Evict transcripts (and handoffs) whose session no longer exists — TTL-pruned or deleted — so the
+	// durable transcript can't outlive its session and grow the DB with orphaned rows. Every persisted
+	// session has a `sessions` row (ephemeral scratch sessions never write a transcript), so "not in
+	// sessions" is exactly the orphan set.
+	_, _ = s.db.Exec(`DELETE FROM transcript_events WHERE session_id NOT IN (SELECT id FROM sessions)`)
 	if n > 0 {
-		_, _ = s.db.Exec(`PRAGMA incremental_vacuum`)
+		_, _ = s.db.Exec(`PRAGMA incremental_vacuum`) // reclaim freed pages to disk
 	}
 	return int(n), nil
 }

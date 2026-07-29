@@ -74,3 +74,31 @@ func rawStrings(b [][]byte) []string {
 	}
 	return out
 }
+
+// TestTranscriptOrphanEviction: PruneSessions must drop transcripts whose session no longer has a
+// record (TTL-pruned or deleted), while keeping transcripts for sessions that still exist.
+func TestTranscriptOrphanEviction(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "orphan.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// "live" has a session record; "orphan" does not (its session was already gone).
+	if err := db.SaveSession(SessionRecord{ID: "live", Provider: "fake"}, 9_999_999_999); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = db.AppendTranscript("live", 1, "a", []byte("keep"))
+	_, _ = db.AppendTranscript("orphan", 1, "b", []byte("drop"))
+
+	// cutoff 0 prunes no sessions, but the orphan sweep still runs.
+	if _, err := db.PruneSessions(0); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.Transcript("orphan"); len(got) != 0 {
+		t.Fatalf("orphan transcript should be evicted, got %d rows", len(got))
+	}
+	if got, _ := db.Transcript("live"); len(got) != 1 {
+		t.Fatalf("live session's transcript should survive, got %d rows", len(got))
+	}
+}

@@ -27,6 +27,9 @@ func (s *Store) AppendTranscript(sessionID string, seq int64, msgID string, raw 
 		return false, err
 	}
 	n, _ := res.RowsAffected()
+	if n > 0 {
+		s.pruneTranscript(sessionID) // keep each session's transcript bounded to the most recent rows
+	}
 	return n > 0, nil
 }
 

@@ -434,8 +434,8 @@ func (m *managedSession) flushUI(sessionID string) {
 // PARENT session's own events. run()-goroutine only (no lock needed for txSeq/asst*).
 func (m *managedSession) persistDurable(ev agent.Event, raw []byte) {
 	db := m.hub.db
-	if db == nil {
-		return
+	if db == nil || m.meta.ephemeral {
+		return // ephemeral scratch chats aren't persisted (keeps "no sessions row" == orphan for prune)
 	}
 	sid := m.sess.ID()
 	var msgID string
