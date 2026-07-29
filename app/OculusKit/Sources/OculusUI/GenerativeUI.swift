@@ -102,37 +102,44 @@ private struct TableView: View {
     var body: some View {
         let cols = Array(props.columns.prefix(Self.maxCols))
         let rows = Array(props.rows.prefix(Self.maxRows))
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 6) {
             if let cap = props.caption, !cap.isEmpty {
-                Text(cap).font(.caption.bold()).foregroundStyle(palette.mutedForeground).padding(.bottom, 4)
+                Text(cap).font(.footnote.weight(.semibold)).foregroundStyle(palette.foreground)
             }
             ScrollView(.horizontal, showsIndicators: true) {
-                // A real Grid, not per-row HStacks: HStack cells each sized to their own content, so
-                // columns never lined up across rows. Grid measures each column across ALL rows.
+                // TanStack-style data table: contiguous header bar, zebra rows, hairline-bordered
+                // rounded container. Cells stretch to their COLUMN width (maxWidth .infinity — the
+                // ideal width still drives column sizing) so backgrounds are continuous, unlike the
+                // old per-cell patches.
                 Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
                     GridRow {
                         ForEach(Array(cols.enumerated()), id: \.offset) { _, c in
-                            Text(c.label).font(.caption.bold()).foregroundStyle(palette.foreground)
-                                .frame(minWidth: 70, alignment: align(c.align))
-                                .padding(.horizontal, 8).padding(.vertical, 5)
-                                .background(palette.muted.opacity(0.3))
+                            Text(c.label)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(palette.mutedForeground)
+                                .padding(.horizontal, 10).padding(.vertical, 7)
+                                .frame(minWidth: 70, maxWidth: .infinity, alignment: align(c.align))
+                                .background(palette.muted.opacity(0.45))
                         }
                     }
-                    Divider().overlay(palette.border)
-                    ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                    ForEach(Array(rows.enumerated()), id: \.offset) { ri, row in
                         GridRow {
                             ForEach(Array(cols.enumerated()), id: \.offset) { ci, c in
                                 Text(ci < row.count ? row[ci].displayString : "")
-                                    .font(.caption.monospacedDigit()).foregroundStyle(palette.foreground)
-                                    .frame(minWidth: 70, maxWidth: 380, alignment: align(c.align))
-                                    .padding(.horizontal, 8).padding(.vertical, 4)
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(palette.foreground)
+                                    .padding(.horizontal, 10).padding(.vertical, 6)
+                                    .frame(minWidth: 70, maxWidth: .infinity, alignment: align(c.align))
                                     .fixedSize(horizontal: false, vertical: true)
                                     .lineLimit(4)
+                                    .background(ri % 2 == 1 ? palette.muted.opacity(0.16) : Color.clear)
                             }
                         }
-                        Divider().overlay(palette.border.opacity(0.3))
                     }
                 }
+                .overlay(RoundedRectangle(cornerRadius: OculusRadius.sm).stroke(palette.border))
+                .clipShape(RoundedRectangle(cornerRadius: OculusRadius.sm))
+                .padding(1) // keep the hairline stroke inside the scroll viewport
             }
             if props.rows.count > Self.maxRows {
                 Text("+\(props.rows.count - Self.maxRows) more rows").font(.caption2).foregroundStyle(palette.mutedForeground).padding(.top, 4)

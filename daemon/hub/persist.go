@@ -120,9 +120,21 @@ func (h *Hub) RestoreSessions(ctx context.Context, ttl time.Duration) {
 		log.Printf("restore: read sessions: %v", err)
 		return
 	}
-	restored, stopped := 0, 0
+	restored, stopped, dropped := 0, 0, 0
 	for _, r := range recs {
 		att := h.attacherFor(r.Provider)
+		// Drop unrecoverable HUSKS: the provider says this id can't actually resume (e.g. a
+		// claude-code session that never completed a first turn, so no UUID was ever recorded) AND we
+		// hold no durable history for it. "Restoring" it would create a fresh empty session lying
+		// about being the old one — the "clicking it does nothing" rows.
+		if rc, ok := att.(agent.ResumeChecker); ok && !rc.CanResume(r.ID) {
+			if rows, err := db.Transcript(r.ID); err == nil && len(rows) == 0 {
+				_ = db.DeleteSession(r.ID)
+				_ = db.DeleteTranscript(r.ID)
+				dropped++
+				continue
+			}
+		}
 		if att != nil {
 			if sess, err := att.Attach(ctx, r.ID, r.Cwd); err == nil {
 				var pm persistedMeta
@@ -146,8 +158,8 @@ func (h *Hub) RestoreSessions(ctx context.Context, ttl time.Duration) {
 		// rather than silently vanishing. It ages out on the normal TTL.
 		stopped++
 	}
-	if restored > 0 || stopped > 0 {
-		log.Printf("restore: re-attached %d session(s), %d kept as stopped/restartable", restored, stopped)
+	if restored > 0 || stopped > 0 || dropped > 0 {
+		log.Printf("restore: re-attached %d session(s), %d kept as stopped/restartable, %d unrecoverable husk(s) dropped", restored, stopped, dropped)
 		h.broadcastSessionList()
 	}
 }

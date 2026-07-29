@@ -46,6 +46,13 @@ type Prober interface {
 	Probe(ctx context.Context) (busy bool, err error)
 }
 
+// ResumeChecker is an optional Provider capability: report whether an existing session id can
+// actually be RESUMED with its history (vs. an attach that would start a fresh, empty impostor).
+// Used at restore to drop unrecoverable husks instead of reviving them as blank sessions.
+type ResumeChecker interface {
+	CanResume(id string) bool
+}
+
 // Replayer is a marker for Sessions whose provider RE-STREAMS the conversation history itself on
 // attach (opencode's replayHistory, claude-code's JSONL transcript replay). For these, the provider
 // is the single source of replay truth — the hub must NOT also replay its durable transcript, or

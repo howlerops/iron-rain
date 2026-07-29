@@ -88,6 +88,13 @@ func (p *Provider) setResume(id, uuid string) {
 	}
 }
 
+// CanResume implements agent.ResumeChecker: a claude-code session is only resumable when we know
+// claude's real UUID for it (recorded on its first turn) or the id itself is that UUID. Without it,
+// "re-attaching" starts a FRESH empty session that lies about being the old one.
+func (p *Provider) CanResume(id string) bool {
+	return p.resumeID(id) != "" || looksLikeUUID(id)
+}
+
 func (p *Provider) Name() string { return "claude-code" }
 
 // List returns no live sessions (claude-code sessions are the daemon's child

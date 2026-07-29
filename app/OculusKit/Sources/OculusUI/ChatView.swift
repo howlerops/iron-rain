@@ -63,6 +63,19 @@ public struct ChatView: View {
                 sessionErrorView(err) // a broken/errored session shows WHY, not a blank pane
             } else if model.messages.isEmpty && model.sessionLoading {
                 sessionLoadingView // smooth swap: a loader while the transcript replays, not white
+            } else if model.messages.isEmpty, model.sessionID != nil, !model.sessionLoading, !model.transcriptSettling {
+                // An OPENED session with nothing in it (e.g. a restored session that never had a turn,
+                // so there is no history anywhere). A blank white pane read as "clicking does nothing" —
+                // say what this is and what to do instead.
+                VStack(spacing: OculusSpace.md) {
+                    Image(systemName: "bubble.left.and.bubble.right").font(.largeTitle).foregroundStyle(palette.mutedForeground)
+                    Text("This conversation is empty").font(.headline).foregroundStyle(palette.foreground)
+                    Text("No messages were found for this session — it may never have had a turn, or its history isn't recoverable. Send a message below to start, or delete it from Manage Sessions.")
+                        .font(.callout).foregroundStyle(palette.mutedForeground)
+                        .multilineTextAlignment(.center).frame(maxWidth: 420).fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(OculusSpace.xl)
             } else if model.transcriptSettling {
                 // History is still bursting in. Keep the scroll view UNBUILT until it settles, then
                 // create it once — fully formed and natively anchored at the bottom — instead of the
