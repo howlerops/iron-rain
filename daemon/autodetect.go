@@ -82,29 +82,48 @@ func enableProviders(ctx context.Context, h *hub.Hub, opencodeURL, claudeSidecar
 	return enabled
 }
 
-// detectOrStartOpenCode returns the URL of a running `opencode serve`, starting one
-// (persistent, reused by later daemon runs) if only the binary is present.
+// detectOrStartOpenCode returns the URL of the opencode server the daemon should use. It prefers a
+// DEDICATED, daemon-managed server so Iron Rain is isolated from any opencode the user runs for their
+// OWN work: latching onto an arbitrary discovered server (lsof order) attached to the user's opencode,
+// picked a NON-DETERMINISTIC server that could switch across restarts, and orphaned Iron Rain's
+// sessions (a session created on server A vanishes when the daemon later reconnects to server B).
+// Priority: (1) our OWN server from a previous run (remembered port, still alive) → sticky reconnect;
+// (2) start a fresh dedicated server; (3) LAST RESORT, a discovered running server (may be the user's).
 func detectOrStartOpenCode(ctx context.Context) string {
+	// (1) Reconnect to the server WE started last time, if it's still up — same server ⇒ our sessions
+	// are still there, and we never drift onto the user's opencode.
+	if url := rememberedOpenCodeURL(); url != "" && waitOpenCodeReady(url, 1*time.Second) {
+		log.Printf("opencode: reusing our managed server at %s", url)
+		return url
+	}
+	// (2) Start our OWN dedicated server.
+	if bin, err := exec.LookPath("opencode"); err == nil {
+		if url := startManagedOpenCode(bin); url != "" {
+			return url
+		}
+	} else {
+		log.Printf("opencode: NOT found on PATH (looked in %s). Install it or add its dir to PATH; then Re-scan.", os.Getenv("PATH"))
+	}
+	// (3) Last resort: reuse a running server (may be the user's own opencode). Better than nothing,
+	// but NOT isolated — warn so a confusing "found the wrong sessions / lost my session" is explained.
 	dctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	if servers, _ := discovery.FindOpenCodeServers(dctx); len(servers) > 0 {
-		log.Printf("opencode: found a running server at %s", servers[0].URL)
+		log.Printf("opencode: WARNING using a running server at %s that the daemon did NOT start — if this is your own opencode, Iron Rain's sessions aren't isolated and may be lost when it stops. Install opencode so the daemon can run its own.", servers[0].URL)
 		return servers[0].URL
 	}
-	// No running server — start one from the binary. Every failure below is logged so the in-app
-	// Daemon Logs reveal why opencode "isn't detected" (the #1 report is the binary not on PATH).
-	bin, err := exec.LookPath("opencode")
-	if err != nil {
-		log.Printf("opencode: NOT found on PATH (looked in %s). Install it or add its dir to PATH; then Re-scan.", os.Getenv("PATH"))
-		return ""
-	}
-	log.Printf("opencode: no server running — starting %s serve …", bin)
+	return ""
+}
+
+// startManagedOpenCode launches a dedicated `opencode serve` (sanitized env), waits for it to become
+// ready, and remembers its port so a later daemon run reconnects to it. Returns "" on failure.
+func startManagedOpenCode(bin string) string {
 	port := freePort()
 	if port == 0 {
 		log.Printf("opencode: couldn't allocate a local port")
 		return ""
 	}
-	// Capture stderr so a start failure has a reason in the log (was io.Discard → silent).
+	log.Printf("opencode: starting our own %s serve on :%d …", bin, port)
 	var errBuf bytes.Buffer
 	cmd := exec.Command(bin, "serve", "--hostname", "127.0.0.1", "--port", strconv.Itoa(port))
 	cmd.Stdout = io.Discard
@@ -112,7 +131,6 @@ func detectOrStartOpenCode(ctx context.Context) string {
 	// Run agent tool commands NON-INTERACTIVELY. An agent bash step like `git merge` (opens $EDITOR
 	// for the merge message), `git commit`, a pager, or a credential prompt would otherwise block on
 	// stdin FOREVER — wedging the whole opencode turn (and every queued prompt behind it) for hours.
-	// These make git/editors/pagers no-ops that return immediately instead of waiting for a human.
 	cmd.Env = append(os.Environ(),
 		"GIT_EDITOR=true",       // git "opens" /usr/bin/true → succeeds instantly, no editor wait
 		"EDITOR=true",           // generic editor fallback
@@ -131,8 +149,45 @@ func detectOrStartOpenCode(ctx context.Context) string {
 		log.Printf("opencode: started %s but it wasn't ready on %s within 12s: %s", bin, url, strings.TrimSpace(errBuf.String()))
 		return ""
 	}
-	log.Printf("opencode: started at %s", url)
+	rememberOpenCodePort(port)
+	log.Printf("opencode: started our managed server at %s", url)
 	return url
+}
+
+// opencodePortFile is where the daemon records the port of the opencode server IT started, so a later
+// run reconnects to the SAME one (where its sessions live) instead of re-discovering an arbitrary
+// server — the fix for orphaned sessions on a machine also running the user's own opencode.
+func opencodePortFile() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".oculus", "opencode-port")
+}
+
+func rememberedOpenCodeURL() string {
+	f := opencodePortFile()
+	if f == "" {
+		return ""
+	}
+	b, err := os.ReadFile(f)
+	if err != nil {
+		return ""
+	}
+	port := strings.TrimSpace(string(b))
+	if _, err := strconv.Atoi(port); err != nil {
+		return ""
+	}
+	return "http://127.0.0.1:" + port
+}
+
+func rememberOpenCodePort(port int) {
+	f := opencodePortFile()
+	if f == "" {
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(f), 0o700)
+	_ = os.WriteFile(f, []byte(strconv.Itoa(port)), 0o600)
 }
 
 func waitOpenCodeReady(url string, timeout time.Duration) bool {

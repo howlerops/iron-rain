@@ -82,3 +82,23 @@ func TestFirstUsableSidecar(t *testing.T) {
 		t.Fatalf("firstUsableSidecar (none installed) = %q, want empty", got)
 	}
 }
+
+// TestOpenCodePortStickiness verifies the daemon remembers the opencode server IT started and hands
+// back that same URL on a later run — so restarts reconnect to the daemon's OWN server (where its
+// sessions live) instead of drifting onto the user's other opencode instances.
+func TestOpenCodePortStickiness(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // isolate ~/.oculus/opencode-port from the real home
+
+	if url := rememberedOpenCodeURL(); url != "" {
+		t.Fatalf("expected no remembered server initially, got %q", url)
+	}
+	rememberOpenCodePort(49596)
+	if got := rememberedOpenCodeURL(); got != "http://127.0.0.1:49596" {
+		t.Fatalf("remembered URL = %q, want http://127.0.0.1:49596", got)
+	}
+	// A garbage port file must be ignored, not returned as a bogus URL.
+	_ = os.WriteFile(opencodePortFile(), []byte("not-a-port"), 0o600)
+	if got := rememberedOpenCodeURL(); got != "" {
+		t.Fatalf("garbage port file should yield no URL, got %q", got)
+	}
+}
