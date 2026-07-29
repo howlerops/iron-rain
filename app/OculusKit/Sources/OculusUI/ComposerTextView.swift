@@ -102,7 +102,18 @@ private struct Representable: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let tv = scroll.documentView as? KeyTextView else { return }
         tv.onSubmit = onSubmit
-        if tv.string != text { tv.string = text }
+        if tv.string != text {
+            // A PROGRAMMATIC swap (the per-session draft switch). A bare `tv.string =` keeps the old
+            // selection AND any in-flight autocomplete/marked-text session — whose stale ranges then
+            // get applied to the new (often empty) string, crashing deep in AppKit with
+            // NSRangeException ("Range {0, 18446744073709551614} out of bounds; string length 0")
+            // the moment a second session was opened. End the input session first, then clamp the
+            // caret to the end of the new draft.
+            if tv.hasMarkedText() { tv.unmarkText() }
+            tv.inputContext?.discardMarkedText()
+            tv.string = text
+            tv.setSelectedRange(NSRange(location: (text as NSString).length, length: 0))
+        }
         DispatchQueue.main.async { recomputeHeight(tv) }
     }
 
