@@ -109,6 +109,18 @@ func detectOrStartOpenCode(ctx context.Context) string {
 	cmd := exec.Command(bin, "serve", "--hostname", "127.0.0.1", "--port", strconv.Itoa(port))
 	cmd.Stdout = io.Discard
 	cmd.Stderr = &errBuf
+	// Run agent tool commands NON-INTERACTIVELY. An agent bash step like `git merge` (opens $EDITOR
+	// for the merge message), `git commit`, a pager, or a credential prompt would otherwise block on
+	// stdin FOREVER — wedging the whole opencode turn (and every queued prompt behind it) for hours.
+	// These make git/editors/pagers no-ops that return immediately instead of waiting for a human.
+	cmd.Env = append(os.Environ(),
+		"GIT_EDITOR=true",       // git "opens" /usr/bin/true → succeeds instantly, no editor wait
+		"EDITOR=true",           // generic editor fallback
+		"VISUAL=true",
+		"GIT_PAGER=cat",         // no interactive pager
+		"PAGER=cat",
+		"GIT_TERMINAL_PROMPT=0", // git fails fast instead of prompting for credentials
+	)
 	if err := cmd.Start(); err != nil {
 		log.Printf("opencode: failed to start %s: %v", bin, err)
 		return ""

@@ -413,6 +413,13 @@ type session struct {
 	// the silent gap) instead of only resuming live from the reconnect point.
 	turnActive atomic.Bool
 
+	// True from when a turn is SENT until it reaches idle — NOT cleared when the POST returns (unlike
+	// turnActive). So if opencode wedges a turn server-side (e.g. an agent bash step like `git merge`
+	// hangs on $EDITOR), this stays true, and the next prompt aborts the stuck turn first instead of
+	// queuing behind it forever (opencode processes a session serially). The exact "I sent
+	// continue?/status? and got nothing" pile-up.
+	turnPending atomic.Bool
+
 	// populated in the (single) readEvents goroutine — no mutex needed.
 	msgRoles    map[string]string // messageID -> role (from message.updated)
 	emittedUser map[string]bool   // messageIDs already forwarded as a user turn
@@ -838,7 +845,8 @@ func (s *session) handle(raw []byte) {
 		s.usageDone = nil
 		s.childIDs = nil
 		s.subStarted = nil
-		s.turnActive.Store(false) // the turn is authoritatively done (covers the post-approval continuation)
+		s.turnActive.Store(false)  // the turn is authoritatively done (covers the post-approval continuation)
+		s.turnPending.Store(false) // reached idle → not wedged; a later prompt won't force an abort
 		s.approvalMu.Lock()
 		s.approvalSession = nil
 		s.approvalMu.Unlock()
@@ -919,7 +927,18 @@ func (s *session) sendParts(parts []map[string]any) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// If the PREVIOUS turn never reached idle, it's wedged server-side (a hung interactive command, a
+	// lost approval, …). opencode runs a session serially, so a new prompt would just queue behind the
+	// hang and never run — the "I sent continue?/status? and got nothing back" pile-up. Abort the stuck
+	// turn first (best-effort) so THIS prompt starts fresh.
+	priorUnfinished := s.turnPending.Swap(true)
 	go func() {
+		if priorUnfinished {
+			actx, acancel := context.WithTimeout(ctx, 15*time.Second)
+			_ = s.p.postJSON(actx, withDir("/session/"+s.id+"/abort", s.dir), map[string]any{}, nil)
+			acancel()
+			log.Printf("opencode: sid=%s new prompt while the prior turn was still unfinished → aborted the stuck turn first", s.id)
+		}
 		// opencode's message POST blocks server-side for the WHOLE turn. We bound it only to prevent a
 		// leaked goroutine — NOT to bound the turn (huge migrations legitimately run for hours). The
 		// real progress + completion channel is the SSE stream; this POST is fire-and-forget.
@@ -945,16 +964,19 @@ func (s *session) sendParts(parts []map[string]any) error {
 			parked := s.lastStatus == protocol.StatusAwaitingApproval
 			s.statusMu.Unlock()
 			if !parked {
-				s.resyncLast(ctx) // recover the turn's result if its streaming was missed, then seal it
+				s.turnPending.Store(false) // turn completed cleanly → not wedged
+				s.resyncLast(ctx)          // recover the turn's result if its streaming was missed, then seal it
 				s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusIdle}})
 			}
 		case pctx.Err() == context.DeadlineExceeded:
-			// Our local 3h leak-bound elapsed. opencode's turn may STILL be running server-side and the
-			// SSE stream keeps delivering it — so we do NOT declare an error (that used to falsely mark
-			// long migrations "stuck"). Just stop waiting on this POST; SSE / the client watchdog cover it.
+			// Our local leak-bound elapsed with the POST STILL blocking — the turn is wedged server-side
+			// (a hung interactive command, etc.). Deliberately LEAVE turnPending set so the user's NEXT
+			// prompt aborts this stuck turn instead of queuing behind it. We don't declare an error (a
+			// legit long migration also keeps this POST open while streaming over SSE).
 			log.Printf("opencode: POST message sid=%s stopped waiting after %s (turn continues on the server)", s.id, time.Since(start).Round(time.Second))
 		default:
 			// A real transport failure (opencode died / connection refused) — surface it.
+			s.turnPending.Store(false)
 			log.Printf("opencode: POST message sid=%s FAILED after %s: %v", s.id, time.Since(start).Round(time.Second), err)
 			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusError, Detail: "opencode: " + err.Error()}})
 		}
