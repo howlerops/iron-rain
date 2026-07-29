@@ -329,6 +329,9 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 		}
 	}
 	ms := h.addSession(sess, meta)
+	if strings.TrimSpace(req.Prompt) != "" {
+		ms.openTurn("") // created WITH a prompt → a turn is already in flight
+	}
 	ms.mu.Lock()
 	if req.Model != "" {
 		ms.model, ms.modelProvider = req.Model, req.ModelProvider

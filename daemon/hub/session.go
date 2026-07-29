@@ -362,6 +362,20 @@ func (m *managedSession) subscribe(conn *transport.Conn) {
 			}
 		}
 	}
+	// Deliver the CURRENT turn snapshot to this subscriber: turn.state is transient (never replayed
+	// from the transcript), so without this a client that subscribes mid-turn — including the CREATOR
+	// of a session started with a prompt, and any session switch — would see no turn state until the
+	// next ~10s heartbeat (or, for a fast turn, only the terminal frame with no `running` before it).
+	m.mu.Lock()
+	if m.turnPhase != "" {
+		ts := m.turnSnapshotLocked(m.turnPhase, "")
+		m.mu.Unlock()
+		if raw, err := (agent.Event{Type: protocol.TypeTurnState, Payload: ts}).Encode(); err == nil {
+			replay = append(replay, raw)
+		}
+	} else {
+		m.mu.Unlock()
+	}
 	if already {
 		// The client RE-subscribed to a session it already had a subscription for — this is a session
 		// SWITCH (the app cleared its transcript view on open, or switched away and back). Previously we
@@ -452,6 +466,17 @@ func (m *managedSession) flushUI(sessionID string) {
 		}
 	}
 	m.seg = genui.Segmenter{}
+}
+
+// ownEvent reports whether a delta/thinking event belongs to the session itself (not a sub-agent).
+func ownEvent(ev agent.Event, sid string) bool {
+	switch p := ev.Payload.(type) {
+	case protocol.OutputDelta:
+		return p.SessionID == sid
+	case protocol.Thinking:
+		return p.SessionID == sid
+	}
+	return false
 }
 
 // persistDurable writes a finalized transcript event to the durable store (SQLite) so a session's
@@ -603,7 +628,13 @@ func (m *managedSession) run() {
 		if ev.Type == protocol.TypeOutputDelta || ev.Type == protocol.TypeThinking {
 			m.mu.Lock()
 			m.wasRunning = true
+			noTurn := m.turnPhase == ""
 			m.mu.Unlock()
+			// Fallback entry: output is streaming but no turn is open (a prompt path we didn't wire,
+			// a nudge, a replayed live turn after re-attach) — the truth is "running", say so.
+			if noTurn && ownEvent(ev, m.sess.ID()) {
+				m.openTurn("")
+			}
 		}
 		// NOTE: the durable transcript deliberately records only the user's WRITE-AHEAD prompts (at
 		// send, in the hub) + error markers (below) — the irreplaceable, low-volume, never-replayed
