@@ -11,11 +11,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/howlerops/oculus/daemon/agent"
@@ -27,20 +29,66 @@ import (
 // ctx) indefinitely.
 const unaryTimeout = 30 * time.Second
 
+// sseIdleTimeout bounds how long the SSE /event stream may go SILENT before we treat the
+// connection as DEAD and force a reconnect. This is the fix for the "opencode gets stuck on long
+// tasks and never catches up" bug: a half-open TCP socket (laptop sleep/wake, Wi-Fi roam, NAT idle
+// drop, an opencode hang — none of which send a FIN/RST) leaves the blocking Read() with no data and
+// no error, so the scanner blocks FOREVER and the transparent reconnect below never fires. An idle
+// read-deadline turns that silent hang into a timeout error, which unwinds the scan loop and triggers
+// a reconnect (the opencode session lives server-side, so reconnecting is cheap + non-destructive).
+// Generous enough that a legitimately quiet stream (a long, output-less tool call) reconnects
+// harmlessly rather than being mistaken for a dead socket.
+const sseIdleTimeout = 120 * time.Second
+
 // Provider talks to one opencode server.
 type Provider struct {
 	baseURL string
-	http    *http.Client // no Timeout: for the long-lived SSE /event stream only
+	sse     *http.Client // no request Timeout, but an idle READ-deadline per conn: the /event stream only
+	http    *http.Client // no Timeout: for the turn-long blocking POST /message (bounded by a 3h ctx)
 	unary   *http.Client // bounded Timeout: for request/response List/postJSON/replayHistory
 }
 
 // New returns a Provider for the given opencode base URL (e.g. http://127.0.0.1:4096).
-func New(baseURL string) *Provider {
+func New(baseURL string) *Provider { return newProvider(baseURL, sseIdleTimeout) }
+
+// newProvider is New with an injectable SSE idle timeout (tests use a short one to exercise the
+// half-open reconnect without waiting the full production window).
+func newProvider(baseURL string, sseIdle time.Duration) *Provider {
 	return &Provider{
 		baseURL: strings.TrimRight(baseURL, "/"),
+		sse:     &http.Client{Transport: newSSETransport(sseIdle)},
 		http:    &http.Client{},
 		unary:   &http.Client{Timeout: unaryTimeout},
 	}
+}
+
+// newSSETransport builds a transport whose connections carry an idle READ-deadline (see
+// sseIdleTimeout). It's used ONLY for the /event SSE stream — never for the blocking POST /message,
+// which legitimately sends no bytes for the whole (possibly multi-hour) turn and must not be killed.
+func newSSETransport(idle time.Duration) *http.Transport {
+	d := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+	return &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			c, err := d.DialContext(ctx, network, addr)
+			if err != nil {
+				return nil, err
+			}
+			return &idleTimeoutConn{Conn: c, idle: idle}, nil
+		},
+	}
+}
+
+// idleTimeoutConn resets a read deadline on every Read, so a stream that stops delivering bytes for
+// longer than `idle` makes the next Read return a timeout error (instead of blocking forever on a
+// half-open socket). Writes and everything else are untouched.
+type idleTimeoutConn struct {
+	net.Conn
+	idle time.Duration
+}
+
+func (c *idleTimeoutConn) Read(b []byte) (int, error) {
+	_ = c.Conn.SetReadDeadline(time.Now().Add(c.idle))
+	return c.Conn.Read(b)
 }
 
 func (p *Provider) Name() string { return "opencode" }
@@ -353,6 +401,11 @@ type session struct {
 	statusMu   sync.Mutex // guards lastStatus (written by the SSE loop, read by the POST goroutine)
 	lastStatus string     // last session.status emitted — lets the POST-return idle backstop skip when awaiting approval
 
+	// True while a turn's POST /message is in flight. Set by sendParts, read by readLoop so that a
+	// mid-turn SSE reconnect resyncs the latest assistant text (recovering anything produced during
+	// the silent gap) instead of only resuming live from the reconnect point.
+	turnActive atomic.Bool
+
 	// populated in the (single) readEvents goroutine — no mutex needed.
 	msgRoles    map[string]string // messageID -> role (from message.updated)
 	emittedUser map[string]bool   // messageIDs already forwarded as a user turn
@@ -388,7 +441,7 @@ func (s *session) openEvents(ctx context.Context) (io.ReadCloser, error) {
 		return nil, err
 	}
 	req.Header.Set("Accept", "text/event-stream")
-	resp, err := s.p.http.Do(req)
+	resp, err := s.p.sse.Do(req) // idle-read-deadline client → a half-open stream reconnects, not hangs
 	if err != nil {
 		return nil, err
 	}
@@ -418,6 +471,13 @@ func (s *session) readLoop(body io.ReadCloser) {
 			return
 		}
 		log.Printf("opencode: /event reconnected sid=%s", s.id)
+		// opencode's /event is live pub/sub with NO replay, so events produced during the drop are gone.
+		// If a turn is in flight, pull the latest assistant text so anything the agent finished writing
+		// while we were disconnected shows up — the app REPLACES the still-streaming message with it, so
+		// this recovers a stalled turn instead of leaving it frozen mid-sentence. Cheap + idempotent.
+		if s.turnActive.Load() {
+			go s.resyncLast(s.ctx)
+		}
 		body = nb
 	}
 }
@@ -815,6 +875,8 @@ func (s *session) sendParts(parts []map[string]any) error {
 		// real progress + completion channel is the SSE stream; this POST is fire-and-forget.
 		pctx, cancel := context.WithTimeout(ctx, 3*time.Hour)
 		defer cancel()
+		s.turnActive.Store(true)
+		defer s.turnActive.Store(false)
 		start := time.Now()
 		log.Printf("opencode: POST message sid=%s (turn start)", s.id)
 		err := s.p.doPost(pctx, withDir("/session/"+s.id+"/message", s.dir), body, nil, s.p.http) // pctx bounds it
