@@ -412,6 +412,10 @@ public final class Model: ObservableObject {
     /// Post-connection hydration: load projects/sessions/integrations and replay any pending
     /// notification-driven action. Runs once, after a route wins the race.
     private func finishConnect() async {
+        // Teach the technical vocabulary before the user can type into the composer, so autocorrect
+        // isn't rewriting `mcp`/`jira` on the very first prompt.
+        TechDictionary.seedIfNeeded()
+        TechDictionary.applyCustom()
         // Identify FIRST so any prompt sent right after connecting is already attributed.
         await identifySelf()
         // Note: discovery of terminal-owned sessions is on-demand (the Add Session search),

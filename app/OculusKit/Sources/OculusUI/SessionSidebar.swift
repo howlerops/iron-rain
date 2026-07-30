@@ -101,6 +101,7 @@ struct SessionSidebar: View {
     var onOpenApprovalRules: (() -> Void)? = nil
     var onOpenMCP: (() -> Void)? = nil
     var onOpenSharing: (() -> Void)? = nil
+    var onOpenDictionary: (() -> Void)? = nil
     var onOpenAccounts: (() -> Void)? = nil
     var onOpenRemotes: (() -> Void)? = nil
     var onManageSessions: (() -> Void)? = nil
@@ -349,6 +350,9 @@ struct SessionSidebar: View {
                 }
                 if let onOpenAgents {
                     Button { onOpenAgents() } label: { Label("Agents…", systemImage: "cpu") }
+                }
+                if let onOpenDictionary {
+                    Button { onOpenDictionary() } label: { Label("Dictionary…", systemImage: "character.book.closed") }
                 }
                 if let onOpenSharing {
                     Button { onOpenSharing() } label: { Label("Sharing…", systemImage: "person.2") }
