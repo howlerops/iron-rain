@@ -19,15 +19,15 @@ type turnFakeSess struct {
 	recovered atomic.Int32
 }
 
-func (f *turnFakeSess) ID() string                                     { return "t1" }
-func (f *turnFakeSess) Provider() string                               { return "fake" }
-func (f *turnFakeSess) Events() <-chan agent.Event                     { return f.ch }
-func (f *turnFakeSess) Prompt(context.Context, string) error           { return nil }
-func (f *turnFakeSess) Respond(context.Context, string, string) error  { return nil }
-func (f *turnFakeSess) Stop(context.Context) error                     { return nil }
-func (f *turnFakeSess) Close() error                                   { return nil }
-func (f *turnFakeSess) Probe(ctx context.Context) (bool, error)        { return f.probe(ctx) }
-func (f *turnFakeSess) Recover(context.Context)                        { f.recovered.Add(1) }
+func (f *turnFakeSess) ID() string                                    { return "t1" }
+func (f *turnFakeSess) Provider() string                              { return "fake" }
+func (f *turnFakeSess) Events() <-chan agent.Event                    { return f.ch }
+func (f *turnFakeSess) Prompt(context.Context, string) error          { return nil }
+func (f *turnFakeSess) Respond(context.Context, string, string) error { return nil }
+func (f *turnFakeSess) Stop(context.Context) error                    { return nil }
+func (f *turnFakeSess) Close() error                                  { return nil }
+func (f *turnFakeSess) Probe(ctx context.Context) (bool, error)       { return f.probe(ctx) }
+func (f *turnFakeSess) Recover(context.Context)                       { f.recovered.Add(1) }
 
 // turnHarness builds a managedSession with an injected subscriber whose channel captures every
 // emitted frame, plus tiny Turn Engine timings (restored on cleanup).

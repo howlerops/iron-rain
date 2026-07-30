@@ -17,7 +17,7 @@ import (
 
 type sharedProvider struct{ sess *sharedSession }
 
-func (p *sharedProvider) Name() string                                    { return "fake" }
+func (p *sharedProvider) Name() string                                     { return "fake" }
 func (p *sharedProvider) List(context.Context) ([]protocol.Session, error) { return nil, nil }
 func (p *sharedProvider) Create(context.Context, string, string) (agent.Session, error) {
 	go p.sess.run()
@@ -32,9 +32,9 @@ type sharedSession struct {
 func newSharedSession() *sharedSession {
 	return &sharedSession{events: make(chan agent.Event, 8), responded: make(chan string, 1)}
 }
-func (s *sharedSession) ID() string                          { return "shared_sess" }
-func (s *sharedSession) Provider() string                    { return "fake" }
-func (s *sharedSession) Events() <-chan agent.Event          { return s.events }
+func (s *sharedSession) ID() string                           { return "shared_sess" }
+func (s *sharedSession) Provider() string                     { return "fake" }
+func (s *sharedSession) Events() <-chan agent.Event           { return s.events }
 func (s *sharedSession) Prompt(context.Context, string) error { return nil }
 func (s *sharedSession) Respond(_ context.Context, _, decision string) error {
 	s.responded <- decision

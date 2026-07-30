@@ -22,10 +22,9 @@ func TestRepoSkillInSync(t *testing.T) {
 	}
 }
 
-// TestCatalogDocumented locks the closed catalog to what the MODEL is actually told about. Adding a
-// component touches five unenforced places (knownComponents, propsWithinCaps, skill.md, the Swift
-// render switch, a props struct) — "plan" once shipped in the catalog and the renderer but never
-// reached skill.md, so no model ever emitted it. This test makes that failure mode impossible.
+// TestCatalogDocumented locks the closed catalog to what the MODEL is actually told about. "plan"
+// once shipped in the catalog and the Swift renderer but never reached skill.md, so no model ever
+// emitted it. This test makes that failure mode impossible.
 func TestCatalogDocumented(t *testing.T) {
 	documented := map[string]bool{}
 	inCatalog := false
@@ -46,14 +45,14 @@ func TestCatalogDocumented(t *testing.T) {
 			documented[name] = true
 		}
 	}
-	for name := range knownComponents {
+	for name := range catalog {
 		if !documented[name] {
-			t.Errorf("component %q is in knownComponents but undocumented in skill.md — the model will never emit it", name)
+			t.Errorf("component %q is in the catalog but undocumented in skill.md — the model will never emit it", name)
 		}
 	}
 	for name := range documented {
-		if !knownComponents[name] {
-			t.Errorf("component %q is documented in skill.md but not in knownComponents — the daemon will drop it as unknown", name)
+		if !knownComponent(name) {
+			t.Errorf("component %q is documented in skill.md but not in the catalog — the daemon will drop it as unknown", name)
 		}
 	}
 }

@@ -14,6 +14,7 @@ struct FanoutSheet: View {
     @State private var projectID = ""
     @State private var count = 3
     @State private var plan = false
+    @State private var judge = false
     @FocusState private var promptFocused: Bool
 
     var body: some View {
@@ -57,6 +58,8 @@ struct FanoutSheet: View {
             }
 
             Toggle("Plan first (each agent proposes a plan before editing)", isOn: $plan)
+            Toggle("Recommend a winner when they finish", isOn: $judge)
+                .help("A fresh agent reads each attempt's summary and diffstat and suggests one to keep. Advisory — you still choose.")
                 .font(.callout)
 
             HStack {
@@ -64,7 +67,7 @@ struct FanoutSheet: View {
                 Button {
                     Task {
                         await model.fanout(prompt: prompt, provider: provider,
-                                           projectID: projectID.isEmpty ? nil : projectID, count: count, plan: plan)
+                                           projectID: projectID.isEmpty ? nil : projectID, count: count, plan: plan, judge: judge)
                         onClose()
                     }
                 } label: {

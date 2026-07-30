@@ -15,7 +15,7 @@ import (
 // then goes idle — exercising the daemon's segmenter → ui.component wire path end to end.
 type genuiProvider struct{ sess *genuiSession }
 
-func (p *genuiProvider) Name() string                                    { return "fake" }
+func (p *genuiProvider) Name() string                                     { return "fake" }
 func (p *genuiProvider) List(context.Context) ([]protocol.Session, error) { return nil, nil }
 func (p *genuiProvider) Create(context.Context, string, string) (agent.Session, error) {
 	go p.sess.run()
@@ -24,13 +24,13 @@ func (p *genuiProvider) Create(context.Context, string, string) (agent.Session, 
 
 type genuiSession struct{ events chan agent.Event }
 
-func (s *genuiSession) ID() string                           { return "genui_sess" }
-func (s *genuiSession) Provider() string                     { return "fake" }
-func (s *genuiSession) Events() <-chan agent.Event           { return s.events }
-func (s *genuiSession) Prompt(context.Context, string) error { return nil }
+func (s *genuiSession) ID() string                                    { return "genui_sess" }
+func (s *genuiSession) Provider() string                              { return "fake" }
+func (s *genuiSession) Events() <-chan agent.Event                    { return s.events }
+func (s *genuiSession) Prompt(context.Context, string) error          { return nil }
 func (s *genuiSession) Respond(context.Context, string, string) error { return nil }
-func (s *genuiSession) Stop(context.Context) error           { return nil }
-func (s *genuiSession) Close() error                         { return nil }
+func (s *genuiSession) Stop(context.Context) error                    { return nil }
+func (s *genuiSession) Close() error                                  { return nil }
 func (s *genuiSession) run() {
 	// A fence split across TWO deltas, with plain text on both sides — proves streaming reassembly.
 	s.events <- agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: "genui_sess", Text: "here are the results:\n```iron:ui\n{\"component\":\"tab"}}

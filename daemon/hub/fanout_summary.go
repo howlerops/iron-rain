@@ -31,9 +31,10 @@ func (h *Hub) buildFanoutSummary(group string) protocol.FanoutSummary {
 		}
 	}
 	db := h.db
+	prompt := h.fanoutPrompt[group]
 	h.mu.Unlock()
 
-	out := protocol.FanoutSummary{Group: group, Results: make([]protocol.FanoutVariantResult, 0, len(members))}
+	out := protocol.FanoutSummary{Group: group, Prompt: prompt, Results: make([]protocol.FanoutVariantResult, 0, len(members))}
 	for _, m := range members {
 		m.mu.Lock()
 		variant := m.meta.fanoutVariant
@@ -138,6 +139,14 @@ func (h *Hub) broadcastFanoutSummary(group string) {
 		if r.FilesChanged > 0 {
 			changed++
 		}
+	}
+	// Optional advisory judge, if this group asked for one.
+	h.mu.Lock()
+	spec, wantsJudge := h.fanoutJudge[group]
+	delete(h.fanoutJudge, group)
+	h.mu.Unlock()
+	if wantsJudge {
+		go h.judgeFanout(context.Background(), sum, spec.provider, spec.projectID)
 	}
 	h.recordActivity(activity.Event{
 		Kind:   activity.KindFanoutDone,

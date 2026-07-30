@@ -26,7 +26,7 @@ type resubSession struct {
 	done   chan struct{}
 }
 
-func (s *resubSession) ID() string                                     { return "rs" }
+func (s *resubSession) ID() string                                    { return "rs" }
 func (s *resubSession) Provider() string                              { return "fake" }
 func (s *resubSession) Events() <-chan agent.Event                    { return s.events }
 func (s *resubSession) Prompt(context.Context, string) error          { return nil }

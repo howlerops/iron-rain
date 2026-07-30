@@ -12,7 +12,7 @@ import (
 
 type txFakeSess struct{ ch chan agent.Event }
 
-func (f *txFakeSess) ID() string                                     { return "s1" }
+func (f *txFakeSess) ID() string                                    { return "s1" }
 func (f *txFakeSess) Provider() string                              { return "fake" }
 func (f *txFakeSess) Events() <-chan agent.Event                    { return f.ch }
 func (f *txFakeSess) Prompt(context.Context, string) error          { return nil }

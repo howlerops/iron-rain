@@ -1574,14 +1574,15 @@ public final class Model: ObservableObject {
     /// Fan-out: spawn `count` agents on the SAME prompt, each in its own worktree, as one group —
     /// race several approaches, then compare and merge the winner. Returns the group id on success.
     @discardableResult
-    public func fanout(prompt: String, provider: String, projectID: String?, count: Int, plan: Bool = false) async -> String? {
+    public func fanout(prompt: String, provider: String, projectID: String?, count: Int, plan: Bool = false, judge: Bool = false) async -> String? {
         guard client != nil else { return nil }
         busy = true; status = "Fanning out \(count) agents…"
         defer { busy = false }
         do {
             let env = try await request(MessageType.fanoutCreate,
                                         payload: FanoutCreate(provider: provider, projectID: projectID,
-                                                              prompt: prompt, plan: plan ? true : nil, count: count))
+                                                              prompt: prompt, plan: plan ? true : nil,
+                                                              judge: judge ? true : nil, count: count))
             let res = try env.payload(as: FanoutResult.self)
             status = "Fan-out: \(res.sessionIDs.count) agents running"
             await loadSessions()

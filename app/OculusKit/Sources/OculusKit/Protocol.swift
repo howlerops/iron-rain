@@ -1198,15 +1198,17 @@ public struct FanoutCreate: Codable {
     public var projectIDs: [String]?
     public var prompt: String
     public var plan: Bool?
+    /// Ask a fresh agent to recommend a winner once every variant finishes. Advisory only.
+    public var judge: Bool?
     public var count: Int
     public var models: [String]?
     enum CodingKeys: String, CodingKey {
         case provider; case projectID = "project_id"; case projectIDs = "project_ids"
-        case prompt; case plan; case count; case models
+        case prompt; case plan; case judge; case count; case models
     }
-    public init(provider: String, projectID: String? = nil, projectIDs: [String]? = nil, prompt: String, plan: Bool? = nil, count: Int, models: [String]? = nil) {
+    public init(provider: String, projectID: String? = nil, projectIDs: [String]? = nil, prompt: String, plan: Bool? = nil, judge: Bool? = nil, count: Int, models: [String]? = nil) {
         self.provider = provider; self.projectID = projectID; self.projectIDs = projectIDs
-        self.prompt = prompt; self.plan = plan; self.count = count; self.models = models
+        self.prompt = prompt; self.plan = plan; self.judge = judge; self.count = count; self.models = models
     }
 }
 

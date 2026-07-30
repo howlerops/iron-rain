@@ -42,9 +42,9 @@ func (fakeApprovalProvider) Create(context.Context, string, string) (agent.Sessi
 
 type fakeApprovalSession struct{ events chan agent.Event }
 
-func (s *fakeApprovalSession) ID() string                          { return "fake_sess" }
-func (s *fakeApprovalSession) Provider() string                    { return "fake" }
-func (s *fakeApprovalSession) Events() <-chan agent.Event          { return s.events }
+func (s *fakeApprovalSession) ID() string                           { return "fake_sess" }
+func (s *fakeApprovalSession) Provider() string                     { return "fake" }
+func (s *fakeApprovalSession) Events() <-chan agent.Event           { return s.events }
 func (s *fakeApprovalSession) Prompt(context.Context, string) error { return nil }
 func (s *fakeApprovalSession) Respond(context.Context, string, string) error {
 	return nil

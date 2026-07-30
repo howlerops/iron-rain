@@ -27,13 +27,13 @@ type statusScopeSession struct {
 	done   chan struct{}
 }
 
-func (s *statusScopeSession) ID() string                               { return "parent_x" }
-func (s *statusScopeSession) Provider() string                         { return "fake" }
-func (s *statusScopeSession) Events() <-chan agent.Event               { return s.events }
-func (s *statusScopeSession) Prompt(context.Context, string) error     { return nil }
+func (s *statusScopeSession) ID() string                                    { return "parent_x" }
+func (s *statusScopeSession) Provider() string                              { return "fake" }
+func (s *statusScopeSession) Events() <-chan agent.Event                    { return s.events }
+func (s *statusScopeSession) Prompt(context.Context, string) error          { return nil }
 func (s *statusScopeSession) Respond(context.Context, string, string) error { return nil }
-func (s *statusScopeSession) Stop(context.Context) error               { return nil }
-func (s *statusScopeSession) Close() error                             { return nil }
+func (s *statusScopeSession) Stop(context.Context) error                    { return nil }
+func (s *statusScopeSession) Close() error                                  { return nil }
 func (s *statusScopeSession) run() {
 	s.events <- agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: "parent_x", Status: protocol.StatusRunning}}
 	s.events <- agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: "child_x", Status: protocol.StatusIdle}}

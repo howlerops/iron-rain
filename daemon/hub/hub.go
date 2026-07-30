@@ -87,6 +87,8 @@ type Hub struct {
 	notifyPrefsPath   string                         // path to ~/.oculus/notify.json (per-category push toggles)
 	notifyOff         map[string]bool                // push categories the user turned OFF (absent = enabled)
 	fanoutNotified    map[string]bool                // fan-out groups already notified as "all done" (fire once)
+	fanoutJudge       map[string]fanoutJudgeSpec     // groups that opted into an advisory judge
+	fanoutPrompt      map[string]string              // the task each group is racing (for the comparison header)
 
 	mcp *mcp.Registry // daemon-owned MCP server registry (nil = MCP not enabled)
 
@@ -991,6 +993,8 @@ func New() *Hub {
 		sessions:        map[string]*managedSession{},
 		approvals:       map[string]*managedSession{},
 		fanoutNotified:  map[string]bool{},
+		fanoutJudge:     map[string]fanoutJudgeSpec{},
+		fanoutPrompt:    map[string]string{},
 		clients:         map[*transport.Conn]*hubClient{},
 		logSubs:         map[*transport.Conn]bool{},
 		autoProjects:    true, // on by default; disable with --auto-projects=false
@@ -1157,6 +1161,13 @@ func (h *Hub) spawnFanout(ctx context.Context, req protocol.FanoutCreate) (proto
 	if len(res.SessionIDs) == 0 {
 		return res, fmt.Errorf("fan-out: no variants started: %v", firstErr)
 	}
+	// Remember the prompt + judge intent for when the last variant settles.
+	h.mu.Lock()
+	h.fanoutPrompt[group] = req.Prompt
+	if req.Judge {
+		h.fanoutJudge[group] = fanoutJudgeSpec{provider: req.Provider, projectID: req.ProjectID}
+	}
+	h.mu.Unlock()
 	log.Printf("fanout %s: started %d/%d variants on prompt (%dB)", group, len(res.SessionIDs), count, len(req.Prompt))
 	h.recordActivity(activity.Event{
 		Kind: activity.KindFanoutRun, Title: fmt.Sprintf("Fan-out: %d agents racing the same task", len(res.SessionIDs)),
@@ -1201,6 +1212,8 @@ func (h *Hub) resolveFanout(ctx context.Context, req protocol.FanoutResolve) pro
 	// a long-lived daemon's many fan-outs.
 	h.mu.Lock()
 	delete(h.fanoutNotified, req.Group)
+	delete(h.fanoutJudge, req.Group)
+	delete(h.fanoutPrompt, req.Group)
 	h.mu.Unlock()
 	log.Printf("fanout.resolve %s: removed %d, kept %q, failed %d", req.Group, len(out.Removed), req.Keep, len(out.Failed))
 	return out
@@ -1221,6 +1234,8 @@ func (h *Hub) forgetFanoutIfEmpty(group string) {
 		}
 	}
 	delete(h.fanoutNotified, group)
+	delete(h.fanoutJudge, group)
+	delete(h.fanoutPrompt, group)
 }
 
 // checkFanoutDone fires the "fan-out finished" push once, when EVERY variant in the group has reached

@@ -16,12 +16,12 @@ type approvalFakeSess struct {
 	responded atomic.Value // "id|decision"
 }
 
-func (f *approvalFakeSess) ID() string                            { return "ap1sess" }
-func (f *approvalFakeSess) Provider() string                      { return "fake" }
-func (f *approvalFakeSess) Events() <-chan agent.Event            { return f.ch }
-func (f *approvalFakeSess) Prompt(context.Context, string) error  { return nil }
-func (f *approvalFakeSess) Stop(context.Context) error            { return nil }
-func (f *approvalFakeSess) Close() error                          { return nil }
+func (f *approvalFakeSess) ID() string                           { return "ap1sess" }
+func (f *approvalFakeSess) Provider() string                     { return "fake" }
+func (f *approvalFakeSess) Events() <-chan agent.Event           { return f.ch }
+func (f *approvalFakeSess) Prompt(context.Context, string) error { return nil }
+func (f *approvalFakeSess) Stop(context.Context) error           { return nil }
+func (f *approvalFakeSess) Close() error                         { return nil }
 func (f *approvalFakeSess) Respond(_ context.Context, id, decision string) error {
 	f.responded.Store(id + "|" + decision)
 	return nil

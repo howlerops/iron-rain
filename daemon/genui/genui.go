@@ -37,10 +37,52 @@ const (
 	maxOptions      = 50
 )
 
-// knownComponents is the closed catalog. An unknown component name is not emitted (degrades to text).
-var knownComponents = map[string]bool{
-	"table": true, "checklist": true, "plan": true, "callout": true,
-	"diff": true, "choice": true, "confirm": true,
+// spec describes one catalog component: its current schema version and how to validate its props.
+// Adding a component used to mean editing TWO places here (a name set and a caps switch) plus
+// skill.md plus the Swift renderer, with nothing enforcing agreement — which is exactly how "plan"
+// ended up renderable but undocumented. Now the daemon has ONE table, and TestCatalogDocumented
+// fails if it ever disagrees with what the model is told.
+type spec struct {
+	schemaV  int
+	validate func(json.RawMessage) bool
+}
+
+// catalog is the closed component set. An unknown name is not emitted (it degrades to text).
+var catalog = map[string]spec{
+	"table":     {schemaV: 1, validate: validateTable},
+	"checklist": {schemaV: 1},
+	"plan":      {schemaV: 1},
+	"callout":   {schemaV: 1},
+	"diff":      {schemaV: 1},
+	"choice":    {schemaV: 1, validate: validateOptions},
+	"confirm":   {schemaV: 1, validate: validateOptions},
+}
+
+// knownComponents reports whether a name is in the catalog.
+func knownComponent(name string) bool {
+	_, ok := catalog[name]
+	return ok
+}
+
+// validateTable enforces the row/column caps so a hallucinated payload can't overwhelm the client.
+func validateTable(props json.RawMessage) bool {
+	var p struct {
+		Columns []json.RawMessage `json:"columns"`
+		Rows    []json.RawMessage `json:"rows"`
+	}
+	if err := json.Unmarshal(props, &p); err != nil {
+		return false
+	}
+	return len(p.Columns) <= maxCols && len(p.Rows) <= maxRows
+}
+
+// validateOptions caps the interactive option list.
+func validateOptions(props json.RawMessage) bool {
+	var p struct {
+		Options []json.RawMessage `json:"options"`
+	}
+	_ = json.Unmarshal(props, &p)
+	return len(p.Options) <= maxOptions
 }
 
 // Segmenter incrementally splits one session's assistant-text stream into forwardable text and
@@ -160,12 +202,12 @@ func Extract(text string) (string, []protocol.UIComponent) {
 
 // fenceComponent is the on-the-wire JSON a model emits inside an iron:ui fence.
 type fenceComponent struct {
-	Component    string             `json:"component"`
-	ID           string             `json:"id"`
-	SchemaV      int                `json:"schema_v"`
-	Props        json.RawMessage    `json:"props"`
+	Component    string              `json:"component"`
+	ID           string              `json:"id"`
+	SchemaV      int                 `json:"schema_v"`
+	Props        json.RawMessage     `json:"props"`
 	Actions      []protocol.UIAction `json:"actions"`
-	FallbackText string             `json:"fallback_text"`
+	FallbackText string              `json:"fallback_text"`
 }
 
 // parseComponent strictly parses + validates a fence body into a normalized UIComponent. It returns
@@ -179,10 +221,11 @@ func parseComponent(body string) (protocol.UIComponent, bool) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(body)), &fc); err != nil {
 		return protocol.UIComponent{}, false
 	}
-	if !knownComponents[fc.Component] || fc.ID == "" {
+	sp, known := catalog[fc.Component]
+	if !known || fc.ID == "" {
 		return protocol.UIComponent{}, false
 	}
-	if !propsWithinCaps(fc.Component, fc.Props) {
+	if sp.validate != nil && !sp.validate(fc.Props) {
 		return protocol.UIComponent{}, false
 	}
 	schemaV := fc.SchemaV
@@ -202,27 +245,4 @@ func parseComponent(body string) (protocol.UIComponent, bool) {
 		Actions:      fc.Actions,
 		FallbackText: fallback,
 	}, true
-}
-
-// propsWithinCaps enforces per-component size caps so a giant hallucinated payload can't overwhelm
-// the client. Unknown shapes pass (already gated by knownComponents + byte cap).
-func propsWithinCaps(component string, props json.RawMessage) bool {
-	switch component {
-	case "table":
-		var p struct {
-			Columns []json.RawMessage `json:"columns"`
-			Rows    []json.RawMessage `json:"rows"`
-		}
-		if err := json.Unmarshal(props, &p); err != nil {
-			return false
-		}
-		return len(p.Columns) <= maxCols && len(p.Rows) <= maxRows
-	case "choice", "confirm":
-		var p struct {
-			Options []json.RawMessage `json:"options"`
-		}
-		_ = json.Unmarshal(props, &p)
-		return len(p.Options) <= maxOptions
-	}
-	return true
 }

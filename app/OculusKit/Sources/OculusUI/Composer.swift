@@ -484,11 +484,51 @@ struct Composer: View {
             }
         }
         #else
-        return Button { showFileImporter = true } label: {
+        return Menu {
+            Button { showFileImporter = true } label: { Label("File…", systemImage: "doc") }
+            Divider()
+            Button { captureScreen(interactive: true) } label: {
+                Label("Capture area…", systemImage: "viewfinder")
+            }
+            Button { captureScreen(interactive: false) } label: {
+                Label("Capture window…", systemImage: "macwindow")
+            }
+        } label: {
             Image(systemName: "paperclip").font(.system(size: 17)).foregroundStyle(palette.mutedForeground)
         }
-        .buttonStyle(.plain)
-        .help("Attach an image or document")
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Attach a file, or capture part of the screen to show the agent")
         #endif
     }
+
+    #if os(macOS)
+    /// Grabs a region or window straight into the prompt.
+    ///
+    /// Showing an agent the broken thing is far more direct than describing it, and the alternative
+    /// today is a four-step detour: screenshot to disk, find it in Finder, drag it in, delete it
+    /// later. This uses the system's own capture UI (`screencapture -i`), so the selection
+    /// affordances are the ones the user already knows, and the file lives in a temp dir we delete
+    /// as soon as it's attached.
+    private func captureScreen(interactive: Bool) {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ironrain-capture-\(UUID().uuidString).png")
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+        // -i interactive (drag a region, or press space for window mode); -w window picker;
+        // -o omits the window shadow, which otherwise wastes most of the image.
+        task.arguments = interactive ? ["-i", url.path] : ["-i", "-w", "-o", url.path]
+        task.terminationHandler = { _ in
+            defer { try? FileManager.default.removeItem(at: url) }
+            // A cancelled capture writes no file — that's a normal outcome, not an error.
+            guard let data = try? Data(contentsOf: url), !data.isEmpty else { return }
+            Task { @MainActor in model.attachImage(mime: "image/png", data: data) }
+        }
+        do {
+            try task.run()
+        } catch {
+            model.actionError = "Couldn't start a screen capture.\n\n\(error.localizedDescription)"
+        }
+    }
+    #endif
 }

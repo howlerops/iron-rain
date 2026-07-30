@@ -474,6 +474,9 @@ type FanoutCreate struct {
 	ProjectIDs []string `json:"project_ids,omitempty"`
 	Prompt     string   `json:"prompt"`
 	Plan       bool     `json:"plan,omitempty"`
+	// Judge asks a fresh agent to recommend a winner once every variant finishes. Advisory only —
+	// it answers with a tappable choice; the manual Keep buttons are unaffected.
+	Judge bool `json:"judge,omitempty"`
 	Count      int      `json:"count"`
 	Models     []string `json:"models,omitempty"`
 }

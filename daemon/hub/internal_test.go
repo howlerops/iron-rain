@@ -82,7 +82,7 @@ func TestTranscriptCapped(t *testing.T) {
 func TestTranscriptByteCap(t *testing.T) {
 	m := newManagedSession(nil, nil, sessionMeta{})
 	big := bytes.Repeat([]byte("y"), 1<<20) // 1 MiB each
-	for i := 0; i < 32; i++ {                // 32 MiB total pushed, cap is 8 MiB
+	for i := 0; i < 32; i++ {               // 32 MiB total pushed, cap is 8 MiB
 		m.broadcast(big)
 	}
 	m.mu.Lock()
