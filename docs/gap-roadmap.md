@@ -1,21 +1,25 @@
 # Gap Roadmap — closing the ADE competitive gaps
 
-**STATUS (2026-07-30, shipped in v0.2.107):** most of this roadmap is now implemented. Delivered:
-all of §0 (0.1–0.9), AP-1…AP-4 (scoped approval rules, payload enrichment, rules UI, modes), FO-1 +
-FO-2 (fan-out aggregation + advisory judge), §5 (agent registry breadth), §6 (screen capture), G-1
-(genui spec registry), MCP-1 + MCP-3 (daemon-owned MCP registry, dual-stack client, per-harness
-injection), and MU-1 (principals + prompt attribution).
+**STATUS (2026-07-30, shipped across v0.2.107–v0.2.108):** this roadmap is substantially complete.
 
-STILL OPEN — the genuinely large remainders, in priority order:
-- **MCP-2 gateway** (supervise each server once, expose local HTTP URLs). Today injection is
-  config-fanout: each harness spawns its own client from the shared definition, so N harnesses × M
-  servers of processes, and per-tool-call audit isn't possible. The registry/injection layer is
-  designed so the gateway slots in underneath without changing the UI or the stored config.
-- **MCP-4/MCP-5**: remote-server OAuth, registry browse/install, per-server tool rules, MCP Apps.
-- **MU-2…MU-4**: roles + permission gating, presence, invite flow. MU-1 landed the attribution the
-  rest hangs off.
-- **G-2…G-4**: the form/layout interpreter components, tool-event projection, MCP Apps bridge.
-- **FO-3**: task decomposition fan-out (`Prompts []string` is already reserved in the protocol).
+Delivered: all of §0 (0.1–0.9) · AP-1…AP-4 (scoped approval rules, payload enrichment, rules UI,
+Ask/Architect/Code modes) · FO-1…FO-3 (fan-out aggregation, advisory judge, divided fan-out) ·
+MCP-1…MCP-3 (registry, dual-stack client, per-harness injection) · **MCP-2 gateway** (one supervised
+connection per server, bearer-authenticated local HTTP front door, protocol-revision bridging) ·
+MU-1…MU-3 (principals, attribution, observer/steerer roles with owner-only approvals, presence) ·
+§5 (10 builtin CLI agents) · §6 (screen capture) · G-1 (genui spec registry) · G-2 (the `form`
+interpreter component, which also implemented the long-dead ui.action `Values` surface).
+
+STILL OPEN, and why each was deferred rather than rushed:
+- **MCP-5 per-server tool rules.** The gateway routes every tool call through the daemon, but an
+  MCP request arrives on an HTTP connection with no session identity — gating it by the existing
+  approval engine needs per-session gateway tokens first. Worth doing properly; not worth faking.
+- **MCP-4** remote-server OAuth (PKCE, issuer-bound credentials, CIMD) and **MCP-5** registry
+  browse/install. Both are external-integration work with real auth surface.
+- **G-3** tool-event projection (todos→checklist, changed-files→diff) needs structured tool events
+  per provider; **G-4** MCP Apps needs a sandboxed WKWebView bridge.
+- **MU-4** invite flow (share-link → pairing lands as observer). MU-1…MU-3 shipped the model it
+  would plug into.
 
 The original plan follows unchanged, for the reasoning behind each decision.
 
