@@ -403,11 +403,25 @@ public struct ChatView: View {
                 // Show the real tool-use indicator whenever the agent is working but not mid-stream
                 // (mid-stream, the text itself is the activity). Now carries the concrete command/path
                 // so you actually see WHAT it's doing, not just "Running a command".
-                ToolActivityView(activity: model.activity, palette: palette, detail: model.activityDetail)
-                // Daemon-vouched patience: while the Turn Engine says the provider is alive but quiet,
-                // say so honestly ("still working · 47s since output") instead of ever guessing a timeout.
-                if let last = model.turn?.lastEventAt, model.turn?.state == SessionStatusValue.running {
-                    QuietAgeBadge(since: Date(timeIntervalSince1970: TimeInterval(last)), palette: palette)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 8) {
+                        ToolActivityView(activity: model.activity, palette: palette, detail: model.activityDetail)
+                        // Daemon-vouched patience: while the Turn Engine says the provider is alive but
+                        // quiet, say so honestly ("still working · 47s since output") — never a guessed timeout.
+                        if let last = model.turn?.lastEventAt, model.turn?.state == SessionStatusValue.running {
+                            QuietAgeBadge(since: Date(timeIntervalSince1970: TimeInterval(last)), palette: palette)
+                        }
+                    }
+                    // The actual reasoning as it streams (when the model emits it): the last line or two,
+                    // so "Thinking" shows WHAT it's thinking, not just that it is.
+                    if !model.liveThinkingTail.isEmpty {
+                        Text(model.liveThinkingTail)
+                            .font(.system(size: 12)).italic()
+                            .foregroundStyle(palette.mutedForeground)
+                            .lineLimit(2).truncationMode(.head)
+                            .frame(maxWidth: 520, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
             Spacer(minLength: 0)

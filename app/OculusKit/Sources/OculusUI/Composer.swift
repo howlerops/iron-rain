@@ -26,6 +26,10 @@ struct Composer: View {
     @State private var showPhotoPicker = false  // iOS: photo library
     /// Highlighted row in the slash-command popup (Tab completes it, ↑/↓ move it).
     @State private var cmdIndex = 0
+    // Shell-style prompt history: ↑/↓ recall previously SENT prompts when the slash popup is closed.
+    // historyIndex nil = not browsing (editing a fresh draft); 0 = most recent sent; up counts back.
+    @State private var historyIndex: Int? = nil
+    @State private var historyStash = "" // the in-progress draft, preserved so ↓ past the newest restores it
     #if os(iOS)
     @State private var photoItem: PhotosPickerItem?
     #endif
@@ -206,12 +210,15 @@ struct Composer: View {
                 // Tab completes the highlighted command; ↑/↓ move the highlight. Each only consumes
                 // the key while the popup is open, so normal typing/tabbing is unaffected.
                 onTab: { completeSelected() },
-                onMoveUp: { moveSelection(-1) },
-                onMoveDown: { moveSelection(1) }
+                onMoveUp: { moveSelection(-1) || recallHistory(-1) },
+                onMoveDown: { moveSelection(1) || recallHistory(1) }
             )
         }
         // Reset the highlight to the top whenever the set of matches changes (new keystroke).
-        .onChange(of: draft) { _ in cmdIndex = 0 }
+        .onChange(of: draft) { _ in
+            cmdIndex = 0
+            if !settingFromHistory { historyIndex = nil } // a manual edit ends history browsing
+        }
     }
 
     /// Completes the highlighted slash command when the popup is open. Returns true (consume the
@@ -220,6 +227,50 @@ struct Composer: View {
         guard !commandMatches.isEmpty else { return false }
         complete(commandMatches[clampedCmdIndex])
         return true
+    }
+
+    @State private var settingFromHistory = false
+
+    /// The prompts this session has SENT, newest last — the ↑/↓ recall list.
+    private var sentPrompts: [String] {
+        model.messages.filter { $0.role == .user }.map(\.text)
+    }
+
+    /// Shell-style history recall. delta -1 = older (↑), +1 = newer (↓). Returns true to CONSUME the
+    /// arrow only when it actually moved through history — so in a multi-line draft the arrows still
+    /// navigate text normally until you're at the top/bottom with nothing to recall. Runs only when
+    /// the slash popup is closed (moveSelection is tried first).
+    private func recallHistory(_ delta: Int) -> Bool {
+        let hist = sentPrompts
+        guard !hist.isEmpty else { return false }
+        switch historyIndex {
+        case nil:
+            guard delta < 0 else { return false } // ↓ with no active recall = let the caret move
+            // Only hijack ↑ from an empty/at-top draft, so editing a long message isn't disrupted.
+            if !draft.isEmpty && draft != hist.last { return false }
+            historyStash = draft
+            historyIndex = 0
+        case .some(let i):
+            let next = i - delta // delta -1 (older) increases the back-index
+            if next < 0 { // ↓ past the newest → restore the stashed in-progress draft
+                historyIndex = nil
+                setDraftFromHistory(historyStash)
+                return true
+            }
+            if next >= hist.count { return true } // ↑ past the oldest → stay put (consumed)
+            historyIndex = next
+        }
+        if let idx = historyIndex {
+            setDraftFromHistory(hist[hist.count - 1 - idx])
+        }
+        return true
+    }
+
+    /// Sets the draft from history WITHOUT the onChange handler treating it as a manual edit.
+    private func setDraftFromHistory(_ text: String) {
+        settingFromHistory = true
+        draft = text
+        DispatchQueue.main.async { settingFromHistory = false }
     }
 
     /// Moves the popup highlight by `delta`, wrapping around. Returns true (consume the arrow) only
@@ -237,6 +288,7 @@ struct Composer: View {
         guard canSend else { return }
         let text = draft
         draft = ""
+        historyIndex = nil; historyStash = ""
         if dictator.isRecording { dictator.stop() }
         Task { await model.send(text) }
     }

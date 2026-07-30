@@ -2306,6 +2306,20 @@ public final class Model: ObservableObject {
         scheduleFlush()
     }
 
+    /// The tail of the current/most-recent reasoning, for the working bar — so "Thinking" carries the
+    /// actual words when the model streams reasoning, not just a label. Empty when there's none.
+    public var liveThinkingTail: String {
+        // Prefer the live streaming buffer; else the last thinking message this turn.
+        if let last = messages.last, last.role == .thinking, last.streaming {
+            let t = (last.text + streamBuffer)
+            return String(t.suffix(240))
+        }
+        if let t = messages.last(where: { $0.role == .thinking })?.text, !t.isEmpty {
+            return String(t.suffix(240))
+        }
+        return ""
+    }
+
     private func appendThinkingDelta(_ text: String) {
         if let last = messages.last, last.role == .thinking, last.streaming {
             // keep buffering into the existing streaming message
