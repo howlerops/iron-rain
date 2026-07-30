@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"path/filepath"
 	"context"
 	"strings"
 	"testing"
@@ -206,5 +207,20 @@ func TestSession_RejectsUnknownCommand(t *testing.T) {
 	p := NewProvider(Config{Name: "nope", Command: "definitely-not-a-real-binary-xyz", Args: []string{"{prompt}"}})
 	if _, err := p.Create(context.Background(), t.TempDir(), "x"); err == nil {
 		t.Error("expected error for a command not on PATH")
+	}
+}
+
+// TestSaveCreatesParentDir guards the writer against assuming ~/.oculus already exists — it used to
+// work only because daemon startup happened to MkdirAll first, so any other caller (or a test) got a
+// silent ENOENT.
+func TestSaveCreatesParentDir(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nested", "deeper", "agents.json")
+	if err := Save(path, []Config{{Name: "codex", Command: "codex"}}); err != nil {
+		t.Fatalf("Save into a missing dir: %v", err)
+	}
+	got, err := Load(path)
+	if err != nil || len(got) != 1 || got[0].Name != "codex" {
+		t.Fatalf("round-trip failed: %v %+v", err, got)
 	}
 }

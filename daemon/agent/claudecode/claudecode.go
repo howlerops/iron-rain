@@ -37,6 +37,7 @@ import (
 
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/discovery"
+	"github.com/howlerops/oculus/daemon/procutil"
 	"github.com/howlerops/oculus/daemon/protocol"
 )
 
@@ -283,7 +284,11 @@ func (p *Provider) start(ctx context.Context, cwd, id, mode, prompt string, plan
 			replayUUID = rid // the JSONL transcript lives under claude's REAL uuid, whatever our id is
 		}
 	}
-	cmd.Stderr = os.Stderr // surface sidecar errors
+	// Sidecar diagnostics go through the daemon log (and so into loghub / the app's log panel).
+	// Writing to the inherited os.Stderr FD bypassed loghub entirely, so a crashing sidecar was
+	// invisible to anyone not tailing the daemon's own output.
+	cmd.Stderr = procutil.LogWriter("claude-sidecar[" + id + "]")
+	procutil.Isolate(cmd) // sidecar spawns node children — kill the tree, not just the wrapper
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		cancel()

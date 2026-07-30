@@ -25,6 +25,7 @@ Rules:
   lists, comparisons.
 - **checklist** — `props {title?, items:[{text, status:pending|active|done|failed}]}`. Plans, task
   status.
+- **plan** — same props as **checklist**; use it when the list is a plan you intend to execute.
 - **callout** — `props {level:info|warn|error|success, title?, body}`. A highlighted note.
 - **diff** — `props {path, patch?}`. A unified-diff preview for one file.
 - **choice** (interactive) — `props {prompt}` plus

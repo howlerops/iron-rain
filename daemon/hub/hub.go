@@ -87,6 +87,12 @@ type Hub struct {
 	notifyOff       map[string]bool              // push categories the user turned OFF (absent = enabled)
 	fanoutNotified  map[string]bool              // fan-out groups already notified as "all done" (fire once)
 
+	// agentsFileMu serializes the load→mutate→save cycle on ~/.oculus/agents.json. agent.upsert and
+	// agent.delete are both in the async-dispatch allowlist, so without this two concurrent edits
+	// each read the same pre-state and the later write silently discards the earlier one. It is a
+	// SEPARATE lock from h.mu on purpose: it is held across disk I/O, which h.mu never is.
+	agentsFileMu sync.Mutex
+
 	pushTimeout     time.Duration // per-Notify deadline for the approval push fan-out
 	pushConcurrency int           // cap on concurrent in-flight pushes
 }
@@ -1046,6 +1052,10 @@ func (h *Hub) removeSession(id string, owner *managedSession) {
 		h.mu.Unlock()
 		return // superseded by a recovered/restarted binding — don't clobber it
 	}
+	group := ""
+	if m := h.sessions[id]; m != nil {
+		group = m.meta.fanoutGroup
+	}
 	delete(h.sessions, id)
 	db := h.db
 	h.mu.Unlock()
@@ -1056,6 +1066,7 @@ func (h *Hub) removeSession(id string, owner *managedSession) {
 		_ = db.DeleteHandoff(id)
 		_ = db.DeleteTranscript(id) // drop the durable conversation too
 	}
+	h.forgetFanoutIfEmpty(group) // last variant gone → drop the group's notify marker
 }
 
 // detachSession removes a session from the LIVE map when its provider stream ended UNEXPECTEDLY (a
@@ -1170,8 +1181,30 @@ func (h *Hub) resolveFanout(ctx context.Context, req protocol.FanoutResolve) pro
 			h.persistSession(m)
 		}
 	}
+	// The group is over — drop its once-only notify marker so the map can't grow without bound across
+	// a long-lived daemon's many fan-outs.
+	h.mu.Lock()
+	delete(h.fanoutNotified, req.Group)
+	h.mu.Unlock()
 	log.Printf("fanout.resolve %s: removed %d, kept %q, failed %d", req.Group, len(out.Removed), req.Keep, len(out.Failed))
 	return out
+}
+
+// forgetFanoutIfEmpty drops a group's notify marker once no session carries the tag any more — the
+// path for groups that end by deleting every variant individually rather than via fanout.resolve.
+// Caller must NOT hold h.mu.
+func (h *Hub) forgetFanoutIfEmpty(group string) {
+	if group == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, m := range h.sessions {
+		if m.meta.fanoutGroup == group {
+			return
+		}
+	}
+	delete(h.fanoutNotified, group)
 }
 
 // checkFanoutDone fires the "fan-out finished" push once, when EVERY variant in the group has reached
@@ -2420,6 +2453,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		if len(cfg.Args) == 0 {
 			cfg.Args = []string{"{prompt}"} // sane default: pass the prompt as the sole arg
 		}
+		h.agentsFileMu.Lock()
 		existing, _ := cli.Load(path)
 		replaced := false
 		for i := range existing {
@@ -2432,7 +2466,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		if !replaced {
 			existing = append(existing, cfg)
 		}
-		if err := cli.Save(path, existing); err != nil {
+		err := cli.Save(path, existing)
+		h.agentsFileMu.Unlock()
+		if err != nil {
 			h.sendErr(conn, env.ID, "save agents: "+err.Error())
 			return
 		}
@@ -2453,6 +2489,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.mu.Lock()
 		path := h.agentsPath
 		h.mu.Unlock()
+		h.agentsFileMu.Lock()
 		existing, _ := cli.Load(path)
 		kept := existing[:0]
 		for _, c := range existing {
@@ -2460,7 +2497,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 				kept = append(kept, c)
 			}
 		}
-		if err := cli.Save(path, kept); err != nil {
+		err := cli.Save(path, kept)
+		h.agentsFileMu.Unlock()
+		if err != nil {
 			h.sendErr(conn, env.ID, "save agents: "+err.Error())
 			return
 		}
@@ -3282,8 +3321,13 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 	case protocol.TypeUIAction:
 		// A user activated a generative-UI component's action. Its ONLY effect is to start the next
 		// user turn (a component can never execute a tool or a destructive op directly). kind=prompt/
-		// answer deliver the templated text as a normal prompt; a permission kind would route through
-		// the approval system (deferred — fenced components don't carry an approval id yet).
+		// answer deliver the templated text as a normal prompt.
+		//
+		// KNOWN-DEAD SURFACE (see docs/gap-roadmap.md §0.7): protocol.UIAction also declares kind
+		// "permission" and a Values map. Neither is implemented — "permission" would need an approval
+		// id that fenced components don't carry, and Values has no consumer until the planned "form"
+		// component lands (§7 G-2). A client sending either gets the no-op fallthrough below, NOT an
+		// error, so don't read this as working-but-untested.
 		var req protocol.UIActionInvoke
 		_ = env.Unmarshal(&req)
 		m := h.managed(req.SessionID)

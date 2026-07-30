@@ -22,6 +22,42 @@ func TestRepoSkillInSync(t *testing.T) {
 	}
 }
 
+// TestCatalogDocumented locks the closed catalog to what the MODEL is actually told about. Adding a
+// component touches five unenforced places (knownComponents, propsWithinCaps, skill.md, the Swift
+// render switch, a props struct) — "plan" once shipped in the catalog and the renderer but never
+// reached skill.md, so no model ever emitted it. This test makes that failure mode impossible.
+func TestCatalogDocumented(t *testing.T) {
+	documented := map[string]bool{}
+	inCatalog := false
+	for _, line := range strings.Split(SkillMarkdown(), "\n") {
+		if strings.HasPrefix(line, "## ") {
+			inCatalog = strings.TrimSpace(line) == "## Catalog"
+			continue
+		}
+		if !inCatalog {
+			continue
+		}
+		// Catalog entries look like: - **name** — description
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "- **")
+		if !ok {
+			continue
+		}
+		if name := strings.SplitN(rest, "**", 2)[0]; name != "" {
+			documented[name] = true
+		}
+	}
+	for name := range knownComponents {
+		if !documented[name] {
+			t.Errorf("component %q is in knownComponents but undocumented in skill.md — the model will never emit it", name)
+		}
+	}
+	for name := range documented {
+		if !knownComponents[name] {
+			t.Errorf("component %q is documented in skill.md but not in knownComponents — the daemon will drop it as unknown", name)
+		}
+	}
+}
+
 // TestGuideBodyStripsFrontmatter confirms the injected guide is the instructional body only (no YAML).
 func TestGuideBodyStripsFrontmatter(t *testing.T) {
 	p := Preamble()

@@ -13,6 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/howlerops/oculus/daemon/procutil"
 )
 
 var errServerClosed = errors.New("lsp: server connection closed")
@@ -61,6 +63,7 @@ func startServer(command string, args []string, langID, root string, onDiag func
 	if err != nil {
 		return nil, err
 	}
+	procutil.Isolate(cmd) // language servers fork helpers (rust-analyzer's proc-macro srv, node) — kill the tree
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
@@ -232,7 +235,7 @@ func (s *server) stop() {
 	select {
 	case <-done:
 	case <-time.After(500 * time.Millisecond):
-		_ = s.cmd.Process.Kill()
+		procutil.TerminateGroup(s.cmd) // the whole group, not just the direct child
 	}
 	_ = s.stdin.Close()
 }
@@ -415,4 +418,15 @@ func extractLocation(raw json.RawMessage) (Location, bool) {
 // isJSONNull reports whether raw is empty or the JSON literal null.
 func isJSONNull(raw json.RawMessage) bool {
 	return len(raw) == 0 || string(raw) == "null"
+}
+
+// isClosed reports whether this server's read loop has exited (the process is gone). A closed server
+// can never serve another request, so the Manager evicts and respawns instead of handing it out.
+func (s *server) isClosed() bool {
+	select {
+	case <-s.closed:
+		return true
+	default:
+		return false
+	}
 }

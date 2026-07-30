@@ -17,30 +17,30 @@ import (
 	"fmt"
 	"io"
 	"log"
+	mrand "math/rand"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
-	mrand "math/rand"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/mdp/qrterminal/v3"
 
+	"github.com/howlerops/oculus/daemon/accounts"
+	"github.com/howlerops/oculus/daemon/activity"
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/agent/opencode"
 	"github.com/howlerops/oculus/daemon/crypto"
 	"github.com/howlerops/oculus/daemon/discovery"
 	"github.com/howlerops/oculus/daemon/genui"
 	"github.com/howlerops/oculus/daemon/hub"
-	"github.com/howlerops/oculus/daemon/accounts"
-	"github.com/howlerops/oculus/daemon/activity"
 	"github.com/howlerops/oculus/daemon/issues"
 	"github.com/howlerops/oculus/daemon/loghub"
-	"github.com/howlerops/oculus/daemon/telemetry"
-	"github.com/howlerops/oculus/daemon/transcript"
 	"github.com/howlerops/oculus/daemon/project"
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/push"
@@ -50,6 +50,8 @@ import (
 	"github.com/howlerops/oculus/daemon/slack"
 	"github.com/howlerops/oculus/daemon/sshremote"
 	"github.com/howlerops/oculus/daemon/store"
+	"github.com/howlerops/oculus/daemon/telemetry"
+	"github.com/howlerops/oculus/daemon/transcript"
 )
 
 // version is stamped at build time via -ldflags "-X main.version=<tag>" (see .github/workflows/
@@ -188,9 +190,9 @@ func serve(args []string) error {
 	// Trackers (Linear/Jira): load saved tokens, connect, and poll every 60s.
 	issuesMgr := issues.NewManager(integrationsPath(), h.BroadcastIssues)
 	h.SetIssues(issuesMgr)
-	h.EnableLoops(loopsPath())        // recurring autonomous ticket workflows
+	h.EnableLoops(loopsPath())                      // recurring autonomous ticket workflows
 	h.SetAgentsPath(agentsPath(), agentPrefsPath()) // custom CLI agents + picker visibility
-	h.SetNotifyPrefsPath(notifyPrefsPath())          // per-category push-notification toggles
+	h.SetNotifyPrefsPath(notifyPrefsPath())         // per-category push-notification toggles
 	h.SetApprovalRulesPath(approvalRulesPath())     // persistent "Always allow" (asked once, ever)
 	if len(issuesMgr.Connected()) > 0 {
 		go func() { _ = issuesMgr.Refresh(context.Background()) }() // initial fetch
@@ -243,7 +245,7 @@ func serve(args []string) error {
 	go h.RestoreSessions(context.Background(), sessionTTL)
 	h.StartSessionPruning(context.Background(), 6*time.Hour, sessionTTL)
 	h.StartConflictSweep(context.Background(), 45*time.Second) // passive merge-conflict badge for worktree sessions
-	h.StartHeartbeat(context.Background()) // supervise autonomous sessions (nudge/checkpoint/escalate)
+	h.StartHeartbeat(context.Background())                     // supervise autonomous sessions (nudge/checkpoint/escalate)
 
 	// A long-running daemon (e.g. a launchd agent on a server) would otherwise never pick up a new
 	// release until it happened to restart. Re-check periodically so it stays current on its own;
@@ -356,7 +358,33 @@ func serve(args []string) error {
 	// (/healthz, /oauth/linear/callback) when exposed via --public-url. Leave
 	// Write/Idle timeouts unset so long-lived /ws WebSocket upgrades aren't cut off.
 	httpSrv := &http.Server{Addr: *addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
-	return httpSrv.ListenAndServe()
+
+	// Graceful shutdown. Without this the process only ever ended by signal, which meant EVERY defer
+	// in this function was dead code: language servers were never stopped, the SQLite handle was never
+	// closed, the transcript writer never flushed, and every agent child (sidecar, pi, CLI) was
+	// orphaned. Catching SIGTERM/SIGINT lets ListenAndServe return normally so those defers actually
+	// run — launchd sends SIGTERM on `launchctl kickstart -k` and on logout.
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	errCh := make(chan error, 1)
+	go func() {
+		err := httpSrv.ListenAndServe()
+		if err == http.ErrServerClosed {
+			err = nil
+		}
+		errCh <- err
+	}()
+	select {
+	case err := <-errCh:
+		return err // the listener failed on its own (port in use, etc.)
+	case sig := <-stop:
+		log.Printf("daemon: %s received — shutting down", sig)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		// Stop accepting first, then let the deferred Shutdown/Close chain above unwind.
+		_ = httpSrv.Shutdown(ctx)
+		return nil
+	}
 }
 
 // relayHost keeps a single host registration on the shared relay so the app can bridge to this

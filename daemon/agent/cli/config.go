@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
+	"path/filepath"
 )
 
 func randID() string {
@@ -60,6 +61,13 @@ func Save(path string, cfgs []Config) error {
 	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
 		return err
+	}
+	// Don't assume ~/.oculus already exists — this used to work only because daemon startup happened
+	// to create it first, which left the writer broken for any other caller (and for tests).
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
 	}
 	return os.WriteFile(path, data, 0o600)
 }

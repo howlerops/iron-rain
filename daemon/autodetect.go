@@ -22,6 +22,7 @@ import (
 	"github.com/howlerops/oculus/daemon/agent/pi"
 	"github.com/howlerops/oculus/daemon/discovery"
 	"github.com/howlerops/oculus/daemon/hub"
+	"github.com/howlerops/oculus/daemon/procutil"
 )
 
 // setupMode controls whether a missing claude-code sidecar (node_modules) is installed.
@@ -139,13 +140,22 @@ func startManagedOpenCode(bin string) string {
 		"PAGER=cat",
 		"GIT_TERMINAL_PROMPT=0", // git fails fast instead of prompting for credentials
 	)
+	procutil.Isolate(cmd) // opencode serve spawns tool subprocesses — own the whole group
 	if err := cmd.Start(); err != nil {
 		log.Printf("opencode: failed to start %s: %v", bin, err)
 		return ""
 	}
+	// Reap it. Without a Wait the exited server lingers as a zombie and its CommandContext watcher
+	// goroutine never returns.
+	go func() {
+		_ = cmd.Wait()
+	}()
+	// NOTE: deliberately NOT terminated on daemon shutdown. A surviving opencode server is re-adopted
+	// on the next start via ~/.oculus/opencode-port (that's what keeps its sessions alive across a
+	// daemon restart or self-update). Isolate/TerminateGroup exist here for the failed-start path.
 	url := fmt.Sprintf("http://127.0.0.1:%d", port)
 	if !waitOpenCodeReady(url, 12*time.Second) {
-		_ = cmd.Process.Kill()
+		procutil.TerminateGroup(cmd)
 		log.Printf("opencode: started %s but it wasn't ready on %s within 12s: %s", bin, url, strings.TrimSpace(errBuf.String()))
 		return ""
 	}

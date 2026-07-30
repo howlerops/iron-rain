@@ -10,6 +10,7 @@ package lsp
 
 import (
 	"context"
+	"log"
 	"sync"
 	"time"
 )
@@ -77,7 +78,14 @@ func (m *Manager) getOrStartServer(root, langID, command string, args []string) 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if s, ok := m.servers[key]; ok {
-		return s, nil
+		// A crashed server used to stay in this map forever: readLoop returns, closed is closed, and
+		// every later call failed errServerClosed for the life of the daemon — LSP silently died until
+		// restart. Evict the corpse and fall through to a fresh spawn.
+		if !s.isClosed() {
+			return s, nil
+		}
+		log.Printf("lsp: %s server for %s exited — restarting", langID, root)
+		delete(m.servers, key)
 	}
 	s, err := startServer(command, args, langID, root, m.onDiagnostics)
 	if err != nil {

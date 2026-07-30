@@ -20,6 +20,7 @@ import (
 
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/osctitle"
+	"github.com/howlerops/oculus/daemon/procutil"
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/ratelimit"
 )
@@ -211,6 +212,7 @@ func (s *session) runTurn(ctx context.Context, argv []string) {
 		return
 	}
 	cmd.Stderr = cmd.Stdout // fold stderr into the streamed output (agents log progress there)
+	procutil.Isolate(cmd)   // a CLI agent forks compilers/test runners — Stop() must kill the tree
 	if err := cmd.Start(); err != nil {
 		turnErr = err
 		return

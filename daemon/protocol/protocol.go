@@ -1279,9 +1279,10 @@ type SubAgent struct {
 	Status   string `json:"status"`        // started | done | error
 }
 
-// UIComponent is a normalized generative-UI element the daemon projects from a harness — either from
-// a structured tool event (the projection registry: todos→checklist, changed-files→diff) or from a
-// fenced ```iron:ui``` block in assistant text. The model emits typed intent (a catalog component +
+// UIComponent is a normalized generative-UI element the daemon parses out of a harness's assistant
+// text — a fenced ```iron:ui``` block (or a bare one-line component JSON). Projecting components from
+// structured tool events (todos→checklist, changed-files→diff) is planned but NOT implemented; the
+// fence path is the only source today. The model emits typed intent (a catalog component +
 // inert props); the CLIENT owns the native view. Props is opaque at transport and validated
 // daemon-side against the per-component schema; the client decodes it per (Component, SchemaV).
 // FallbackText is mandatory markdown so an unknown component or a newer schema degrades visibly.
@@ -1289,7 +1290,7 @@ type UIComponent struct {
 	SessionID    string          `json:"session_id"`
 	MessageID    string          `json:"message_id,omitempty"` // groups the component under a message turn
 	ID           string          `json:"id"`                   // stable per message — enables in-place update
-	Component    string          `json:"component"`            // table | checklist | callout | diff | choice | confirm
+	Component    string          `json:"component"`            // table | checklist | plan | callout | diff | choice | confirm
 	SchemaV      int             `json:"schema_v"`             // per-component schema version (forward-compatible)
 	Status       string          `json:"status"`               // running | ready | error
 	Props        json.RawMessage `json:"props,omitempty"`      // inert, per-component; validated daemon-side

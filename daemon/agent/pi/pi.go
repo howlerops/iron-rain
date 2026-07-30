@@ -27,12 +27,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
 
 	"github.com/howlerops/oculus/daemon/agent"
+	"github.com/howlerops/oculus/daemon/procutil"
 	"github.com/howlerops/oculus/daemon/protocol"
 )
 
@@ -59,7 +59,8 @@ func (p *Provider) Create(ctx context.Context, cwd, prompt string) (agent.Sessio
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = procutil.LogWriter("pi") // into the daemon log/loghub, not the raw inherited FD
+	procutil.Isolate(cmd)                 // pi can shell out — terminate the whole tree
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		cancel()
