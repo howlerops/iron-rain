@@ -85,7 +85,7 @@ func (h *Hub) mcpServersForSession(projectID string) []mcp.Server {
 	if r == nil {
 		return nil
 	}
-	return r.Enabled(projectID)
+	return h.gatewayServers(r.Enabled(projectID))
 }
 
 // handleMCP dispatches the mcp.* protocol surface. Every mutating arm broadcasts, so a second device
@@ -222,5 +222,54 @@ func (h *Hub) OpenCodeMCPConfig() string {
 			global = append(global, s)
 		}
 	}
-	return mcp.OpenCodeConfigJSON(global)
+	return mcp.OpenCodeConfigJSON(h.gatewayServers(global))
+}
+
+// SetMCPGateway records the local gateway so injected configs point harnesses at it instead of at a
+// per-harness copy of each server.
+func (h *Hub) SetMCPGateway(g *mcp.Gateway, token string) {
+	h.mu.Lock()
+	h.mcpGateway = g
+	h.mcpToken = token
+	h.mu.Unlock()
+	g.SetToolCallHook(func(server, tool string) {
+		// Every MCP tool call transits the daemon, so this is the one place it can be recorded.
+		log.Printf("mcp: %s called %s/%s", "agent", server, tool)
+	})
+}
+
+// SetMCPGatewayBase records the reachable base URL of the local gateway (set once the listener is up).
+func (h *Hub) SetMCPGatewayBase(base string) {
+	h.mu.Lock()
+	h.mcpGatewayBase = base
+	h.mu.Unlock()
+}
+
+// gatewayServers rewrites stdio server definitions into REMOTE ones pointing at the local gateway,
+// so each harness talks HTTP to the daemon and the actual server process runs exactly once.
+//
+// Falls back to the raw stdio definitions when the gateway isn't up — a harness with its own copy of
+// a server is strictly better than a harness with no tools at all.
+func (h *Hub) gatewayServers(servers []mcp.Server) []mcp.Server {
+	h.mu.Lock()
+	g, base, token := h.mcpGateway, h.mcpGatewayBase, h.mcpToken
+	h.mu.Unlock()
+	if g == nil || base == "" {
+		return servers
+	}
+	out := make([]mcp.Server, 0, len(servers))
+	for _, s := range servers {
+		if s.Transport != "stdio" {
+			out = append(out, s) // an upstream remote server is passed through untouched
+			continue
+		}
+		out = append(out, mcp.Server{
+			Name:      s.Name,
+			Transport: "http",
+			URL:       g.URLFor(base, s.Name),
+			Headers:   map[string]string{"Authorization": "Bearer " + token},
+			ProjectID: s.ProjectID,
+		})
+	}
+	return out
 }

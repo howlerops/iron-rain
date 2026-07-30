@@ -197,7 +197,15 @@ func serve(args []string) error {
 	h.SetApprovalRulesPath(approvalRulesPath())     // persistent "Always allow" (asked once, ever)
 	// Daemon-owned MCP host: servers are registered ONCE here and injected into every harness, instead
 	// of the user configuring the same server separately for each agent.
-	h.SetMCPRegistry(mcp.NewRegistry(mcpRegistryPath()))
+	mcpReg := mcp.NewRegistry(mcpRegistryPath())
+	h.SetMCPRegistry(mcpReg)
+	// The gateway supervises each server ONCE and lets every harness reach it over local HTTP,
+	// instead of each agent spawning its own copy of the same server.
+	mcpMgr := mcp.NewManager(mcpReg)
+	defer mcpMgr.Shutdown()
+	mcpToken := loadOrCreateSecret(mcpTokenPath())
+	mcpGateway := mcp.NewGateway(mcpMgr, mcpToken)
+	h.SetMCPGateway(mcpGateway, mcpToken)
 	if len(issuesMgr.Connected()) > 0 {
 		go func() { _ = issuesMgr.Refresh(context.Background()) }() // initial fetch
 	}
@@ -296,6 +304,9 @@ func serve(args []string) error {
 	mux := http.NewServeMux()
 	mux.Handle("/ws", srv.Handler())
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) })
+	// Local MCP gateway. Bearer-authenticated: loopback is shared with every other process on this
+	// machine, so being local is not by itself an authorization.
+	mux.Handle("/mcp/", mcpGateway)
 	// Loopback OAuth callback for tracker connect (Linear + Jira). The redirect URI must be
 	// registered on each provider's OAuth app. It is served both on the main mux (reachable via
 	// --public-url tunnels) and on a dedicated browser-safe loopback port below, since the
@@ -361,6 +372,12 @@ func serve(args []string) error {
 	// ReadHeaderTimeout bounds header-slowloris on the plain HTTP routes
 	// (/healthz, /oauth/linear/callback) when exposed via --public-url. Leave
 	// Write/Idle timeouts unset so long-lived /ws WebSocket upgrades aren't cut off.
+	// Tell the hub where the MCP gateway is reachable, now that the bind address is settled. Harnesses
+	// are always pointed at LOOPBACK, never at whatever --addr is (the installed launchd agent binds
+	// 0.0.0.0), so an agent on this machine never routes its tool calls over the network. The route
+	// itself is still exposed on that interface, which is exactly why it requires a bearer token — an
+	// MCP server runs with this machine's credentials.
+	h.SetMCPGatewayBase("http://127.0.0.1:" + portOf(*addr))
 	httpSrv := &http.Server{Addr: *addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 
 	// Graceful shutdown. Without this the process only ever ended by signal, which meant EVERY defer
@@ -589,6 +606,23 @@ func projectsPath() string {
 		return "oculus-projects.json"
 	}
 	return filepath.Join(home, ".oculus", "projects.json")
+}
+
+// portOf extracts the port from a listen address, defaulting to the daemon's standard port.
+func portOf(addr string) string {
+	if _, port, err := net.SplitHostPort(addr); err == nil && port != "" {
+		return port
+	}
+	return "6000"
+}
+
+// mcpTokenPath holds the bearer token harnesses present to the local MCP gateway (0600).
+func mcpTokenPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "oculus-mcp-token"
+	}
+	return filepath.Join(home, ".oculus", "mcp-token")
 }
 
 // mcpRegistryPath is where MCP server definitions live (0600 — Env/Headers hold credentials).

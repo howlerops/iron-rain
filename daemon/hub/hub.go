@@ -93,6 +93,10 @@ type Hub struct {
 	mcp   *mcp.Registry // daemon-owned MCP server registry (nil = MCP not enabled)
 	roles *roleRegistry // who may steer vs. watch (see roles.go); disabled = everyone is the owner
 
+	mcpGateway     *mcp.Gateway // local HTTP front door for supervised MCP servers (nil = not enabled)
+	mcpGatewayBase string       // reachable base URL of the gateway ("" until the listener is up)
+	mcpToken       string       // bearer token harnesses present to the gateway
+
 	// agentsFileMu serializes the load→mutate→save cycle on ~/.oculus/agents.json. agent.upsert and
 	// agent.delete are both in the async-dispatch allowlist, so without this two concurrent edits
 	// each read the same pre-state and the later write silently discards the earlier one. It is a
