@@ -1,5 +1,24 @@
 # Gap Roadmap — closing the ADE competitive gaps
 
+**STATUS (2026-07-30, shipped in v0.2.107):** most of this roadmap is now implemented. Delivered:
+all of §0 (0.1–0.9), AP-1…AP-4 (scoped approval rules, payload enrichment, rules UI, modes), FO-1 +
+FO-2 (fan-out aggregation + advisory judge), §5 (agent registry breadth), §6 (screen capture), G-1
+(genui spec registry), MCP-1 + MCP-3 (daemon-owned MCP registry, dual-stack client, per-harness
+injection), and MU-1 (principals + prompt attribution).
+
+STILL OPEN — the genuinely large remainders, in priority order:
+- **MCP-2 gateway** (supervise each server once, expose local HTTP URLs). Today injection is
+  config-fanout: each harness spawns its own client from the shared definition, so N harnesses × M
+  servers of processes, and per-tool-call audit isn't possible. The registry/injection layer is
+  designed so the gateway slots in underneath without changing the UI or the stored config.
+- **MCP-4/MCP-5**: remote-server OAuth, registry browse/install, per-server tool rules, MCP Apps.
+- **MU-2…MU-4**: roles + permission gating, presence, invite flow. MU-1 landed the attribution the
+  rest hangs off.
+- **G-2…G-4**: the form/layout interpreter components, tool-event projection, MCP Apps bridge.
+- **FO-3**: task decomposition fan-out (`Prompts []string` is already reserved in the protocol).
+
+The original plan follows unchanged, for the reasoning behind each decision.
+
 Written 2026-07-30, after the Zed ADK / Orca ADE competitive analysis. This is the deep plan
 for the seven ranked gaps, grounded in first-hand code mapping (file:line references verified
 against the tree at v0.2.106) plus external research current as of this week — including the
