@@ -93,7 +93,7 @@ public struct ChatView: View {
             if let ap = model.pendingApproval {
                 ApprovalCard(approval: ap, palette: palette,
                              onAllow: { Task { await model.respond(Decision.allow) } },
-                             onAlways: { Task { await model.respond(Decision.always) } },
+                             onAlways: { scope in Task { await model.respond(Decision.always, scope: scope) } },
                              onDeny: { Task { await model.respond(Decision.deny) } })
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -945,8 +945,11 @@ struct ApprovalCard: View {
     let approval: ApprovalRequest
     let palette: OculusPalette
     let onAllow: () -> Void
-    let onAlways: () -> Void
+    /// nil scope = the broad "this tool, everywhere" rule (what Always always meant).
+    let onAlways: (ApprovalScope?) -> Void
     let onDeny: () -> Void
+
+    @State private var showArgs = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -964,12 +967,30 @@ struct ApprovalCard: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .textSelection(.enabled)
             }
+            // The exact arguments, when the harness sent them. The one-line detail is a summary;
+            // approving a tool without being able to see what it will actually do is the whole
+            // failure mode this fixes.
+            if let args = approval.input, let pretty = args.prettyJSON, pretty != approval.detail {
+                DisclosureGroup(isExpanded: $showArgs) {
+                    ScrollView(.horizontal) {
+                        Text(pretty)
+                            .font(.system(size: 11, design: .monospaced))
+                            .textSelection(.enabled)
+                            .padding(8)
+                    }
+                    .frame(maxHeight: 160)
+                    .background(palette.input)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                } label: {
+                    Text("Details").font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(palette.mutedForeground)
+                }
+            }
             HStack(spacing: 8) {
                 Button("Deny", action: onDeny)
                     .buttonStyle(.bordered).tint(palette.destructive)
                 Spacer()
-                Button("Always", action: onAlways)
-                    .buttonStyle(.bordered).tint(palette.primary)
+                alwaysControl
                 Button("Allow", action: onAllow)
                     .buttonStyle(.borderedProminent).tint(palette.primary)
                     .keyboardShortcut(.defaultAction)
@@ -980,6 +1001,27 @@ struct ApprovalCard: View {
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(palette.primary.opacity(0.4)))
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .padding(.horizontal, 12).padding(.bottom, 6)
+    }
+
+    /// "Always" is a plain button when the daemon offered no scopes (older daemon), and a menu when
+    /// it did — so the common case stays one tap while "always allow *this command shape*" is
+    /// available without the user inventing a pattern.
+    @ViewBuilder private var alwaysControl: some View {
+        if approval.suggestedScopes.isEmpty {
+            Button("Always") { onAlways(nil) }
+                .buttonStyle(.bordered).tint(palette.primary)
+        } else {
+            Menu {
+                ForEach(approval.suggestedScopes) { scope in
+                    Button(scope.label) { onAlways(scope) }
+                }
+            } label: {
+                Text("Always…")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .tint(palette.primary)
+        }
     }
 }
 

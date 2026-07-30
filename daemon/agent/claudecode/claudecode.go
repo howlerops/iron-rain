@@ -377,6 +377,9 @@ type outMsg struct {
 	OutputTokens int           `json:"output_tokens,omitempty"`
 	CostUSD      float64       `json:"cost_usd,omitempty"`
 	Todos        []sidecarTodo `json:"todos,omitempty"`
+	// Input is the approved tool's raw arguments (approval messages only) — what the daemon's rule
+	// engine needs to scope an "always allow" to a path or command shape.
+	Input json.RawMessage `json:"input,omitempty"`
 }
 
 type sidecarTodo struct {
@@ -507,7 +510,7 @@ func (s *session) readLoop(stdout io.ReadCloser) {
 			}})
 		case "approval":
 			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusAwaitingApproval}})
-			s.emit(agent.Event{Type: protocol.TypeApprovalRequest, Payload: protocol.ApprovalRequest{ApprovalID: m.ID, SessionID: s.id, Tool: m.Tool, Detail: m.Detail}})
+			s.emit(agent.Event{Type: protocol.TypeApprovalRequest, Payload: protocol.ApprovalRequest{ApprovalID: m.ID, SessionID: s.id, Tool: m.Tool, Detail: m.Detail, Input: m.Input}})
 		case "idle":
 			idle = true
 			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusIdle}})

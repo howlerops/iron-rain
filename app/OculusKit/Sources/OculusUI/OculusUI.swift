@@ -2217,21 +2217,24 @@ public final class Model: ObservableObject {
         for (_, cont) in inflight { cont.resume(throwing: error) }
     }
 
-    public func respond(_ decision: String) async {
+    /// - Parameter scope: only meaningful with `Decision.always`; nil means the broad
+    ///   "this tool, everywhere" rule. The daemon supplies the available scopes on the request.
+    public func respond(_ decision: String, scope: ApprovalScope? = nil) async {
         guard let client, let ap = pendingApproval else { return }
         let verb: String
         switch decision {
         case Decision.deny: verb = "✗ Denied"
-        case Decision.always: verb = "✓ Always allow"
+        case Decision.always: verb = scope.map { "✓ \($0.label)" } ?? "✓ Always allow"
         default: verb = "✓ Allowed"
         }
         let cmd = (ap.detail?.isEmpty == false) ? " · \(ap.detail!)" : ""
-        appendTool("\(verb) \(ap.tool)\(cmd)")
+        // A scoped Always already names what it covers, so don't repeat the tool after it.
+        appendTool(decision == Decision.always && scope != nil ? verb : "\(verb) \(ap.tool)\(cmd)")
         pendingApproval = nil
         refreshLiveActivity()
         do {
             let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.approvalRespond,
-                                          payload: ApprovalRespond(approvalID: ap.approvalID, decision: decision))
+                                          payload: ApprovalRespond(approvalID: ap.approvalID, decision: decision, scope: scope))
             try await client.send(env)
         } catch {
             // Restore the pending approval so the agent isn't left hanging on a decision the daemon

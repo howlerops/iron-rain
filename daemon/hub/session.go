@@ -611,12 +611,19 @@ func (m *managedSession) run() {
 		m.mu.Unlock()
 		if ev.Type == protocol.TypeApprovalRequest {
 			if ar, ok := ev.Payload.(protocol.ApprovalRequest); ok {
-				// A persisted ALWAYS rule answers it silently — permissions are asked ONCE, ever,
-				// not once per session. The request never reaches a client.
+				// A persisted rule answers it silently — permissions are asked ONCE, ever, not once
+				// per session. The request never reaches a client.
 				if m.hub.autoAllowApproval(m, ar) {
 					continue
 				}
-				m.hub.recordApproval(ar.ApprovalID, ar.Tool, m)
+				// Offer the scopes an ALWAYS could narrow to. Computed here, once, from what this
+				// harness actually told us, so the client never has to parse a command itself.
+				m.mu.Lock()
+				projectID := m.meta.projectID
+				m.mu.Unlock()
+				ar.SuggestedScopes = suggestScopes(ar, ar.Patterns, projectID)
+				ev.Payload = ar // forward the enriched request to clients, not the bare one
+				m.hub.recordApproval(ar, m)
 				m.mu.Lock()
 				m.pendingApprovals++
 				m.mu.Unlock()

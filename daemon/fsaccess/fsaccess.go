@@ -316,3 +316,28 @@ func isBinary(buf []byte) bool {
 	}
 	return false
 }
+
+// NormalizePath canonicalizes p for comparison against a configured prefix: expand ~, make it
+// absolute, resolve symlinks on the longest existing ancestor, and Clean it. It returns "" when p
+// doesn't denote a filesystem path at all (an approval Detail is often a bare command like
+// "npm test", which must never be mistaken for a path and matched against a subtree rule).
+//
+// Callers use this for POLICY decisions (does this request fall inside an allowed subtree). Guard.Resolve
+// remains the enforcement path for actual reads/writes.
+func NormalizePath(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return ""
+	}
+	if strings.HasPrefix(p, "~") {
+		if home, err := os.UserHomeDir(); err == nil {
+			p = filepath.Join(home, strings.TrimPrefix(p, "~"))
+		}
+	}
+	// Only absolute paths are comparable to a configured prefix. A relative token ("npm test",
+	// "src/main.go") has no single meaning here, so decline rather than guess a working directory.
+	if !filepath.IsAbs(p) {
+		return ""
+	}
+	return filepath.Clean(resolveExisting(filepath.Clean(p)))
+}

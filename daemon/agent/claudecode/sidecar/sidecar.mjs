@@ -83,7 +83,10 @@ function canUseTool(toolName, input) {
     (toolName === "ExitPlanMode" && input?.plan) ||
     input?.command || input?.file_path || input?.path || input?.plan ||
     (input ? JSON.stringify(input).slice(0, 160) : "");
-  send({ t: "approval", id, tool: toolName, detail });
+  // Forward the tool's FULL arguments, not just the truncated display string. The daemon's rule
+  // engine scopes an "always allow" by argument (a path subtree, a command shape), which it can't do
+  // from a 160-char summary. The daemon caps/validates before anything is persisted or rendered.
+  send({ t: "approval", id, tool: toolName, detail, input: input ?? null });
   return new Promise((resolve) => approvals.set(id, { resolve, input }));
 }
 

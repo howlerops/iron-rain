@@ -1186,12 +1186,30 @@ type ApprovalRequest struct {
 	SessionID  string          `json:"session_id"`
 	Tool       string          `json:"tool"`
 	Detail     string          `json:"detail,omitempty"` // human-readable command/args (e.g. the bash command)
-	Input      json.RawMessage `json:"input,omitempty"`
+	Input      json.RawMessage `json:"input,omitempty"`  // the tool's raw arguments, when the harness provides them
+	// Patterns are the harness's OWN glob(s) for what this request covers (opencode sends these).
+	// They make the best "always allow" suggestions because they come from the tool that will be
+	// matching them, not from us re-parsing a command string.
+	Patterns []string `json:"patterns,omitempty"`
+	// Scopes the daemon suggests for an ALWAYS answer, narrowest first. The client renders these as
+	// the "Always allow …" menu; it never invents its own, so scope semantics live in ONE place.
+	SuggestedScopes []ApprovalScope `json:"suggested_scopes,omitempty"`
+}
+
+// ApprovalScope narrows what an ALWAYS decision applies to. Kind is "tool" (this tool anywhere),
+// "pattern" (commands/URLs matching Value as a glob), "path" (anything under the Value subtree), or
+// "project" (this tool, but only in the session's project).
+type ApprovalScope struct {
+	Kind  string `json:"kind"`
+	Value string `json:"value,omitempty"`
+	Label string `json:"label"` // ready-to-render menu text, e.g. `Always allow "git *"`
 }
 
 type ApprovalRespond struct {
 	ApprovalID string `json:"approval_id"`
 	Decision   string `json:"decision"`
+	// Scope applies only to DecisionAlways. Omitted = the historical provider+tool rule.
+	Scope *ApprovalScope `json:"scope,omitempty"`
 }
 
 // ApprovalResolved is broadcast to every client when an approval is answered, so a

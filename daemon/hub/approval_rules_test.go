@@ -93,10 +93,7 @@ func TestApprovalRulesPersistToDisk(t *testing.T) {
 
 	h2 := New()
 	h2.SetApprovalRulesPath(path) // the restarted daemon
-	h2.mu.Lock()
-	ok := h2.approvalAllow[approvalRuleKey("opencode", "bash")]
-	h2.mu.Unlock()
-	if !ok {
-		t.Fatal("ALWAYS rule did not survive restart")
+	if d, ok := h2.evaluateApproval("opencode", "", protocol.ApprovalRequest{Tool: "bash", Detail: "npm test"}); !ok || d != protocol.DecisionAllow {
+		t.Fatalf("ALWAYS rule did not survive restart (decision=%q matched=%v)", d, ok)
 	}
 }

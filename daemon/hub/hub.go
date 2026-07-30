@@ -80,9 +80,9 @@ type Hub struct {
 	db            *store.Store                   // optional: durable local state (session names + records)
 	lsp           *lsp.Manager                   // language servers for the built-in editor (diagnostics/types)
 	runningTests  map[string]bool                // session ids with a test/build run in progress
-	approvalRulesPath string                     // path to ~/.oculus/approval-rules.json (persistent ALWAYS)
-	approvalAllow     map[string]bool            // provider|tool rules auto-allowed for every session
-	approvalTools     map[string]string          // approvalID -> tool (so an ALWAYS answer knows what to persist)
+	approvalRulesPath string                     // path to ~/.oculus/approval-rules.json (persistent rules)
+	approvalRules     []ApprovalRule             // ordered scoped rules; deny beats allow (see approval_rules.go)
+	approvalReqs      map[string]pendingApproval // approvalID -> the request + its scope, for a scoped ALWAYS
 	notifyPrefsPath string                       // path to ~/.oculus/notify.json (per-category push toggles)
 	notifyOff       map[string]bool              // push categories the user turned OFF (absent = enabled)
 	fanoutNotified  map[string]bool              // fan-out groups already notified as "all done" (fire once)
@@ -1418,13 +1418,25 @@ func (h *Hub) finishWorkspaceMember(ctx context.Context, mem worktree.Member, ti
 	return res
 }
 
-func (h *Hub) recordApproval(approvalID, tool string, m *managedSession) {
+// pendingApproval is everything a later ALWAYS answer needs to build a SCOPED rule. Keeping only the
+// tool name (the original behavior) meant "Always" could never mean anything narrower than
+// "every bash command forever" — the whole request has to survive until the user answers.
+type pendingApproval struct {
+	req       protocol.ApprovalRequest
+	provider  string
+	projectID string
+}
+
+func (h *Hub) recordApproval(ar protocol.ApprovalRequest, m *managedSession) {
+	m.mu.Lock()
+	projectID := m.meta.projectID
+	m.mu.Unlock()
 	h.mu.Lock()
-	h.approvals[approvalID] = m
-	if h.approvalTools == nil {
-		h.approvalTools = map[string]string{}
+	h.approvals[ar.ApprovalID] = m
+	if h.approvalReqs == nil {
+		h.approvalReqs = map[string]pendingApproval{}
 	}
-	h.approvalTools[approvalID] = tool
+	h.approvalReqs[ar.ApprovalID] = pendingApproval{req: ar, provider: m.sess.Provider(), projectID: projectID}
 	h.mu.Unlock()
 }
 
@@ -3357,9 +3369,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		_ = env.Unmarshal(&req)
 		h.mu.Lock()
 		m := h.approvals[req.ApprovalID]
-		tool := h.approvalTools[req.ApprovalID]
+		pend := h.approvalReqs[req.ApprovalID]
 		delete(h.approvals, req.ApprovalID)
-		delete(h.approvalTools, req.ApprovalID)
+		delete(h.approvalReqs, req.ApprovalID)
 		h.mu.Unlock()
 		if m == nil {
 			h.sendErr(conn, env.ID, "no such approval")
@@ -3374,10 +3386,11 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, err.Error())
 			return
 		}
-		// ALWAYS persists ACROSS sessions: every future session auto-allows this provider+tool, so
-		// permissions are truly asked once — not once per session.
+		// ALWAYS persists ACROSS sessions, so permissions are truly asked once — not once per session.
+		// The client may narrow what "always" means (this exact command shape, this subtree, this
+		// project); with no Scope it stays the historical provider+tool rule.
 		if req.Decision == protocol.DecisionAlways {
-			h.rememberApprovalRule(m.sess.Provider(), tool)
+			h.addApprovalRule(ruleFromDecision(pend, req.Scope))
 		}
 		h.sendOK(conn, env.ID, nil)
 		// Tell every client this approval was answered, so its card clears everywhere.

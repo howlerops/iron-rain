@@ -866,7 +866,9 @@ func (s *session) handle(raw []byte) {
 			}
 		}
 		s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusAwaitingApproval}})
-		s.emit(agent.Event{Type: protocol.TypeApprovalRequest, Payload: protocol.ApprovalRequest{ApprovalID: perm.ID, SessionID: s.id, Tool: tool, Detail: detail, Input: perm.Metadata}})
+		// Forward opencode's OWN patterns: they're the authoritative globs for what this permission
+		// covers, and they make far better "always allow …" suggestions than re-parsing the command.
+		s.emit(agent.Event{Type: protocol.TypeApprovalRequest, Payload: protocol.ApprovalRequest{ApprovalID: perm.ID, SessionID: s.id, Tool: tool, Detail: detail, Input: perm.Metadata, Patterns: perm.Patterns}})
 
 	case "session.idle":
 		var pr struct {

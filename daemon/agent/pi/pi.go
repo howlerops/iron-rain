@@ -333,7 +333,14 @@ func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool) {
 				if tool == "" {
 					tool = "confirm"
 				}
-				s.emit(agent.Event{Type: protocol.TypeApprovalRequest, Payload: protocol.ApprovalRequest{ApprovalID: e.ID, SessionID: s.id, Tool: tool, Detail: detail}})
+				// Forward the tool args so an "always allow" can be scoped by path/command, not just by tool.
+				var rawArgs json.RawMessage
+				if len(e.Args) > 0 {
+					if b, err := json.Marshal(e.Args); err == nil {
+						rawArgs = b
+					}
+				}
+				s.emit(agent.Event{Type: protocol.TypeApprovalRequest, Payload: protocol.ApprovalRequest{ApprovalID: e.ID, SessionID: s.id, Tool: tool, Detail: detail, Input: rawArgs}})
 			}
 		case "agent_end":
 			idle = true

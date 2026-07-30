@@ -450,14 +450,51 @@ public struct Thinking: Codable {
     public var sessionID: String; public var text: String
     enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case text }
 }
+/// One way an "Always" answer can be narrowed. The DAEMON computes these — the app never parses a
+/// command itself, so scope semantics live in exactly one place and can't drift between clients.
+public struct ApprovalScope: Codable, Equatable, Identifiable {
+    public var kind: String     // tool | pattern | path | project
+    public var value: String?
+    public var label: String    // ready-to-render menu text
+    public var id: String { kind + "|" + (value ?? "") }
+    public init(kind: String, value: String? = nil, label: String) {
+        self.kind = kind; self.value = value; self.label = label
+    }
+}
 public struct ApprovalRequest: Codable, Equatable {
     public var approvalID: String; public var sessionID: String; public var tool: String; public var detail: String?
-    enum CodingKeys: String, CodingKey { case approvalID = "approval_id"; case sessionID = "session_id"; case tool; case detail }
+    /// The tool's raw arguments, when the harness provides them — shown in the card's "details"
+    /// disclosure so the user can see exactly what they're approving, not just a truncated summary.
+    public var input: JSONValue?
+    public var suggestedScopes: [ApprovalScope]
+    enum CodingKeys: String, CodingKey {
+        case approvalID = "approval_id"; case sessionID = "session_id"; case tool; case detail
+        case input; case suggestedScopes = "suggested_scopes"
+    }
+    public init(approvalID: String, sessionID: String, tool: String, detail: String? = nil,
+                input: JSONValue? = nil, suggestedScopes: [ApprovalScope] = []) {
+        self.approvalID = approvalID; self.sessionID = sessionID; self.tool = tool
+        self.detail = detail; self.input = input; self.suggestedScopes = suggestedScopes
+    }
+    // Decode defensively: an older daemon sends neither new field.
+    public init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        approvalID = try c.decode(String.self, forKey: .approvalID)
+        sessionID = try c.decode(String.self, forKey: .sessionID)
+        tool = try c.decode(String.self, forKey: .tool)
+        detail = try c.decodeIfPresent(String.self, forKey: .detail)
+        input = try c.decodeIfPresent(JSONValue.self, forKey: .input)
+        suggestedScopes = try c.decodeIfPresent([ApprovalScope].self, forKey: .suggestedScopes) ?? []
+    }
 }
 public struct ApprovalRespond: Codable {
     public var approvalID: String; public var decision: String
-    public init(approvalID: String, decision: String) { self.approvalID = approvalID; self.decision = decision }
-    enum CodingKeys: String, CodingKey { case approvalID = "approval_id"; case decision }
+    /// Only meaningful with decision == "always"; nil keeps the historical provider+tool rule.
+    public var scope: ApprovalScope?
+    public init(approvalID: String, decision: String, scope: ApprovalScope? = nil) {
+        self.approvalID = approvalID; self.decision = decision; self.scope = scope
+    }
+    enum CodingKeys: String, CodingKey { case approvalID = "approval_id"; case decision; case scope }
 }
 public struct ApprovalResolved: Codable {
     public var approvalID: String; public var decision: String
@@ -500,6 +537,18 @@ public indirect enum JSONValue: Codable, Equatable {
     public func decoded<T: Decodable>(_ type: T.Type) -> T? {
         guard let data = try? JSONEncoder().encode(self) else { return nil }
         return try? JSONDecoder().decode(type, from: data)
+    }
+
+    /// Human-readable, key-sorted JSON for display (approval argument disclosure). A lone string
+    /// renders as itself rather than a quoted one-element document. Returns nil for `.null`, so a
+    /// caller can skip the whole affordance.
+    public var prettyJSON: String? {
+        if case .null = self { return nil }
+        if case .string(let s) = self { return s }
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        guard let data = try? enc.encode(self), let s = String(data: data, encoding: .utf8) else { return nil }
+        return s
     }
 }
 
