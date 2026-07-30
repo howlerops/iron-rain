@@ -19,57 +19,73 @@ public struct ApprovalRulesView: View {
     private var allows: [ApprovalRuleInfo] { model.approvalRules.filter { $0.action != "deny" } }
     private var denies: [ApprovalRuleInfo] { model.approvalRules.filter { $0.action == "deny" } }
 
+    @State private var query = ""
+
+    private func matching(_ rs: [ApprovalRuleInfo]) -> [ApprovalRuleInfo] {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return rs }
+        return rs.filter {
+            $0.description.lowercased().contains(q)
+            || ($0.tool ?? "").lowercased().contains(q)
+            || ($0.pattern ?? "").lowercased().contains(q)
+            || ($0.projectName ?? "").lowercased().contains(q)
+        }
+    }
+
     public var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider().overlay(palette.border)
+        OculusSheet(
+            title: "Approval rules",
+            subtitle: "What your agents may do without asking.",
+            palette: palette,
+            search: model.approvalRules.count >= 6 ? $query : nil,
+            searchPrompt: "Search rules",
+            onClose: onClose
+        ) {
             if model.approvalRules.isEmpty {
-                emptyState
+                SheetEmptyState(icon: "checkmark.shield",
+                                title: "No standing rules",
+                                message: "Every tool your agents run still asks first. Choosing “Always…” on an approval saves a rule here — scoped to the command, folder, or project you picked.",
+                                palette: palette)
             } else {
-                List {
-                    if !denies.isEmpty {
-                        Section {
-                            ForEach(denies, id: \.index) { row($0) }
-                        } header: {
-                            Text("Never allowed").foregroundStyle(palette.destructive)
-                        } footer: {
-                            Text("Checked first — a deny always beats an allow.")
-                                .font(.caption).foregroundStyle(palette.mutedForeground)
-                        }
-                    }
-                    if !allows.isEmpty {
-                        Section("Always allowed") {
-                            ForEach(allows, id: \.index) { row($0) }
-                        }
+                let denies = matching(model.approvalRules.filter { $0.action == "deny" })
+                let allows = matching(model.approvalRules.filter { $0.action != "deny" })
+                if denies.isEmpty && allows.isEmpty {
+                    SheetEmptyState(icon: "line.3.horizontal.decrease.circle",
+                                    title: "Nothing matches",
+                                    message: "No rule matching “\(query)”.",
+                                    palette: palette) {
+                        Button("Clear search") { query = "" }.buttonStyle(.bordered)
                     }
                 }
-                #if os(macOS)
-                .listStyle(.inset)
-                #endif
+                if !denies.isEmpty {
+                    section("Never allowed", tint: palette.destructive,
+                            note: "Checked first — a deny always beats an allow.")
+                    VStack(spacing: OculusSpace.sm) { ForEach(denies, id: \.index) { row($0) } }
+                }
+                if !allows.isEmpty {
+                    section("Always allowed", tint: palette.mutedForeground, note: nil)
+                    VStack(spacing: OculusSpace.sm) { ForEach(allows, id: \.index) { row($0) } }
+                }
             }
         }
-        .frame(minWidth: 460, minHeight: 340)
-        .background(palette.background)
         .task { await model.loadApprovalRules() }
     }
 
-    private var header: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Approval rules").font(.headline).foregroundStyle(palette.foreground)
-                Text("What your agents may do without asking.")
-                    .font(.caption).foregroundStyle(palette.mutedForeground)
-            }
-            Spacer()
-            if let onClose {
-                Button("Done", action: onClose).keyboardShortcut(.defaultAction)
+    private func section(_ title: String, tint: Color, note: String?) -> some View {
+        VStack(alignment: .leading, spacing: OculusSpace.xxs) {
+            Text(title.uppercased())
+                .font(.system(size: 10, weight: .semibold)).tracking(0.8)
+                .foregroundStyle(tint)
+            if let note {
+                Text(note).font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
             }
         }
-        .padding(14)
+        .padding(.top, OculusSpace.xs)
     }
 
     private func row(_ r: ApprovalRuleInfo) -> some View {
-        HStack(alignment: .top, spacing: 10) {
+        SheetCard(palette: palette) {
+        HStack(alignment: .top, spacing: OculusSpace.sm) {
             Image(systemName: r.action == "deny" ? "hand.raised.fill" : "checkmark.shield.fill")
                 .foregroundStyle(r.action == "deny" ? palette.destructive : palette.primary)
                 .padding(.top, 2)
@@ -92,7 +108,7 @@ public struct ApprovalRulesView: View {
             .buttonStyle(.plain)
             .help("Remove this rule — the agent will ask again next time.")
         }
-        .padding(.vertical, 4)
+        }
     }
 
     private func tag(_ s: String, mono: Bool = false) -> some View {
@@ -105,16 +121,4 @@ public struct ApprovalRulesView: View {
             .foregroundStyle(palette.mutedForeground)
     }
 
-    private var emptyState: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "checkmark.shield").font(.system(size: 30))
-                .foregroundStyle(palette.mutedForeground.opacity(0.5))
-            Text("No standing rules").font(.headline).foregroundStyle(palette.foreground)
-            Text("Every tool your agents run still asks first. Choosing “Always…” on an approval saves a rule here — scoped to the command, folder, or project you picked.")
-                .font(.callout).foregroundStyle(palette.mutedForeground)
-                .multilineTextAlignment(.center).frame(maxWidth: 360)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(24)
-    }
 }

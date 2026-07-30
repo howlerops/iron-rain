@@ -27,67 +27,54 @@ public struct SharingView: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-            Divider().overlay(palette.border)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    toggleRow
-                    if model.participants.isEmpty {
-                        Text("No other devices are connected.")
-                            .font(.callout).foregroundStyle(palette.mutedForeground)
-                            .padding(.top, 4)
-                    } else {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("CONNECTED").font(.system(size: 10, weight: .semibold)).tracking(0.8)
-                                .foregroundStyle(palette.mutedForeground)
-                            ForEach(model.participants) { row($0) }
-                        }
-                    }
-                    if model.sharingEnabled {
-                        inviteSection
-                        rulesNote
+        OculusSheet(
+            title: "Sharing",
+            subtitle: "Who can steer your agents.",
+            palette: palette,
+            onClose: onClose
+        ) {
+            toggleRow
+            if model.participants.isEmpty {
+                Text("No other devices are connected.")
+                    .font(.system(size: 12)).foregroundStyle(palette.mutedForeground)
+            } else {
+                VStack(alignment: .leading, spacing: OculusSpace.xs) {
+                    Text("CONNECTED").font(.system(size: 10, weight: .semibold)).tracking(0.8)
+                        .foregroundStyle(palette.mutedForeground)
+                    VStack(spacing: OculusSpace.sm) {
+                        ForEach(model.participants) { row($0) }
                     }
                 }
-                .padding(16)
+            }
+            if model.sharingEnabled {
+                inviteSection
+                rulesNote
             }
         }
-        .frame(minWidth: 460, minHeight: 320)
-        .background(palette.background)
         .task { await model.loadParticipants() }
-    }
-
-    private var header: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Sharing").font(.headline).foregroundStyle(palette.foreground)
-                Text("Who can steer your agents.")
-                    .font(.caption).foregroundStyle(palette.mutedForeground)
-            }
-            Spacer()
-            if let onClose { Button("Done", action: onClose).keyboardShortcut(.defaultAction) }
-        }
-        .padding(14)
+        .animation(.easeOut(duration: 0.18), value: model.sharingEnabled)
     }
 
     private var toggleRow: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        SheetCard(palette: palette) {
             Toggle(isOn: Binding(
                 get: { model.sharingEnabled },
                 set: { on in Task { await model.setSharingEnabled(on) } }
             )) {
-                Text("Require permission to steer").font(.system(size: 13))
+                Text("Require permission to steer").font(.system(size: 12.5))
             }
             .toggleStyle(.switch).tint(palette.primary)
             Text(model.sharingEnabled
                  ? "New devices can watch, but can't prompt or interrupt until you let them."
                  : "Off — every device connected to this Mac has full control. Fine when they're all yours.")
-                .font(.caption).foregroundStyle(palette.mutedForeground)
+                .font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
     private func row(_ p: Participant) -> some View {
-        HStack(spacing: 10) {
+        SheetCard(palette: palette) {
+        HStack(spacing: OculusSpace.sm) {
             Image(systemName: p.role == ParticipantRole.owner ? "person.crop.circle.fill.badge.checkmark" : "person.crop.circle")
                 .foregroundStyle(p.role == ParticipantRole.owner ? palette.primary : palette.mutedForeground)
             VStack(alignment: .leading, spacing: 1) {
@@ -102,10 +89,10 @@ public struct SharingView: View {
                     let next = p.role == ParticipantRole.steerer ? ParticipantRole.observer : ParticipantRole.steerer
                     Task { await model.grantRole(name: p.name, role: next) }
                 }
-                .buttonStyle(.bordered).font(.system(size: 11))
+                .buttonStyle(.bordered).controlSize(.small)
             }
         }
-        .padding(.vertical, 3)
+        }
     }
 
     @State private var inviteLabel = ""
@@ -115,7 +102,7 @@ public struct SharingView: View {
     /// Minting a share link. The secret is shown exactly once — the daemon never returns it again,
     /// which is deliberate: a credential you can re-read is one that leaks off a screen later.
     private var inviteSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        SheetCard(palette: palette) {
             Text("INVITE SOMEONE").font(.system(size: 10, weight: .semibold)).tracking(0.8)
                 .foregroundStyle(palette.mutedForeground)
 
@@ -135,10 +122,9 @@ public struct SharingView: View {
                             .buttonStyle(.bordered)
                     }
                 }
-                .padding(10)
-                .background(palette.card)
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.primary.opacity(0.4)))
-                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .padding(OculusSpace.md)
+                .background(palette.input)
+                .clipShape(RoundedRectangle(cornerRadius: OculusRadius.sm))
             } else {
                 HStack(spacing: 8) {
                     TextField("Who's this for?", text: $inviteLabel).textFieldStyle(.roundedBorder)
@@ -192,15 +178,12 @@ public struct SharingView: View {
     }
 
     private var rulesNote: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        SheetCard(palette: palette) {
             Label("Approvals stay yours", systemImage: "lock.shield")
                 .font(.system(size: 12, weight: .medium)).foregroundStyle(palette.foreground)
             Text("Anyone you let steer can prompt and interrupt. Only you can approve a tool — those run with your credentials on this Mac.")
-                .font(.caption).foregroundStyle(palette.mutedForeground)
+                .font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(10)
-        .background(palette.card)
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.border))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 }

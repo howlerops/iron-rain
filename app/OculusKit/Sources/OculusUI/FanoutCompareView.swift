@@ -20,40 +20,22 @@ struct FanoutCompareView: View {
     private var succeeded: [FanoutVariantResult] { summary.results.filter { $0.failed != true } }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-            Divider().overlay(palette.border)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    ForEach(summary.results) { r in card(r) }
-                }
-                .padding(14)
+        OculusSheet(
+            title: "Compare \(summary.results.count) attempts",
+            subtitle: (summary.prompt?.isEmpty == false)
+                ? summary.prompt
+                : "Keep one — the rest are discarded along with their worktrees.",
+            palette: palette,
+            onClose: onClose
+        ) {
+            VStack(spacing: OculusSpace.sm) {
+                ForEach(summary.results) { r in card(r) }
             }
         }
-        .frame(minWidth: 560, minHeight: 420)
-        .background(palette.background)
-    }
-
-    private var header: some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Compare \(summary.results.count) attempts").font(.headline)
-                    .foregroundStyle(palette.foreground)
-                if let p = summary.prompt, !p.isEmpty {
-                    Text(p).font(.caption).foregroundStyle(palette.mutedForeground).lineLimit(2)
-                } else {
-                    Text("Keep one — the rest are discarded along with their worktrees.")
-                        .font(.caption).foregroundStyle(palette.mutedForeground)
-                }
-            }
-            Spacer()
-            Button("Done", action: onClose).keyboardShortcut(.cancelAction)
-        }
-        .padding(14)
     }
 
     private func card(_ r: FanoutVariantResult) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        SheetCard(palette: palette) {
             HStack(spacing: 8) {
                 Text("#\(r.variant + 1)")
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
@@ -96,7 +78,7 @@ struct FanoutCompareView: View {
                 }
                 Spacer()
                 Button("Open") { onOpenSession(r.sessionID) }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.bordered).controlSize(.small)
                 Button(keeping == r.sessionID ? "Keeping…" : "Keep this") {
                     keeping = r.sessionID
                     Task {
@@ -104,14 +86,10 @@ struct FanoutCompareView: View {
                         onClose()
                     }
                 }
-                .buttonStyle(.borderedProminent).tint(palette.primary)
+                .buttonStyle(.borderedProminent).tint(palette.primary).controlSize(.small)
                 .disabled(keeping != nil || (r.failed == true && succeeded.isEmpty == false))
             }
         }
-        .padding(12)
-        .background(palette.card)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(palette.border))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
         .opacity(r.failed == true ? 0.72 : 1)
     }
 

@@ -17,31 +17,75 @@ public struct MCPServersView: View {
     @State private var checking: Set<String> = []
     @State private var browsing = false
     @State private var prefill: MCPDirectoryEntry? = nil
+    @State private var query = ""
+    @State private var filter: Filter = .all
+
+    /// Filtering by STATE, not just text: with a lot of servers the question is usually "which ones
+    /// are broken" or "what's actually on", and scanning dots for that is exactly the work the UI
+    /// should be doing.
+    enum Filter: Hashable { case all, enabled, attention, unchecked }
 
     public init(model: Model, palette: OculusPalette, onClose: (() -> Void)? = nil) {
         self.model = model; self.palette = palette; self.onClose = onClose
     }
 
+    private var needsAttention: [MCPServerInfo] {
+        model.mcpServers.filter { $0.checkedAt != nil && !$0.ok }
+    }
+    private var unchecked: [MCPServerInfo] { model.mcpServers.filter { $0.checkedAt == nil } }
+
+    private var visible: [MCPServerInfo] {
+        var out = model.mcpServers
+        switch filter {
+        case .all: break
+        case .enabled: out = out.filter { $0.enabled }
+        case .attention: out = out.filter { $0.checkedAt != nil && !$0.ok }
+        case .unchecked: out = out.filter { $0.checkedAt == nil }
+        }
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return out }
+        // Search the tool names too — you often remember what a server DOES, not what it's called.
+        return out.filter { s in
+            if s.name.lowercased().contains(q) { return true }
+            if (s.command ?? "").lowercased().contains(q) { return true }
+            if (s.url ?? "").lowercased().contains(q) { return true }
+            return (s.tools ?? []).contains { $0.name.lowercased().contains(q) }
+        }
+    }
+
     public var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider().overlay(palette.border)
+        OculusSheet(
+            title: "MCP servers",
+            subtitle: "Registered once here — every agent gets them.",
+            palette: palette,
+            actions: AnyView(headerActions),
+            // The search bar only earns its space once there's enough to search.
+            search: model.mcpServers.count >= 6 ? $query : nil,
+            searchPrompt: "Search servers and tools",
+            filters: model.mcpServers.count >= 6 ? AnyView(filterChips) : nil,
+            onClose: onClose
+        ) {
             if model.daemonOutdated { outdatedBanner }
             if !model.mcpFound.isEmpty { importBanner }
+
             if model.mcpServers.isEmpty && model.mcpFound.isEmpty {
                 emptyState
-            } else {
-                List {
-                    ForEach(model.mcpServers) { row($0) }
-                    if !model.mcpServers.isEmpty { exclusiveRow }
+            } else if visible.isEmpty {
+                SheetEmptyState(icon: "line.3.horizontal.decrease.circle",
+                                title: "Nothing matches",
+                                message: query.isEmpty
+                                    ? "No servers in this state."
+                                    : "No server or tool matching “\(query)”.",
+                                palette: palette) {
+                    Button("Clear filters") { query = ""; filter = .all }.buttonStyle(.bordered)
                 }
-                #if os(macOS)
-                .listStyle(.inset)
-                #endif
+            } else {
+                VStack(spacing: OculusSpace.sm) {
+                    ForEach(visible) { row($0) }
+                }
+                if !model.mcpServers.isEmpty { exclusiveRow }
             }
         }
-        .frame(minWidth: 520, minHeight: 400)
-        .background(palette.background)
         .task {
             await model.loadMCPServers()
             await model.discoverMCPServers()
@@ -51,10 +95,7 @@ public struct MCPServersView: View {
         }
         .sheet(isPresented: $browsing) {
             MCPDirectoryView(model: model, palette: palette,
-                             onPick: { entry in
-                                 browsing = false
-                                 prefill = entry
-                             },
+                             onPick: { entry in browsing = false; prefill = entry },
                              onClose: { browsing = false })
         }
         .sheet(item: $prefill) { entry in
@@ -65,142 +106,123 @@ public struct MCPServersView: View {
         }
     }
 
-    /// Servers your agents already have. Offered rather than absorbed: each one carries a command
-    /// that will run with your credentials, so it gets a look first.
-    private var importBanner: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "arrow.down.circle").foregroundStyle(palette.primary)
-                Text("\(model.mcpFound.count) server\(model.mcpFound.count == 1 ? "" : "s") already set up in your agents")
-                    .font(.system(size: 12, weight: .medium)).foregroundStyle(palette.foreground)
-                Spacer()
-                Button("Import all") {
-                    Task { await model.importMCPServers(names: model.mcpFound.map(\.name)) }
-                }
-                .buttonStyle(.borderedProminent).tint(palette.primary).font(.system(size: 11))
-            }
-            ForEach(model.mcpFound) { f in
-                HStack(spacing: 8) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(f.name).font(.system(size: 12)).foregroundStyle(palette.foreground)
-                        Text(f.source).font(.system(size: 10)).foregroundStyle(palette.mutedForeground)
-                    }
-                    Spacer()
-                    if let keys = f.envKeys, !keys.isEmpty {
-                        Text(keys.joined(separator: ", "))
-                            .font(.system(size: 9.5, design: .monospaced))
-                            .foregroundStyle(palette.mutedForeground).lineLimit(1)
-                    }
-                    Button("Import") { Task { await model.importMCPServers(names: [f.name]) } }
-                        .buttonStyle(.bordered).font(.system(size: 11))
-                }
-            }
-            Text("Importing copies the definition here. Turn the original off in that agent's own config so it isn't started twice — or use the switch below to have Iron Rain manage MCP for all of them.")
-                .font(.caption).foregroundStyle(palette.mutedForeground)
+    private var headerActions: some View {
+        HStack(spacing: OculusSpace.sm) {
+            Button { browsing = true } label: { Label("Browse", systemImage: "magnifyingglass") }
+            Button { adding = true } label: { Label("Add", systemImage: "plus") }
         }
-        .padding(12)
-        .background(palette.card)
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.primary.opacity(0.35)))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .padding(.horizontal, 14).padding(.top, 10)
+        .controlSize(.small)
     }
 
-    /// The dedupe switch. Off by default because turning it on when servers haven't been imported
-    /// would silently remove tools the user relies on.
-    private var exclusiveRow: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Toggle(isOn: Binding(
-                get: { model.mcpExclusive },
-                set: { on in Task { await model.setMCPExclusive(on) } }
-            )) {
-                Text("Iron Rain manages MCP for my agents").font(.system(size: 12))
-            }
-            .toggleStyle(.switch).tint(palette.primary)
-            Text(model.mcpExclusive
-                 ? "Your agents ignore their own MCP config and use only the servers above — one process per server."
-                 : "Your agents ALSO load their own MCP config. A server configured in both places runs twice.")
-                .font(.caption).foregroundStyle(palette.mutedForeground)
-        }
-        .padding(.vertical, 4)
+    private var filterChips: some View {
+        FilterChips(selection: $filter, options: [
+            .init(value: .all, label: "All", count: model.mcpServers.count),
+            .init(value: .enabled, label: "On", count: model.mcpServers.filter(\.enabled).count),
+            .init(value: .attention, label: "Needs attention", count: needsAttention.count),
+            .init(value: .unchecked, label: "Untested", count: unchecked.count),
+        ], palette: palette)
     }
 
     /// An out-of-date daemon used to look EXACTLY like an empty screen: the app sends mcp.list, the
     /// daemon answers "unknown type", the `try?` swallows it, and nothing renders. Saying so directly
     /// is the difference between "this feature is broken" and "restart your daemon".
     private var outdatedBanner: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Color(hex: 0xE0912A))
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Your daemon is older than this app").font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(palette.foreground)
-                Text("It doesn't know about MCP servers yet, so nothing here will work. Quit and reopen Iron Rain to restart the daemon — it updates itself on start.")
-                    .font(.caption).foregroundStyle(palette.mutedForeground)
-                    .fixedSize(horizontal: false, vertical: true)
+        SheetCard(palette: palette, tint: Color(hex: 0xE0912A)) {
+            HStack(alignment: .top, spacing: OculusSpace.sm) {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Color(hex: 0xE0912A))
+                VStack(alignment: .leading, spacing: OculusSpace.xxs) {
+                    Text("Your daemon is older than this app")
+                        .font(.system(size: 12.5, weight: .medium)).foregroundStyle(palette.foreground)
+                    Text("It doesn't know about MCP servers yet, so nothing here will work. Quit and reopen Iron Rain to restart the daemon — it updates itself on start.")
+                        .font(.system(size: 11.5)).foregroundStyle(palette.mutedForeground)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
-            Spacer()
         }
-        .padding(12)
-        .background(palette.card)
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color(hex: 0xE0912A).opacity(0.5)))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .padding(.horizontal, 14).padding(.top, 10)
     }
 
-    private var header: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("MCP servers").font(.headline).foregroundStyle(palette.foreground)
-                Text("Registered once here — every agent gets them.")
-                    .font(.caption).foregroundStyle(palette.mutedForeground)
+    /// Servers your agents already have. Offered rather than absorbed: each one carries a command
+    /// that will run with your credentials, so it gets a look first.
+    private var importBanner: some View {
+        SheetCard(palette: palette, tint: palette.primary) {
+            HStack(spacing: OculusSpace.sm) {
+                Image(systemName: "arrow.down.circle").foregroundStyle(palette.primary)
+                Text("\(model.mcpFound.count) server\(model.mcpFound.count == 1 ? "" : "s") already set up in your agents")
+                    .font(.system(size: 12.5, weight: .medium)).foregroundStyle(palette.foreground)
+                Spacer(minLength: OculusSpace.sm)
+                Button("Import all") {
+                    Task { await model.importMCPServers(names: model.mcpFound.map(\.name)) }
+                }
+                .buttonStyle(.borderedProminent).tint(palette.primary).controlSize(.small)
             }
-            Spacer()
-            Button { browsing = true } label: { Label("Browse", systemImage: "magnifyingglass") }
-            Button { adding = true } label: { Label("Add", systemImage: "plus") }
-            if let onClose {
-                Button("Done", action: onClose).keyboardShortcut(.defaultAction)
+            VStack(spacing: OculusSpace.xs) {
+                ForEach(model.mcpFound) { f in
+                    HStack(spacing: OculusSpace.sm) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(f.name).font(.system(size: 12)).foregroundStyle(palette.foreground)
+                            Text(f.source).font(.system(size: 10)).foregroundStyle(palette.mutedForeground)
+                                .lineLimit(1).truncationMode(.middle)
+                        }
+                        Spacer(minLength: OculusSpace.sm)
+                        if let keys = f.envKeys, !keys.isEmpty {
+                            Text(keys.joined(separator: ", "))
+                                .font(.system(size: 9.5, design: .monospaced))
+                                .foregroundStyle(palette.mutedForeground)
+                                .lineLimit(1).truncationMode(.tail).frame(maxWidth: 140, alignment: .trailing)
+                        }
+                        Button("Import") { Task { await model.importMCPServers(names: [f.name]) } }
+                            .buttonStyle(.bordered).controlSize(.small)
+                    }
+                }
             }
+            Text("Importing copies the definition here. Turn the original off in that agent's own config so it isn't started twice — or use the switch below to have Iron Rain manage MCP for all of them.")
+                .font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(14)
+        .transition(.opacity)
     }
 
     private func row(_ s: MCPServerInfo) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
+        SheetCard(palette: palette) {
+            HStack(spacing: OculusSpace.sm) {
                 statusDot(s)
                 Text(s.name).font(.system(size: 13, weight: .medium)).foregroundStyle(palette.foreground)
                 if let v = s.serverVersion, !v.isEmpty {
                     Text(v).font(.system(size: 10, design: .monospaced)).foregroundStyle(palette.mutedForeground)
                 }
-                Spacer()
+                if let p = s.protocolVersion, !p.isEmpty { tag(p) }
+                if let pid = s.projectID, !pid.isEmpty { tag("one project") }
+                Spacer(minLength: OculusSpace.sm)
                 Toggle("", isOn: Binding(
                     get: { s.enabled },
                     set: { on in Task { await model.setMCPServerEnabled(name: s.name, enabled: on) } }
                 ))
-                .labelsHidden().toggleStyle(.switch).tint(palette.primary)
+                .labelsHidden().toggleStyle(.switch).tint(palette.primary).controlSize(.mini)
             }
 
             Text(commandLine(s))
                 .font(.system(size: 10.5, design: .monospaced))
-                .foregroundStyle(palette.mutedForeground).lineLimit(1).truncationMode(.middle)
+                .foregroundStyle(palette.mutedForeground)
+                .lineLimit(1).truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             if let err = s.error, !err.isEmpty {
                 // The server's own stderr — usually the only clue about what's wrong.
                 Text(err)
                     .font(.system(size: 10.5, design: .monospaced))
                     .foregroundStyle(palette.destructive)
-                    .lineLimit(3)
+                    .lineLimit(3).fixedSize(horizontal: false, vertical: true)
             } else if let tools = s.tools, !tools.isEmpty {
                 Text(tools.prefix(8).map(\.name).joined(separator: " · ") + (tools.count > 8 ? " +\(tools.count - 8) more" : ""))
-                    .font(.system(size: 10.5)).foregroundStyle(palette.mutedForeground).lineLimit(2)
+                    .font(.system(size: 10.5)).foregroundStyle(palette.mutedForeground)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
             } else {
                 Text("Not checked yet — Test to connect and list its tools.")
                     .font(.system(size: 10.5)).italic().foregroundStyle(palette.mutedForeground)
             }
 
-            HStack(spacing: 8) {
-                if let p = s.protocolVersion, !p.isEmpty { tag(p) }
-                if let pid = s.projectID, !pid.isEmpty { tag("one project") }
-                Spacer()
+            HStack(spacing: OculusSpace.sm) {
+                Spacer(minLength: 0)
                 Button(checking.contains(s.name) ? "Testing…" : "Test") {
                     checking.insert(s.name)
                     Task {
@@ -208,17 +230,17 @@ public struct MCPServersView: View {
                         checking.remove(s.name)
                     }
                 }
-                .buttonStyle(.bordered).disabled(checking.contains(s.name))
-                Button("Edit") { editing = s }.buttonStyle(.bordered)
+                .disabled(checking.contains(s.name))
+                Button("Edit") { editing = s }
                 Button(role: .destructive) {
                     Task { await model.deleteMCPServer(name: s.name) }
                 } label: { Image(systemName: "trash") }
                 .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
             }
-            .font(.system(size: 11))
+            .buttonStyle(.bordered).controlSize(.small)
         }
-        .padding(.vertical, 5)
         .opacity(s.enabled ? 1 : 0.55)
+        .animation(.easeOut(duration: 0.15), value: s.enabled)
     }
 
     private func statusDot(_ s: MCPServerInfo) -> some View {
@@ -235,27 +257,42 @@ public struct MCPServersView: View {
 
     private func tag(_ t: String) -> some View {
         Text(t).font(.system(size: 9.5, design: .monospaced))
-            .padding(.horizontal, 5).padding(.vertical, 1.5)
-            .background(palette.input).clipShape(RoundedRectangle(cornerRadius: 4))
+            .padding(.horizontal, OculusSpace.xs).padding(.vertical, 1.5)
+            .background(palette.input).clipShape(RoundedRectangle(cornerRadius: OculusRadius.sm))
             .foregroundStyle(palette.mutedForeground)
     }
 
+    /// The dedupe switch. Off by default because turning it on when servers haven't been imported
+    /// would silently remove tools the user relies on.
+    private var exclusiveRow: some View {
+        SheetCard(palette: palette) {
+            Toggle(isOn: Binding(
+                get: { model.mcpExclusive },
+                set: { on in Task { await model.setMCPExclusive(on) } }
+            )) {
+                Text("Iron Rain manages MCP for my agents").font(.system(size: 12.5))
+            }
+            .toggleStyle(.switch).tint(palette.primary)
+            Text(model.mcpExclusive
+                 ? "Your agents ignore their own MCP config and use only the servers above — one process per server."
+                 : "Your agents ALSO load their own MCP config. A server configured in both places runs twice.")
+                .font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     private var emptyState: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "puzzlepiece.extension").font(.system(size: 30))
-                .foregroundStyle(palette.mutedForeground.opacity(0.5))
-            Text("No MCP servers").font(.headline).foregroundStyle(palette.foreground)
-            Text("Add a server once and every agent — opencode, Claude Code, and any CLI agent you've configured — gets its tools. Credentials stay on this Mac.")
-                .font(.callout).foregroundStyle(palette.mutedForeground)
-                .multilineTextAlignment(.center).frame(maxWidth: 380)
-            HStack {
+        SheetEmptyState(icon: "puzzlepiece.extension",
+                        title: "No MCP servers",
+                        message: "Add a server once and every agent — opencode, Claude Code, and any CLI agent you've configured — gets its tools. Credentials stay on this Mac.",
+                        palette: palette) {
+            HStack(spacing: OculusSpace.sm) {
                 Button { browsing = true } label: { Label("Browse the registry", systemImage: "magnifyingglass") }
                     .buttonStyle(.borderedProminent).tint(palette.primary)
                 Button { adding = true } label: { Label("Add manually", systemImage: "plus") }
                     .buttonStyle(.bordered)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity).padding(24)
     }
 }
 
@@ -279,10 +316,13 @@ struct MCPServerEditor: View {
     @State private var saving = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(existing == nil ? "Add MCP server" : "Edit \(existing!.name)")
-                .font(.headline).foregroundStyle(palette.foreground)
-
+        OculusSheet(
+            title: existing == nil ? "Add MCP server" : "Edit \(existing!.name)",
+            subtitle: transport == "stdio"
+                ? "A command this Mac runs. It executes with your credentials."
+                : "A hosted endpoint the daemon connects to.",
+            palette: palette
+        ) {
             field("Name") {
                 TextField("github", text: $name).textFieldStyle(.roundedBorder)
                     .disabled(existing != nil) // the name is the identity
@@ -318,10 +358,13 @@ struct MCPServerEditor: View {
             }
 
             if let error {
-                Text(error).font(.caption).foregroundStyle(palette.destructive)
+                SheetCard(palette: palette, tint: palette.destructive) {
+                    Text(error).font(.system(size: 11.5)).foregroundStyle(palette.destructive)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
-            HStack {
+            HStack(spacing: OculusSpace.sm) {
                 Spacer()
                 Button("Cancel", action: onClose).keyboardShortcut(.cancelAction)
                 Button(saving ? "Saving…" : "Save") { save() }
@@ -329,10 +372,8 @@ struct MCPServerEditor: View {
                     .keyboardShortcut(.defaultAction)
                     .disabled(saving || name.trimmingCharacters(in: .whitespaces).isEmpty)
             }
+            .padding(.top, OculusSpace.xs)
         }
-        .padding(18)
-        .frame(minWidth: 440)
-        .background(palette.background)
         .onAppear(perform: load)
     }
 
@@ -343,11 +384,12 @@ struct MCPServerEditor: View {
     }
 
     private func field<C: View>(_ label: String, @ViewBuilder content: () -> C) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: OculusSpace.xs) {
             Text(label.uppercased()).font(.system(size: 10, weight: .semibold)).tracking(0.7)
                 .foregroundStyle(palette.mutedForeground)
             content()
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func load() {
@@ -408,68 +450,68 @@ struct MCPDirectoryView: View {
     @State private var query = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Browse MCP servers").font(.headline).foregroundStyle(palette.foreground)
-                    Text("From the public registry. You'll confirm before anything is saved.")
-                        .font(.caption).foregroundStyle(palette.mutedForeground)
+        OculusSheet(
+            title: "Browse MCP servers",
+            subtitle: "From the public registry. You'll confirm before anything is saved.",
+            palette: palette,
+            search: $query,
+            searchPrompt: "Search (github, postgres, slack…)",
+            onClose: onClose
+        ) {
+            if model.mcpBrowsing && model.mcpDirectory.isEmpty {
+                HStack(spacing: OculusSpace.sm) {
+                    ProgressView().controlSize(.small)
+                    Text("Searching the registry…").font(.system(size: 12))
+                        .foregroundStyle(palette.mutedForeground)
                 }
-                Spacer()
-                Button("Done", action: onClose).keyboardShortcut(.cancelAction)
-            }
-            .padding(14)
-            HStack {
-                TextField("Search (e.g. github, postgres, slack)", text: $query)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit { Task { await model.browseMCPDirectory(query: query) } }
-                Button(model.mcpBrowsing ? "…" : "Search") {
-                    Task { await model.browseMCPDirectory(query: query) }
-                }
-                .buttonStyle(.bordered).disabled(model.mcpBrowsing)
-            }
-            .padding(.horizontal, 14).padding(.bottom, 10)
-            Divider().overlay(palette.border)
-
-            if let err = model.mcpBrowseError, model.mcpDirectory.isEmpty {
-                Text(err).font(.callout).foregroundStyle(palette.mutedForeground)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity).padding(24)
+                .frame(maxWidth: .infinity).padding(.vertical, OculusSpace.xxl)
+            } else if let err = model.mcpBrowseError, model.mcpDirectory.isEmpty {
+                SheetEmptyState(icon: "magnifyingglass",
+                                title: "Nothing found",
+                                message: err,
+                                palette: palette)
             } else {
-                List(model.mcpDirectory) { e in
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: 6) {
-                            Text(e.name).font(.system(size: 13, weight: .medium))
-                                .foregroundStyle(palette.foreground)
-                            if let v = e.version, !v.isEmpty {
-                                Text(v).font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(palette.mutedForeground)
-                            }
-                            Spacer()
-                            if let u = e.unsupported, !u.isEmpty {
-                                Text(u).font(.system(size: 10)).foregroundStyle(palette.mutedForeground)
-                            } else {
-                                Button("Add") { onPick(e) }.buttonStyle(.bordered).font(.system(size: 11))
-                            }
-                        }
-                        if let d = e.description, !d.isEmpty {
-                            Text(d).font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
-                                .lineLimit(3)
-                        }
-                        if let keys = e.envKeys, !keys.isEmpty {
-                            Text("needs: " + keys.joined(separator: ", "))
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(palette.mutedForeground)
-                        }
-                    }
-                    .padding(.vertical, 3)
+                VStack(spacing: OculusSpace.sm) {
+                    ForEach(model.mcpDirectory) { entry($0) }
                 }
-                #if os(macOS)
-                .listStyle(.inset)
-                #endif
             }
         }
-        .frame(minWidth: 520, minHeight: 400)
-        .background(palette.background)
-        .task { await model.browseMCPDirectory(query: "") }
+        // Debounced live search: typing shouldn't fire a request per keystroke, and pressing Enter
+        // shouldn't be required to see results.
+        .task(id: query) {
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            await model.browseMCPDirectory(query: query)
+        }
+    }
+
+    private func entry(_ e: MCPDirectoryEntry) -> some View {
+        SheetCard(palette: palette) {
+            HStack(spacing: OculusSpace.xs) {
+                Text(e.name).font(.system(size: 12.5, weight: .medium))
+                    .foregroundStyle(palette.foreground).lineLimit(1).truncationMode(.middle)
+                if let v = e.version, !v.isEmpty {
+                    Text(v).font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(palette.mutedForeground)
+                }
+                Spacer(minLength: OculusSpace.sm)
+                if let u = e.unsupported, !u.isEmpty {
+                    Text(u).font(.system(size: 10)).foregroundStyle(palette.mutedForeground)
+                        .lineLimit(1).truncationMode(.tail).frame(maxWidth: 200, alignment: .trailing)
+                } else {
+                    Button("Add") { onPick(e) }.buttonStyle(.bordered).controlSize(.small)
+                }
+            }
+            if let d = e.description, !d.isEmpty {
+                Text(d).font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
+                    .lineLimit(3).fixedSize(horizontal: false, vertical: true)
+            }
+            if let keys = e.envKeys, !keys.isEmpty {
+                Text("needs: " + keys.joined(separator: ", "))
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(palette.mutedForeground)
+                    .lineLimit(1).truncationMode(.tail)
+            }
+        }
     }
 }
