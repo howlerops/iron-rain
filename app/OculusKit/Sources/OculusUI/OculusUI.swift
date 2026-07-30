@@ -1403,6 +1403,11 @@ public final class Model: ObservableObject {
     /// Observes an existing hub-managed session (replays its transcript, then live).
     public func openSession(_ id: String) async {
         guard let client else { return }
+        // A self-replaying provider may re-stream history right after we subscribe, on top of the
+        // daemon's replay. Arm the de-duplicator for the same reason re-attach does — cheap, and it
+        // makes the overlap between the two sources harmless rather than doubled.
+        dedupReplay = true
+        Task { try? await Task.sleep(nanoseconds: 5_000_000_000); dedupReplay = false }
         // Already the open session → no-op. Re-running the full clear+resubscribe (e.g. when you
         // click the active row again) briefly wiped messages/currentSession and blanked the detail.
         if id == currentSession?.id, !messages.isEmpty { return }

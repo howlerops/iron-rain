@@ -24,6 +24,12 @@ import (
 // send fast, long enough that a model simply thinking before its first token isn't falsely flagged.
 const responseTimeout = 25 * time.Second
 
+// replayGrace is how long after a session binding is created a self-replaying provider is assumed to
+// still be re-streaming its history. Inside it the durable transcript is withheld (the provider is
+// authoritative and layering both duplicates every message); outside it the provider will never
+// re-stream again, so the durable transcript is the only history a new subscriber can get.
+const replayGrace = 15 * time.Second
+
 // armResponseWatchdog marks the session as awaiting a first event and, if none arrives within
 // responseTimeout, synthesizes a StatusError so every client sees it (and it lands in the durable
 // transcript). The generation counter makes a newer prompt/response cancel an older watchdog.
@@ -106,6 +112,10 @@ type managedSession struct {
 	txSeq         int64
 	asstAccum     strings.Builder
 	asstPersisted bool
+
+	// createdAt is when this binding was made (create or attach). It bounds the window in which a
+	// self-replaying provider might still be re-streaming its history — see subscribe().
+	createdAt time.Time
 
 	// Heartbeat supervision state (recorded from the event pump; read by the heartbeat tick).
 	lastStatus       string          // last session.status ("running"/"idle"/"awaiting_approval"/"error")
@@ -217,7 +227,9 @@ type sessionMeta struct {
 }
 
 func newManagedSession(h *Hub, sess agent.Session, meta sessionMeta) *managedSession {
-	return &managedSession{hub: h, sess: sess, meta: meta, subs: map[*transport.Conn]*subscriber{}, lastActivity: time.Now()}
+	now := time.Now()
+	return &managedSession{hub: h, sess: sess, meta: meta, subs: map[*transport.Conn]*subscriber{},
+		lastActivity: now, createdAt: now}
 }
 
 // onStatus fires "walk away" push notifications on turn boundaries: an agent that produced
@@ -360,14 +372,23 @@ func (m *managedSession) subscribe(conn *transport.Conn) {
 	// full history comes back for EVERY provider (not just opencode/claude, which also re-stream on
 	// attach).
 	if len(replay) == 0 {
-		// Providers that RE-STREAM their own history on attach (opencode/claude-code) are the single
-		// source of replay truth — layering the durable transcript on top duplicated every message
-		// after a daemon restart. The durable replay is for providers with NO self-replay (pi/cli).
+		// Providers that RE-STREAM their own history (opencode/claude-code) are the single source of
+		// replay truth WHILE that re-stream is in flight — layering the durable transcript on top of
+		// it duplicated every message after a daemon restart.
+		//
+		// But that re-stream happens ONCE, at attach. It is not repeated for a client that subscribes
+		// later, so treating self-replay as a permanent reason to withhold the durable transcript
+		// meant a SECOND device opening a live session saw an empty conversation while the first
+		// device — still holding the history in its own memory — showed it fine. Scope the exclusion
+		// to the attach window it was actually about.
+		m.mu.Lock()
+		withinAttachWindow := time.Since(m.createdAt) < replayGrace
+		m.mu.Unlock()
 		selfReplaying := false
 		if r, ok := m.sess.(agent.Replayer); ok {
 			selfReplaying = r.SelfReplaying()
 		}
-		if !selfReplaying {
+		if !selfReplaying || !withinAttachWindow {
 			if db := m.hub.db; db != nil {
 				if durable, err := db.Transcript(m.sess.ID()); err == nil && len(durable) > 0 {
 					replay = durable

@@ -313,9 +313,14 @@ public struct RootView: View {
                                             })
                         }
                     }
+                    // macOS only. On iOS this inset sat on top of the tab bar and swallowed taps
+                    // along the bottom edge — and a live-tailing log is a desk affordance anyway, not
+                    // something worth a permanent strip of a phone screen.
+                    #if os(macOS)
                     .safeAreaInset(edge: .bottom, spacing: 0) {
                         DaemonLogPanel(model: model, palette: palette, onOpenActivity: { destination = .activity })
                     }
+                    #endif
                     // Cmd-K command palette: one fuzzy entry across destinations, sessions, loops,
                     // agents, and actions. ⌘K on macOS; a search button in the sidebar on iOS.
                     .background(
