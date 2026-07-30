@@ -80,12 +80,14 @@ func redactEnv(env map[string]string) map[string]string {
 }
 
 // mcpServersForSession returns the MCP servers to inject into one session's harness.
-func (h *Hub) mcpServersForSession(projectID string) []mcp.Server {
+// The token identifies the SESSION to the gateway, which is what lets approval rules and modes apply
+// to MCP tool calls at all.
+func (h *Hub) mcpServersForSession(projectID, token string) []mcp.Server {
 	r := h.mcpRegistry()
 	if r == nil {
 		return nil
 	}
-	return h.gatewayServers(r.Enabled(projectID))
+	return h.gatewayServers(r.Enabled(projectID), token)
 }
 
 // handleMCP dispatches the mcp.* protocol surface. Every mutating arm broadcasts, so a second device
@@ -222,7 +224,7 @@ func (h *Hub) OpenCodeMCPConfig() string {
 			global = append(global, s)
 		}
 	}
-	return mcp.OpenCodeConfigJSON(h.gatewayServers(global))
+	return mcp.OpenCodeConfigJSON(h.gatewayServers(global, ""))
 }
 
 // SetMCPGateway records the local gateway so injected configs point harnesses at it instead of at a
@@ -234,8 +236,10 @@ func (h *Hub) SetMCPGateway(g *mcp.Gateway, token string) {
 	h.mu.Unlock()
 	g.SetToolCallHook(func(server, tool string) {
 		// Every MCP tool call transits the daemon, so this is the one place it can be recorded.
-		log.Printf("mcp: %s called %s/%s", "agent", server, tool)
+		log.Printf("mcp: tool call %s/%s", server, tool)
 	})
+	// MCP tools obey the same modes and approval rules as native ones (see mcp_authz.go).
+	g.SetAuthorizer(h.authorizeMCPTool)
 }
 
 // SetMCPGatewayBase records the reachable base URL of the local gateway (set once the listener is up).
@@ -250,9 +254,12 @@ func (h *Hub) SetMCPGatewayBase(base string) {
 //
 // Falls back to the raw stdio definitions when the gateway isn't up — a harness with its own copy of
 // a server is strictly better than a harness with no tools at all.
-func (h *Hub) gatewayServers(servers []mcp.Server) []mcp.Server {
+func (h *Hub) gatewayServers(servers []mcp.Server, token string) []mcp.Server {
 	h.mu.Lock()
-	g, base, token := h.mcpGateway, h.mcpGatewayBase, h.mcpToken
+	g, base := h.mcpGateway, h.mcpGatewayBase
+	if token == "" {
+		token = h.mcpToken
+	}
 	h.mu.Unlock()
 	if g == nil || base == "" {
 		return servers
@@ -272,4 +279,23 @@ func (h *Hub) gatewayServers(servers []mcp.Server) []mcp.Server {
 		})
 	}
 	return out
+}
+
+// mcpGatewayHandle returns the gateway, if MCP is enabled.
+func (h *Hub) mcpGatewayHandle() *mcp.Gateway {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.mcpGateway
+}
+
+// revokeMCPToken invalidates a session's gateway token when the session ends, so a leaked config
+// can't outlive the session it was minted for.
+func (h *Hub) revokeMCPToken(sessionID string) {
+	token := h.mcpTokens.revoke(sessionID)
+	if token == "" {
+		return
+	}
+	if g := h.mcpGatewayHandle(); g != nil {
+		g.RemoveSessionToken(token)
+	}
 }

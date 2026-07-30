@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -31,19 +32,60 @@ const requestTimeout = 120 * time.Second
 // maxRequestBytes bounds an inbound request body.
 const maxRequestBytes = 8 << 20
 
+// Authorizer decides whether one tools/call may proceed. It receives the bearer token the caller
+// presented — which identifies the SESSION, not just the machine — plus the server and tool being
+// invoked. Returning an error blocks the call and the error text is returned to the agent.
+//
+// This is the seam that lets MCP tools obey the same approval rules and read-only modes as native
+// tools. Without a per-session token an MCP call arrives with no identity at all and can only be
+// allowed or refused wholesale.
+type Authorizer func(ctx context.Context, token, server, tool string) error
+
 // Gateway is an http.Handler serving /mcp/<server>.
 type Gateway struct {
 	mgr   *Manager
 	token string
 	// onToolCall is notified after a successful tools/call, for the activity feed. Optional.
 	onToolCall func(server, tool string)
+	// authorize gates tools/call. Optional; nil means every call proceeds.
+	authorize Authorizer
+	// sessionTokens are per-session bearer tokens, checked in addition to the machine token.
+	sessionMu     sync.RWMutex
+	sessionTokens map[string]bool
 }
 
 // NewGateway returns a gateway over mgr. token must be presented as a bearer credential: the
 // endpoint listens on loopback, but loopback is shared with every other process on the machine, so
 // "local" is not by itself an authorization.
 func NewGateway(mgr *Manager, token string) *Gateway {
-	return &Gateway{mgr: mgr, token: token}
+	return &Gateway{mgr: mgr, token: token, sessionTokens: map[string]bool{}}
+}
+
+// SetAuthorizer installs the tools/call gate.
+func (g *Gateway) SetAuthorizer(a Authorizer) { g.authorize = a }
+
+// AddSessionToken registers a per-session bearer token.
+func (g *Gateway) AddSessionToken(token string) {
+	if token == "" {
+		return
+	}
+	g.sessionMu.Lock()
+	g.sessionTokens[token] = true
+	g.sessionMu.Unlock()
+}
+
+// RemoveSessionToken revokes one, when its session ends.
+func (g *Gateway) RemoveSessionToken(token string) {
+	g.sessionMu.Lock()
+	delete(g.sessionTokens, token)
+	g.sessionMu.Unlock()
+}
+
+// knownSessionToken reports whether a token was issued for a live session.
+func (g *Gateway) knownSessionToken(token string) bool {
+	g.sessionMu.RLock()
+	defer g.sessionMu.RUnlock()
+	return g.sessionTokens[token]
 }
 
 // SetToolCallHook installs a callback fired after each successful tools/call.
@@ -67,7 +109,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "this gateway speaks JSON-RPC over POST", http.StatusMethodNotAllowed)
 		return
 	}
-	if !g.authorized(r) {
+	bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !g.authorized(bearer) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -96,6 +139,15 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
 	defer cancel()
+
+	// Gate the call BEFORE connecting: a denied tool shouldn't even wake a sleeping server, and the
+	// user shouldn't wait on a spawn for a call that was never going to run.
+	if req.Method == "tools/call" && g.authorize != nil {
+		if err := g.authorize(ctx, bearer, name, toolNameFrom(req.Params)); err != nil {
+			writeRPCError(w, req.ID, -32001, err.Error())
+			return
+		}
+	}
 
 	client, protocolVersion, err := g.mgr.Get(ctx, name)
 	if err != nil {
@@ -127,13 +179,17 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// authorized checks the bearer token in constant time.
-func (g *Gateway) authorized(r *http.Request) bool {
+// authorized accepts either the machine-wide token or a live per-session token. Comparison against
+// the machine token is constant-time; session tokens are random 128-bit values looked up by exact
+// match, so there is no secret to leak through timing.
+func (g *Gateway) authorized(bearer string) bool {
 	if g.token == "" {
 		return true // no token configured (tests / explicitly open)
 	}
-	got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	return subtle.ConstantTimeCompare([]byte(got), []byte(g.token)) == 1
+	if subtle.ConstantTimeCompare([]byte(bearer), []byte(g.token)) == 1 {
+		return true
+	}
+	return g.knownSessionToken(bearer)
 }
 
 // withMeta injects the per-request _meta the newest revision requires, preserving whatever the

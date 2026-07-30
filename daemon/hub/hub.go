@@ -95,7 +95,9 @@ type Hub struct {
 
 	mcpGateway     *mcp.Gateway // local HTTP front door for supervised MCP servers (nil = not enabled)
 	mcpGatewayBase string       // reachable base URL of the gateway ("" until the listener is up)
-	mcpToken       string       // bearer token harnesses present to the gateway
+	mcpToken       string       // machine-wide bearer token for the gateway
+	mcpTokens      *mcpSessionTokens
+	mcpApprovals   map[string]chan string // approvalID -> waiter, for MCP calls blocked on a human
 
 	// agentsFileMu serializes the load→mutate→save cycle on ~/.oculus/agents.json. agent.upsert and
 	// agent.delete are both in the async-dispatch allowlist, so without this two concurrent edits
@@ -327,7 +329,15 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 	var err error
 	// Attach the daemon's MCP servers for this project so every harness spawns with the same tools.
 	// It rides the context because providers are global while MCP scoping is per-session.
-	if servers := h.mcpServersForSession(req.ProjectID); len(servers) > 0 {
+	// Mint this session's own gateway token BEFORE spawning, so its MCP calls are attributable and
+	// can be held to the session's mode and approval rules. It's bound to the real session id a
+	// moment later, once the provider assigns one.
+	mcpToken := ""
+	if g := h.mcpGatewayHandle(); g != nil {
+		mcpToken = h.mcpTokens.mint()
+		g.AddSessionToken(mcpToken)
+	}
+	if servers := h.mcpServersForSession(req.ProjectID, mcpToken); len(servers) > 0 {
 		ctx = mcp.WithConfig(ctx, mcp.Config{Servers: servers})
 	}
 	if planStart {
@@ -361,6 +371,7 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 	if strings.TrimSpace(req.Prompt) != "" {
 		ms.openTurn("") // created WITH a prompt → a turn is already in flight
 	}
+	h.mcpTokens.bind(mcpToken, sess.ID()) // the token now identifies this session to the gateway
 	ms.mu.Lock()
 	if req.Model != "" {
 		ms.model, ms.modelProvider = req.Model, req.ModelProvider
@@ -998,6 +1009,8 @@ func New() *Hub {
 		sessions:        map[string]*managedSession{},
 		approvals:       map[string]*managedSession{},
 		roles:           newRoleRegistry(),
+		mcpTokens:       newMCPSessionTokens(),
+		mcpApprovals:    map[string]chan string{},
 		fanoutNotified:  map[string]bool{},
 		fanoutJudge:     map[string]fanoutJudgeSpec{},
 		fanoutPrompt:    map[string]string{},
@@ -1093,6 +1106,7 @@ func (h *Hub) removeSession(id string, owner *managedSession) {
 		_ = db.DeleteTranscript(id) // drop the durable conversation too
 	}
 	h.forgetFanoutIfEmpty(group) // last variant gone → drop the group's notify marker
+	h.revokeMCPToken(id)
 }
 
 // detachSession removes a session from the LIVE map when its provider stream ended UNEXPECTEDLY (a
@@ -3532,9 +3546,13 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			m.pendingApprovals--
 		}
 		m.mu.Unlock()
-		if err := m.sess.Respond(ctx, req.ApprovalID, req.Decision); err != nil {
-			h.sendErr(conn, env.ID, err.Error())
-			return
+		// An MCP approval is the daemon's own question (a blocked gateway call), not something the
+		// provider is waiting on — deliver it to the waiter instead of down to the harness.
+		if !h.resolveMCPApproval(req.ApprovalID, req.Decision) {
+			if err := m.sess.Respond(ctx, req.ApprovalID, req.Decision); err != nil {
+				h.sendErr(conn, env.ID, err.Error())
+				return
+			}
 		}
 		// ALWAYS persists ACROSS sessions, so permissions are truly asked once — not once per session.
 		// The client may narrow what "always" means (this exact command shape, this subtree, this

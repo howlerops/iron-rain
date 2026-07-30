@@ -803,3 +803,9 @@ func (m *managedSession) broadcastUserEcho(text, author string) {
 		m.broadcast(raw)
 	}
 }
+
+// encodeApprovalRequest frames an approval for broadcast (MCP approvals originate in the hub rather
+// than arriving from a provider's event stream, so they need their own encoder).
+func encodeApprovalRequest(ar protocol.ApprovalRequest) ([]byte, error) {
+	return (agent.Event{Type: protocol.TypeApprovalRequest, Payload: ar}).Encode()
+}
