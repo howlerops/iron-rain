@@ -271,6 +271,15 @@ public struct RootView: View {
                     #if os(macOS)
                     .modifier(SoftwareUpdateModifier(palette: palette, forceCheck: $checkForUpdates, updates: updates))
                     #endif
+                    .sheet(item: Binding(get: { model.fanoutSummary }, set: { model.fanoutSummary = $0 })) { sum in
+                        FanoutCompareView(model: model, summary: sum, palette: palette,
+                                          onOpenSession: { sid in
+                                              model.fanoutSummary = nil
+                                              Task { await model.openSession(sid) }
+                                              showSessionDetail = true
+                                          },
+                                          onClose: { model.fanoutSummary = nil })
+                    }
                     .sheet(item: $panel) { which in
                         switch which {
                         case .loops:

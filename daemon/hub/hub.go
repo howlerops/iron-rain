@@ -1151,7 +1151,7 @@ func (h *Hub) spawnFanout(ctx context.Context, req protocol.FanoutCreate) (proto
 	}
 	log.Printf("fanout %s: started %d/%d variants on prompt (%dB)", group, len(res.SessionIDs), count, len(req.Prompt))
 	h.recordActivity(activity.Event{
-		Kind: activity.KindLoopRun, Title: fmt.Sprintf("Fan-out: %d agents racing the same task", len(res.SessionIDs)),
+		Kind: activity.KindFanoutRun, Title: fmt.Sprintf("Fan-out: %d agents racing the same task", len(res.SessionIDs)),
 	})
 	h.broadcastSessionList()
 	return res, nil
@@ -1249,6 +1249,9 @@ func (h *Hub) checkFanoutDone(group string) {
 	h.mu.Unlock()
 	if allIdle {
 		h.pushFanoutDone(group, count)
+		// Aggregate: assemble the per-variant comparison so the user opens ONE screen instead of N
+		// sessions. Off the hub goroutine because it shells out to git per worktree.
+		go h.broadcastFanoutSummary(group)
 	}
 }
 

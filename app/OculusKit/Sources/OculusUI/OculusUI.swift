@@ -1596,6 +1596,7 @@ public final class Model: ObservableObject {
     /// Force removes even worktrees with uncommitted changes. Returns the count actually removed.
     @discardableResult
     public func resolveFanout(group: String, keep winner: String?, force: Bool = false) async -> Int {
+        if fanoutSummary?.group == group { fanoutSummary = nil } // the comparison is answered
         guard client != nil else { return 0 }
         busy = true; status = "Resolving fan-out…"
         defer { busy = false }
@@ -1637,6 +1638,10 @@ public final class Model: ObservableObject {
             notifyPrefs = np.prefs
         }
     }
+
+    /// The finished fan-out comparison, if one arrived. Set by the daemon's fanout.summary broadcast;
+    /// presenting it is the host view's job. Cleared when the group is resolved.
+    @Published public var fanoutSummary: FanoutSummary? = nil
 
     /// The active session's mode (code | ask | architect). Mirrors the daemon, which is authoritative
     /// and enforces it regardless of what the client shows.
@@ -2846,6 +2851,8 @@ public final class Model: ObservableObject {
                     if let ll = try? env.payload(as: LoopList.self) { loops = ll.loops; loopRuns = ll.runs }
                 case MessageType.providerList: // pushed after a custom agent is added/removed
                     if let pl = try? env.payload(as: ProviderList.self) { applyProviders(pl.providers); providersLoaded = true }
+                case MessageType.fanoutSummary: // every variant in a fan-out group finished
+                    if let sum = try? env.payload(as: FanoutSummary.self) { fanoutSummary = sum }
                 case MessageType.approvalRulesChanged: // an Always answer or a revoke, on ANY device
                     if let list = try? env.payload(as: ApprovalRulesList.self) { approvalRules = list.rules }
                 case MessageType.runOutput: // streamed line from a test/build run

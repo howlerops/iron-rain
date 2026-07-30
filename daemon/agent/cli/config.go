@@ -23,6 +23,15 @@ var builtins = []Config{
 	{Name: "gemini", Command: "gemini", Args: []string{"-p", "{prompt}"}},
 	{Name: "cursor-agent", Command: "cursor-agent", Args: []string{"-p", "{prompt}"}},
 	{Name: "aider", Command: "aider", Args: []string{"--yes-always", "--no-auto-commits", "--message", "{prompt}"}},
+	// The rest of the field. Each needs a genuinely NON-INTERACTIVE invocation — an agent that
+	// drops into a TUI would hang forever behind the daemon's pipe, so a wrong flag here is worse
+	// than a missing entry. Users can correct any of these in ~/.oculus/agents.json, which wins.
+	{Name: "copilot", Command: "copilot", Args: []string{"-p", "{prompt}"}},
+	{Name: "goose", Command: "goose", Args: []string{"run", "-t", "{prompt}"}},
+	{Name: "grok", Command: "grok", Args: []string{"-p", "{prompt}"}},
+	{Name: "amp", Command: "amp", Args: []string{"-x", "{prompt}"}},
+	{Name: "qwen", Command: "qwen", Args: []string{"-p", "{prompt}"}},
+	{Name: "crush", Command: "crush", Args: []string{"run", "{prompt}"}},
 }
 
 // Detect returns the built-in agents whose command is present on PATH.

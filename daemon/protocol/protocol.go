@@ -138,6 +138,7 @@ const (
 	TypeNotifyPrefsGet   = "notify.prefs.get"  // list toggleable push-notification types + their on/off state
 	TypeNotifyPrefsSet   = "notify.prefs.set"  // enable/disable one push-notification type
 
+	TypeFanoutSummary        = "fanout.summary"         // per-variant results once every agent in a group finishes
 	TypeApprovalRulesList    = "approval.rules.list"    // the persisted "always allow/deny" rules
 	TypeApprovalRuleDelete   = "approval.rules.delete"  // drop one rule by index
 	TypeApprovalRulesChanged = "approval.rules.changed" // broadcast: the rule set changed (any device)
@@ -1663,4 +1664,30 @@ const (
 type SessionModeSet struct {
 	SessionID string `json:"session_id"`
 	Mode      string `json:"mode"`
+}
+
+// FanoutVariantResult is one agent's outcome in a fan-out group. This is the aggregation half that
+// the market is missing: every ADE can fan a prompt across N agents, but the human is then left to
+// open N sessions and diff them by hand. Summary/Title come from the agent's OWN handoff record
+// (what it says it did), so no extra model call is needed to produce them.
+type FanoutVariantResult struct {
+	SessionID    string `json:"session_id"`
+	Variant      int    `json:"variant"`
+	Model        string `json:"model,omitempty"`
+	Status       string `json:"status"`            // idle | error | ...
+	Title        string `json:"title,omitempty"`   // the agent's own summary title
+	Summary      string `json:"summary,omitempty"` // the agent's own handoff summary
+	FilesChanged int    `json:"files_changed"`     // vs the worktree's base commit
+	Insertions   int    `json:"insertions"`
+	Deletions    int    `json:"deletions"`
+	DurationSec  int    `json:"duration_sec,omitempty"`
+	Branch       string `json:"branch,omitempty"`
+	Failed       bool   `json:"failed,omitempty"` // ended in error rather than completing
+}
+
+// FanoutSummary is the comparison payload broadcast when every variant in a group has finished.
+type FanoutSummary struct {
+	Group   string                `json:"group"`
+	Prompt  string                `json:"prompt,omitempty"`
+	Results []FanoutVariantResult `json:"results"`
 }

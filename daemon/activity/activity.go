@@ -22,6 +22,8 @@ const (
 	KindLoopRun     = "loop_run"     // a loop started an agent on a ticket
 	KindLoopPR      = "loop_pr"      // a loop run opened a PR
 	KindStarted     = "started"      // a session started a turn (low-signal; kept for the feed)
+	KindFanoutRun   = "fanout_run"   // N agents started racing the same prompt
+	KindFanoutDone  = "fanout_done"  // every variant finished — a comparison is ready
 )
 
 // Event is one activity item. ID is stable (dedup + unread tracking).

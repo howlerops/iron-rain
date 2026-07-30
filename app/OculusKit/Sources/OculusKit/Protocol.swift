@@ -60,6 +60,7 @@ public enum MessageType {
     public static let approvalRuleDelete = "approval.rules.delete"
     public static let approvalRulesChanged = "approval.rules.changed"
     public static let sessionModeSet = "session.mode.set"
+    public static let fanoutSummary = "fanout.summary"
     public static let turnState = "turn.state"
     public static let checkpointCreate = "checkpoint.create"
     public static let checkpointList = "checkpoint.list"
@@ -1884,4 +1885,45 @@ public struct SessionModeSet: Codable {
     public var mode: String
     public init(sessionID: String, mode: String) { self.sessionID = sessionID; self.mode = mode }
     enum CodingKeys: String, CodingKey { case sessionID = "session_id", mode }
+}
+
+/// One agent's outcome in a fan-out group. Title/summary are the agent's OWN handoff record — what
+/// it says it did — so the comparison costs no extra model call.
+public struct FanoutVariantResult: Codable, Equatable, Identifiable {
+    public var sessionID: String
+    public var variant: Int
+    public var model: String?
+    public var status: String
+    public var title: String?
+    public var summary: String?
+    public var filesChanged: Int
+    public var insertions: Int
+    public var deletions: Int
+    public var durationSec: Int?
+    public var branch: String?
+    public var failed: Bool?
+    public var id: String { sessionID }
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id", variant, model, status, title, summary
+        case filesChanged = "files_changed", insertions, deletions
+        case durationSec = "duration_sec", branch, failed
+    }
+}
+
+/// The comparison broadcast when every variant in a fan-out group has finished.
+public struct FanoutSummary: Codable, Equatable, Identifiable {
+    public var id: String { group }
+    public var group: String
+    public var prompt: String?
+    public var results: [FanoutVariantResult]
+    public init(group: String, prompt: String? = nil, results: [FanoutVariantResult] = []) {
+        self.group = group; self.prompt = prompt; self.results = results
+    }
+    public init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        group = try c.decode(String.self, forKey: .group)
+        prompt = try c.decodeIfPresent(String.self, forKey: .prompt)
+        results = try c.decodeIfPresent([FanoutVariantResult].self, forKey: .results) ?? []
+    }
+    enum CodingKeys: String, CodingKey { case group, prompt, results }
 }
