@@ -2600,9 +2600,14 @@ public final class Model: ObservableObject {
                         let role: ChatMessage.Role = m.role == "user" ? .user : (m.role == "tool" ? .tool : .assistant)
                         let shown = Self.stripUIGuide(m.text) // hide the injected iron:ui guide from turn 1
                         let trimmed = shown.trimmingCharacters(in: .whitespacesAndNewlines)
-                        // Skip the echo of our own just-sent user turn (appended locally for instant feedback).
-                        if role == .user, let last = messages.last, last.role == .user,
-                           last.text.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed {
+                        // Skip the daemon's echo of a user turn we already show. We append every SENT
+                        // prompt locally for instant feedback, and opencode then echoes the same user
+                        // message back (sometimes more than once, e.g. a slash-command expansion) —
+                        // arriving AFTER the assistant text + tool cards, so a `messages.last` check
+                        // missed it and the prompt duplicated. Match against ANY user message already
+                        // on screen (live path only; replayed history is handled by dedupReplay below).
+                        if role == .user, !trimmed.isEmpty, !dedupReplay,
+                           messages.contains(where: { $0.role == .user && $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed }) {
                             break
                         }
                         // Just after a live re-attach, the provider replays history; skip messages
