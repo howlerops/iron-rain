@@ -74,3 +74,14 @@ func TestFanoutResultOrdering(t *testing.T) {
 		}
 	}
 }
+
+// TestFanoutCapConstant documents the bound a divided fan-out relies on: every variant is a real
+// worktree plus a real agent process, so an arbitrary-length subtask list must not be honored.
+func TestFanoutCapConstant(t *testing.T) {
+	if maxFanoutVariants < 6 {
+		t.Fatalf("the cap (%d) must not be below the race maximum of 6", maxFanoutVariants)
+	}
+	if maxFanoutVariants > 24 {
+		t.Fatalf("the cap (%d) is high enough to exhaust the machine", maxFanoutVariants)
+	}
+}

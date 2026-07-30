@@ -365,7 +365,7 @@ public struct ChatView: View {
                         } else {
                             MessageRow(message: msg, palette: palette,
                                        onRetry: msg.delivery == .failed ? { Task { await model.retryFailedMessage() } } : nil,
-                                       onUIAction: { c, a in Task { await model.invokeUIAction(c, a) } },
+                                       onUIAction: { c, a, values in Task { await model.invokeUIAction(c, a, values: values) } },
                                        imageLoader: { path in
                                            guard let b = try? await model.fsReadBytes(path) else { return nil }
                                            return Data(base64Encoded: b.data)
@@ -621,7 +621,8 @@ struct MessageRow: View {
     var onRetry: (() -> Void)? = nil
     /// Fired when the user activates a generative-UI component's action (choice/confirm). The
     /// transcript wires this to Model.invokeUIAction.
-    var onUIAction: ((UIComponent, UIComponentAction) -> Void)? = nil
+    /// Third argument carries a form's collected values (nil for every other component).
+    var onUIAction: ((UIComponent, UIComponentAction, [String: JSONValue]?) -> Void)? = nil
     /// Loads referenced-image bytes via the daemon (nil = inline images off, e.g. child transcripts).
     var imageLoader: ((String) async -> Data?)? = nil
     // Mirror ChatMarkdownView's type prefs so the whole transcript (user bubble, thinking, streaming
@@ -745,7 +746,7 @@ struct MessageRow: View {
                 .frame(maxWidth: .infinity, alignment: .center)
         case .ui:
             if let c = message.component {
-                UIComponentView(component: c, palette: palette, onAction: { a in onUIAction?(c, a) })
+                UIComponentView(component: c, palette: palette, onAction: { a, values in onUIAction?(c, a, values) })
             }
         }
     }

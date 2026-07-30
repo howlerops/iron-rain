@@ -15,7 +15,17 @@ struct FanoutSheet: View {
     @State private var count = 3
     @State private var plan = false
     @State private var judge = false
+    /// Race (every agent attempts the same task) vs. divide (each agent gets its own subtask).
+    @State private var divide = false
     @FocusState private var promptFocused: Bool
+
+    /// In divide mode each non-empty line of the task box is one agent's subtask.
+    private var subtasks: [String] {
+        guard divide else { return [] }
+        return prompt.split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -51,27 +61,43 @@ struct FanoutSheet: View {
                         ForEach(model.projects) { Text($0.name).tag($0.id) }
                     }.labelsHidden().frame(minWidth: 150)
                 }
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("AGENTS").font(.system(size: 10.5, weight: .semibold)).tracking(0.8).foregroundStyle(palette.mutedForeground)
-                    Stepper("\(count)", value: $count, in: 2...6).frame(width: 90)
+                if !divide {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("AGENTS").font(.system(size: 10.5, weight: .semibold)).tracking(0.8).foregroundStyle(palette.mutedForeground)
+                        Stepper("\(count)", value: $count, in: 2...6).frame(width: 90)
+                    }
                 }
             }
 
+            Picker("", selection: $divide) {
+                Text("Race the same task").tag(false)
+                Text("Split into subtasks").tag(true)
+            }
+            .pickerStyle(.segmented).labelsHidden()
+            if divide {
+                Text("One line per subtask. Each gets its own agent and its own branch, so you can review them independently.")
+                    .font(.caption).foregroundStyle(palette.mutedForeground)
+            }
+
             Toggle("Plan first (each agent proposes a plan before editing)", isOn: $plan)
-            Toggle("Recommend a winner when they finish", isOn: $judge)
-                .help("A fresh agent reads each attempt's summary and diffstat and suggests one to keep. Advisory — you still choose.")
-                .font(.callout)
+            if !divide {
+                Toggle("Recommend a winner when they finish", isOn: $judge)
+                    .help("A fresh agent reads each attempt's summary and diffstat and suggests one to keep. Advisory — you still choose.")
+                    .font(.callout)
+            }
 
             HStack {
                 Spacer()
                 Button {
                     Task {
                         await model.fanout(prompt: prompt, provider: provider,
-                                           projectID: projectID.isEmpty ? nil : projectID, count: count, plan: plan, judge: judge)
+                                           projectID: projectID.isEmpty ? nil : projectID,
+                                           count: count, plan: plan, judge: judge, subtasks: subtasks)
                         onClose()
                     }
                 } label: {
-                    Label("Fan out \(count) agents", systemImage: "square.grid.2x2")
+                    Label(divide ? "Run \(max(subtasks.count, 1)) subtasks" : "Fan out \(count) agents",
+                          systemImage: "square.grid.2x2")
                 }
                 .buttonStyle(.borderedProminent).tint(palette.primary)
                 .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || provider.isEmpty || projectID.isEmpty)

@@ -480,9 +480,13 @@ type FanoutCreate struct {
 	Plan       bool     `json:"plan,omitempty"`
 	// Judge asks a fresh agent to recommend a winner once every variant finishes. Advisory only —
 	// it answers with a tappable choice; the manual Keep buttons are unaffected.
-	Judge  bool     `json:"judge,omitempty"`
-	Count  int      `json:"count"`
-	Models []string `json:"models,omitempty"`
+	Judge bool `json:"judge,omitempty"`
+	// Prompts turns a RACE into a DIVISION of labour: each agent gets its own subtask instead of all
+	// of them attempting the same one. Count is ignored when this is set (the list defines the fan).
+	// The variants still land in separate worktrees, so their work stays reviewable independently.
+	Prompts []string `json:"prompts,omitempty"`
+	Count   int      `json:"count"`
+	Models  []string `json:"models,omitempty"`
 }
 
 // FanoutResult reports the spawned group.

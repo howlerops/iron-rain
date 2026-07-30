@@ -56,6 +56,46 @@ var catalog = map[string]spec{
 	"diff":      {schemaV: 1},
 	"choice":    {schemaV: 1, validate: validateOptions},
 	"confirm":   {schemaV: 1, validate: validateOptions},
+	// form is the INTERPRETER component: rather than adding a new compiled case per shape, its props
+	// declare fields and the client renders them generically. One catalog entry covers an open-ended
+	// space of structured questions, and the closed-catalog safety model is preserved because the
+	// field types are still a fixed, validated set.
+	"form": {schemaV: 1, validate: validateForm},
+}
+
+// maxFields caps a form so a hallucinated payload can't render an endless questionnaire.
+const maxFields = 20
+
+// formFieldTypes is the fixed set of inputs a form may ask for. Anything else is rejected — the
+// point of a closed catalog is that the model cannot invent UI the client hasn't vetted.
+var formFieldTypes = map[string]bool{
+	"text": true, "textarea": true, "select": true, "toggle": true, "number": true,
+}
+
+// validateForm enforces the field cap and the closed field-type set.
+func validateForm(props json.RawMessage) bool {
+	var p struct {
+		Fields []struct {
+			ID      string            `json:"id"`
+			Type    string            `json:"type"`
+			Options []json.RawMessage `json:"options"`
+		} `json:"fields"`
+	}
+	if err := json.Unmarshal(props, &p); err != nil {
+		return false
+	}
+	if len(p.Fields) == 0 || len(p.Fields) > maxFields {
+		return false
+	}
+	for _, f := range p.Fields {
+		if f.ID == "" || !formFieldTypes[f.Type] {
+			return false
+		}
+		if len(f.Options) > maxOptions {
+			return false
+		}
+	}
+	return true
 }
 
 // knownComponents reports whether a name is in the catalog.

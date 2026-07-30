@@ -28,6 +28,9 @@ Rules:
 - **plan** — same props as **checklist**; use it when the list is a plan you intend to execute.
 - **callout** — `props {level:info|warn|error|success, title?, body}`. A highlighted note.
 - **diff** — `props {path, patch?}`. A unified-diff preview for one file.
+- **form** (interactive) — `props {title?, submit_label?, fields:[{id, type:text|textarea|select|toggle|number, label, placeholder?, value?, options?:[{value,label}]}]}`
+  plus `actions:[{id, kind:"answer", label, prompt:"<text prefixing the collected values>"}]`.
+  Use when you need SEVERAL answers at once instead of a chain of questions.
 - **choice** (interactive) — `props {prompt}` plus
   `actions:[{id, kind:"prompt", label, prompt:"<message sent AS THE USER'S REPLY when tapped>"}]`.
 - **confirm** (interactive) — `props {prompt}` plus

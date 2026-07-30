@@ -1576,15 +1576,20 @@ public final class Model: ObservableObject {
     /// Fan-out: spawn `count` agents on the SAME prompt, each in its own worktree, as one group —
     /// race several approaches, then compare and merge the winner. Returns the group id on success.
     @discardableResult
-    public func fanout(prompt: String, provider: String, projectID: String?, count: Int, plan: Bool = false, judge: Bool = false) async -> String? {
+    /// - Parameter subtasks: when non-empty, each agent gets its OWN subtask (a division of labour)
+    ///   instead of all of them racing the same prompt; `count` is then ignored.
+    public func fanout(prompt: String, provider: String, projectID: String?, count: Int, plan: Bool = false, judge: Bool = false, subtasks: [String] = []) async -> String? {
         guard client != nil else { return nil }
-        busy = true; status = "Fanning out \(count) agents…"
+        let n = subtasks.isEmpty ? count : subtasks.count
+        busy = true; status = subtasks.isEmpty ? "Fanning out \(n) agents…" : "Splitting into \(n) subtasks…"
         defer { busy = false }
         do {
             let env = try await request(MessageType.fanoutCreate,
                                         payload: FanoutCreate(provider: provider, projectID: projectID,
                                                               prompt: prompt, plan: plan ? true : nil,
-                                                              judge: judge ? true : nil, count: count))
+                                                              judge: judge ? true : nil,
+                                                              prompts: subtasks.isEmpty ? nil : subtasks,
+                                                              count: count))
             let res = try env.payload(as: FanoutResult.self)
             status = "Fan-out: \(res.sessionIDs.count) agents running"
             await loadSessions()
@@ -2601,12 +2606,24 @@ public final class Model: ObservableObject {
     /// The user activated a generative-UI action (choice/confirm). Sends ui.action to the daemon,
     /// which maps it to the NEXT user turn (prompt/answer) or resolves an approval (permission) — the
     /// component can never execute a tool directly. Optimistically echoes a prompt as a user message.
-    public func invokeUIAction(_ c: UIComponent, _ a: UIComponentAction) async {
+    /// - Parameter values: a form's collected answers; nil for every other component. The daemon
+    ///   renders them into the user turn, so the phrasing stays canonical across clients.
+    public func invokeUIAction(_ c: UIComponent, _ a: UIComponentAction, values: [String: JSONValue]? = nil) async {
         guard let client else { return }
+        let encoded: JSONValue? = values.map { .object($0) }
         let invoke = UIActionInvoke(sessionID: c.sessionID, messageID: c.messageID, componentID: c.id,
-                                    actionID: a.id, kind: a.kind, prompt: a.prompt)
-        if a.kind == "prompt", let p = a.prompt, !p.isEmpty {
-            messages.append(ChatMessage(role: .user, text: p, delivery: .sending))
+                                    actionID: a.id, kind: a.kind, prompt: a.prompt, values: encoded)
+        // Echo optimistically, including the submitted values so the user sees what they sent.
+        var echo = a.prompt ?? ""
+        if let values, !values.isEmpty {
+            let lines = values.keys.sorted().compactMap { k -> String? in
+                guard let v = values[k], let s = v.prettyJSON, !s.isEmpty else { return nil }
+                return "\(k): \(s)"
+            }
+            if !lines.isEmpty { echo = echo.isEmpty ? lines.joined(separator: "\n") : echo + "\n\n" + lines.joined(separator: "\n") }
+        }
+        if (a.kind == "prompt" || a.kind == "answer"), !echo.isEmpty {
+            messages.append(ChatMessage(role: .user, text: echo, delivery: .sending))
             busy = true
         }
         if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.uiAction, payload: invoke) {

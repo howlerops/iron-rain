@@ -1120,25 +1120,47 @@ func (h *Hub) detachSession(id string, owner *managedSession) {
 // finishes/PRs via the existing paths); the only new thing is the group tag. Returns the group id +
 // the spawned session ids. Partial success is allowed (some variants may fail to start).
 func (h *Hub) spawnFanout(ctx context.Context, req protocol.FanoutCreate) (protocol.FanoutResult, error) {
+	// Two shapes share this path. A RACE (Prompt + Count) runs the same task N ways to compare
+	// approaches; a DIVISION (Prompts) gives each agent a different subtask. Division is the more
+	// useful shape for large work, and it reuses every piece of the race machinery — isolation,
+	// completion tracking, aggregation — so it is a shorter path than a separate engine.
+	prompts := make([]string, 0, len(req.Prompts))
+	for _, p := range req.Prompts {
+		if strings.TrimSpace(p) != "" {
+			prompts = append(prompts, p)
+		}
+	}
+	divided := len(prompts) > 0
 	count := req.Count
-	if count < 2 {
-		count = 2
+	if divided {
+		count = len(prompts)
+	} else {
+		if count < 2 {
+			count = 2
+		}
+		if count > 6 {
+			count = 6
+		}
 	}
-	if count > 6 {
-		count = 6
+	if count > maxFanoutVariants {
+		return protocol.FanoutResult{}, fmt.Errorf("fan-out is capped at %d agents (asked for %d)", maxFanoutVariants, count)
 	}
-	if strings.TrimSpace(req.Prompt) == "" {
+	if !divided && strings.TrimSpace(req.Prompt) == "" {
 		return protocol.FanoutResult{}, fmt.Errorf("fan-out needs a prompt")
 	}
 	group := randToken()
 	res := protocol.FanoutResult{Group: group}
 	var firstErr error
 	for i := 0; i < count; i++ {
+		prompt := req.Prompt
+		if divided {
+			prompt = prompts[i]
+		}
 		create := protocol.SessionCreate{
 			Provider:      req.Provider,
 			ProjectID:     req.ProjectID,
 			ProjectIDs:    req.ProjectIDs,
-			Prompt:        req.Prompt,
+			Prompt:        prompt,
 			Plan:          req.Plan,
 			Worktree:      true, // each variant is isolated on its own branch
 			WorkspaceName: fmt.Sprintf("fanout-%s-%d", group, i+1),
@@ -1165,15 +1187,21 @@ func (h *Hub) spawnFanout(ctx context.Context, req protocol.FanoutCreate) (proto
 	}
 	// Remember the prompt + judge intent for when the last variant settles.
 	h.mu.Lock()
-	h.fanoutPrompt[group] = req.Prompt
+	if divided {
+		h.fanoutPrompt[group] = fmt.Sprintf("%d subtasks divided across %d agents", len(prompts), len(res.SessionIDs))
+	} else {
+		h.fanoutPrompt[group] = req.Prompt
+	}
 	if req.Judge {
 		h.fanoutJudge[group] = fanoutJudgeSpec{provider: req.Provider, projectID: req.ProjectID}
 	}
 	h.mu.Unlock()
 	log.Printf("fanout %s: started %d/%d variants on prompt (%dB)", group, len(res.SessionIDs), count, len(req.Prompt))
-	h.recordActivity(activity.Event{
-		Kind: activity.KindFanoutRun, Title: fmt.Sprintf("Fan-out: %d agents racing the same task", len(res.SessionIDs)),
-	})
+	title := fmt.Sprintf("Fan-out: %d agents racing the same task", len(res.SessionIDs))
+	if divided {
+		title = fmt.Sprintf("Fan-out: %d subtasks running in parallel", len(res.SessionIDs))
+	}
+	h.recordActivity(activity.Event{Kind: activity.KindFanoutRun, Title: title})
 	h.broadcastSessionList()
 	return res, nil
 }
@@ -3440,11 +3468,10 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		// user turn (a component can never execute a tool or a destructive op directly). kind=prompt/
 		// answer deliver the templated text as a normal prompt.
 		//
-		// KNOWN-DEAD SURFACE (see docs/gap-roadmap.md §0.7): protocol.UIAction also declares kind
-		// "permission" and a Values map. Neither is implemented — "permission" would need an approval
-		// id that fenced components don't carry, and Values has no consumer until the planned "form"
-		// component lands (§7 G-2). A client sending either gets the no-op fallthrough below, NOT an
-		// error, so don't read this as working-but-untested.
+		// Values carries a form's collected answers and is appended to the prompt (see formValuesText).
+		// kind "permission" remains DECLARED BUT UNIMPLEMENTED: it would need an approval id that
+		// fenced components don't carry. A client sending it gets the no-op fallthrough below, not an
+		// error — don't read that as working-but-untested.
 		var req protocol.UIActionInvoke
 		_ = env.Unmarshal(&req)
 		m := h.managed(req.SessionID)
@@ -3454,6 +3481,15 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		}
 		if req.Kind == "prompt" || req.Kind == "answer" {
 			text := req.Prompt
+			// A form submits its collected values alongside the action's prompt. Rendering them
+			// daemon-side keeps one canonical phrasing rather than each client inventing its own.
+			if values := formValuesText(req.Values); values != "" {
+				if text == "" {
+					text = values
+				} else {
+					text = text + "\n\n" + values
+				}
+			}
 			if text == "" {
 				h.sendErr(conn, env.ID, "ui action has no prompt")
 				return
@@ -4193,4 +4229,34 @@ func authorOrLocal(author string) string {
 		return "an unidentified client"
 	}
 	return author
+}
+
+// formValuesText renders a form's collected values as the readable lines that become part of the
+// user's next turn. Keys are sorted so the same answers always produce the same text (a model
+// re-reading its own transcript shouldn't see the order shuffle).
+//
+// Values are rendered as plain "label: value" lines rather than JSON because they ARE the user's
+// reply — the agent should read them the way a person would have typed them.
+func formValuesText(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var values map[string]any
+	if err := json.Unmarshal(raw, &values); err != nil || len(values) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(values))
+	for k := range values {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		v := values[k]
+		if s, ok := v.(string); ok && strings.TrimSpace(s) == "" {
+			continue // an untouched optional field shouldn't add a blank line
+		}
+		fmt.Fprintf(&b, "%s: %v\n", k, v)
+	}
+	return strings.TrimRight(b.String(), "\n")
 }

@@ -154,3 +154,8 @@ func (h *Hub) broadcastFanoutSummary(group string) {
 		Detail: "tap to compare",
 	})
 }
+
+// maxFanoutVariants bounds a fan-out. A divided fan-out takes an arbitrary-length subtask list, and
+// every variant is a real worktree plus a real agent process — an unbounded list would exhaust the
+// machine long before it produced anything useful.
+const maxFanoutVariants = 12

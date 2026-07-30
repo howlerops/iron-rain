@@ -13,7 +13,9 @@ import OculusKit
 struct UIComponentView: View {
     let component: UIComponent
     let palette: OculusPalette
-    var onAction: ((UIComponentAction) -> Void)? = nil
+    /// Fires when the user activates an action. The second argument carries a form's collected
+    /// values (nil for every other component).
+    var onAction: ((UIComponentAction, [String: JSONValue]?) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -39,7 +41,12 @@ struct UIComponentView: View {
             case "diff":      decoded(DiffProps.self) { DiffCardView(props: $0, palette: palette) }
             case "choice", "confirm":
                 decoded(InteractiveProps.self) {
-                    InteractiveView(props: $0, actions: component.actions ?? [], palette: palette, onAction: onAction)
+                    InteractiveView(props: $0, actions: component.actions ?? [], palette: palette,
+                                    onAction: { a in onAction?(a, nil) })
+                }
+            case "form":
+                decoded(FormProps.self) {
+                    FormView(props: $0, actions: component.actions ?? [], palette: palette, onAction: onAction)
                 }
             default:          fallback   // unknown component → visible markdown fallback
             }
@@ -311,5 +318,136 @@ extension JSONValue {
         case .array(let a): return a.map { $0.displayString }.joined(separator: ", ")
         case .object: return "{…}"
         }
+    }
+}
+
+// MARK: - form
+
+/// A form's declarative field list. This is the INTERPRETER component: instead of adding a compiled
+/// case per question shape, the model declares fields and this renders them generically — one
+/// catalog entry covering an open-ended space. The field types stay a fixed, daemon-validated set,
+/// so the closed-catalog safety model is preserved.
+struct FormProps: Decodable {
+    struct Option: Decodable, Identifiable {
+        let value: String
+        let label: String?
+        var id: String { value }
+    }
+    struct Field: Decodable, Identifiable {
+        let id: String
+        let type: String        // text | textarea | select | toggle | number
+        let label: String?
+        let placeholder: String?
+        let value: String?
+        let options: [Option]?
+    }
+    let title: String?
+    let fields: [Field]
+    let submitLabel: String?
+
+    enum CodingKeys: String, CodingKey {
+        case title, fields
+        case submitLabel = "submit_label"
+    }
+}
+
+/// Renders a form and submits its collected values with the chosen action.
+struct FormView: View {
+    let props: FormProps
+    let actions: [UIComponentAction]
+    let palette: OculusPalette
+    var onAction: ((UIComponentAction, [String: JSONValue]?) -> Void)? = nil
+
+    /// Values keyed by field id, seeded from each field's default.
+    @State private var values: [String: String] = [:]
+    @State private var toggles: [String: Bool] = [:]
+    @State private var submitted = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let t = props.title, !t.isEmpty {
+                Text(t).font(.callout.bold()).foregroundStyle(palette.foreground)
+            }
+            ForEach(props.fields) { f in field(f) }
+            HStack(spacing: 8) {
+                Spacer()
+                ForEach(actions) { a in
+                    Button(a.label ?? props.submitLabel ?? "Submit") { submit(a) }
+                        .buttonStyle(.borderedProminent).tint(palette.primary)
+                        .disabled(submitted)
+                }
+            }
+        }
+        .opacity(submitted ? 0.6 : 1)          // answered forms read as spent, like the other interactives
+        .disabled(submitted)                    // one submission per form: it becomes a user turn
+        .onAppear(perform: seedDefaults)
+    }
+
+    @ViewBuilder private func field(_ f: FormProps.Field) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            if let l = f.label, !l.isEmpty {
+                Text(l).font(.system(size: 11, weight: .medium)).foregroundStyle(palette.mutedForeground)
+            }
+            switch f.type {
+            case "textarea":
+                TextEditor(text: binding(f.id))
+                    .font(.system(size: 12)).frame(height: 64)
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(palette.border))
+            case "select":
+                Picker("", selection: binding(f.id)) {
+                    ForEach(f.options ?? []) { o in Text(o.label ?? o.value).tag(o.value) }
+                }
+                .labelsHidden().pickerStyle(.menu)
+            case "toggle":
+                Toggle("", isOn: toggleBinding(f.id)).labelsHidden().toggleStyle(.switch).tint(palette.primary)
+            case "number":
+                TextField(f.placeholder ?? "", text: binding(f.id))
+                    .textFieldStyle(.roundedBorder)
+                    #if os(iOS)
+                    .keyboardType(.numberPad)
+                    #endif
+            default:
+                TextField(f.placeholder ?? "", text: binding(f.id)).textFieldStyle(.roundedBorder)
+            }
+        }
+    }
+
+    private func binding(_ id: String) -> Binding<String> {
+        Binding(get: { values[id] ?? "" }, set: { values[id] = $0 })
+    }
+    private func toggleBinding(_ id: String) -> Binding<Bool> {
+        Binding(get: { toggles[id] ?? false }, set: { toggles[id] = $0 })
+    }
+
+    private func seedDefaults() {
+        guard values.isEmpty && toggles.isEmpty else { return }
+        for f in props.fields {
+            if f.type == "toggle" {
+                toggles[f.id] = (f.value == "true")
+            } else if let v = f.value {
+                values[f.id] = v
+            } else if f.type == "select", let first = f.options?.first {
+                values[f.id] = first.value // a select must always carry a valid value
+            }
+        }
+    }
+
+    private func submit(_ a: UIComponentAction) {
+        submitted = true
+        var out: [String: JSONValue] = [:]
+        for f in props.fields {
+            switch f.type {
+            case "toggle":
+                out[f.label ?? f.id] = .bool(toggles[f.id] ?? false)
+            case "number":
+                let raw = values[f.id] ?? ""
+                if let n = Double(raw) { out[f.label ?? f.id] = .number(n) }
+                else if !raw.isEmpty { out[f.label ?? f.id] = .string(raw) }
+            default:
+                let raw = values[f.id] ?? ""
+                if !raw.isEmpty { out[f.label ?? f.id] = .string(raw) }
+            }
+        }
+        onAction?(a, out)
     }
 }

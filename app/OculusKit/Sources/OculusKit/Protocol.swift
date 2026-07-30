@@ -1204,15 +1204,19 @@ public struct FanoutCreate: Codable {
     public var plan: Bool?
     /// Ask a fresh agent to recommend a winner once every variant finishes. Advisory only.
     public var judge: Bool?
+    /// Turns a RACE into a DIVISION of labour: each agent gets its own subtask. `count` is ignored
+    /// when this is set — the list defines the fan.
+    public var prompts: [String]?
     public var count: Int
     public var models: [String]?
     enum CodingKeys: String, CodingKey {
         case provider; case projectID = "project_id"; case projectIDs = "project_ids"
-        case prompt; case plan; case judge; case count; case models
+        case prompt; case plan; case judge; case prompts; case count; case models
     }
-    public init(provider: String, projectID: String? = nil, projectIDs: [String]? = nil, prompt: String, plan: Bool? = nil, judge: Bool? = nil, count: Int, models: [String]? = nil) {
+    public init(provider: String, projectID: String? = nil, projectIDs: [String]? = nil, prompt: String, plan: Bool? = nil, judge: Bool? = nil, prompts: [String]? = nil, count: Int, models: [String]? = nil) {
         self.provider = provider; self.projectID = projectID; self.projectIDs = projectIDs
-        self.prompt = prompt; self.plan = plan; self.judge = judge; self.count = count; self.models = models
+        self.prompt = prompt; self.plan = plan; self.judge = judge; self.prompts = prompts
+        self.count = count; self.models = models
     }
 }
 
