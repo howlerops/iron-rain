@@ -15,6 +15,8 @@ public struct MCPServersView: View {
     @State private var editing: MCPServerInfo? = nil
     @State private var adding = false
     @State private var checking: Set<String> = []
+    @State private var browsing = false
+    @State private var prefill: MCPDirectoryEntry? = nil
 
     public init(model: Model, palette: OculusPalette, onClose: (() -> Void)? = nil) {
         self.model = model; self.palette = palette; self.onClose = onClose
@@ -39,10 +41,21 @@ public struct MCPServersView: View {
         .background(palette.background)
         .task { await model.loadMCPServers() }
         .sheet(isPresented: $adding) {
-            MCPServerEditor(model: model, palette: palette, existing: nil, onClose: { adding = false })
+            MCPServerEditor(model: model, palette: palette, existing: nil, prefill: nil, onClose: { adding = false })
+        }
+        .sheet(isPresented: $browsing) {
+            MCPDirectoryView(model: model, palette: palette,
+                             onPick: { entry in
+                                 browsing = false
+                                 prefill = entry
+                             },
+                             onClose: { browsing = false })
+        }
+        .sheet(item: $prefill) { entry in
+            MCPServerEditor(model: model, palette: palette, existing: nil, prefill: entry, onClose: { prefill = nil })
         }
         .sheet(item: $editing) { server in
-            MCPServerEditor(model: model, palette: palette, existing: server, onClose: { editing = nil })
+            MCPServerEditor(model: model, palette: palette, existing: server, prefill: nil, onClose: { editing = nil })
         }
     }
 
@@ -54,6 +67,7 @@ public struct MCPServersView: View {
                     .font(.caption).foregroundStyle(palette.mutedForeground)
             }
             Spacer()
+            Button { browsing = true } label: { Label("Browse", systemImage: "magnifyingglass") }
             Button { adding = true } label: { Label("Add", systemImage: "plus") }
             if let onClose {
                 Button("Done", action: onClose).keyboardShortcut(.defaultAction)
@@ -147,8 +161,12 @@ public struct MCPServersView: View {
             Text("Add a server once and every agent — opencode, Claude Code, and any CLI agent you've configured — gets its tools. Credentials stay on this Mac.")
                 .font(.callout).foregroundStyle(palette.mutedForeground)
                 .multilineTextAlignment(.center).frame(maxWidth: 380)
-            Button { adding = true } label: { Label("Add a server", systemImage: "plus") }
-                .buttonStyle(.borderedProminent).tint(palette.primary)
+            HStack {
+                Button { browsing = true } label: { Label("Browse the registry", systemImage: "magnifyingglass") }
+                    .buttonStyle(.borderedProminent).tint(palette.primary)
+                Button { adding = true } label: { Label("Add manually", systemImage: "plus") }
+                    .buttonStyle(.bordered)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity).padding(24)
     }
@@ -159,6 +177,9 @@ struct MCPServerEditor: View {
     @ObservedObject var model: Model
     let palette: OculusPalette
     let existing: MCPServerInfo?
+    /// A registry entry to pre-fill from. The user still confirms and saves — a one-tap install of a
+    /// third-party command that then runs with their credentials should require a look first.
+    let prefill: MCPDirectoryEntry?
     var onClose: () -> Void
 
     @State private var name = ""
@@ -228,6 +249,12 @@ struct MCPServerEditor: View {
         .onAppear(perform: load)
     }
 
+    /// Registry names are namespaced (io.github.owner/thing); the last segment is the usable name.
+    private func shortName(_ full: String) -> String {
+        let tail = full.split(separator: "/").last.map(String.init) ?? full
+        return tail.replacingOccurrences(of: " ", with: "-")
+    }
+
     private func field<C: View>(_ label: String, @ViewBuilder content: () -> C) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label.uppercased()).font(.system(size: 10, weight: .semibold)).tracking(0.7)
@@ -237,6 +264,17 @@ struct MCPServerEditor: View {
     }
 
     private func load() {
+        if let p = prefill, existing == nil {
+            name = shortName(p.name)
+            transport = p.transport
+            command = p.command ?? ""
+            argsText = (p.args ?? []).joined(separator: " ")
+            url = p.url ?? ""
+            // Seed the credential keys the registry says this server wants, with empty values, so
+            // it's obvious what still needs filling in.
+            envText = (p.envKeys ?? []).map { "\($0)=" }.joined(separator: "\n")
+            return
+        }
         guard let e = existing else { return }
         name = e.name
         transport = e.transport
@@ -269,5 +307,82 @@ struct MCPServerEditor: View {
             saving = false
             if let err { error = err } else { onClose() }
         }
+    }
+}
+
+
+/// Search results from the public MCP registry.
+struct MCPDirectoryView: View {
+    @ObservedObject var model: Model
+    let palette: OculusPalette
+    var onPick: (MCPDirectoryEntry) -> Void
+    var onClose: () -> Void
+
+    @State private var query = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Browse MCP servers").font(.headline).foregroundStyle(palette.foreground)
+                    Text("From the public registry. You'll confirm before anything is saved.")
+                        .font(.caption).foregroundStyle(palette.mutedForeground)
+                }
+                Spacer()
+                Button("Done", action: onClose).keyboardShortcut(.cancelAction)
+            }
+            .padding(14)
+            HStack {
+                TextField("Search (e.g. github, postgres, slack)", text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { Task { await model.browseMCPDirectory(query: query) } }
+                Button(model.mcpBrowsing ? "…" : "Search") {
+                    Task { await model.browseMCPDirectory(query: query) }
+                }
+                .buttonStyle(.bordered).disabled(model.mcpBrowsing)
+            }
+            .padding(.horizontal, 14).padding(.bottom, 10)
+            Divider().overlay(palette.border)
+
+            if let err = model.mcpBrowseError, model.mcpDirectory.isEmpty {
+                Text(err).font(.callout).foregroundStyle(palette.mutedForeground)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity).padding(24)
+            } else {
+                List(model.mcpDirectory) { e in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            Text(e.name).font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(palette.foreground)
+                            if let v = e.version, !v.isEmpty {
+                                Text(v).font(.system(size: 10, design: .monospaced))
+                                    .foregroundStyle(palette.mutedForeground)
+                            }
+                            Spacer()
+                            if let u = e.unsupported, !u.isEmpty {
+                                Text(u).font(.system(size: 10)).foregroundStyle(palette.mutedForeground)
+                            } else {
+                                Button("Add") { onPick(e) }.buttonStyle(.bordered).font(.system(size: 11))
+                            }
+                        }
+                        if let d = e.description, !d.isEmpty {
+                            Text(d).font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
+                                .lineLimit(3)
+                        }
+                        if let keys = e.envKeys, !keys.isEmpty {
+                            Text("needs: " + keys.joined(separator: ", "))
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(palette.mutedForeground)
+                        }
+                    }
+                    .padding(.vertical, 3)
+                }
+                #if os(macOS)
+                .listStyle(.inset)
+                #endif
+            }
+        }
+        .frame(minWidth: 520, minHeight: 400)
+        .background(palette.background)
+        .task { await model.browseMCPDirectory(query: "") }
     }
 }

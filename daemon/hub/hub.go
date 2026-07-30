@@ -2289,7 +2289,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.broadcastSessionList() // the mode chip is part of the session row
 
 	case protocol.TypeMCPList, protocol.TypeMCPUpsert, protocol.TypeMCPDelete,
-		protocol.TypeMCPEnable, protocol.TypeMCPCheck:
+		protocol.TypeMCPEnable, protocol.TypeMCPCheck, protocol.TypeMCPBrowse:
 		h.handleMCP(ctx, conn, env)
 
 	case protocol.TypeApprovalRulesList:

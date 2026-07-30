@@ -74,6 +74,7 @@ public enum MessageType {
     public static let mcpEnable = "mcp.enable"
     public static let mcpCheck = "mcp.check"
     public static let mcpChanged = "mcp.changed"
+    public static let mcpBrowse = "mcp.browse"
     public static let turnState = "turn.state"
     public static let checkpointCreate = "checkpoint.create"
     public static let checkpointList = "checkpoint.list"
@@ -2122,4 +2123,38 @@ public struct InviteCreated: Codable {
 public struct InviteRef: Codable {
     public var id: String
     public init(id: String) { self.id = id }
+}
+
+/// One server published in the public MCP registry. Command/Args are a SUGGESTION the user confirms
+/// before anything is saved — nothing installs itself.
+public struct MCPDirectoryEntry: Codable, Equatable, Identifiable {
+    public var name: String
+    public var description: String?
+    public var version: String?
+    public var command: String?
+    public var args: [String]?
+    public var url: String?
+    public var transport: String
+    public var envKeys: [String]?
+    public var unsupported: String?
+    public var id: String { name }
+    enum CodingKeys: String, CodingKey {
+        case name, description, version, command, args, url, transport, unsupported
+        case envKeys = "env_keys"
+    }
+}
+
+public struct MCPBrowse: Codable {
+    public var query: String?
+    public init(query: String? = nil) { self.query = query }
+}
+
+public struct MCPDirectory: Codable, Equatable {
+    public var entries: [MCPDirectoryEntry]
+    public init(entries: [MCPDirectoryEntry] = []) { self.entries = entries }
+    public init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        entries = try c.decodeIfPresent([MCPDirectoryEntry].self, forKey: .entries) ?? []
+    }
+    enum CodingKeys: String, CodingKey { case entries }
 }

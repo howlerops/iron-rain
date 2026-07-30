@@ -149,7 +149,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	client, protocolVersion, err := g.mgr.Get(ctx, name)
+	client, protocolVersion, err := g.mgr.Dial(ctx, name)
 	if err != nil {
 		writeRPCError(w, req.ID, -32000, err.Error())
 		return

@@ -197,10 +197,16 @@ func (r *Registry) Check(ctx context.Context, name string) Status {
 		return Status{Name: name, Error: "no such server"}
 	}
 	st := Status{Name: name, CheckedAt: time.Now()}
-	if s.Transport != "stdio" {
-		// Remote servers are handed to harnesses as-is; probing them needs the HTTP client that
-		// arrives with the gateway stage.
-		st.Error = "remote servers aren't probed yet"
+	if s.Transport == "http" {
+		ctx, cancel := context.WithTimeout(ctx, connectTimeout)
+		defer cancel()
+		info, err := DialRemote(s.URL, s.Headers).Probe(ctx)
+		if err != nil {
+			st.Error = err.Error()
+		} else {
+			st.OK = true
+			st.ProtocolVersion, st.ServerVersion, st.Tools = info.ProtocolVersion, info.Version, info.Tools
+		}
 		r.record(st)
 		return st
 	}

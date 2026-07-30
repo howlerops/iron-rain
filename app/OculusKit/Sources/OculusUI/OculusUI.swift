@@ -1731,6 +1731,27 @@ public final class Model: ObservableObject {
     /// MCP servers registered with the daemon (Settings → MCP servers). Kept live by mcp.changed.
     @Published public var mcpServers: [MCPServerInfo] = []
 
+    /// Results from the public MCP registry.
+    @Published public var mcpDirectory: [MCPDirectoryEntry] = []
+    @Published public var mcpBrowsing = false
+    @Published public var mcpBrowseError: String? = nil
+
+    /// Searches the public registry so adding a server doesn't mean knowing its argv by heart.
+    public func browseMCPDirectory(query: String) async {
+        guard client != nil else { return }
+        mcpBrowsing = true
+        mcpBrowseError = nil
+        defer { mcpBrowsing = false }
+        do {
+            let env = try await request(MessageType.mcpBrowse, payload: MCPBrowse(query: query))
+            mcpDirectory = (try? env.payload(as: MCPDirectory.self))?.entries ?? []
+            if mcpDirectory.isEmpty { mcpBrowseError = "Nothing matched that search." }
+        } catch {
+            mcpDirectory = []
+            mcpBrowseError = error.localizedDescription
+        }
+    }
+
     public func loadMCPServers() async {
         guard client != nil else { return }
         if let env = try? await request(MessageType.mcpList, payload: Optional<Int>.none),

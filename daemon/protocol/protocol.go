@@ -152,6 +152,7 @@ const (
 	TypeMCPEnable            = "mcp.enable"             // enable/disable one server
 	TypeMCPCheck             = "mcp.check"              // connect to a server and list its tools
 	TypeMCPChanged           = "mcp.changed"            // broadcast: the server set or a status changed
+	TypeMCPBrowse            = "mcp.browse"             // search the public MCP registry
 	TypeApprovalRulesList    = "approval.rules.list"    // the persisted "always allow/deny" rules
 	TypeApprovalRuleDelete   = "approval.rules.delete"  // drop one rule by index
 	TypeApprovalRulesChanged = "approval.rules.changed" // broadcast: the rule set changed (any device)
@@ -1831,4 +1832,28 @@ type InviteCreated struct {
 // InviteRef names one invite.
 type InviteRef struct {
 	ID string `json:"id"`
+}
+
+// MCPDirectoryEntry is one server published in the public MCP registry, reduced to what an install
+// form needs. Command/Args are a SUGGESTION the user confirms — nothing installs itself.
+type MCPDirectoryEntry struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Version     string   `json:"version,omitempty"`
+	Command     string   `json:"command,omitempty"`
+	Args        []string `json:"args,omitempty"`
+	URL         string   `json:"url,omitempty"`
+	Transport   string   `json:"transport"`
+	EnvKeys     []string `json:"env_keys,omitempty"`
+	Unsupported string   `json:"unsupported,omitempty"`
+}
+
+// MCPBrowse searches the public registry.
+type MCPBrowse struct {
+	Query string `json:"query,omitempty"`
+}
+
+// MCPDirectory is a page of registry results.
+type MCPDirectory struct {
+	Entries []MCPDirectoryEntry `json:"entries"`
 }

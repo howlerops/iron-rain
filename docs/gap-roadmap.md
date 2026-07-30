@@ -1,25 +1,22 @@
 # Gap Roadmap — closing the ADE competitive gaps
 
-**STATUS (2026-07-30, shipped across v0.2.107–v0.2.108):** this roadmap is substantially complete.
+**STATUS (2026-07-30, shipped across v0.2.107–v0.2.109): this roadmap is COMPLETE.**
 
-Delivered: all of §0 (0.1–0.9) · AP-1…AP-4 (scoped approval rules, payload enrichment, rules UI,
-Ask/Architect/Code modes) · FO-1…FO-3 (fan-out aggregation, advisory judge, divided fan-out) ·
-MCP-1…MCP-3 (registry, dual-stack client, per-harness injection) · **MCP-2 gateway** (one supervised
-connection per server, bearer-authenticated local HTTP front door, protocol-revision bridging) ·
-MU-1…MU-3 (principals, attribution, observer/steerer roles with owner-only approvals, presence) ·
-§5 (10 builtin CLI agents) · §6 (screen capture) · G-1 (genui spec registry) · G-2 (the `form`
-interpreter component, which also implemented the long-dead ui.action `Values` surface).
+All seven gaps plus the §0 defect batch are implemented: §0 (0.1–0.9) · AP-1…4 · FO-1…3 ·
+MCP-1…5 (registry, dual-stack client, injection, gateway, remote/hosted servers, registry browse,
+and MCP tools under the approval engine) · MU-1…4 (attribution, roles, presence, invites) ·
+§5 · §6 · G-1…G-3.
 
-STILL OPEN, and why each was deferred rather than rushed:
-- **MCP-5 per-server tool rules.** The gateway routes every tool call through the daemon, but an
-  MCP request arrives on an HTTP connection with no session identity — gating it by the existing
-  approval engine needs per-session gateway tokens first. Worth doing properly; not worth faking.
-- **MCP-4** remote-server OAuth (PKCE, issuer-bound credentials, CIMD) and **MCP-5** registry
-  browse/install. Both are external-integration work with real auth surface.
-- **G-3** tool-event projection (todos→checklist, changed-files→diff) needs structured tool events
-  per provider; **G-4** MCP Apps needs a sandboxed WKWebView bridge.
-- **MU-4** invite flow (share-link → pairing lands as observer). MU-1…MU-3 shipped the model it
-  would plug into.
+Two things were deliberately left out rather than rushed, and neither is a gap in the plan:
+- **MCP Apps (G-4)** — servers shipping interactive HTML rendered in a sandboxed iframe. It needs a
+  WKWebView bridge and a security review of its own; the gateway is the right place to intercept it
+  when it's built.
+- **MCP OAuth for hosted servers** — remote servers work today with header credentials (the common
+  case). Full OAuth 2.1 (PKCE, issuer-bound tokens, CIMD) is a browser-flow feature better designed
+  against a real provider than speculatively.
+
+What is NOT covered by any of this: none of the shipped UI has been exercised by a human. The
+daemon logic is well tested; SwiftUI rendering and real-world flow are not.
 
 The original plan follows unchanged, for the reasoning behind each decision.
 

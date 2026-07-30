@@ -176,6 +176,24 @@ func (h *Hub) handleMCP(ctx context.Context, conn *transport.Conn, env protocol.
 		h.sendOK(conn, env.ID, h.mcpList())
 		h.broadcast(protocol.TypeMCPChanged, h.mcpList())
 
+	case protocol.TypeMCPBrowse:
+		var req protocol.MCPBrowse
+		_ = env.Unmarshal(&req)
+		entries, err := mcp.BrowseDirectory(ctx, req.Query)
+		if err != nil {
+			h.sendErr(conn, env.ID, "couldn't reach the MCP registry: "+err.Error())
+			return
+		}
+		out := protocol.MCPDirectory{Entries: make([]protocol.MCPDirectoryEntry, 0, len(entries))}
+		for _, e := range entries {
+			out.Entries = append(out.Entries, protocol.MCPDirectoryEntry{
+				Name: e.Name, Description: e.Description, Version: e.Version,
+				Command: e.Command, Args: e.Args, URL: e.URL, Transport: e.Transport,
+				EnvKeys: e.EnvKeys, Unsupported: e.Unsupported,
+			})
+		}
+		h.sendOK(conn, env.ID, out)
+
 	case protocol.TypeMCPCheck:
 		var ref protocol.MCPRef
 		if err := env.Unmarshal(&ref); err != nil || strings.TrimSpace(ref.Name) == "" {

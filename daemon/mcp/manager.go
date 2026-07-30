@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"sync"
 	"time"
@@ -33,6 +34,9 @@ type Manager struct {
 	mu    sync.Mutex
 	conns map[string]*supervised
 	reg   *Registry
+	// remoteVersions caches the negotiated protocol for hosted servers, which have no persistent
+	// connection to hang it off.
+	remoteVersions map[string]string
 }
 
 // supervised is one server's connection plus its restart state.
@@ -46,7 +50,56 @@ type supervised struct {
 
 // NewManager returns a manager backed by reg.
 func NewManager(reg *Registry) *Manager {
-	return &Manager{conns: map[string]*supervised{}, reg: reg}
+	return &Manager{conns: map[string]*supervised{}, reg: reg, remoteVersions: map[string]string{}}
+}
+
+// Caller is what the gateway proxies through: either a supervised stdio process or a hosted HTTP
+// server. Both answer one JSON-RPC request at a time, which is all the gateway needs.
+type Caller interface {
+	call(ctx context.Context, method string, params any) (json.RawMessage, error)
+}
+
+// Dial returns something to proxy through for the named server, plus its protocol version. Remote
+// servers need no supervision — there is no process to watch — so they bypass the restart machinery
+// entirely and are negotiated per call cycle.
+func (m *Manager) Dial(ctx context.Context, name string) (Caller, string, error) {
+	srv, ok := m.reg.Get(name)
+	if !ok {
+		return nil, "", &NotFoundError{Server: name}
+	}
+	if srv.Disabled {
+		return nil, "", &DisabledError{Server: name}
+	}
+	if srv.Transport == "http" {
+		rc := DialRemote(srv.URL, srv.Headers)
+		version := m.remoteVersion(name)
+		if version == "" {
+			info, err := rc.negotiate(ctx)
+			if err != nil {
+				return nil, "", err
+			}
+			version = info.ProtocolVersion
+			m.rememberRemoteVersion(name, version)
+		}
+		return rc, version, nil
+	}
+	return m.Get(ctx, name)
+}
+
+// remoteVersion returns a cached negotiated version for a hosted server ("" = not yet known).
+func (m *Manager) remoteVersion(name string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.remoteVersions[name]
+}
+
+func (m *Manager) rememberRemoteVersion(name, version string) {
+	m.mu.Lock()
+	if m.remoteVersions == nil {
+		m.remoteVersions = map[string]string{}
+	}
+	m.remoteVersions[name] = version
+	m.mu.Unlock()
 }
 
 // Get returns a live, negotiated connection to the named server, starting or restarting it as
