@@ -357,3 +357,43 @@ func commandPrefixGlob(detail string) string {
 	}
 	return head + " *"
 }
+
+// approvalRulesList renders the rule set for the management UI. Descriptions are built here so every
+// client words a rule identically.
+func (h *Hub) approvalRulesList() protocol.ApprovalRulesList {
+	h.mu.Lock()
+	rules := make([]ApprovalRule, len(h.approvalRules))
+	copy(rules, h.approvalRules)
+	reg := h.projects
+	h.mu.Unlock()
+	out := protocol.ApprovalRulesList{Rules: make([]protocol.ApprovalRuleInfo, 0, len(rules))}
+	for i, r := range rules {
+		info := protocol.ApprovalRuleInfo{
+			Index: i, Action: r.Action, Provider: r.Provider, Tool: r.Tool,
+			Pattern: r.Pattern, PathPrefix: r.PathPrefix, ProjectID: r.ProjectID,
+			Description: r.describe(),
+		}
+		if r.ProjectID != "" && reg != nil {
+			if p, ok := reg.Get(r.ProjectID); ok {
+				info.ProjectName = p.Name
+			}
+		}
+		out.Rules = append(out.Rules, info)
+	}
+	return out
+}
+
+// deleteApprovalRule drops the rule at index (as returned by approvalRulesList) and persists.
+func (h *Hub) deleteApprovalRule(index int) bool {
+	h.mu.Lock()
+	if index < 0 || index >= len(h.approvalRules) {
+		h.mu.Unlock()
+		return false
+	}
+	removed := h.approvalRules[index]
+	h.approvalRules = append(h.approvalRules[:index], h.approvalRules[index+1:]...)
+	h.mu.Unlock()
+	h.saveApprovalRules()
+	log.Printf("approvals: rule removed — %s", removed.describe())
+	return true
+}

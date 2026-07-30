@@ -98,6 +98,7 @@ struct SessionSidebar: View {
     /// Opens the Loops (recurring autonomous workflows) sheet.
     var onOpenLoops: (() -> Void)? = nil
     var onOpenAgents: (() -> Void)? = nil
+    var onOpenApprovalRules: (() -> Void)? = nil
     var onOpenAccounts: (() -> Void)? = nil
     var onOpenRemotes: (() -> Void)? = nil
     var onManageSessions: (() -> Void)? = nil
@@ -346,6 +347,9 @@ struct SessionSidebar: View {
                 }
                 if let onOpenAgents {
                     Button { onOpenAgents() } label: { Label("Agents…", systemImage: "cpu") }
+                }
+                if let onOpenApprovalRules {
+                    Button { onOpenApprovalRules() } label: { Label("Approval rules…", systemImage: "checkmark.shield") }
                 }
                 if let onOpenAccounts {
                     Button { onOpenAccounts() } label: { Label("Accounts & usage…", systemImage: "person.2.badge.key") }

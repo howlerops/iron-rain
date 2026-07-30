@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -77,16 +78,16 @@ type managedSession struct {
 	sess agent.Session
 	meta sessionMeta // grouping info (project/cwd/worktree) for session.list + create
 
-	mu              sync.Mutex
-	subs            map[*transport.Conn]*subscriber
-	transcript      [][]byte  // encoded protocol events, replayed to new subscribers
-	transcriptBytes int       // running size of transcript (for the byte cap)
-	lastActivity    time.Time // last event time; surfaced as Session.UpdatedAt for sorting/relative time
-	inTok, outTok   int       // cumulative token usage across the session
-	costUSD         float64   // cumulative cost (USD)
-	wasRunning      bool      // saw activity since the last idle (gates the "finished" push)
-	turnStartedAt   time.Time // when the current turn started running (for the "finished" push duration)
-	loopDoneNotified bool     // fired the "loop run finished" push once (loop sessions only)
+	mu               sync.Mutex
+	subs             map[*transport.Conn]*subscriber
+	transcript       [][]byte  // encoded protocol events, replayed to new subscribers
+	transcriptBytes  int       // running size of transcript (for the byte cap)
+	lastActivity     time.Time // last event time; surfaced as Session.UpdatedAt for sorting/relative time
+	inTok, outTok    int       // cumulative token usage across the session
+	costUSD          float64   // cumulative cost (USD)
+	wasRunning       bool      // saw activity since the last idle (gates the "finished" push)
+	turnStartedAt    time.Time // when the current turn started running (for the "finished" push duration)
+	loopDoneNotified bool      // fired the "loop run finished" push once (loop sessions only)
 
 	// Turn Engine state (see turn.go) — guarded by m.mu. turnPhase "" = no open turn.
 	turnID         string
@@ -111,6 +112,7 @@ type managedSession struct {
 	latestTodos      []protocol.Todo // last session.todos (completion signal)
 	turnEnded        bool            // true after idle, false after running (turn boundary vs done)
 	pendingApprovals int             // outstanding approval requests (never nudge while > 0)
+	mode             string          // code | ask | architect — enforced daemon-side (see modes.go)
 	autonomous       bool            // opt-in: heartbeat may auto-nudge this session to continue
 	nudgeCount       int             // nudges spent this session (capped by maxNudges)
 	lastNudge        time.Time       // for the nudge cooldown
@@ -125,10 +127,10 @@ type managedSession struct {
 
 	seg genui.Segmenter // incremental scanner for ```iron:ui``` generative-UI fences in assistant text
 
-	awaitingResponse bool // a prompt was sent and no event has come back yet (drives the no-response watchdog)
-	respWatchdogGen  int  // generation counter so a stale watchdog can't fire after a newer prompt/response
-	userStopped      bool // the user explicitly stopped/removed this session (vs. an unexpected provider exit)
-	conflicted       bool // this worktree session's branch would conflict with the default branch (passive badge)
+	awaitingResponse bool                  // a prompt was sent and no event has come back yet (drives the no-response watchdog)
+	respWatchdogGen  int                   // generation counter so a stale watchdog can't fire after a newer prompt/response
+	userStopped      bool                  // the user explicitly stopped/removed this session (vs. an unexpected provider exit)
+	conflicted       bool                  // this worktree session's branch would conflict with the default branch (passive badge)
 	checkpoints      []protocol.Checkpoint // restore points snapshotted for this worktree session (newest last)
 }
 
@@ -303,6 +305,7 @@ func (m *managedSession) info() protocol.Session {
 	isWorkspace := len(m.meta.members) > 0
 	status := m.lastStatus
 	model, modelProvider := m.model, m.modelProvider
+	mode := m.mode
 	conflicted := m.conflicted
 	m.mu.Unlock()
 	if status == "" {
@@ -325,6 +328,7 @@ func (m *managedSession) info() protocol.Session {
 		IssueID:       m.meta.issueID,
 		Model:         model,
 		ModelProvider: modelProvider,
+		Mode:          mode,
 		UpdatedAt:     updated,
 		InputTokens:   inTok,
 		OutputTokens:  outTok,
@@ -611,6 +615,14 @@ func (m *managedSession) run() {
 		m.mu.Unlock()
 		if ev.Type == protocol.TypeApprovalRequest {
 			if ar, ok := ev.Payload.(protocol.ApprovalRequest); ok {
+				// Read-only modes deny mutating tools outright, before any rule is consulted — a
+				// standing "always allow bash" must not punch a hole through Ask mode.
+				if mode := m.sessionMode(); modeDeniesTool(mode, ar.Tool) {
+					log.Printf("session %s: denied %s — %s mode is read-only", m.sess.ID(), ar.Tool, mode)
+					go func(id string) { _ = m.sess.Respond(context.Background(), id, protocol.DecisionDeny) }(ar.ApprovalID)
+					m.emitTool("⊘ " + ar.Tool + " blocked — " + mode + " mode is read-only")
+					continue
+				}
 				// A persisted rule answers it silently — permissions are asked ONCE, ever, not once
 				// per session. The request never reaches a client.
 				if m.hub.autoAllowApproval(m, ar) {
@@ -698,7 +710,7 @@ func (m *managedSession) run() {
 					}
 				case protocol.StatusIdle, protocol.StatusDone:
 					log.Printf("session %s (%s): turn end (%s)", m.sess.ID(), m.sess.Provider(), ss.Status)
-					m.flushUI(ss.SessionID) // emit any component/text left in an open fence, reset for next turn
+					m.flushUI(ss.SessionID)    // emit any component/text left in an open fence, reset for next turn
 					m.finalizeTurnTranscript() // persist the turn's assistant reply if the provider only streamed deltas
 					// Record a "finished" activity item only when a real turn actually ran (saw deltas),
 					// so idle re-attaches don't spam the feed.

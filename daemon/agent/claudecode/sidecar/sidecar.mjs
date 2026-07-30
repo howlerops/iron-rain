@@ -134,6 +134,14 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     if (currentQuery && typeof currentQuery.interrupt === "function") {
       try { currentQuery.interrupt(); } catch {}
     }
+  } else if (m.t === "mode") {
+    // Switch the permission mode for subsequent turns. The daemon enforces its own rules regardless;
+    // this makes the MODEL aware it should be planning rather than editing, which changes what it
+    // proposes, not just what it's allowed to do.
+    permissionMode = m.text === "architect" || m.text === "ask" ? "plan" : "default";
+    if (currentQuery && typeof currentQuery.setPermissionMode === "function") {
+      try { currentQuery.setPermissionMode(permissionMode); } catch {}
+    }
   } else if (m.t === "model") {
     // Switch the model for subsequent turns (SDK setModel accepts an alias like "opus" or a full id).
     if (currentQuery && m.text) {
@@ -144,8 +152,9 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 
 // --- run the session ---
 const planMode = process.env.OCULUS_PLAN === "1";
+let permissionMode = planMode ? "plan" : "default";
 const options = {
-  permissionMode: planMode ? "plan" : "default",
+  permissionMode,
   includePartialMessages: true,
   canUseTool,
 };

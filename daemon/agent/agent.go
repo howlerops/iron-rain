@@ -122,3 +122,13 @@ type ModelLister interface {
 type ModelSetter interface {
 	SetModel(provider, model string) error
 }
+
+// ModeSetter is an optional Session capability: switch the agent's working mode mid-session, without
+// restarting it. Sessions that don't implement it still obey the hub's own mode enforcement (which
+// gates tools at the approval layer), they just don't get the harness-native behavior change.
+//
+// opencode implements this cheaply because its agent/mode is sent per message; claude-code forwards
+// it to the sidecar, which applies it to the next turn.
+type ModeSetter interface {
+	SetMode(ctx context.Context, mode string) error
+}

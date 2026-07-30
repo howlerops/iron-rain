@@ -178,6 +178,27 @@ public struct ChatView: View {
                           ? "The heartbeat keeps this session going until its to-dos are done. Tap to stop."
                           : "Let the heartbeat nudge this session to keep going until done.")
                 }
+                // Mode is its own control, not buried in the overflow: a read-only session behaves
+                // very differently and the user must be able to see AND change that at a glance.
+                ToolbarItem(placement: .automatic) {
+                    Menu {
+                        Button { Task { await model.setSessionMode(SessionMode.code) } } label: {
+                            Label("Code — normal", systemImage: "hammer")
+                        }
+                        Button { Task { await model.setSessionMode(SessionMode.ask) } } label: {
+                            Label("Ask — read-only", systemImage: "magnifyingglass")
+                        }
+                        Button { Task { await model.setSessionMode(SessionMode.architect) } } label: {
+                            Label("Architect — plan first", systemImage: "ruler")
+                        }
+                    } label: {
+                        Label(SessionMode.label(model.sessionMode),
+                              systemImage: SessionMode.isRestricted(model.sessionMode) ? "lock.shield" : "hammer")
+                    }
+                    .help(SessionMode.isRestricted(model.sessionMode)
+                          ? "This session is read-only — edits and commands are refused."
+                          : "Normal mode. Your approval rules decide what runs without asking.")
+                }
                 // Everything else folds into ONE labeled menu (was 4 bare icons in the header) — the
                 // items carry text labels so it's clear what each does, unlike hover-only tooltips.
                 ToolbarItem(placement: .automatic) {

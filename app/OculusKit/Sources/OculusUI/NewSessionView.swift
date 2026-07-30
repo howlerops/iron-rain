@@ -16,7 +16,7 @@ struct NewSessionView: View {
     @State private var provider = "opencode"
     @State private var selectedProjects: Set<String> = []
     @State private var useWorktree = false
-    @State private var planFirst = false
+    @State private var sessionMode = SessionMode.code
     @State private var autonomous = false
     @State private var workspaceName = ""
     @State private var terminalSearch = ""
@@ -43,8 +43,20 @@ struct NewSessionView: View {
         var id: String { rawValue }
     }
 
-    // Plan mode is native-only (see planCapable).
+    // Whether the harness ALSO has a native plan mode we can hint (enforcement is daemon-side either way).
     private var planCapable: Bool { provider == "opencode" || provider == "claude-code" }
+    private var modeHelp: String {
+        switch sessionMode {
+        case SessionMode.ask:
+            return "Read-only. The agent can read, search and explain, but every edit or command is refused."
+        case SessionMode.architect:
+            return planCapable
+                ? "Plans first. Edits and commands are refused until you switch to Code."
+                : "Plans first. Edits and commands are refused until you switch to Code (this agent has no native plan mode, so the daemon enforces it)."
+        default:
+            return "Normal. Your approval rules decide; anything else asks."
+        }
+    }
 
     private var isMulti: Bool { selectedProjects.count > 1 }
     private var singleSelectedProject: Project? {
@@ -140,7 +152,7 @@ struct NewSessionView: View {
                                                   projectIDs: selectedProjects.isEmpty ? nil : Array(selectedProjects),
                                                   worktree: useWorktree && canIsolate,
                                                   workspaceName: workspaceName.isEmpty ? nil : workspaceName,
-                                                  plan: planFirst && planCapable,
+                                                  mode: sessionMode,
                                                   autonomous: autonomous,
                                                   model: selectedModel.isEmpty ? nil : selectedModel,
                                                   modelProvider: chosen?.provider)
@@ -227,17 +239,17 @@ struct NewSessionView: View {
                     .font(.caption).foregroundStyle(palette.mutedForeground)
             }
 
-            if planCapable { // only claude-code + opencode support plan mode natively
-                field("Plan first") {
-                    Toggle(isOn: $planFirst) {
-                        Text("Propose a plan to approve before making changes").font(.system(size: 13))
-                    }
-                    .toggleStyle(.switch).tint(palette.primary)
-                    Text(provider == "opencode"
-                         ? "Runs opencode's plan agent — edits and commands wait for your approval."
-                         : "The agent drafts a plan and waits for your approval (from anywhere) before it touches code.")
-                        .font(.caption).foregroundStyle(palette.mutedForeground)
+            // Mode applies to EVERY provider: the daemon enforces it at the approval layer, so even a
+            // harness with no native permission mode is held to it. planCapable only decides whether
+            // we can additionally ask the harness to plan natively.
+            field("Mode") {
+                Picker("", selection: $sessionMode) {
+                    Text("Code").tag(SessionMode.code)
+                    Text("Ask").tag(SessionMode.ask)
+                    Text("Architect").tag(SessionMode.architect)
                 }
+                .pickerStyle(.segmented).labelsHidden()
+                Text(modeHelp).font(.caption).foregroundStyle(palette.mutedForeground)
             }
 
             field("Autonomous") {

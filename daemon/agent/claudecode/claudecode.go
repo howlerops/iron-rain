@@ -427,6 +427,13 @@ func (s *session) Stop(_ context.Context) error { return s.send(inMsg{T: "stop"}
 // SetModel switches the model via the SDK's setModel (provider is unused — Claude ids stand alone).
 func (s *session) SetModel(_, model string) error { return s.send(inMsg{T: "model", Text: model}) }
 
+// SetMode implements agent.ModeSetter: forward the mode to the sidecar, which maps ask/architect onto
+// the SDK's "plan" permission mode for subsequent turns. The daemon enforces the mode itself either
+// way — this only makes the model aware of the intent.
+func (s *session) SetMode(_ context.Context, mode string) error {
+	return s.send(inMsg{T: "mode", Text: mode})
+}
+
 func (s *session) Close() error {
 	s.closeOnce.Do(func() {
 		close(s.done)

@@ -33,8 +33,9 @@ type persistedMeta struct {
 	ParentID      string            `json:"parent_id,omitempty"`
 	Subtask       string            `json:"subtask,omitempty"`
 	// Model is stored so a restarted session (session.restart) comes back on the same model.
-	Model         string            `json:"model,omitempty"`
-	ModelProvider string            `json:"model_provider,omitempty"`
+	Model         string `json:"model,omitempty"`
+	ModelProvider string `json:"model_provider,omitempty"`
+	Mode          string `json:"mode,omitempty"` // code | ask | architect (see hub/modes.go)
 }
 
 func metaToPersisted(m sessionMeta) persistedMeta {
@@ -72,9 +73,11 @@ func (h *Hub) persistSessionAt(m *managedSession, updatedAt int64) {
 	m.mu.Lock()
 	meta := m.meta
 	model, modelProvider := m.model, m.modelProvider
+	mode := m.mode
 	m.mu.Unlock()
 	pm := metaToPersisted(meta)
 	pm.Model, pm.ModelProvider = model, modelProvider
+	pm.Mode = mode
 	blob, err := json.Marshal(pm)
 	if err != nil {
 		return
@@ -218,6 +221,7 @@ func (h *Hub) restartSession(ctx context.Context, oldID string) (*managedSession
 	m := h.addSession(sess, pm.toMeta())
 	m.mu.Lock()
 	m.model, m.modelProvider = pm.Model, pm.ModelProvider
+	m.mode = pm.Mode
 	m.mu.Unlock()
 	h.persistSession(m)
 	if sess.ID() != oldID {

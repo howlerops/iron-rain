@@ -16,71 +16,72 @@ import (
 // Message types.
 const (
 	// requests (client -> daemon), carry an id echoed on the response
-	TypeSessionList         = "session.list"
-	TypeSessionGet          = "session.get"
-	TypeSessionCreate       = "session.create"
-	TypeSessionPrompt       = "session.prompt"
-	TypeCommandList         = "command.list"
-	TypeLoopList            = "loop.list"
-	TypeLoopUpsert          = "loop.upsert"
-	TypeLoopDelete          = "loop.delete"
-	TypeLoopSetEnabled      = "loop.enabled"
-	TypeSessionStop         = "session.stop"
-	TypeSessionInterrupt    = "session.interrupt" // stop the current turn, keep the session
-	TypeSessionAutonomy     = "session.autonomy"  // toggle/re-arm heartbeat supervision
-	TypeHandoffList         = "handoff.list"      // indexed agent-authored handoff files (request + event)
-	TypeSessionChild        = "session.child"     // spawn a scoped sub-agent seeded from a parent's handoff
-	TypeSessionRename       = "session.rename"
-	TypeSessionAttach       = "session.attach"
-	TypeSessionRestart      = "session.restart"  // re-create a stopped session (provider couldn't re-attach after a daemon restart)
-	TypeSessionRecover      = "session.recover"  // re-attach an existing session, re-resolving its real directory (heals a broken session whose sends fail)
-	TypeSessionSubscribe    = "session.subscribe" // observe an already-owned session (no dup subscription)
-	TypeApprovalRespond     = "approval.respond"
-	TypeDiscover            = "discover.list"
-	TypeDeviceRegister      = "device.register"
-	TypeProviderList        = "provider.list"    // agent providers registered on this daemon
-	TypeProviderRefresh     = "provider.refresh" // re-detect agent harnesses on PATH (rescan) + rebroadcast the list
-	TypeAgentList           = "agent.list"    // full agent roster (native + detected + custom)
-	TypeAgentUpsert         = "agent.upsert"  // add/edit a custom CLI agent (persisted, live)
-	TypeAgentDelete         = "agent.delete"  // remove a custom CLI agent
-	TypeAgentVisible        = "agent.visible"    // show/hide an agent in the session pickers
-	TypeModelList           = "model.list"       // list a provider's available models
-	TypeSessionSetModel     = "session.set_model" // switch a live session's model
-	TypeProjectList         = "project.list"
-	TypeProjectAdd          = "project.add"
-	TypeProjectBrowse       = "project.browse"
-	TypeProjectRemove       = "project.remove"
-	TypeWorktreeDiff        = "worktree.diff"        // request the diff of a worktree session
-	TypeWorktreeRemove      = "worktree.remove"      // stop a worktree session + remove its worktree
-	TypeWorktreePR          = "worktree.pr"          // commit + push + open a PR for a worktree session
-	TypeWorktreeCatchUp     = "worktree.catch_up"    // merge the repo's default branch into a worktree session's branch
-	TypeWorktreeConflicts   = "worktree.conflicts"   // files this worktree shares with other active worktrees
-	TypeWorkspaceDiff       = "workspace.diff"       // per-member diff for a cross-repo workspace session
-	TypeWorkspacePR         = "workspace.pr"         // commit + push + open a PR for each workspace member
-	TypeIntegrationConnect  = "integration.connect"  // connect a tracker (Linear/Jira) with a token
+	TypeSessionList           = "session.list"
+	TypeSessionGet            = "session.get"
+	TypeSessionCreate         = "session.create"
+	TypeSessionModeSet        = "session.mode.set" // switch a live session between code/ask/architect
+	TypeSessionPrompt         = "session.prompt"
+	TypeCommandList           = "command.list"
+	TypeLoopList              = "loop.list"
+	TypeLoopUpsert            = "loop.upsert"
+	TypeLoopDelete            = "loop.delete"
+	TypeLoopSetEnabled        = "loop.enabled"
+	TypeSessionStop           = "session.stop"
+	TypeSessionInterrupt      = "session.interrupt" // stop the current turn, keep the session
+	TypeSessionAutonomy       = "session.autonomy"  // toggle/re-arm heartbeat supervision
+	TypeHandoffList           = "handoff.list"      // indexed agent-authored handoff files (request + event)
+	TypeSessionChild          = "session.child"     // spawn a scoped sub-agent seeded from a parent's handoff
+	TypeSessionRename         = "session.rename"
+	TypeSessionAttach         = "session.attach"
+	TypeSessionRestart        = "session.restart"   // re-create a stopped session (provider couldn't re-attach after a daemon restart)
+	TypeSessionRecover        = "session.recover"   // re-attach an existing session, re-resolving its real directory (heals a broken session whose sends fail)
+	TypeSessionSubscribe      = "session.subscribe" // observe an already-owned session (no dup subscription)
+	TypeApprovalRespond       = "approval.respond"
+	TypeDiscover              = "discover.list"
+	TypeDeviceRegister        = "device.register"
+	TypeProviderList          = "provider.list"     // agent providers registered on this daemon
+	TypeProviderRefresh       = "provider.refresh"  // re-detect agent harnesses on PATH (rescan) + rebroadcast the list
+	TypeAgentList             = "agent.list"        // full agent roster (native + detected + custom)
+	TypeAgentUpsert           = "agent.upsert"      // add/edit a custom CLI agent (persisted, live)
+	TypeAgentDelete           = "agent.delete"      // remove a custom CLI agent
+	TypeAgentVisible          = "agent.visible"     // show/hide an agent in the session pickers
+	TypeModelList             = "model.list"        // list a provider's available models
+	TypeSessionSetModel       = "session.set_model" // switch a live session's model
+	TypeProjectList           = "project.list"
+	TypeProjectAdd            = "project.add"
+	TypeProjectBrowse         = "project.browse"
+	TypeProjectRemove         = "project.remove"
+	TypeWorktreeDiff          = "worktree.diff"          // request the diff of a worktree session
+	TypeWorktreeRemove        = "worktree.remove"        // stop a worktree session + remove its worktree
+	TypeWorktreePR            = "worktree.pr"            // commit + push + open a PR for a worktree session
+	TypeWorktreeCatchUp       = "worktree.catch_up"      // merge the repo's default branch into a worktree session's branch
+	TypeWorktreeConflicts     = "worktree.conflicts"     // files this worktree shares with other active worktrees
+	TypeWorkspaceDiff         = "workspace.diff"         // per-member diff for a cross-repo workspace session
+	TypeWorkspacePR           = "workspace.pr"           // commit + push + open a PR for each workspace member
+	TypeIntegrationConnect    = "integration.connect"    // connect a tracker (Linear/Jira) with a token
 	TypeIntegrationDisconnect = "integration.disconnect" // remove a tracker's connection (clears its token)
-	TypeIntegrationStatus   = "integration.status"   // which trackers are connected
-	TypeTelemetrySet        = "telemetry.set"        // toggle anonymized diagnostics on/off
-	TypeTelemetryStatus     = "telemetry.status"     // query whether anonymized diagnostics are on
-	TypeJiraSites           = "jira.sites"           // list Atlassian sites the token can access (multi-site orgs)
-	TypeJiraSetSite         = "jira.set_site"        // switch the active Jira site (cloud id)
-	TypeIntegrationOAuth    = "integration.oauth"    // begin an OAuth flow; returns an authorize URL
-	TypeIntegrationOAuthApp = "integration.oauthapp" // save a provider's OAuth app client_id/secret
-	TypeIssueList           = "issue.list"           // assigned issues (request + broadcast)
-	TypeIssueStates         = "issue.states"         // workflow states (kanban columns) for a team
-	TypeIssueColumns        = "issue.columns"        // a project's ordered workflow statuses (real-status board columns)
-	TypeIssueMove           = "issue.move"           // move an issue to a status (drag-drop) — resolves the transition
-	TypeIssueCreate         = "issue.create"         // create a new ticket on a provider/project
-	TypeIssueProjects       = "issue.projects"       // list the projects/teams the connected trackers expose (board picker)
-	TypeIssueLaunch         = "issue.launch"         // launch an agent on an issue (worktree)
-	TypeIssueDetail         = "issue.detail"         // full issue + comments
-	TypeIssueUpdate         = "issue.update"         // edit issue fields (partial)
-	TypeIssueComment        = "issue.comment"        // add a comment
-	TypeIssueCommentEdit    = "issue.comment.edit"   // edit an existing comment
-	TypeIssueMembers        = "issue.members"        // assignable users for a project/issue (assignee picker)
-	TypeIssueLabels         = "issue.labels"         // a project's labels (label picker)
-	TypeIssueCycles         = "issue.cycles"         // a project's sprints/cycles (sprint picker)
-	TypeIssueImage          = "issue.image"          // proxy an auth-gated attachment image
+	TypeIntegrationStatus     = "integration.status"     // which trackers are connected
+	TypeTelemetrySet          = "telemetry.set"          // toggle anonymized diagnostics on/off
+	TypeTelemetryStatus       = "telemetry.status"       // query whether anonymized diagnostics are on
+	TypeJiraSites             = "jira.sites"             // list Atlassian sites the token can access (multi-site orgs)
+	TypeJiraSetSite           = "jira.set_site"          // switch the active Jira site (cloud id)
+	TypeIntegrationOAuth      = "integration.oauth"      // begin an OAuth flow; returns an authorize URL
+	TypeIntegrationOAuthApp   = "integration.oauthapp"   // save a provider's OAuth app client_id/secret
+	TypeIssueList             = "issue.list"             // assigned issues (request + broadcast)
+	TypeIssueStates           = "issue.states"           // workflow states (kanban columns) for a team
+	TypeIssueColumns          = "issue.columns"          // a project's ordered workflow statuses (real-status board columns)
+	TypeIssueMove             = "issue.move"             // move an issue to a status (drag-drop) — resolves the transition
+	TypeIssueCreate           = "issue.create"           // create a new ticket on a provider/project
+	TypeIssueProjects         = "issue.projects"         // list the projects/teams the connected trackers expose (board picker)
+	TypeIssueLaunch           = "issue.launch"           // launch an agent on an issue (worktree)
+	TypeIssueDetail           = "issue.detail"           // full issue + comments
+	TypeIssueUpdate           = "issue.update"           // edit issue fields (partial)
+	TypeIssueComment          = "issue.comment"          // add a comment
+	TypeIssueCommentEdit      = "issue.comment.edit"     // edit an existing comment
+	TypeIssueMembers          = "issue.members"          // assignable users for a project/issue (assignee picker)
+	TypeIssueLabels           = "issue.labels"           // a project's labels (label picker)
+	TypeIssueCycles           = "issue.cycles"           // a project's sprints/cycles (sprint picker)
+	TypeIssueImage            = "issue.image"            // proxy an auth-gated attachment image
 
 	// Built-in editor file access — all paths validated against project roots + session cwds.
 	TypeFSTree      = "fs.tree"      // list a directory (or the available roots when path is empty)
@@ -118,7 +119,7 @@ const (
 	TypeSessionUsage     = "session.usage"     // token/cost usage for a session (event)
 	TypeSessionTodos     = "session.todos"     // the agent's live to-do list (event)
 	TypeSessionSubAgent  = "session.subagent"  // a sub-agent (opencode task etc.) started/finished under a parent
-	TypeSessionTool      = "session.tool"       // a tool call with its command + output (rich inline card)
+	TypeSessionTool      = "session.tool"      // a tool call with its command + output (rich inline card)
 	TypeUIComponent      = "ui.component"      // event: a normalized generative-UI component (projected or fenced)
 	TypeUIAction         = "ui.action"         // client → daemon: user activated a UI component's action
 	TypeSessionHeartbeat = "session.heartbeat" // supervision state for a session (event)
@@ -133,22 +134,26 @@ const (
 	TypeActivityMarkRead = "activity.markread" // mark activity items read (clears the needs-you badge)
 	TypeFanoutCreate     = "fanout.create"     // spawn N agents on the SAME prompt in isolated worktrees (compare + merge winner)
 	TypeFanoutResolve    = "fanout.resolve"    // tear down a fan-out group (keep the winner, discard the rest + worktrees)
-	TypeTurnState        = "turn.state"       // daemon-authoritative turn lifecycle + heartbeat (the client renders, never infers)
+	TypeTurnState        = "turn.state"        // daemon-authoritative turn lifecycle + heartbeat (the client renders, never infers)
 	TypeNotifyPrefsGet   = "notify.prefs.get"  // list toggleable push-notification types + their on/off state
 	TypeNotifyPrefsSet   = "notify.prefs.set"  // enable/disable one push-notification type
-	TypeCheckpointCreate = "checkpoint.create" // snapshot the session's worktree (a restore point on the timeline)
-	TypeCheckpointList   = "checkpoint.list"   // list a session's checkpoints
-	TypeCheckpointRestore = "checkpoint.restore" // roll the worktree back to a checkpoint
-	TypeAccountList      = "account.list"      // list credential accounts + active selection + per-provider usage
-	TypeAccountUpsert    = "account.upsert"    // add/update a credential account
-	TypeAccountDelete    = "account.delete"    // remove a credential account
-	TypeAccountActivate  = "account.activate"  // set the active account for a provider (hot-swap)
-	TypeAccountQuota     = "account.quota"      // probe an account's remaining rate-limit/quota from the provider API
-	TypeRemoteList       = "remote.list"       // list registered SSH remote hosts
-	TypeRemoteUpsert     = "remote.upsert"     // add/update a remote host (probes it)
-	TypeRemoteDelete     = "remote.delete"     // remove a remote host
-	TypeRemoteStatus     = "remote.status"     // git status/diff of a remote worktree over SSH
-	TypeRemoteRun        = "remote.run"        // start an agent SESSION on a remote host over SSH (streams output)
+
+	TypeApprovalRulesList    = "approval.rules.list"    // the persisted "always allow/deny" rules
+	TypeApprovalRuleDelete   = "approval.rules.delete"  // drop one rule by index
+	TypeApprovalRulesChanged = "approval.rules.changed" // broadcast: the rule set changed (any device)
+	TypeCheckpointCreate     = "checkpoint.create"      // snapshot the session's worktree (a restore point on the timeline)
+	TypeCheckpointList       = "checkpoint.list"        // list a session's checkpoints
+	TypeCheckpointRestore    = "checkpoint.restore"     // roll the worktree back to a checkpoint
+	TypeAccountList          = "account.list"           // list credential accounts + active selection + per-provider usage
+	TypeAccountUpsert        = "account.upsert"         // add/update a credential account
+	TypeAccountDelete        = "account.delete"         // remove a credential account
+	TypeAccountActivate      = "account.activate"       // set the active account for a provider (hot-swap)
+	TypeAccountQuota         = "account.quota"          // probe an account's remaining rate-limit/quota from the provider API
+	TypeRemoteList           = "remote.list"            // list registered SSH remote hosts
+	TypeRemoteUpsert         = "remote.upsert"          // add/update a remote host (probes it)
+	TypeRemoteDelete         = "remote.delete"          // remove a remote host
+	TypeRemoteStatus         = "remote.status"          // git status/diff of a remote worktree over SSH
+	TypeRemoteRun            = "remote.run"             // start an agent SESSION on a remote host over SSH (streams output)
 
 	// responses
 	TypeOK    = "ok"
@@ -190,7 +195,8 @@ type SessionCreate struct {
 	Images        []ImageAttachment `json:"images,omitempty"`         // images for the first prompt
 	Worktree      bool              `json:"worktree,omitempty"`       // run in a fresh git worktree (opt-in)
 	WorkspaceName string            `json:"workspace_name,omitempty"` // human name for the worktree branch
-	Plan          bool              `json:"plan,omitempty"`           // start in plan mode (propose a plan to approve first)
+	Plan          bool              `json:"plan,omitempty"`           // DEPRECATED alias for Mode=="architect"; kept for older clients
+	Mode          string            `json:"mode,omitempty"`           // code (default) | ask | architect — see the Mode* constants
 	Autonomous    bool              `json:"autonomous,omitempty"`     // let the heartbeat nudge it to keep going
 	MaxNudges     int               `json:"max_nudges,omitempty"`     // give-up bound for auto-nudging (0 = default)
 	BudgetUSD     float64           `json:"budget_usd,omitempty"`     // cost ceiling for auto-nudging (0 = default)
@@ -482,10 +488,10 @@ type FanoutResolve struct {
 
 // FanoutResolved reports which variants were torn down (and which winner was kept).
 type FanoutResolved struct {
-	Group     string   `json:"group"`
-	Kept      string   `json:"kept,omitempty"`
-	Removed   []string `json:"removed"`
-	Failed    []string `json:"failed,omitempty"` // variants whose teardown errored (e.g. dirty worktree without force)
+	Group   string   `json:"group"`
+	Kept    string   `json:"kept,omitempty"`
+	Removed []string `json:"removed"`
+	Failed  []string `json:"failed,omitempty"` // variants whose teardown errored (e.g. dirty worktree without force)
 }
 
 // TurnChild is one sub-agent's state within a parent turn.
@@ -502,7 +508,7 @@ type TurnChild struct {
 type TurnState struct {
 	SessionID   string      `json:"session_id"`
 	TurnID      string      `json:"turn_id"`
-	State       string      `json:"state"` // running | awaiting_approval | idle | error | abandoned
+	State       string      `json:"state"`                   // running | awaiting_approval | idle | error | abandoned
 	StartedAt   int64       `json:"started_at,omitempty"`    // unix seconds
 	LastEventAt int64       `json:"last_event_at,omitempty"` // unix seconds of the last provider event
 	Detail      string      `json:"detail,omitempty"`        // e.g. "running bash"
@@ -831,7 +837,7 @@ type IssueProjectsList struct {
 }
 
 type IssueProject struct {
-	ID       string `json:"id"`   // Jira project key / Linear team id
+	ID       string `json:"id"` // Jira project key / Linear team id
 	Name     string `json:"name"`
 	Provider string `json:"provider"`
 }
@@ -1237,8 +1243,9 @@ type Session struct {
 	IssueID       string `json:"issue_id,omitempty"`
 	Model         string `json:"model,omitempty"`          // active model id ("" = provider default)
 	ModelProvider string `json:"model_provider,omitempty"` // sub-provider/backend for the model
+	Mode          string `json:"mode,omitempty"`           // code | ask | architect ("" = code)
 	Restartable   bool   `json:"restartable,omitempty"`    // a stopped session that can be re-created (session.restart)
-	UpdatedAt     int64  `json:"updated_at,omitempty"` // unix seconds of last activity (0 = unknown)
+	UpdatedAt     int64  `json:"updated_at,omitempty"`     // unix seconds of last activity (0 = unknown)
 	// Cumulative token/cost usage for the session (surfaced as a meter; 0 = unknown).
 	InputTokens  int     `json:"input_tokens,omitempty"`
 	OutputTokens int     `json:"output_tokens,omitempty"`
@@ -1291,10 +1298,10 @@ type SessionTool struct {
 // tool spawns a child session). The app renders an inline, collapsible card in the parent transcript
 // keyed by ID; the child's own output/tools then stream in tagged with SessionID == ID.
 type SubAgent struct {
-	ParentID string `json:"parent_id"`     // the delegating (parent) session
-	ID       string `json:"id"`            // the sub-agent's session id (its events carry this SessionID)
+	ParentID string `json:"parent_id"` // the delegating (parent) session
+	ID       string `json:"id"`        // the sub-agent's session id (its events carry this SessionID)
 	Title    string `json:"title,omitempty"`
-	Status   string `json:"status"`        // started | done | error
+	Status   string `json:"status"` // started | done | error
 }
 
 // UIComponent is a normalized generative-UI element the daemon parses out of a harness's assistant
@@ -1321,7 +1328,7 @@ type UIComponent struct {
 // (a typed reply to a request id), "permission" (resolve an approval via the native ApprovalSheet).
 type UIAction struct {
 	ID     string `json:"id"`
-	Kind   string `json:"kind"`             // prompt | answer | permission
+	Kind   string `json:"kind"` // prompt | answer | permission
 	Label  string `json:"label,omitempty"`
 	Style  string `json:"style,omitempty"`  // default | destructive | cancel (confirm buttons)
 	Prompt string `json:"prompt,omitempty"` // templated user-turn text sent for kind=="prompt"
@@ -1455,11 +1462,11 @@ type SessionSetModel struct {
 // (user-defined in ~/.oculus/agents.json — editable/removable). Available means its command
 // currently resolves on PATH.
 type AgentInfo struct {
-	Name       string   `json:"name"`
-	Kind       string   `json:"kind"`
-	Available  bool     `json:"available"`
-	Editable   bool     `json:"editable"`
-	Hidden     bool     `json:"hidden"` // user hid it from the session pickers (still runnable)
+	Name       string            `json:"name"`
+	Kind       string            `json:"kind"`
+	Available  bool              `json:"available"`
+	Editable   bool              `json:"editable"`
+	Hidden     bool              `json:"hidden"` // user hid it from the session pickers (still runnable)
 	Command    string            `json:"command,omitempty"`
 	Args       []string          `json:"args,omitempty"`
 	ResumeArgs []string          `json:"resume_args,omitempty"`
@@ -1610,4 +1617,50 @@ func (e Envelope) Unmarshal(v any) error {
 		return errors.New("protocol: empty payload")
 	}
 	return json.Unmarshal(e.Payload, v)
+}
+
+// ApprovalRuleInfo is one persisted approval rule as shown in the rules UI. Description is rendered
+// daemon-side so every client words a rule identically. Index is the rule's position in the ordered
+// list and is how a delete names it — stable for the lifetime of one list response.
+type ApprovalRuleInfo struct {
+	Index       int    `json:"index"`
+	Action      string `json:"action"` // allow | deny
+	Provider    string `json:"provider,omitempty"`
+	Tool        string `json:"tool,omitempty"`
+	Pattern     string `json:"pattern,omitempty"`
+	PathPrefix  string `json:"path_prefix,omitempty"`
+	ProjectID   string `json:"project_id,omitempty"`
+	ProjectName string `json:"project_name,omitempty"` // resolved for display
+	Description string `json:"description"`
+}
+
+// ApprovalRulesList is the full ordered rule set (approval.rules.list / approval.rules.changed).
+type ApprovalRulesList struct {
+	Rules []ApprovalRuleInfo `json:"rules"`
+}
+
+// ApprovalRuleDelete removes one rule. Index must come from the most recent list.
+type ApprovalRuleDelete struct {
+	Index int `json:"index"`
+}
+
+// Session modes. A mode is a PRESET over the approval rule engine, enforced daemon-side so it
+// behaves the same on every harness — even ones with no native concept of a permission mode (a gap
+// competitors have: Zed's tool permissions famously don't apply to external agents at all). Where a
+// harness DOES have a native mode, the daemon also forwards it as a hint via agent.ModeSetter.
+const (
+	// ModeCode is normal operation: the persisted approval rules decide, anything else asks.
+	ModeCode = "code"
+	// ModeAsk is read-only. Mutating tools (edit/write/shell/patch) are auto-denied; reading,
+	// searching and thinking are unaffected. For "explain this codebase" without any risk.
+	ModeAsk = "ask"
+	// ModeArchitect is plan-first: same denials as ask, plus the harness's native plan mode where it
+	// has one, so the agent proposes a plan instead of editing.
+	ModeArchitect = "architect"
+)
+
+// SessionModeSet switches a live session's mode (session.mode.set).
+type SessionModeSet struct {
+	SessionID string `json:"session_id"`
+	Mode      string `json:"mode"`
 }

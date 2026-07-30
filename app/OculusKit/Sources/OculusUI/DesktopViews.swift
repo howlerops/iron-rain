@@ -205,7 +205,7 @@ struct SoftwareUpdateModifier: ViewModifier {
 
 /// The one shared sheet slot for the Loops / Agents panels (kept to a single `.sheet` so they
 /// don't collide with the New Session sheet).
-private enum PanelSheet: Int, Identifiable { case loops, agents, accounts, remotes, sessions; var id: Int { rawValue } }
+private enum PanelSheet: Int, Identifiable { case loops, agents, accounts, remotes, sessions, approvalRules; var id: Int { rawValue } }
 
 public struct RootView: View {
     @ObservedObject var store: DesktopStore
@@ -283,6 +283,8 @@ public struct RootView: View {
                                       onClose: { panel = nil })
                         case .agents:
                             ManageAgentsView(model: model, palette: palette)
+                        case .approvalRules:
+                            ApprovalRulesView(model: model, palette: palette, onClose: { panel = nil })
                         case .accounts:
                             AccountsView(model: model, palette: palette, onClose: { panel = nil })
                         case .remotes:
@@ -429,6 +431,7 @@ public struct RootView: View {
                 SessionSidebar(store: store, model: model, selection: $selection, searchText: $searchText,
                                onOpenLoops: { destination = .loops },
                                onOpenAgents: { panel = .agents },
+                               onOpenApprovalRules: { panel = .approvalRules },
                                onOpenAccounts: { panel = .accounts },
                                onOpenRemotes: { panel = .remotes },
                                onManageSessions: { panel = .sessions })
@@ -600,6 +603,7 @@ public struct RootView: View {
                            updates: updates,
                            onOpenLoops: { destination = .loops },
                            onOpenAgents: { panel = .agents },
+                           onOpenApprovalRules: { panel = .approvalRules },
                            onOpenAccounts: { panel = .accounts },
                                onOpenRemotes: { panel = .remotes },
                                onManageSessions: { panel = .sessions })

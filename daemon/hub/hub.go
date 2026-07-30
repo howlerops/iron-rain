@@ -18,26 +18,26 @@ import (
 	"sync"
 	"time"
 
-	"github.com/howlerops/oculus/daemon/agent"
-	"github.com/howlerops/oculus/daemon/genui"
-	"github.com/howlerops/oculus/daemon/agent/cli"
-	"github.com/howlerops/oculus/daemon/fsaccess"
 	"github.com/howlerops/oculus/daemon/accounts"
 	"github.com/howlerops/oculus/daemon/activity"
+	"github.com/howlerops/oculus/daemon/agent"
+	"github.com/howlerops/oculus/daemon/agent/cli"
+	"github.com/howlerops/oculus/daemon/commands"
+	"github.com/howlerops/oculus/daemon/fsaccess"
+	"github.com/howlerops/oculus/daemon/genui"
 	"github.com/howlerops/oculus/daemon/issues"
 	"github.com/howlerops/oculus/daemon/loghub"
-	"github.com/howlerops/oculus/daemon/quota"
-	"github.com/howlerops/oculus/daemon/telemetry"
-	"github.com/howlerops/oculus/daemon/transcript"
 	"github.com/howlerops/oculus/daemon/loops"
 	"github.com/howlerops/oculus/daemon/lsp"
-	"github.com/howlerops/oculus/daemon/commands"
 	"github.com/howlerops/oculus/daemon/project"
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/push"
+	"github.com/howlerops/oculus/daemon/quota"
 	"github.com/howlerops/oculus/daemon/slack"
 	"github.com/howlerops/oculus/daemon/sshremote"
 	"github.com/howlerops/oculus/daemon/store"
+	"github.com/howlerops/oculus/daemon/telemetry"
+	"github.com/howlerops/oculus/daemon/transcript"
 	"github.com/howlerops/oculus/daemon/transport"
 	"github.com/howlerops/oculus/daemon/worktree"
 )
@@ -53,39 +53,39 @@ type Hub struct {
 	approvals map[string]*managedSession // approvalID -> owning session
 	discover  DiscoverFunc
 
-	notifier      push.Notifier // optional: push actionable approvals to a device
-	slack         *slack.Client // optional: mirror agent events to a Slack channel
-	pushTokens    []string      // registered device tokens
-	attach        AttacherFactory
-	clients       map[*transport.Conn]*hubClient // all connected clients (for global broadcasts)
-	projects      *project.Registry              // optional: registered folders sessions spawn in
-	autoProjects  bool                           // auto-register projects from active agents' cwds
-	issues        *issues.Manager                // optional: connected trackers (Linear/Jira)
-	telemetry     *telemetry.Client              // optional: anonymized diagnostics shipping
-	logHub        *loghub.Hub                    // optional: live daemon-log stream (Developer log panel)
-	logSubs       map[*transport.Conn]bool       // clients subscribed to the log stream
-	transcripts   *transcript.Store              // optional: durable append-only per-session transcript (never-lose-work)
-	activity      *activity.Store                // optional: cross-session activity feed (Activity destination backbone)
-	accounts      *accounts.Registry             // optional: multi-account credentials + active selection per provider
-	remotes       *sshremote.Registry            // optional: registered SSH remote hosts (remote worktrees)
-	sshRunner     *sshremote.Runner              // optional: executes git/agent ops on remotes over SSH
-	redetect      func()                         // optional: re-run agent-harness detection (provider.refresh)
-	loopEngine    *loops.Engine                  // optional: recurring autonomous ticket workflows
-	agentsPath    string                         // path to ~/.oculus/agents.json (custom CLI agents)
-	agentHidePath string                         // path to ~/.oculus/agent-visibility.json (hidden names)
-	agentHidden   map[string]bool                // agent names hidden from the session pickers
-	oauthAddr     string                         // loopback host:port for tracker OAuth callbacks (per-provider path)
-	worktreeBase  string                         // base dir for worktrees ("" = worktree.DefaultBase)
-	reservedPorts map[int]bool                   // ports handed to worktree setup hooks (collision-free)
-	db            *store.Store                   // optional: durable local state (session names + records)
-	lsp           *lsp.Manager                   // language servers for the built-in editor (diagnostics/types)
-	runningTests  map[string]bool                // session ids with a test/build run in progress
-	approvalRulesPath string                     // path to ~/.oculus/approval-rules.json (persistent rules)
-	approvalRules     []ApprovalRule             // ordered scoped rules; deny beats allow (see approval_rules.go)
-	approvalReqs      map[string]pendingApproval // approvalID -> the request + its scope, for a scoped ALWAYS
-	notifyPrefsPath string                       // path to ~/.oculus/notify.json (per-category push toggles)
-	notifyOff       map[string]bool              // push categories the user turned OFF (absent = enabled)
-	fanoutNotified  map[string]bool              // fan-out groups already notified as "all done" (fire once)
+	notifier          push.Notifier // optional: push actionable approvals to a device
+	slack             *slack.Client // optional: mirror agent events to a Slack channel
+	pushTokens        []string      // registered device tokens
+	attach            AttacherFactory
+	clients           map[*transport.Conn]*hubClient // all connected clients (for global broadcasts)
+	projects          *project.Registry              // optional: registered folders sessions spawn in
+	autoProjects      bool                           // auto-register projects from active agents' cwds
+	issues            *issues.Manager                // optional: connected trackers (Linear/Jira)
+	telemetry         *telemetry.Client              // optional: anonymized diagnostics shipping
+	logHub            *loghub.Hub                    // optional: live daemon-log stream (Developer log panel)
+	logSubs           map[*transport.Conn]bool       // clients subscribed to the log stream
+	transcripts       *transcript.Store              // optional: durable append-only per-session transcript (never-lose-work)
+	activity          *activity.Store                // optional: cross-session activity feed (Activity destination backbone)
+	accounts          *accounts.Registry             // optional: multi-account credentials + active selection per provider
+	remotes           *sshremote.Registry            // optional: registered SSH remote hosts (remote worktrees)
+	sshRunner         *sshremote.Runner              // optional: executes git/agent ops on remotes over SSH
+	redetect          func()                         // optional: re-run agent-harness detection (provider.refresh)
+	loopEngine        *loops.Engine                  // optional: recurring autonomous ticket workflows
+	agentsPath        string                         // path to ~/.oculus/agents.json (custom CLI agents)
+	agentHidePath     string                         // path to ~/.oculus/agent-visibility.json (hidden names)
+	agentHidden       map[string]bool                // agent names hidden from the session pickers
+	oauthAddr         string                         // loopback host:port for tracker OAuth callbacks (per-provider path)
+	worktreeBase      string                         // base dir for worktrees ("" = worktree.DefaultBase)
+	reservedPorts     map[int]bool                   // ports handed to worktree setup hooks (collision-free)
+	db                *store.Store                   // optional: durable local state (session names + records)
+	lsp               *lsp.Manager                   // language servers for the built-in editor (diagnostics/types)
+	runningTests      map[string]bool                // session ids with a test/build run in progress
+	approvalRulesPath string                         // path to ~/.oculus/approval-rules.json (persistent rules)
+	approvalRules     []ApprovalRule                 // ordered scoped rules; deny beats allow (see approval_rules.go)
+	approvalReqs      map[string]pendingApproval     // approvalID -> the request + its scope, for a scoped ALWAYS
+	notifyPrefsPath   string                         // path to ~/.oculus/notify.json (per-category push toggles)
+	notifyOff         map[string]bool                // push categories the user turned OFF (absent = enabled)
+	fanoutNotified    map[string]bool                // fan-out groups already notified as "all done" (fire once)
 
 	// agentsFileMu serializes the load→mutate→save cycle on ~/.oculus/agents.json. agent.upsert and
 	// agent.delete are both in the async-dispatch allowlist, so without this two concurrent edits
@@ -305,16 +305,21 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 		createPrompt = firstTurnPrefix + createPrompt
 		firstTurnPrefix = ""
 	}
-	log.Printf("session.create: starting %s in %s (plan=%v)…", req.Provider, cwd, req.Plan)
+	// Mode subsumes the old Plan bool: architect keeps the harness's native plan mode, ask is
+	// read-only, code is normal. Enforcement is daemon-side (modes.go), so a harness with no native
+	// mode still obeys it.
+	mode := normalizeMode(req.Mode, req.Plan)
+	planStart := mode == protocol.ModeArchitect
+	log.Printf("session.create: starting %s in %s (mode=%s)…", req.Provider, cwd, mode)
 	emit("provider", "Starting "+req.Provider+"…", 0, 0)
 	pc0 := time.Now()
 	var sess agent.Session
 	var err error
-	if req.Plan {
+	if planStart {
 		if pc, ok := p.(agent.PlanCreator); ok {
 			sess, err = pc.CreatePlan(ctx, cwd, createPrompt)
 		} else {
-			sess, err = p.Create(ctx, cwd, createPrompt) // provider has no plan mode; run normally
+			sess, err = p.Create(ctx, cwd, createPrompt) // provider has no plan mode; daemon-side rules still apply
 		}
 	} else {
 		sess, err = p.Create(ctx, cwd, createPrompt)
@@ -345,6 +350,7 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 	if req.Model != "" {
 		ms.model, ms.modelProvider = req.Model, req.ModelProvider
 	}
+	ms.mode = mode
 	ms.pendingContext = firstTurnPrefix
 	ms.mu.Unlock()
 	emit("ready", "Session ready", 0, 0)
@@ -575,7 +581,9 @@ func (h *Hub) SetAccounts(r *accounts.Registry) {
 	}
 	h.mu.Unlock()
 	for name, p := range provs {
-		if s, ok := p.(interface{ SetAccountEnv(func() map[string]string) }); ok {
+		if s, ok := p.(interface {
+			SetAccountEnv(func() map[string]string)
+		}); ok {
 			n := name
 			s.SetAccountEnv(func() map[string]string { return r.EnvFor(n) })
 		}
@@ -1706,8 +1714,8 @@ func (h *Hub) pushPRFinished(sessionID, label, prURL string) {
 // pushFanoutDone notifies that every agent in a fan-out group has completed.
 func (h *Hub) pushFanoutDone(group string, count int) {
 	h.pushNotify(push.Notification{
-		Title: "Fan-out finished",
-		Body:  fmt.Sprintf("All %d agents are done — tap to compare and merge the winner", count),
+		Title:    "Fan-out finished",
+		Body:     fmt.Sprintf("All %d agents are done — tap to compare and merge the winner", count),
 		Category: "FANOUT_DONE",
 		ThreadID: "fanout-" + group, Custom: map[string]any{"fanout_group": group},
 	})
@@ -1886,83 +1894,84 @@ func (h *Hub) Serve(ctx context.Context, conn *transport.Conn) error {
 func asyncDispatch(typ string) bool {
 	switch typ {
 	case protocol.TypeSessionCreate, // worktree.Create + Bootstrap (setup hooks) + provider Create
-		protocol.TypeFanoutCreate,        // N× worktree.Create + provider Create (fan-out)
-		protocol.TypeFanoutResolve,       // N× provider Stop/Delete + git worktree remove/prune
-		protocol.TypeCheckpointCreate,    // git snapshot (blocking)
-		protocol.TypeCheckpointRestore,   // git checkout (blocking)
-		protocol.TypeRemoteList,          // ssh probe per host (network)
-		protocol.TypeRemoteUpsert,        // ssh probe (network)
-		protocol.TypeRemoteStatus,        // ssh git status/diff (network)
-		protocol.TypeRemoteRun,           // ssh agent session start (network)
-		protocol.TypeAccountQuota,        // provider API quota probe (network)
-		protocol.TypeProviderRefresh,     // re-detect harnesses on PATH (may start opencode)
-		protocol.TypeIssueLaunch,         // same startSession path as create
-		protocol.TypeWorktreeDiff,        // git diff
-		protocol.TypeWorktreeRemove,      // provider Stop/Close + git remove/prune
-		protocol.TypeWorktreePR,          // git CommitAll/Push/CreatePR
-		protocol.TypeWorktreeCatchUp,     // git fetch + merge default branch
-		protocol.TypeWorktreeConflicts,   // git per-worktree ChangedFiles
-		protocol.TypeWorkspaceDiff,       // git diff per workspace member
-		protocol.TypeWorkspacePR,         // git commit/push/PR per workspace member
-		protocol.TypeSessionChild,        // provider Create for a scoped sub-agent
-		protocol.TypeIntegrationConnect,  // tracker HTTP
+		protocol.TypeFanoutCreate,          // N× worktree.Create + provider Create (fan-out)
+		protocol.TypeFanoutResolve,         // N× provider Stop/Delete + git worktree remove/prune
+		protocol.TypeCheckpointCreate,      // git snapshot (blocking)
+		protocol.TypeCheckpointRestore,     // git checkout (blocking)
+		protocol.TypeRemoteList,            // ssh probe per host (network)
+		protocol.TypeRemoteUpsert,          // ssh probe (network)
+		protocol.TypeRemoteStatus,          // ssh git status/diff (network)
+		protocol.TypeRemoteRun,             // ssh agent session start (network)
+		protocol.TypeAccountQuota,          // provider API quota probe (network)
+		protocol.TypeProviderRefresh,       // re-detect harnesses on PATH (may start opencode)
+		protocol.TypeIssueLaunch,           // same startSession path as create
+		protocol.TypeWorktreeDiff,          // git diff
+		protocol.TypeWorktreeRemove,        // provider Stop/Close + git remove/prune
+		protocol.TypeWorktreePR,            // git CommitAll/Push/CreatePR
+		protocol.TypeWorktreeCatchUp,       // git fetch + merge default branch
+		protocol.TypeWorktreeConflicts,     // git per-worktree ChangedFiles
+		protocol.TypeWorkspaceDiff,         // git diff per workspace member
+		protocol.TypeWorkspacePR,           // git commit/push/PR per workspace member
+		protocol.TypeSessionChild,          // provider Create for a scoped sub-agent
+		protocol.TypeIntegrationConnect,    // tracker HTTP
 		protocol.TypeIntegrationDisconnect, // writes integrations.json + refresh
-		protocol.TypeIntegrationOAuthApp, // writes integrations.json
-		protocol.TypeIntegrationOAuth,    // tracker HTTP
-		protocol.TypeJiraSites,           // tracker HTTP (accessible-resources)
-		protocol.TypeJiraSetSite,         // tracker HTTP (switch site + refresh)
-		protocol.TypeIssueStates,         // tracker HTTP
-		protocol.TypeIssueColumns,        // tracker HTTP
-		protocol.TypeIssueMove,           // tracker HTTP (resolve + transition + re-fetch)
-		protocol.TypeIssueCreate,         // tracker HTTP
-		protocol.TypeIssueProjects,       // tracker HTTP (per connected provider)
-		protocol.TypeIssueDetail,         // tracker HTTP
-		protocol.TypeIssueUpdate,         // tracker HTTP
-		protocol.TypeIssueMembers,        // tracker HTTP (assignee picker)
-		protocol.TypeIssueLabels,         // tracker HTTP (label picker)
-		protocol.TypeIssueCycles,         // tracker HTTP (sprint picker)
-		protocol.TypeIssueComment,        // tracker HTTP
-		protocol.TypeIssueCommentEdit,    // tracker HTTP
-		protocol.TypeIssueImage,          // tracker HTTP (image fetch)
-		protocol.TypeSessionPrompt,       // provider prompt (may be network)
-		protocol.TypeApprovalRespond,     // provider Respond (may be network)
-		protocol.TypeSessionAttach,       // provider Attach
-		protocol.TypeSessionRestart,      // provider Create (re-create a stopped session)
-		protocol.TypeSessionRecover,      // provider Attach (re-attach + heal a broken session's directory)
-		protocol.TypeSessionStop,         // provider Stop
-		protocol.TypeSessionInterrupt,    // provider Stop (interrupt only)
-		protocol.TypeProjectBrowse,       // disk: dir listing for the folder picker
-		protocol.TypeCommandList,         // disk: scans .claude/commands for the slash palette
-		protocol.TypeLoopUpsert,          // disk: persists loop config (+ may spawn a session)
-		protocol.TypeLoopDelete,          // disk: persists loop config
-		protocol.TypeLoopSetEnabled,      // disk: persists loop config
-		protocol.TypeAgentList,           // disk: reads ~/.oculus/agents.json
-		protocol.TypeAgentUpsert,         // disk: persists a custom agent
-		protocol.TypeAgentDelete,         // disk: persists a custom agent
-		protocol.TypeAgentVisible,        // disk: persists picker visibility
-		protocol.TypeModelList,           // network: queries the provider for models
-		protocol.TypeSessionSetModel,     // network: switches a session's model
-		protocol.TypeFSTree,              // disk: dir listing
-		protocol.TypeFSRead,              // disk: file read
-		protocol.TypeFSReadBytes,         // disk: raw bytes (images)
-		protocol.TypeFSWrite,             // disk: file write
-		protocol.TypeFSDiff,              // git diff
-		protocol.TypeFSSearch,            // disk: multi-file search
-		protocol.TypeRunTest,             // run tests/build (subprocess)
-		protocol.TypeHandoffList,         // disk-backed store read
-		protocol.TypeLSPReferences,       // language server: references
-		protocol.TypeLSPRename,           // language server: rename
-		protocol.TypeLSPSymbols,          // language server: document symbols
-		protocol.TypeLSPOpen,             // language server: didOpen
-		protocol.TypeLSPChange,           // language server: didChange
-		protocol.TypeLSPClose,            // language server: didClose
-		protocol.TypeLSPHover,            // language server: hover
-		protocol.TypeLSPDefinition,       // language server: definition
-		protocol.TypeLSPComplete,         // language server: completion
-		protocol.TypeLSPFormat,           // language server: format document
-		protocol.TypeLSPServerInfo,       // language server: install status
-		protocol.TypeLSPInstall,          // language server: install (runs a package manager)
-		protocol.TypeDiscover:            // host scan
+		protocol.TypeIntegrationOAuthApp,   // writes integrations.json
+		protocol.TypeIntegrationOAuth,      // tracker HTTP
+		protocol.TypeJiraSites,             // tracker HTTP (accessible-resources)
+		protocol.TypeJiraSetSite,           // tracker HTTP (switch site + refresh)
+		protocol.TypeIssueStates,           // tracker HTTP
+		protocol.TypeIssueColumns,          // tracker HTTP
+		protocol.TypeIssueMove,             // tracker HTTP (resolve + transition + re-fetch)
+		protocol.TypeIssueCreate,           // tracker HTTP
+		protocol.TypeIssueProjects,         // tracker HTTP (per connected provider)
+		protocol.TypeIssueDetail,           // tracker HTTP
+		protocol.TypeIssueUpdate,           // tracker HTTP
+		protocol.TypeIssueMembers,          // tracker HTTP (assignee picker)
+		protocol.TypeIssueLabels,           // tracker HTTP (label picker)
+		protocol.TypeIssueCycles,           // tracker HTTP (sprint picker)
+		protocol.TypeIssueComment,          // tracker HTTP
+		protocol.TypeIssueCommentEdit,      // tracker HTTP
+		protocol.TypeIssueImage,            // tracker HTTP (image fetch)
+		protocol.TypeSessionPrompt,         // provider prompt (may be network)
+		protocol.TypeApprovalRespond,       // provider Respond (may be network)
+		protocol.TypeSessionAttach,         // provider Attach
+		protocol.TypeSessionRestart,        // provider Create (re-create a stopped session)
+		protocol.TypeSessionRecover,        // provider Attach (re-attach + heal a broken session's directory)
+		protocol.TypeSessionStop,           // provider Stop
+		protocol.TypeSessionInterrupt,      // provider Stop (interrupt only)
+		protocol.TypeProjectBrowse,         // disk: dir listing for the folder picker
+		protocol.TypeCommandList,           // disk: scans .claude/commands for the slash palette
+		protocol.TypeLoopUpsert,            // disk: persists loop config (+ may spawn a session)
+		protocol.TypeLoopDelete,            // disk: persists loop config
+		protocol.TypeLoopSetEnabled,        // disk: persists loop config
+		protocol.TypeAgentList,             // disk: reads ~/.oculus/agents.json
+		protocol.TypeAgentUpsert,           // disk: persists a custom agent
+		protocol.TypeAgentDelete,           // disk: persists a custom agent
+		protocol.TypeAgentVisible,          // disk: persists picker visibility
+		protocol.TypeApprovalRuleDelete,    // disk: persists ~/.oculus/approval-rules.json
+		protocol.TypeModelList,             // network: queries the provider for models
+		protocol.TypeSessionSetModel,       // network: switches a session's model
+		protocol.TypeFSTree,                // disk: dir listing
+		protocol.TypeFSRead,                // disk: file read
+		protocol.TypeFSReadBytes,           // disk: raw bytes (images)
+		protocol.TypeFSWrite,               // disk: file write
+		protocol.TypeFSDiff,                // git diff
+		protocol.TypeFSSearch,              // disk: multi-file search
+		protocol.TypeRunTest,               // run tests/build (subprocess)
+		protocol.TypeHandoffList,           // disk-backed store read
+		protocol.TypeLSPReferences,         // language server: references
+		protocol.TypeLSPRename,             // language server: rename
+		protocol.TypeLSPSymbols,            // language server: document symbols
+		protocol.TypeLSPOpen,               // language server: didOpen
+		protocol.TypeLSPChange,             // language server: didChange
+		protocol.TypeLSPClose,              // language server: didClose
+		protocol.TypeLSPHover,              // language server: hover
+		protocol.TypeLSPDefinition,         // language server: definition
+		protocol.TypeLSPComplete,           // language server: completion
+		protocol.TypeLSPFormat,             // language server: format document
+		protocol.TypeLSPServerInfo,         // language server: install status
+		protocol.TypeLSPInstall,            // language server: install (runs a package manager)
+		protocol.TypeDiscover:              // host scan
 		return true
 	}
 	return false
@@ -2159,6 +2168,40 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		}
 		h.setNotifyPref(req.Key, req.Enabled)
 		h.sendOK(conn, env.ID, h.notifyPrefs())
+
+	case protocol.TypeSessionModeSet:
+		var req protocol.SessionModeSet
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad session.mode.set")
+			return
+		}
+		m := h.managed(req.SessionID)
+		if m == nil {
+			h.sendErr(conn, env.ID, "no such session")
+			return
+		}
+		h.setSessionMode(ctx, m, req.Mode)
+		h.sendOK(conn, env.ID, nil)
+		h.broadcastSessionList() // the mode chip is part of the session row
+
+	case protocol.TypeApprovalRulesList:
+		h.sendOK(conn, env.ID, h.approvalRulesList())
+
+	case protocol.TypeApprovalRuleDelete:
+		var req protocol.ApprovalRuleDelete
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad approval.rules.delete")
+			return
+		}
+		if !h.deleteApprovalRule(req.Index) {
+			h.sendErr(conn, env.ID, "no such rule")
+			return
+		}
+		list := h.approvalRulesList()
+		h.sendOK(conn, env.ID, list)
+		// Broadcast so a second device's rules screen updates live instead of going stale — the
+		// mistake agent.list and notify.prefs.set both make.
+		h.broadcast(protocol.TypeApprovalRulesChanged, list)
 
 	case protocol.TypeCheckpointCreate:
 		var req protocol.CheckpointCreate
@@ -3391,6 +3434,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		// project); with no Scope it stays the historical provider+tool rule.
 		if req.Decision == protocol.DecisionAlways {
 			h.addApprovalRule(ruleFromDecision(pend, req.Scope))
+			h.broadcast(protocol.TypeApprovalRulesChanged, h.approvalRulesList())
 		}
 		h.sendOK(conn, env.ID, nil)
 		// Tell every client this approval was answered, so its card clears everywhere.
@@ -3516,7 +3560,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		var req protocol.SessionRef
 		_ = env.Unmarshal(&req)
 		if m := h.managed(req.SessionID); m != nil {
-			m.markUserStopped() // intentional delete → run() drops the record (not a crash to preserve)
+			m.markUserStopped()  // intentional delete → run() drops the record (not a crash to preserve)
 			_ = m.sess.Stop(ctx) // interrupt any running turn
 			// Permanently delete server-side (opencode) so it can't be re-attached/re-discovered and
 			// reappear — the "deleted session keeps coming back" bug. Best-effort, before Close.
@@ -3525,7 +3569,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 					log.Printf("session.stop %s: server-side delete failed: %v", req.SessionID, err)
 				}
 			}
-			_ = m.sess.Close()   // end the event stream -> run() -> removeSession (drops the record)
+			_ = m.sess.Close() // end the event stream -> run() -> removeSession (drops the record)
 			h.removeSession(req.SessionID, m)
 			if h.db != nil {
 				_ = h.db.SetName(req.SessionID, "") // clear the orphaned rename

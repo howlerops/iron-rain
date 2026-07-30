@@ -824,7 +824,7 @@ public final class Model: ObservableObject {
         }
     }
 
-    public func createSession(provider: String, projectIDs: [String]? = nil, worktree: Bool = false, workspaceName: String? = nil, plan: Bool = false, autonomous: Bool = false, model: String? = nil, modelProvider: String? = nil) async {
+    public func createSession(provider: String, projectIDs: [String]? = nil, worktree: Bool = false, workspaceName: String? = nil, mode: String = SessionMode.code, autonomous: Bool = false, model: String? = nil, modelProvider: String? = nil) async {
         guard client != nil else { return }
         startingProvider = provider
         createSteps = [] // fresh checklist; the daemon streams session.progress as it works
@@ -846,7 +846,10 @@ public final class Model: ObservableObject {
                                        // it. Don't drop it for the multi-repo case.
                                        worktree: worktree ? true : nil,
                                        workspaceName: workspaceName,
-                                       plan: plan ? true : nil,
+                                       // `plan` stays populated so an OLDER daemon (which knows only
+                                       // the bool) still starts architect sessions in plan mode.
+                                       plan: mode == SessionMode.architect ? true : nil,
+                                       mode: mode == SessionMode.code ? nil : mode,
                                        autonomous: autonomous ? true : nil,
                                        model: model,
                                        modelProvider: modelProvider))
@@ -1632,6 +1635,44 @@ public final class Model: ObservableObject {
         if let env = try? await request(MessageType.notifyPrefsSet, payload: NotifyPrefSet(key: key, enabled: enabled)),
            let np = try? env.payload(as: NotifyPrefs.self) {
             notifyPrefs = np.prefs
+        }
+    }
+
+    /// The active session's mode (code | ask | architect). Mirrors the daemon, which is authoritative
+    /// and enforces it regardless of what the client shows.
+    @Published public var sessionMode: String = SessionMode.code
+
+    /// Switches the live session's mode. Optimistic: the daemon confirms via session.list.
+    public func setSessionMode(_ mode: String) async {
+        guard client != nil, let sid = sessionID else { return }
+        let previous = sessionMode
+        sessionMode = mode
+        appendTool("◆ Mode → \(SessionMode.label(mode))")
+        if (try? await request(MessageType.sessionModeSet, payload: SessionModeSet(sessionID: sid, mode: mode))) == nil {
+            sessionMode = previous
+            actionError = "Couldn't switch mode. The agent is still in \(SessionMode.label(previous))."
+        }
+    }
+
+    /// Persisted "always allow / never allow" rules (Settings → Approval rules). Kept live by the
+    /// daemon's approval.rules.changed broadcast, so answering "Always…" on the phone updates this
+    /// screen on the Mac.
+    @Published public var approvalRules: [ApprovalRuleInfo] = []
+
+    public func loadApprovalRules() async {
+        guard client != nil else { return }
+        if let env = try? await request(MessageType.approvalRulesList, payload: Optional<Int>.none),
+           let list = try? env.payload(as: ApprovalRulesList.self) {
+            approvalRules = list.rules
+        }
+    }
+
+    /// Revokes one rule; the agent asks again next time it wants that tool.
+    public func deleteApprovalRule(index: Int) async {
+        guard client != nil else { return }
+        if let env = try? await request(MessageType.approvalRuleDelete, payload: ApprovalRuleDelete(index: index)),
+           let list = try? env.payload(as: ApprovalRulesList.self) {
+            approvalRules = list.rules
         }
     }
 
@@ -2733,7 +2774,13 @@ public final class Model: ObservableObject {
                     // model change. Without handling it here the sidebar only refreshed on an explicit
                     // reload — so a 2nd session (or a restored set) never appeared until a manual
                     // refresh. Update the list live.
-                    if let sl = try? env.payload(as: SessionList.self) { sessions = sl.sessions }
+                    if let sl = try? env.payload(as: SessionList.self) {
+                        sessions = sl.sessions
+                        // The daemon is authoritative on mode (another device may have switched it).
+                        if let cur = sl.sessions.first(where: { $0.id == sessionID }) {
+                            sessionMode = cur.mode ?? SessionMode.code
+                        }
+                    }
                 case MessageType.issueList: // broadcast from the 60s tracker poll
                     if let il = try? env.payload(as: IssueList.self) {
                         issues = il.issues
@@ -2799,6 +2846,8 @@ public final class Model: ObservableObject {
                     if let ll = try? env.payload(as: LoopList.self) { loops = ll.loops; loopRuns = ll.runs }
                 case MessageType.providerList: // pushed after a custom agent is added/removed
                     if let pl = try? env.payload(as: ProviderList.self) { applyProviders(pl.providers); providersLoaded = true }
+                case MessageType.approvalRulesChanged: // an Always answer or a revoke, on ANY device
+                    if let list = try? env.payload(as: ApprovalRulesList.self) { approvalRules = list.rules }
                 case MessageType.runOutput: // streamed line from a test/build run
                     if let o = try? env.payload(as: RunOutput.self), o.sessionID == sessionID {
                         testOutput.append(o.line)

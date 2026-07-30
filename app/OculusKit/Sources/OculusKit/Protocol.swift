@@ -56,6 +56,10 @@ public enum MessageType {
     public static let fanoutResolve = "fanout.resolve"
     public static let notifyPrefsGet = "notify.prefs.get"
     public static let notifyPrefsSet = "notify.prefs.set"
+    public static let approvalRulesList = "approval.rules.list"
+    public static let approvalRuleDelete = "approval.rules.delete"
+    public static let approvalRulesChanged = "approval.rules.changed"
+    public static let sessionModeSet = "session.mode.set"
     public static let turnState = "turn.state"
     public static let checkpointCreate = "checkpoint.create"
     public static let checkpointList = "checkpoint.list"
@@ -167,17 +171,19 @@ public struct SessionCreate: Codable {
     public var worktree: Bool?
     public var workspaceName: String?
     public var plan: Bool?
+    /// code | ask | architect. Enforced daemon-side for every harness (see SessionMode).
+    public var mode: String?
     public var autonomous: Bool?
     public var maxNudges: Int?
     public var budgetUSD: Double?
     public var model: String?
     public var modelProvider: String?
     public var ephemeral: Bool?
-    public init(provider: String, cwd: String? = nil, projectID: String? = nil, projectIDs: [String]? = nil, prompt: String? = nil, images: [ImageAttachment]? = nil, worktree: Bool? = nil, workspaceName: String? = nil, plan: Bool? = nil, autonomous: Bool? = nil, maxNudges: Int? = nil, budgetUSD: Double? = nil, model: String? = nil, modelProvider: String? = nil, ephemeral: Bool? = nil) {
-        self.provider = provider; self.cwd = cwd; self.projectID = projectID; self.projectIDs = projectIDs; self.prompt = prompt; self.images = images; self.worktree = worktree; self.workspaceName = workspaceName; self.plan = plan; self.autonomous = autonomous; self.maxNudges = maxNudges; self.budgetUSD = budgetUSD; self.model = model; self.modelProvider = modelProvider; self.ephemeral = ephemeral
+    public init(provider: String, cwd: String? = nil, projectID: String? = nil, projectIDs: [String]? = nil, prompt: String? = nil, images: [ImageAttachment]? = nil, worktree: Bool? = nil, workspaceName: String? = nil, plan: Bool? = nil, mode: String? = nil, autonomous: Bool? = nil, maxNudges: Int? = nil, budgetUSD: Double? = nil, model: String? = nil, modelProvider: String? = nil, ephemeral: Bool? = nil) {
+        self.provider = provider; self.cwd = cwd; self.projectID = projectID; self.projectIDs = projectIDs; self.prompt = prompt; self.images = images; self.worktree = worktree; self.workspaceName = workspaceName; self.plan = plan; self.mode = mode; self.autonomous = autonomous; self.maxNudges = maxNudges; self.budgetUSD = budgetUSD; self.model = model; self.modelProvider = modelProvider; self.ephemeral = ephemeral
     }
     enum CodingKeys: String, CodingKey {
-        case provider, cwd, prompt, images, worktree, plan, autonomous, model, ephemeral
+        case provider, cwd, prompt, images, worktree, plan, mode, autonomous, model, ephemeral
         case projectID = "project_id"
         case projectIDs = "project_ids"
         case workspaceName = "workspace_name"
@@ -644,6 +650,7 @@ public struct Session: Codable, Identifiable {
     public var issueID: String?
     public var model: String?          // active model id ("" = provider default)
     public var modelProvider: String?  // sub-provider/backend for the model
+    public var mode: String?           // code | ask | architect ("" / nil = code)
     public var restartable: Bool?      // a "stopped" session that can be re-created (session.restart)
     public var updatedAt: Int? // unix seconds of last activity
     public var inputTokens: Int?
@@ -654,7 +661,7 @@ public struct Session: Codable, Identifiable {
     public var fanoutVariant: Int?   // 0-based variant index within the fan-out group
     public var ephemeral: Bool?      // scratch "just chat" session (no project, not persisted)
     enum CodingKeys: String, CodingKey {
-        case id, provider, status, title, name, cwd, branch, port, model, restartable, conflicted, ephemeral
+        case id, provider, status, title, name, cwd, branch, port, model, mode, restartable, conflicted, ephemeral
         case fanoutGroup = "fanout_group"
         case fanoutVariant = "fanout_variant"
         case projectID = "project_id"
@@ -1816,4 +1823,65 @@ public enum Protocol {
         }
         return p
     }
+}
+
+/// One persisted approval rule, as shown in the rules screen. `description` is rendered daemon-side
+/// so every client words a rule identically.
+public struct ApprovalRuleInfo: Codable, Equatable, Identifiable {
+    public var index: Int
+    public var action: String
+    public var provider: String?
+    public var tool: String?
+    public var pattern: String?
+    public var pathPrefix: String?
+    public var projectID: String?
+    public var projectName: String?
+    public var description: String
+    public var id: Int { index }
+    enum CodingKeys: String, CodingKey {
+        case index, action, provider, tool, pattern
+        case pathPrefix = "path_prefix", projectID = "project_id", projectName = "project_name"
+        case description
+    }
+}
+public struct ApprovalRulesList: Codable, Equatable {
+    public var rules: [ApprovalRuleInfo]
+    public init(rules: [ApprovalRuleInfo] = []) { self.rules = rules }
+    public init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        rules = try c.decodeIfPresent([ApprovalRuleInfo].self, forKey: .rules) ?? []
+    }
+    enum CodingKeys: String, CodingKey { case rules }
+}
+public struct ApprovalRuleDelete: Codable {
+    public var index: Int
+    public init(index: Int) { self.index = index }
+}
+
+/// A session's working mode. The daemon enforces these at the approval layer, so they behave the
+/// same on every harness — including ones with no native permission mode of their own.
+public enum SessionMode {
+    /// Normal: the persisted approval rules decide, anything else asks.
+    public static let code = "code"
+    /// Read-only: reads and searches run, every mutating tool is refused.
+    public static let ask = "ask"
+    /// Plan-first: same refusals as ask, plus the harness's native plan mode where it has one.
+    public static let architect = "architect"
+
+    public static func label(_ mode: String?) -> String {
+        switch mode {
+        case ask: return "Ask"
+        case architect: return "Architect"
+        default: return "Code"
+        }
+    }
+    /// Read-only modes get a visible chip; normal operation doesn't need one.
+    public static func isRestricted(_ mode: String?) -> Bool { mode == ask || mode == architect }
+}
+
+public struct SessionModeSet: Codable {
+    public var sessionID: String
+    public var mode: String
+    public init(sessionID: String, mode: String) { self.sessionID = sessionID; self.mode = mode }
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id", mode }
 }

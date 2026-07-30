@@ -440,7 +440,7 @@ type session struct {
 	p      *Provider
 	id     string
 	dir    string // working directory; forwarded to opencode as ?directory= (scopes the session)
-	agent  string // opencode agent to run turns as ("plan" = gate edits/bash on approval); "" = default
+	agent  string // opencode agent to run turns as ("plan" = gate edits/bash on approval); "" = default. Guarded by modelMu.
 	events chan agent.Event
 
 	ctx       context.Context
@@ -967,10 +967,10 @@ func (s *session) SetModel(provider, model string) error {
 
 func (s *session) sendParts(parts []map[string]any) error {
 	body := map[string]any{"parts": parts}
+	s.modelMu.Lock()
 	if s.agent != "" {
 		body["agent"] = s.agent // e.g. "plan" — gate edits/bash on approval
 	}
-	s.modelMu.Lock()
 	if s.modelID != "" {
 		m := map[string]any{"modelID": s.modelID}
 		if s.modelProvider != "" {
@@ -1119,5 +1119,22 @@ func (s *session) Close() error {
 			s.cancel()
 		}
 	})
+	return nil
+}
+
+// SetMode implements agent.ModeSetter. opencode carries its agent/mode on EVERY message, so a switch
+// takes effect on the next turn with no restart and no lost context — architect maps to opencode's
+// own "plan" agent, code to its default. Ask has no opencode equivalent; the daemon enforces it.
+func (s *session) SetMode(_ context.Context, mode string) error {
+	s.modelMu.Lock() // same lock as the other per-message config read in sendParts
+	defer s.modelMu.Unlock()
+	switch mode {
+	case protocol.ModeArchitect:
+		s.agent = "plan"
+	case protocol.ModeAsk:
+		s.agent = "plan" // closest native behavior: propose rather than edit
+	default:
+		s.agent = ""
+	}
 	return nil
 }
