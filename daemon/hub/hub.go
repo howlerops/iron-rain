@@ -90,8 +90,12 @@ type Hub struct {
 	fanoutJudge       map[string]fanoutJudgeSpec     // groups that opted into an advisory judge
 	fanoutPrompt      map[string]string              // the task each group is racing (for the comparison header)
 
-	mcp   *mcp.Registry // daemon-owned MCP server registry (nil = MCP not enabled)
-	roles *roleRegistry // who may steer vs. watch (see roles.go); disabled = everyone is the owner
+	mcp     *mcp.Registry   // daemon-owned MCP server registry (nil = MCP not enabled)
+	roles   *roleRegistry   // who may steer vs. watch (see roles.go); disabled = everyone is the owner
+	invites *inviteRegistry // outstanding share credentials (see invites.go)
+	// pairURL builds a redeemable pairing URL for an invite secret. Set by main once the reachable
+	// address is known; nil = invites can be created but not rendered as a link.
+	pairURL func(secret string) string
 
 	mcpGateway     *mcp.Gateway // local HTTP front door for supervised MCP servers (nil = not enabled)
 	mcpGatewayBase string       // reachable base URL of the gateway ("" until the listener is up)
@@ -1009,6 +1013,7 @@ func New() *Hub {
 		sessions:        map[string]*managedSession{},
 		approvals:       map[string]*managedSession{},
 		roles:           newRoleRegistry(),
+		invites:         newInviteRegistry(),
 		mcpTokens:       newMCPSessionTokens(),
 		mcpApprovals:    map[string]chan string{},
 		fanoutNotified:  map[string]bool{},
@@ -1924,6 +1929,10 @@ func (h *Hub) Serve(ctx context.Context, conn *transport.Conn) error {
 	c := &hubClient{conn: conn, ch: make(chan []byte, hubOutboundBuffer), done: make(chan struct{})}
 	h.mu.Lock()
 	h.clients[conn] = c
+	// A guest who came in through an invite starts in that invite's role; the owner's own devices
+	// start as owner. Resolved from the handshake public key, so it can't be spoofed by a client
+	// simply asserting a role.
+	h.roles.setRole(conn, h.roleForConn(conn.PeerPublicKey()))
 	h.mu.Unlock()
 	go h.writeClientLoop(c)
 	defer func() {
@@ -3662,6 +3671,48 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		}
 		h.autoRegisterProjects(items) // auto-create projects from active agents' cwds
 		h.sendOK(conn, env.ID, protocol.DiscoverList{Items: items})
+
+	case protocol.TypeInviteCreate:
+		if !h.requireCapability(conn, env.ID, capApprove, "create an invite") {
+			return
+		}
+		var req protocol.InviteCreate
+		_ = env.Unmarshal(&req)
+		inv := h.invites.create(req.Label, req.Role, time.Duration(req.TTLHours)*time.Hour)
+		out := protocol.InviteCreated{Invite: protocol.Invite{
+			ID: inv.ID, Label: inv.Label, Role: inv.Role,
+			ExpiresAt: inv.ExpiresAt.Unix(),
+		}}
+		h.mu.Lock()
+		build := h.pairURL
+		h.mu.Unlock()
+		if build != nil {
+			out.URL = build(inv.Secret)
+		}
+		log.Printf("invites: created %q (%s, expires %s)", inviteLabel(inv), inv.Role, inv.ExpiresAt.Format(time.RFC3339))
+		h.sendOK(conn, env.ID, out)
+
+	case protocol.TypeInviteList:
+		if !h.requireCapability(conn, env.ID, capApprove, "list invites") {
+			return
+		}
+		h.sendOK(conn, env.ID, h.inviteList())
+
+	case protocol.TypeInviteRevoke:
+		if !h.requireCapability(conn, env.ID, capApprove, "revoke an invite") {
+			return
+		}
+		var ref protocol.InviteRef
+		if err := env.Unmarshal(&ref); err != nil || ref.ID == "" {
+			h.sendErr(conn, env.ID, "bad invite.revoke")
+			return
+		}
+		if !h.invites.revoke(ref.ID) {
+			h.sendErr(conn, env.ID, "no such invite")
+			return
+		}
+		h.sendOK(conn, env.ID, h.inviteList())
+		h.broadcastParticipants()
 
 	case protocol.TypeParticipants:
 		h.sendOK(conn, env.ID, h.participants())

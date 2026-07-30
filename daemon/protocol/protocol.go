@@ -43,6 +43,9 @@ const (
 	TypeParticipants          = "participants"      // who is connected and what they may do
 	TypeRoleGrant             = "role.grant"        // owner grants/revokes another participant's role
 	TypeRolesEnable           = "roles.enable"      // turn multi-user enforcement on/off
+	TypeInviteCreate          = "invite.create"     // mint a share credential with its own secret + role
+	TypeInviteList            = "invite.list"       // outstanding invites
+	TypeInviteRevoke          = "invite.revoke"     // drop one invite
 	TypeProviderList          = "provider.list"     // agent providers registered on this daemon
 	TypeProviderRefresh       = "provider.refresh"  // re-detect agent harnesses on PATH (rescan) + rebroadcast the list
 	TypeAgentList             = "agent.list"        // full agent roster (native + detected + custom)
@@ -1795,4 +1798,37 @@ type RoleGrant struct {
 // RolesEnable turns multi-user enforcement on or off.
 type RolesEnable struct {
 	Enabled bool `json:"enabled"`
+}
+
+// Invite is one outstanding share credential. The SECRET is returned only once, at creation — it is
+// never listed afterwards, because a credential you can re-read is one that leaks from a screen.
+type Invite struct {
+	ID        string `json:"id"`
+	Label     string `json:"label,omitempty"`
+	Role      string `json:"role"`
+	ExpiresAt int64  `json:"expires_at"`
+	Redeemed  int    `json:"redeemed"`
+}
+
+// InviteList is the set of live invites.
+type InviteList struct {
+	Invites []Invite `json:"invites"`
+}
+
+// InviteCreate mints one. Role may be steerer or observer; an invite can never mint an owner.
+type InviteCreate struct {
+	Label    string `json:"label,omitempty"`
+	Role     string `json:"role,omitempty"`
+	TTLHours int    `json:"ttl_hours,omitempty"`
+}
+
+// InviteCreated carries the one-time redeemable URL back to the creator.
+type InviteCreated struct {
+	Invite Invite `json:"invite"`
+	URL    string `json:"url"`
+}
+
+// InviteRef names one invite.
+type InviteRef struct {
+	ID string `json:"id"`
 }

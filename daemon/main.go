@@ -289,9 +289,9 @@ func serve(args []string) error {
 		pushEnabled = true
 	}
 
-	srv := server.New(h, kp, func(_ []byte, presented string) bool {
-		return presented == sec
-	})
+	// The daemon accepts the owner's secret OR a live invite credential. An invited guest is
+	// authenticated exactly like any other client; what differs is the ROLE their connection gets.
+	srv := server.New(h, kp, h.AcceptSecret(sec))
 
 	// Remote access: keep a host registration on the shared relay so the app can reach this daemon
 	// from anywhere (off-LAN) with zero port-forwarding. The relay only forwards ciphertext — the
@@ -364,6 +364,11 @@ func serve(args []string) error {
 	if *relayURL != "" {
 		fmt.Printf("  relay:          %s  (remote access from anywhere)\n", *relayURL)
 	}
+	// Let the hub render invite links using the same reachable URL the pairing QR uses, so an invite
+	// works from wherever a normal pairing would.
+	h.SetPairURLBuilder(func(secret string) string {
+		return buildPairURL(pubURL, hex.EncodeToString(kp.Public()), secret, desktopName, *relayURL)
+	})
 	printPairing(pubURL, hex.EncodeToString(kp.Public()), sec, desktopName, *relayURL)
 	// Drop a local pairing file so an app on THIS machine (the macOS app) can
 	// auto-discover + connect with zero config, and show a QR (using the reachable

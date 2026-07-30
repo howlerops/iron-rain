@@ -64,6 +64,9 @@ public enum MessageType {
     public static let participants = "participants"
     public static let roleGrant = "role.grant"
     public static let rolesEnable = "roles.enable"
+    public static let inviteCreate = "invite.create"
+    public static let inviteList = "invite.list"
+    public static let inviteRevoke = "invite.revoke"
     public static let fanoutSummary = "fanout.summary"
     public static let mcpList = "mcp.list"
     public static let mcpUpsert = "mcp.upsert"
@@ -2075,4 +2078,48 @@ public struct RoleGrant: Codable {
 public struct RolesEnable: Codable {
     public var enabled: Bool
     public init(enabled: Bool) { self.enabled = enabled }
+}
+
+/// An outstanding share credential. The secret is returned ONCE at creation and never listed again —
+/// a credential you can re-read is one that leaks from a screen.
+public struct Invite: Codable, Equatable, Identifiable {
+    public var id: String
+    public var label: String?
+    public var role: String
+    public var expiresAt: Int
+    public var redeemed: Int
+    enum CodingKeys: String, CodingKey {
+        case id, label, role, redeemed
+        case expiresAt = "expires_at"
+    }
+}
+
+public struct InviteList: Codable, Equatable {
+    public var invites: [Invite]
+    public init(invites: [Invite] = []) { self.invites = invites }
+    public init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        invites = try c.decodeIfPresent([Invite].self, forKey: .invites) ?? []
+    }
+    enum CodingKeys: String, CodingKey { case invites }
+}
+
+public struct InviteCreate: Codable {
+    public var label: String?
+    public var role: String?
+    public var ttlHours: Int?
+    public init(label: String? = nil, role: String? = nil, ttlHours: Int? = nil) {
+        self.label = label; self.role = role; self.ttlHours = ttlHours
+    }
+    enum CodingKeys: String, CodingKey { case label, role; case ttlHours = "ttl_hours" }
+}
+
+public struct InviteCreated: Codable {
+    public var invite: Invite
+    public var url: String?
+}
+
+public struct InviteRef: Codable {
+    public var id: String
+    public init(id: String) { self.id = id }
 }

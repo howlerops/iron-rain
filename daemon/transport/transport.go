@@ -91,6 +91,9 @@ func ServerHandshake(mc MsgConn, kp crypto.KeyPair, authorize func(clientPub []b
 		return nil, err
 	}
 	conn, err := newConn(mc, keys.D2C, keys.C2D) // server sends d2c, receives c2d
+	if conn != nil {
+		conn.peerPub = clientPub
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +126,13 @@ type Conn struct {
 	sendMu sync.Mutex
 	sealer *crypto.Sealer
 	opener *crypto.Opener
+	// peerPub is the client's public key from the handshake. It identifies WHICH paired device this
+	// connection is, which is what lets an invited guest be given a different role from the owner.
+	peerPub []byte
 }
+
+// PeerPublicKey returns the client's handshake public key (nil for a client-side Conn).
+func (c *Conn) PeerPublicKey() []byte { return append([]byte(nil), c.peerPub...) }
 
 func newConn(mc MsgConn, sendKey, recvKey []byte) (*Conn, error) {
 	sealer, err := crypto.NewSealer(sendKey)

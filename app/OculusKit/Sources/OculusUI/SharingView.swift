@@ -1,5 +1,10 @@
 import SwiftUI
 import OculusKit
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 /// Who's connected to this Mac's agents, and what each of them may do.
 ///
@@ -39,7 +44,10 @@ public struct SharingView: View {
                             ForEach(model.participants) { row($0) }
                         }
                     }
-                    if model.sharingEnabled { rulesNote }
+                    if model.sharingEnabled {
+                        inviteSection
+                        rulesNote
+                    }
                 }
                 .padding(16)
             }
@@ -98,6 +106,89 @@ public struct SharingView: View {
             }
         }
         .padding(.vertical, 3)
+    }
+
+    @State private var inviteLabel = ""
+    @State private var inviteRole = ParticipantRole.observer
+    @State private var creating = false
+
+    /// Minting a share link. The secret is shown exactly once — the daemon never returns it again,
+    /// which is deliberate: a credential you can re-read is one that leaks off a screen later.
+    private var inviteSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("INVITE SOMEONE").font(.system(size: 10, weight: .semibold)).tracking(0.8)
+                .foregroundStyle(palette.mutedForeground)
+
+            if let url = model.freshInviteURL {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Share this link — it won't be shown again.")
+                        .font(.caption).foregroundStyle(palette.foreground)
+                    Text(url)
+                        .font(.system(size: 10, design: .monospaced))
+                        .textSelection(.enabled).lineLimit(3)
+                        .padding(8).background(palette.input)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                    HStack {
+                        Button("Copy link") { copyToPasteboard(url) }
+                            .buttonStyle(.borderedProminent).tint(palette.primary)
+                        Button("Done") { model.freshInviteURL = nil }
+                            .buttonStyle(.bordered)
+                    }
+                }
+                .padding(10)
+                .background(palette.card)
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.primary.opacity(0.4)))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            } else {
+                HStack(spacing: 8) {
+                    TextField("Who's this for?", text: $inviteLabel).textFieldStyle(.roundedBorder)
+                    Picker("", selection: $inviteRole) {
+                        Text("Watch").tag(ParticipantRole.observer)
+                        Text("Steer").tag(ParticipantRole.steerer)
+                    }
+                    .labelsHidden().pickerStyle(.menu).fixedSize()
+                    Button(creating ? "…" : "Create") {
+                        creating = true
+                        Task {
+                            await model.createInvite(label: inviteLabel, role: inviteRole, ttlHours: 24)
+                            inviteLabel = ""
+                            creating = false
+                        }
+                    }
+                    .buttonStyle(.bordered).disabled(creating)
+                }
+                Text("Links expire after 24 hours. An invite can never grant ownership.")
+                    .font(.caption).foregroundStyle(palette.mutedForeground)
+            }
+
+            ForEach(model.invites) { inv in
+                HStack(spacing: 8) {
+                    Image(systemName: "link").font(.system(size: 10)).foregroundStyle(palette.mutedForeground)
+                    Text(inv.label?.isEmpty == false ? inv.label! : "Untitled invite")
+                        .font(.system(size: 12)).foregroundStyle(palette.foreground)
+                    Text(ParticipantRole.label(inv.role))
+                        .font(.system(size: 10)).foregroundStyle(palette.mutedForeground)
+                    if inv.redeemed > 0 {
+                        Text("· used \(inv.redeemed)×").font(.system(size: 10))
+                            .foregroundStyle(palette.mutedForeground)
+                    }
+                    Spacer()
+                    Button("Revoke") { Task { await model.revokeInvite(id: inv.id) } }
+                        .buttonStyle(.plain).font(.system(size: 11))
+                        .foregroundStyle(palette.destructive)
+                }
+            }
+        }
+        .task(id: model.sharingEnabled) { await model.loadInvites() }
+    }
+
+    private func copyToPasteboard(_ s: String) {
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(s, forType: .string)
+        #else
+        UIPasteboard.general.string = s
+        #endif
     }
 
     private var rulesNote: some View {

@@ -1666,6 +1666,34 @@ public final class Model: ObservableObject {
         _ = try? await request(MessageType.clientIdentify, payload: ClientIdentify(name: identity))
     }
 
+    /// Outstanding share invites (owner-only).
+    @Published public var invites: [Invite] = []
+    /// The most recently minted invite link. Shown once, then cleared — the daemon never returns a
+    /// secret again, so this is the only moment it can be copied.
+    @Published public var freshInviteURL: String? = nil
+
+    public func loadInvites() async {
+        guard client != nil else { return }
+        if let env = try? await request(MessageType.inviteList, payload: Optional<Int>.none),
+           let l = try? env.payload(as: InviteList.self) { invites = l.invites }
+    }
+
+    public func createInvite(label: String, role: String, ttlHours: Int) async {
+        guard client != nil else { return }
+        if let env = try? await request(MessageType.inviteCreate,
+                                        payload: InviteCreate(label: label, role: role, ttlHours: ttlHours)),
+           let created = try? env.payload(as: InviteCreated.self) {
+            freshInviteURL = created.url
+            await loadInvites()
+        }
+    }
+
+    public func revokeInvite(id: String) async {
+        guard client != nil else { return }
+        if let env = try? await request(MessageType.inviteRevoke, payload: InviteRef(id: id)),
+           let l = try? env.payload(as: InviteList.self) { invites = l.invites }
+    }
+
     /// Who else is connected, and what they may do. Empty until the daemon reports it.
     @Published public var participants: [Participant] = []
     /// Whether multi-user enforcement is on. Off (the default) means everyone is the owner.

@@ -654,8 +654,17 @@ func (m *managedSession) run() {
 		if ev.Type == protocol.TypeSessionTodos {
 			if t, ok := ev.Payload.(protocol.SessionTodos); ok {
 				m.mu.Lock()
+				changed := todosChanged(m.latestTodos, t.Todos)
 				m.latestTodos = t.Todos
 				m.mu.Unlock()
+				// PROJECTION: the daemon already has the structured list, so it builds the checklist
+				// itself rather than waiting for a model to volunteer an iron:ui block. Only on a real
+				// change — a harness that re-sends an identical list shouldn't redraw the card.
+				if changed && t.SessionID == m.sess.ID() {
+					if comp, ok := genui.ProjectTodos(m.sess.ID(), t.Todos); ok {
+						m.emitUIComponents(m.sess.ID(), []protocol.UIComponent{comp})
+					}
+				}
 			}
 		}
 		if ev.Type == protocol.TypeOutputDelta || ev.Type == protocol.TypeThinking {
@@ -808,4 +817,18 @@ func (m *managedSession) broadcastUserEcho(text, author string) {
 // than arriving from a provider's event stream, so they need their own encoder).
 func encodeApprovalRequest(ar protocol.ApprovalRequest) ([]byte, error) {
 	return (agent.Event{Type: protocol.TypeApprovalRequest, Payload: ar}).Encode()
+}
+
+// todosChanged reports whether a to-do list differs from the previous one. Harnesses re-send the
+// full list on every update, including when nothing actually moved.
+func todosChanged(prev, next []protocol.Todo) bool {
+	if len(prev) != len(next) {
+		return true
+	}
+	for i := range next {
+		if prev[i].Content != next[i].Content || prev[i].Status != next[i].Status {
+			return true
+		}
+	}
+	return false
 }
