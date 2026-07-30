@@ -139,6 +139,12 @@ const (
 	TypeNotifyPrefsSet   = "notify.prefs.set"  // enable/disable one push-notification type
 
 	TypeFanoutSummary        = "fanout.summary"         // per-variant results once every agent in a group finishes
+	TypeMCPList              = "mcp.list"               // registered MCP servers + last probe status
+	TypeMCPUpsert            = "mcp.upsert"             // add/replace an MCP server
+	TypeMCPDelete            = "mcp.delete"             // remove an MCP server
+	TypeMCPEnable            = "mcp.enable"             // enable/disable one server
+	TypeMCPCheck             = "mcp.check"              // connect to a server and list its tools
+	TypeMCPChanged           = "mcp.changed"            // broadcast: the server set or a status changed
 	TypeApprovalRulesList    = "approval.rules.list"    // the persisted "always allow/deny" rules
 	TypeApprovalRuleDelete   = "approval.rules.delete"  // drop one rule by index
 	TypeApprovalRulesChanged = "approval.rules.changed" // broadcast: the rule set changed (any device)
@@ -1690,4 +1696,58 @@ type FanoutSummary struct {
 	Group   string                `json:"group"`
 	Prompt  string                `json:"prompt,omitempty"`
 	Results []FanoutVariantResult `json:"results"`
+}
+
+// MCPTool is one tool an MCP server advertises.
+type MCPTool struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+// MCPServerInfo is one registered MCP server plus what we last learned by talking to it.
+type MCPServerInfo struct {
+	Name      string            `json:"name"`
+	Transport string            `json:"transport"` // stdio | http
+	Command   string            `json:"command,omitempty"`
+	Args      []string          `json:"args,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
+	URL       string            `json:"url,omitempty"`
+	Enabled   bool              `json:"enabled"`
+	ProjectID string            `json:"project_id,omitempty"`
+	// Live status from the last probe.
+	OK              bool      `json:"ok"`
+	Error           string    `json:"error,omitempty"`
+	ProtocolVersion string    `json:"protocol_version,omitempty"`
+	ServerVersion   string    `json:"server_version,omitempty"`
+	Tools           []MCPTool `json:"tools,omitempty"`
+	CheckedAt       int64     `json:"checked_at,omitempty"`
+}
+
+// MCPList is the full registry (mcp.list / mcp.changed).
+type MCPList struct {
+	Servers []MCPServerInfo `json:"servers"`
+}
+
+// MCPUpsert adds or replaces a server definition.
+type MCPUpsert struct {
+	Name      string            `json:"name"`
+	Transport string            `json:"transport,omitempty"`
+	Command   string            `json:"command,omitempty"`
+	Args      []string          `json:"args,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
+	URL       string            `json:"url,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	Cwd       string            `json:"cwd,omitempty"`
+	ProjectID string            `json:"project_id,omitempty"`
+}
+
+// MCPRef names one server.
+type MCPRef struct {
+	Name string `json:"name"`
+}
+
+// MCPEnable toggles one server.
+type MCPEnable struct {
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
 }

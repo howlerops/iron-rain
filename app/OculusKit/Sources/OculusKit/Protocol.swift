@@ -61,6 +61,12 @@ public enum MessageType {
     public static let approvalRulesChanged = "approval.rules.changed"
     public static let sessionModeSet = "session.mode.set"
     public static let fanoutSummary = "fanout.summary"
+    public static let mcpList = "mcp.list"
+    public static let mcpUpsert = "mcp.upsert"
+    public static let mcpDelete = "mcp.delete"
+    public static let mcpEnable = "mcp.enable"
+    public static let mcpCheck = "mcp.check"
+    public static let mcpChanged = "mcp.changed"
     public static let turnState = "turn.state"
     public static let checkpointCreate = "checkpoint.create"
     public static let checkpointList = "checkpoint.list"
@@ -1926,4 +1932,78 @@ public struct FanoutSummary: Codable, Equatable, Identifiable {
         results = try c.decodeIfPresent([FanoutVariantResult].self, forKey: .results) ?? []
     }
     enum CodingKeys: String, CodingKey { case group, prompt, results }
+}
+
+/// One tool an MCP server advertises.
+public struct MCPTool: Codable, Equatable, Identifiable {
+    public var name: String
+    public var description: String?
+    public var id: String { name }
+}
+
+/// A registered MCP server plus what the daemon last learned by talking to it.
+public struct MCPServerInfo: Codable, Equatable, Identifiable {
+    public var name: String
+    public var transport: String
+    public var command: String?
+    public var args: [String]?
+    /// Credential VALUES are redacted by the daemon; keys are shown so you can see what's set.
+    public var env: [String: String]?
+    public var url: String?
+    public var enabled: Bool
+    public var projectID: String?
+    public var ok: Bool
+    public var error: String?
+    public var protocolVersion: String?
+    public var serverVersion: String?
+    public var tools: [MCPTool]?
+    public var checkedAt: Int?
+    public var id: String { name }
+    enum CodingKeys: String, CodingKey {
+        case name, transport, command, args, env, url, enabled, ok, error, tools
+        case projectID = "project_id"
+        case protocolVersion = "protocol_version"
+        case serverVersion = "server_version"
+        case checkedAt = "checked_at"
+    }
+}
+
+public struct MCPList: Codable, Equatable {
+    public var servers: [MCPServerInfo]
+    public init(servers: [MCPServerInfo] = []) { self.servers = servers }
+    public init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        servers = try c.decodeIfPresent([MCPServerInfo].self, forKey: .servers) ?? []
+    }
+    enum CodingKeys: String, CodingKey { case servers }
+}
+
+public struct MCPUpsert: Codable {
+    public var name: String
+    public var transport: String?
+    public var command: String?
+    public var args: [String]?
+    public var env: [String: String]?
+    public var url: String?
+    public var projectID: String?
+    public init(name: String, transport: String? = nil, command: String? = nil, args: [String]? = nil,
+                env: [String: String]? = nil, url: String? = nil, projectID: String? = nil) {
+        self.name = name; self.transport = transport; self.command = command
+        self.args = args; self.env = env; self.url = url; self.projectID = projectID
+    }
+    enum CodingKeys: String, CodingKey {
+        case name, transport, command, args, env, url
+        case projectID = "project_id"
+    }
+}
+
+public struct MCPRef: Codable {
+    public var name: String
+    public init(name: String) { self.name = name }
+}
+
+public struct MCPEnable: Codable {
+    public var name: String
+    public var enabled: Bool
+    public init(name: String, enabled: Bool) { self.name = name; self.enabled = enabled }
 }

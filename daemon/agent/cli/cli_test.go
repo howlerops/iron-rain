@@ -12,13 +12,13 @@ import (
 
 func TestSubstitute(t *testing.T) {
 	// {prompt} + {cwd} + {model} expand in place.
-	got := substitute([]string{"--model", "{model}", "--cwd", "{cwd}", "{prompt}"}, "fix the bug", "/repo", "gpt-5")
+	got := substitute([]string{"--model", "{model}", "--cwd", "{cwd}", "{prompt}"}, "fix the bug", "/repo", "gpt-5", "")
 	want := []string{"--model", "gpt-5", "--cwd", "/repo", "fix the bug"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Errorf("substitute = %v, want %v", got, want)
 	}
 	// No {prompt} token → prompt appended as the last arg.
-	got = substitute([]string{"exec"}, "hello", "/repo", "")
+	got = substitute([]string{"exec"}, "hello", "/repo", "", "")
 	if len(got) != 2 || got[1] != "hello" {
 		t.Errorf("substitute (append) = %v, want [exec hello]", got)
 	}
@@ -222,5 +222,20 @@ func TestSaveCreatesParentDir(t *testing.T) {
 	got, err := Load(path)
 	if err != nil || len(got) != 1 || got[0].Name != "codex" {
 		t.Fatalf("round-trip failed: %v %+v", err, got)
+	}
+}
+
+// TestSubstituteMCPConfig: {mcp_config} expands to the daemon-written server file, which is how a
+// BYO CLI agent gets the same MCP servers as the native harnesses with no adapter code.
+func TestSubstituteMCPConfig(t *testing.T) {
+	got := substitute([]string{"--mcp-config", "{mcp_config}", "{prompt}"}, "hi", "/repo", "", "/tmp/mcp.json")
+	want := []string{"--mcp-config", "/tmp/mcp.json", "hi"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("substitute = %v, want %v", got, want)
+	}
+	// With no MCP servers configured the token expands to empty rather than leaking the literal.
+	got = substitute([]string{"--mcp-config", "{mcp_config}", "{prompt}"}, "hi", "/repo", "", "")
+	if strings.Contains(strings.Join(got, "|"), "{mcp_config}") {
+		t.Errorf("unexpanded token leaked into argv: %v", got)
 	}
 }

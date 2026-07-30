@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/howlerops/oculus/daemon/agent"
+	"github.com/howlerops/oculus/daemon/mcp"
 	"github.com/howlerops/oculus/daemon/osctitle"
 	"github.com/howlerops/oculus/daemon/procutil"
 	"github.com/howlerops/oculus/daemon/protocol"
@@ -70,7 +71,7 @@ func (p *Provider) Models(context.Context) ([]protocol.ModelInfo, error) {
 	return out, nil
 }
 
-func (p *Provider) Create(_ context.Context, cwd, prompt string) (agent.Session, error) {
+func (p *Provider) Create(ctx context.Context, cwd, prompt string) (agent.Session, error) {
 	if p.cfg.Command == "" {
 		return nil, fmt.Errorf("cli agent %q: no command configured", p.cfg.Name)
 	}
@@ -83,15 +84,22 @@ func (p *Provider) Create(_ context.Context, cwd, prompt string) (agent.Session,
 	if p.accountEnv != nil {
 		acctEnv = p.accountEnv()
 	}
+	// Daemon-owned MCP servers, written once for this session and substituted for {mcp_config} in
+	// the agent's arg template (e.g. "--mcp-config", "{mcp_config}").
+	mcpPath := ""
+	if cfg, ok := mcp.FromContext(ctx); ok {
+		mcpPath = cfg.CLIFile()
+	}
 	s := &session{
-		id:      p.cfg.Name + "_" + randID(),
-		cfg:     p.cfg,
-		cwd:     cwd,
-		model:   p.cfg.Model,
-		acctEnv: acctEnv,
-		events:  make(chan agent.Event, 64),
-		out:     make(chan agent.Event, 64),
-		done:    make(chan struct{}),
+		id:            p.cfg.Name + "_" + randID(),
+		cfg:           p.cfg,
+		cwd:           cwd,
+		model:         p.cfg.Model,
+		acctEnv:       acctEnv,
+		mcpConfigPath: mcpPath,
+		events:        make(chan agent.Event, 64),
+		out:           make(chan agent.Event, 64),
+		done:          make(chan struct{}),
 	}
 	go s.pump()
 	if strings.TrimSpace(prompt) != "" {
@@ -108,8 +116,8 @@ type session struct {
 	out    chan agent.Event // internal; turn goroutines feed the pump
 	done   chan struct{}
 
-	acctEnv map[string]string // active account's env overrides, snapshotted at create
-	ratedThisTurn bool        // a rate-limit was already surfaced this turn (dedupe)
+	acctEnv       map[string]string // active account's env overrides, snapshotted at create
+	ratedThisTurn bool              // a rate-limit was already surfaced this turn (dedupe)
 
 	mu        sync.Mutex
 	running   bool
@@ -117,6 +125,9 @@ type session struct {
 	cancel    context.CancelFunc // cancels the in-flight turn (Stop)
 	closeOnce sync.Once
 	model     string // selected model, substituted for {model} in Args (guarded by mu)
+	// mcpConfigPath is a temp file holding the daemon's MCP servers, substituted for {mcp_config}.
+	// Written once at create and reused for every turn, so an agent's own MCP state stays stable.
+	mcpConfigPath string
 }
 
 func (s *session) ID() string                 { return s.id }
@@ -179,10 +190,11 @@ func (s *session) startTurn(text string) {
 	s.turns++
 	s.running = true
 	model := s.model
+	mcpPath := s.mcpConfigPath
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancel = cancel
 	s.mu.Unlock()
-	go s.runTurn(ctx, substitute(tmpl, text, s.cwd, model))
+	go s.runTurn(ctx, substitute(tmpl, text, s.cwd, model, mcpPath))
 }
 
 func (s *session) runTurn(ctx context.Context, argv []string) {
@@ -313,14 +325,19 @@ func (s *session) Close() error {
 		if s.cancel != nil {
 			s.cancel()
 		}
+		path := s.mcpConfigPath
+		s.mcpConfigPath = ""
 		s.mu.Unlock()
+		if path != "" {
+			_ = os.Remove(path) // the MCP config may hold credentials — don't leave it in /tmp
+		}
 	})
 	return nil
 }
 
 // substitute expands {prompt}/{cwd} in the arg template. If no arg contains {prompt}, the prompt is
 // appended as the final argument (so a bare command like `["exec"]` still receives it).
-func substitute(tmpl []string, prompt, cwd, model string) []string {
+func substitute(tmpl []string, prompt, cwd, model, mcpConfig string) []string {
 	out := make([]string, 0, len(tmpl)+1)
 	sawPrompt := false
 	for _, a := range tmpl {
@@ -330,6 +347,9 @@ func substitute(tmpl []string, prompt, cwd, model string) []string {
 		a = strings.ReplaceAll(a, "{prompt}", prompt)
 		a = strings.ReplaceAll(a, "{cwd}", cwd)
 		a = strings.ReplaceAll(a, "{model}", model)
+		// {mcp_config} expands to a file holding the daemon's MCP servers, so ANY agent that accepts
+		// a --mcp-config-style flag gets the same servers as the native harnesses, with no adapter.
+		a = strings.ReplaceAll(a, "{mcp_config}", mcpConfig)
 		out = append(out, a)
 	}
 	if !sawPrompt {

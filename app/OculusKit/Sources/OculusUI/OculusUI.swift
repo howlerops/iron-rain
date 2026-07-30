@@ -1639,6 +1639,48 @@ public final class Model: ObservableObject {
         }
     }
 
+    /// MCP servers registered with the daemon (Settings → MCP servers). Kept live by mcp.changed.
+    @Published public var mcpServers: [MCPServerInfo] = []
+
+    public func loadMCPServers() async {
+        guard client != nil else { return }
+        if let env = try? await request(MessageType.mcpList, payload: Optional<Int>.none),
+           let list = try? env.payload(as: MCPList.self) {
+            mcpServers = list.servers
+        }
+    }
+
+    public func upsertMCPServer(_ server: MCPUpsert) async -> String? {
+        guard client != nil else { return "Not connected." }
+        do {
+            let env = try await request(MessageType.mcpUpsert, payload: server)
+            if let list = try? env.payload(as: MCPList.self) { mcpServers = list.servers }
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    public func deleteMCPServer(name: String) async {
+        guard client != nil else { return }
+        if let env = try? await request(MessageType.mcpDelete, payload: MCPRef(name: name)),
+           let list = try? env.payload(as: MCPList.self) { mcpServers = list.servers }
+    }
+
+    public func setMCPServerEnabled(name: String, enabled: Bool) async {
+        guard client != nil else { return }
+        if let i = mcpServers.firstIndex(where: { $0.name == name }) { mcpServers[i].enabled = enabled }
+        if let env = try? await request(MessageType.mcpEnable, payload: MCPEnable(name: name, enabled: enabled)),
+           let list = try? env.payload(as: MCPList.self) { mcpServers = list.servers }
+    }
+
+    /// Connects to the server and lists its tools — the honest "does this actually work" check.
+    public func checkMCPServer(name: String) async {
+        guard client != nil else { return }
+        if let env = try? await request(MessageType.mcpCheck, payload: MCPRef(name: name)),
+           let list = try? env.payload(as: MCPList.self) { mcpServers = list.servers }
+    }
+
     /// The finished fan-out comparison, if one arrived. Set by the daemon's fanout.summary broadcast;
     /// presenting it is the host view's job. Cleared when the group is resolved.
     @Published public var fanoutSummary: FanoutSummary? = nil
@@ -2851,6 +2893,8 @@ public final class Model: ObservableObject {
                     if let ll = try? env.payload(as: LoopList.self) { loops = ll.loops; loopRuns = ll.runs }
                 case MessageType.providerList: // pushed after a custom agent is added/removed
                     if let pl = try? env.payload(as: ProviderList.self) { applyProviders(pl.providers); providersLoaded = true }
+                case MessageType.mcpChanged: // a server was added/removed/toggled, or a probe finished
+                    if let list = try? env.payload(as: MCPList.self) { mcpServers = list.servers }
                 case MessageType.fanoutSummary: // every variant in a fan-out group finished
                     if let sum = try? env.payload(as: FanoutSummary.self) { fanoutSummary = sum }
                 case MessageType.approvalRulesChanged: // an Always answer or a revoke, on ANY device

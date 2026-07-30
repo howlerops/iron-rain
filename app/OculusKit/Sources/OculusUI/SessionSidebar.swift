@@ -99,6 +99,7 @@ struct SessionSidebar: View {
     var onOpenLoops: (() -> Void)? = nil
     var onOpenAgents: (() -> Void)? = nil
     var onOpenApprovalRules: (() -> Void)? = nil
+    var onOpenMCP: (() -> Void)? = nil
     var onOpenAccounts: (() -> Void)? = nil
     var onOpenRemotes: (() -> Void)? = nil
     var onManageSessions: (() -> Void)? = nil
@@ -347,6 +348,9 @@ struct SessionSidebar: View {
                 }
                 if let onOpenAgents {
                     Button { onOpenAgents() } label: { Label("Agents…", systemImage: "cpu") }
+                }
+                if let onOpenMCP {
+                    Button { onOpenMCP() } label: { Label("MCP servers…", systemImage: "puzzlepiece.extension") }
                 }
                 if let onOpenApprovalRules {
                     Button { onOpenApprovalRules() } label: { Label("Approval rules…", systemImage: "checkmark.shield") }

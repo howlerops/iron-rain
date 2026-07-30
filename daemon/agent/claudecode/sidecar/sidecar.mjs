@@ -159,6 +159,17 @@ const options = {
   canUseTool,
 };
 if (process.env.OCULUS_MODEL) options.model = process.env.OCULUS_MODEL; // create-time model
+// MCP servers registered once with the daemon and injected here, so the user configures a server in
+// ONE place instead of separately per harness. Malformed JSON is ignored rather than fatal: losing
+// MCP tools is far better than failing to start the session at all.
+if (process.env.OCULUS_MCP_CONFIG) {
+  try {
+    const servers = JSON.parse(process.env.OCULUS_MCP_CONFIG);
+    if (servers && typeof servers === "object" && Object.keys(servers).length) options.mcpServers = servers;
+  } catch (e) {
+    send({ t: "error", message: "ignoring malformed MCP config: " + (e?.message || e) });
+  }
+}
 if (mode === "attach" && sessionLabel) {
   // Take-over = resume the session's full history but FORK it into a fresh id. Claude Code
   // has no live multi-client attach for plain sessions, and two writers on one session id

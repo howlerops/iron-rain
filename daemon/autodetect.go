@@ -41,7 +41,7 @@ func enableProviders(ctx context.Context, h *hub.Hub, opencodeURL, claudeSidecar
 	var enabled []string
 
 	if opencodeURL == "" {
-		opencodeURL = detectOrStartOpenCode(ctx)
+		opencodeURL = detectOrStartOpenCode(ctx, h)
 	}
 	if opencodeURL != "" {
 		h.Register(opencode.New(opencodeURL))
@@ -90,7 +90,7 @@ func enableProviders(ctx context.Context, h *hub.Hub, opencodeURL, claudeSidecar
 // sessions (a session created on server A vanishes when the daemon later reconnects to server B).
 // Priority: (1) our OWN server from a previous run (remembered port, still alive) → sticky reconnect;
 // (2) start a fresh dedicated server; (3) LAST RESORT, a discovered running server (may be the user's).
-func detectOrStartOpenCode(ctx context.Context) string {
+func detectOrStartOpenCode(ctx context.Context, h *hub.Hub) string {
 	// (1) Reconnect to the server WE started last time, if it's still up — same server ⇒ our sessions
 	// are still there, and we never drift onto the user's opencode.
 	if url := rememberedOpenCodeURL(); url != "" && waitOpenCodeReady(url, 1*time.Second) {
@@ -99,7 +99,7 @@ func detectOrStartOpenCode(ctx context.Context) string {
 	}
 	// (2) Start our OWN dedicated server.
 	if bin, err := exec.LookPath("opencode"); err == nil {
-		if url := startManagedOpenCode(bin); url != "" {
+		if url := startManagedOpenCode(bin, h.OpenCodeMCPConfig()); url != "" {
 			return url
 		}
 	} else {
@@ -118,7 +118,7 @@ func detectOrStartOpenCode(ctx context.Context) string {
 
 // startManagedOpenCode launches a dedicated `opencode serve` (sanitized env), waits for it to become
 // ready, and remembers its port so a later daemon run reconnects to it. Returns "" on failure.
-func startManagedOpenCode(bin string) string {
+func startManagedOpenCode(bin, mcpConfig string) string {
 	port := freePort()
 	if port == 0 {
 		log.Printf("opencode: couldn't allocate a local port")
@@ -133,13 +133,23 @@ func startManagedOpenCode(bin string) string {
 	// for the merge message), `git commit`, a pager, or a credential prompt would otherwise block on
 	// stdin FOREVER — wedging the whole opencode turn (and every queued prompt behind it) for hours.
 	cmd.Env = append(os.Environ(),
-		"GIT_EDITOR=true",       // git "opens" /usr/bin/true → succeeds instantly, no editor wait
-		"EDITOR=true",           // generic editor fallback
+		"GIT_EDITOR=true", // git "opens" /usr/bin/true → succeeds instantly, no editor wait
+		"EDITOR=true",     // generic editor fallback
 		"VISUAL=true",
-		"GIT_PAGER=cat",         // no interactive pager
+		"GIT_PAGER=cat", // no interactive pager
 		"PAGER=cat",
 		"GIT_TERMINAL_PROMPT=0", // git fails fast instead of prompting for credentials
 	)
+	// Daemon-owned MCP servers. OPENCODE_CONFIG_CONTENT MERGES with the user's own opencode.json
+	// rather than replacing it, so this adds our servers without disturbing their setup.
+	//
+	// Only ever set on a server WE started (this function). Path (3) in detectOrStartOpenCode falls
+	// back to the user's OWN running opencode — injecting there would leak Iron Rain's servers, and
+	// its credentials, into their personal tool.
+	if mcpConfig != "" {
+		cmd.Env = append(cmd.Env, "OPENCODE_CONFIG_CONTENT="+mcpConfig)
+		log.Printf("opencode: injecting %d daemon-managed MCP server(s)", strings.Count(mcpConfig, "\"type\""))
+	}
 	procutil.Isolate(cmd) // opencode serve spawns tool subprocesses — own the whole group
 	if err := cmd.Start(); err != nil {
 		log.Printf("opencode: failed to start %s: %v", bin, err)

@@ -41,6 +41,7 @@ import (
 	"github.com/howlerops/oculus/daemon/hub"
 	"github.com/howlerops/oculus/daemon/issues"
 	"github.com/howlerops/oculus/daemon/loghub"
+	"github.com/howlerops/oculus/daemon/mcp"
 	"github.com/howlerops/oculus/daemon/project"
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/push"
@@ -194,6 +195,9 @@ func serve(args []string) error {
 	h.SetAgentsPath(agentsPath(), agentPrefsPath()) // custom CLI agents + picker visibility
 	h.SetNotifyPrefsPath(notifyPrefsPath())         // per-category push-notification toggles
 	h.SetApprovalRulesPath(approvalRulesPath())     // persistent "Always allow" (asked once, ever)
+	// Daemon-owned MCP host: servers are registered ONCE here and injected into every harness, instead
+	// of the user configuring the same server separately for each agent.
+	h.SetMCPRegistry(mcp.NewRegistry(mcpRegistryPath()))
 	if len(issuesMgr.Connected()) > 0 {
 		go func() { _ = issuesMgr.Refresh(context.Background()) }() // initial fetch
 	}
@@ -585,6 +589,15 @@ func projectsPath() string {
 		return "oculus-projects.json"
 	}
 	return filepath.Join(home, ".oculus", "projects.json")
+}
+
+// mcpRegistryPath is where MCP server definitions live (0600 — Env/Headers hold credentials).
+func mcpRegistryPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "oculus-mcp.json"
+	}
+	return filepath.Join(home, ".oculus", "mcp.json")
 }
 
 func approvalRulesPath() string {

@@ -29,6 +29,7 @@ import (
 	"github.com/howlerops/oculus/daemon/loghub"
 	"github.com/howlerops/oculus/daemon/loops"
 	"github.com/howlerops/oculus/daemon/lsp"
+	"github.com/howlerops/oculus/daemon/mcp"
 	"github.com/howlerops/oculus/daemon/project"
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/push"
@@ -86,6 +87,8 @@ type Hub struct {
 	notifyPrefsPath   string                         // path to ~/.oculus/notify.json (per-category push toggles)
 	notifyOff         map[string]bool                // push categories the user turned OFF (absent = enabled)
 	fanoutNotified    map[string]bool                // fan-out groups already notified as "all done" (fire once)
+
+	mcp *mcp.Registry // daemon-owned MCP server registry (nil = MCP not enabled)
 
 	// agentsFileMu serializes the load→mutate→save cycle on ~/.oculus/agents.json. agent.upsert and
 	// agent.delete are both in the async-dispatch allowlist, so without this two concurrent edits
@@ -315,6 +318,11 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 	pc0 := time.Now()
 	var sess agent.Session
 	var err error
+	// Attach the daemon's MCP servers for this project so every harness spawns with the same tools.
+	// It rides the context because providers are global while MCP scoping is per-session.
+	if servers := h.mcpServersForSession(req.ProjectID); len(servers) > 0 {
+		ctx = mcp.WithConfig(ctx, mcp.Config{Servers: servers})
+	}
 	if planStart {
 		if pc, ok := p.(agent.PlanCreator); ok {
 			sess, err = pc.CreatePlan(ctx, cwd, createPrompt)
@@ -2186,6 +2194,10 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.setSessionMode(ctx, m, req.Mode)
 		h.sendOK(conn, env.ID, nil)
 		h.broadcastSessionList() // the mode chip is part of the session row
+
+	case protocol.TypeMCPList, protocol.TypeMCPUpsert, protocol.TypeMCPDelete,
+		protocol.TypeMCPEnable, protocol.TypeMCPCheck:
+		h.handleMCP(ctx, conn, env)
 
 	case protocol.TypeApprovalRulesList:
 		h.sendOK(conn, env.ID, h.approvalRulesList())

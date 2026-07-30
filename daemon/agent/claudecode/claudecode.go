@@ -37,6 +37,7 @@ import (
 
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/discovery"
+	"github.com/howlerops/oculus/daemon/mcp"
 	"github.com/howlerops/oculus/daemon/procutil"
 	"github.com/howlerops/oculus/daemon/protocol"
 )
@@ -266,6 +267,13 @@ func (p *Provider) start(ctx context.Context, cwd, id, mode, prompt string, plan
 		cmd.Dir = cwd
 	}
 	cmd.Env = append(os.Environ(), "OCULUS_SESSION_ID="+id, "OCULUS_MODE="+mode)
+	// Daemon-owned MCP servers, rendered into the Agent SDK's mcpServers shape. Passed by env rather
+	// than a file so credentials never touch disk in a location the user's other tools can read.
+	if cfg, ok := mcp.FromContext(ctx); ok {
+		if js := cfg.Claude(); js != "" {
+			cmd.Env = append(cmd.Env, "OCULUS_MCP_CONFIG="+js)
+		}
+	}
 	if plan {
 		cmd.Env = append(cmd.Env, "OCULUS_PLAN=1")
 	}
