@@ -2037,6 +2037,25 @@ type hubClient struct {
 	ch   chan []byte
 	done chan struct{}
 	once sync.Once
+
+	// nameMu guards name, which a client sets once via client.identify. It is the ATTRIBUTION for
+	// everything this connection does — whose phone or Mac sent a prompt. With several devices (or,
+	// later, several people) on one session, an unattributed transcript is genuinely confusing:
+	// you cannot tell your own message from someone else's.
+	nameMu sync.Mutex
+	name   string
+}
+
+func (c *hubClient) setName(n string) {
+	c.nameMu.Lock()
+	c.name = n
+	c.nameMu.Unlock()
+}
+
+func (c *hubClient) displayName() string {
+	c.nameMu.Lock()
+	defer c.nameMu.Unlock()
+	return c.name
 }
 
 func (c *hubClient) close() { c.once.Do(func() { close(c.done) }) }
@@ -3386,9 +3405,15 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		// WRITE-AHEAD: durably record the user's prompt BEFORE sending it. If the send silently
 		// fails (wrong directory → opencode 2xx-no-op, provider outage), the text is already on disk
 		// and recoverable — it can never vaporize the way it did in the 6-hour-loss incident.
-		_ = h.tr().Append(req.SessionID, transcript.Entry{Kind: "user", Text: text})
+		author := h.clientName(conn)
+		_ = h.tr().Append(req.SessionID, transcript.Entry{Kind: "user", Text: text, Author: author})
 		m.openTurn("") // Turn Engine: a turn is now in flight (heartbeats + reconciler start)
-		log.Printf("session %s (%s): prompt received (%d chars)", req.SessionID, m.sess.Provider(), len(text))
+		// Echo the prompt back to EVERY subscriber attributed to its sender. Without this a second
+		// device shows the message with no indication of who sent it.
+		if author != "" {
+			m.broadcastUserEcho(text, author)
+		}
+		log.Printf("session %s (%s): prompt received (%d chars) from %s", req.SessionID, m.sess.Provider(), len(text), authorOrLocal(author))
 		if err := promptSession(ctx, m.sess, text, req.Images); err != nil {
 			log.Printf("session %s: prompt send FAILED: %v", req.SessionID, err)
 			if t := h.tel(); t != nil {
@@ -3567,6 +3592,23 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		}
 		h.autoRegisterProjects(items) // auto-create projects from active agents' cwds
 		h.sendOK(conn, env.ID, protocol.DiscoverList{Items: items})
+
+	case protocol.TypeClientIdentify:
+		var req protocol.ClientIdentify
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad client.identify")
+			return
+		}
+		name := strings.TrimSpace(req.Name)
+		if len(name) > 60 {
+			name = name[:60]
+		}
+		h.mu.Lock()
+		if c := h.clients[conn]; c != nil {
+			c.setName(name)
+		}
+		h.mu.Unlock()
+		h.sendOK(conn, env.ID, nil)
 
 	case protocol.TypeDeviceRegister:
 		var req protocol.DeviceRegister
@@ -4076,4 +4118,23 @@ func (h *Hub) sendEvent(conn *transport.Conn, typ string, payload any) {
 	if raw, err := protocol.Encode("", typ, payload); err == nil {
 		_ = conn.Send(raw)
 	}
+}
+
+// clientName returns the human name a connection declared via client.identify ("" if it never did).
+func (h *Hub) clientName(conn *transport.Conn) string {
+	h.mu.Lock()
+	c := h.clients[conn]
+	h.mu.Unlock()
+	if c == nil {
+		return ""
+	}
+	return c.displayName()
+}
+
+// authorOrLocal renders an author for logs.
+func authorOrLocal(author string) string {
+	if author == "" {
+		return "an unidentified client"
+	}
+	return author
 }

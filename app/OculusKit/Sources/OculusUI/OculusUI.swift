@@ -412,6 +412,8 @@ public final class Model: ObservableObject {
     /// Post-connection hydration: load projects/sessions/integrations and replay any pending
     /// notification-driven action. Runs once, after a route wins the race.
     private func finishConnect() async {
+        // Identify FIRST so any prompt sent right after connecting is already attributed.
+        await identifySelf()
         // Note: discovery of terminal-owned sessions is on-demand (the Add Session search),
         // not auto-loaded — the sidebar shows only sessions started/opened in the app.
         await loadProjects()
@@ -1640,6 +1642,25 @@ public final class Model: ObservableObject {
         }
     }
 
+    /// This device's human name, announced to the daemon on connect so prompts can be attributed.
+    /// Defaults to the device name; a message tagged with a DIFFERENT name came from someone else.
+    public var identity: String = Model.defaultIdentity()
+
+    static func defaultIdentity() -> String {
+        #if os(iOS)
+        return UIDevice.current.name
+        #else
+        return Host.current().localizedName ?? "Mac"
+        #endif
+    }
+
+    /// Announces this device to the daemon. Best-effort: an older daemon just errors and we carry on
+    /// unattributed rather than failing the connection.
+    func identifySelf() async {
+        guard client != nil, !identity.isEmpty else { return }
+        _ = try? await request(MessageType.clientIdentify, payload: ClientIdentify(name: identity))
+    }
+
     /// MCP servers registered with the daemon (Settings → MCP servers). Kept live by mcp.changed.
     @Published public var mcpServers: [MCPServerInfo] = []
 
@@ -2718,7 +2739,10 @@ public final class Model: ObservableObject {
                             break
                         }
                         finalizeStreaming()
-                        messages.append(ChatMessage(role: role, text: shown))
+                        // Attribute a user message that came from ANOTHER device. Our own echoes are
+                        // deduped above, so anything reaching here with an author is someone else's.
+                        let author = (role == .user && m.author != identity) ? m.author : nil
+                        messages.append(ChatMessage(role: role, text: shown, author: author))
                     } else if let m = try? env.payload(as: SessionMessage.self), childMessages[m.sessionID] != nil {
                         // A sub-agent's message — route into its own buffer, never the main transcript.
                         // Tool calls arrive as role=="tool" with Text=the tool name; keep them.

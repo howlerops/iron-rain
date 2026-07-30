@@ -22,6 +22,7 @@ type Entry struct {
 	Kind   string `json:"kind"`             // user | assistant | tool | status
 	Text   string `json:"text"`             // prompt text, message text, tool name, or status+detail
 	Detail string `json:"detail,omitempty"` // extra context (e.g. status detail)
+	Author string `json:"author,omitempty"` // who sent a user entry (device/person name); "" = unattributed
 }
 
 // Store appends entries to per-session files. Safe for concurrent use; one mutex per session file so

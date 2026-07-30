@@ -60,6 +60,7 @@ public enum MessageType {
     public static let approvalRuleDelete = "approval.rules.delete"
     public static let approvalRulesChanged = "approval.rules.changed"
     public static let sessionModeSet = "session.mode.set"
+    public static let clientIdentify = "client.identify"
     public static let fanoutSummary = "fanout.summary"
     public static let mcpList = "mcp.list"
     public static let mcpUpsert = "mcp.upsert"
@@ -1677,7 +1678,10 @@ public struct SessionAttach: Codable {
 }
 public struct SessionMessage: Codable {
     public var sessionID: String; public var role: String; public var text: String
-    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case role; case text }
+    /// Who sent a USER message (the device/person name from client.identify). Empty for assistant
+    /// and tool messages, and for anything sent before a client identified itself.
+    public var author: String?
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case role; case text; case author }
 }
 
 public enum DiscoveredKind {
@@ -2008,4 +2012,10 @@ public struct MCPEnable: Codable {
     public var name: String
     public var enabled: Bool
     public init(name: String, enabled: Bool) { self.name = name; self.enabled = enabled }
+}
+
+/// Announces this device's human name so the daemon can attribute prompts to it.
+public struct ClientIdentify: Codable {
+    public var name: String
+    public init(name: String) { self.name = name }
 }

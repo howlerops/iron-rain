@@ -639,6 +639,16 @@ struct MessageRow: View {
         switch message.role {
         case .user:
             VStack(alignment: .trailing, spacing: 3) {
+                // Attribution appears ONLY for a message from another device — labelling your own
+                // messages with your own name is noise in the overwhelmingly common single-user case.
+                if let author = message.author, !author.isEmpty {
+                    HStack(spacing: 4) {
+                        Image(systemName: "person.crop.circle").font(.system(size: 9))
+                        Text(author).font(.system(size: 10, weight: .medium))
+                    }
+                    .foregroundStyle(palette.mutedForeground)
+                    .padding(.trailing, 2)
+                }
                 HStack {
                     Spacer(minLength: 40)
                     Text(message.text)

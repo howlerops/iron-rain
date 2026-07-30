@@ -39,6 +39,7 @@ const (
 	TypeApprovalRespond       = "approval.respond"
 	TypeDiscover              = "discover.list"
 	TypeDeviceRegister        = "device.register"
+	TypeClientIdentify        = "client.identify"   // this client's human name, used to attribute prompts
 	TypeProviderList          = "provider.list"     // agent providers registered on this daemon
 	TypeProviderRefresh       = "provider.refresh"  // re-detect agent harnesses on PATH (rescan) + rebroadcast the list
 	TypeAgentList             = "agent.list"        // full agent roster (native + detected + custom)
@@ -476,9 +477,9 @@ type FanoutCreate struct {
 	Plan       bool     `json:"plan,omitempty"`
 	// Judge asks a fresh agent to recommend a winner once every variant finishes. Advisory only —
 	// it answers with a tappable choice; the manual Keep buttons are unaffected.
-	Judge bool `json:"judge,omitempty"`
-	Count      int      `json:"count"`
-	Models     []string `json:"models,omitempty"`
+	Judge  bool     `json:"judge,omitempty"`
+	Count  int      `json:"count"`
+	Models []string `json:"models,omitempty"`
 }
 
 // FanoutResult reports the spawned group.
@@ -1165,6 +1166,9 @@ type SessionMessage struct {
 	// dedup a message a provider re-streams when its history is replayed on re-attach. Omitted for
 	// providers/paths without a stable id (the transcript then keys such rows by sequence only).
 	MsgID string `json:"msg_id,omitempty"`
+	// Author is the human name of the device/person that sent a USER message (from client.identify).
+	// Empty on assistant/tool messages and on anything sent before a client identified itself.
+	Author string `json:"author,omitempty"`
 }
 
 type SessionPrompt struct {
@@ -1753,4 +1757,11 @@ type MCPRef struct {
 type MCPEnable struct {
 	Name    string `json:"name"`
 	Enabled bool   `json:"enabled"`
+}
+
+// ClientIdentify tells the daemon which device/person this connection is, so prompts, interrupts and
+// approvals can be attributed. Purely descriptive today; it becomes the principal that per-user
+// permissions hang off.
+type ClientIdentify struct {
+	Name string `json:"name"`
 }

@@ -791,3 +791,15 @@ func (m *managedSession) run() {
 		m.hub.detachSession(m.sess.ID(), m)
 	}
 }
+
+// broadcastUserEcho re-emits a user prompt to every subscriber tagged with who sent it, so a second
+// device can tell your message apart from its own. The sending client already rendered it
+// optimistically and dedups this echo by text.
+func (m *managedSession) broadcastUserEcho(text, author string) {
+	ev := agent.Event{Type: protocol.TypeSessionMessage, Payload: protocol.SessionMessage{
+		SessionID: m.sess.ID(), Role: "user", Text: text, Author: author,
+	}}
+	if raw, err := ev.Encode(); err == nil {
+		m.broadcast(raw)
+	}
+}

@@ -36,8 +36,11 @@ public struct ChatMessage: Identifiable, Equatable {
     /// Set only for `.tool` rows sourced from a rich tool event — the invocation + its output,
     /// updated in place by `tool.id` as the tool runs → completes.
     public var tool: ToolCall?
+    /// Set only for `.user` rows that came from ANOTHER device — the sender's name. Nil for your own
+    /// messages, so the common single-device case stays visually clean.
+    public var author: String?
 
-    public init(id: UUID = UUID(), role: Role, text: String, streaming: Bool = false, delivery: Delivery = .ok, component: UIComponent? = nil, subAgentID: String? = nil, tool: ToolCall? = nil) {
+    public init(id: UUID = UUID(), role: Role, text: String, streaming: Bool = false, delivery: Delivery = .ok, component: UIComponent? = nil, subAgentID: String? = nil, tool: ToolCall? = nil, author: String? = nil) {
         self.id = id
         self.role = role
         self.text = text
@@ -46,6 +49,7 @@ public struct ChatMessage: Identifiable, Equatable {
         self.component = component
         self.subAgentID = subAgentID
         self.tool = tool
+        self.author = author
     }
 }
 
