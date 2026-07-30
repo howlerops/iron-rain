@@ -272,6 +272,10 @@ func (p *Provider) start(ctx context.Context, cwd, id, mode, prompt string, plan
 	if cfg, ok := mcp.FromContext(ctx); ok {
 		if js := cfg.Claude(); js != "" {
 			cmd.Env = append(cmd.Env, "OCULUS_MCP_CONFIG="+js)
+			if cfg.Exclusive {
+				// The daemon owns MCP for this session: the harness must not also start its own copies.
+				cmd.Env = append(cmd.Env, "OCULUS_MCP_EXCLUSIVE=1")
+			}
 		}
 	}
 	if plan {

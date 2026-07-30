@@ -26,6 +26,10 @@ func FromContext(ctx context.Context) (Config, bool) {
 // the registry type or each other harness's format.
 type Config struct {
 	Servers []Server
+	// Exclusive tells a harness to use ONLY these servers and ignore its own MCP configuration.
+	// Off by default: enabling it for someone whose servers we haven't imported would silently
+	// remove tools they rely on.
+	Exclusive bool
 }
 
 // Claude returns the Claude Agent SDK mcpServers JSON ("" = nothing to inject).

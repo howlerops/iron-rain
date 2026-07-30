@@ -3,6 +3,8 @@ package hub
 import (
 	"context"
 	"log"
+	"os"
+	"sort"
 	"strings"
 
 	"github.com/howlerops/oculus/daemon/mcp"
@@ -176,6 +178,46 @@ func (h *Hub) handleMCP(ctx context.Context, conn *transport.Conn, env protocol.
 		h.sendOK(conn, env.ID, h.mcpList())
 		h.broadcast(protocol.TypeMCPChanged, h.mcpList())
 
+	case protocol.TypeMCPDiscover:
+		found := h.discoverMCP(h.discoverCwd())
+		out := protocol.MCPDiscovered{Exclusive: h.mcpExclusiveEnabled()}
+		for _, f := range found {
+			e := protocol.MCPFound{
+				Name: f.Server.Name, Transport: f.Server.Transport,
+				Command: f.Server.Command, Args: f.Server.Args, URL: f.Server.URL,
+				Source: f.Source, Path: f.Path,
+			}
+			for k := range f.Server.Env {
+				e.EnvKeys = append(e.EnvKeys, k)
+			}
+			sort.Strings(e.EnvKeys)
+			out.Found = append(out.Found, e)
+		}
+		h.sendOK(conn, env.ID, out)
+
+	case protocol.TypeMCPImport:
+		var in protocol.MCPImport
+		if err := env.Unmarshal(&in); err != nil {
+			h.sendErr(conn, env.ID, "bad mcp.import")
+			return
+		}
+		n := h.importMCP(in.Names)
+		if n == 0 {
+			h.sendErr(conn, env.ID, "nothing was imported — re-scan and try again")
+			return
+		}
+		h.sendOK(conn, env.ID, h.mcpList())
+		h.broadcast(protocol.TypeMCPChanged, h.mcpList())
+
+	case protocol.TypeMCPExclusive:
+		var in protocol.MCPExclusiveSet
+		if err := env.Unmarshal(&in); err != nil {
+			h.sendErr(conn, env.ID, "bad mcp.exclusive")
+			return
+		}
+		h.SetMCPExclusive(in.Enabled)
+		h.sendOK(conn, env.ID, protocol.MCPExclusiveSet{Enabled: in.Enabled})
+
 	case protocol.TypeMCPBrowse:
 		var req protocol.MCPBrowse
 		_ = env.Unmarshal(&req)
@@ -316,4 +358,87 @@ func (h *Hub) revokeMCPToken(sessionID string) {
 	if g := h.mcpGatewayHandle(); g != nil {
 		g.RemoveSessionToken(token)
 	}
+}
+
+// discoverMCP scans the harnesses' own configuration for servers the registry doesn't have. The
+// results are cached so a follow-up import doesn't have to re-read the files (and can't be pointed
+// at a server that wasn't actually offered).
+func (h *Hub) discoverMCP(cwd string) []mcp.Found {
+	r := h.mcpRegistry()
+	if r == nil {
+		return nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	found := mcp.Discover(home, cwd, r.List())
+	h.mu.Lock()
+	h.mcpFound = map[string]mcp.Found{}
+	for _, f := range found {
+		h.mcpFound[f.Server.Name] = f
+	}
+	h.mu.Unlock()
+	return found
+}
+
+// importMCP adopts previously-discovered servers by name. Returns how many were added.
+func (h *Hub) importMCP(names []string) int {
+	r := h.mcpRegistry()
+	if r == nil {
+		return 0
+	}
+	h.mu.Lock()
+	found := h.mcpFound
+	h.mu.Unlock()
+	n := 0
+	for _, name := range names {
+		f, ok := found[name]
+		if !ok {
+			continue // only ever import something a discover actually offered
+		}
+		if err := r.Upsert(f.Server); err != nil {
+			log.Printf("mcp: import of %q failed: %v", name, err)
+			continue
+		}
+		log.Printf("mcp: imported %q from %s", name, f.Source)
+		n++
+	}
+	return n
+}
+
+// SetMCPExclusive records whether the daemon owns MCP for its harnesses.
+func (h *Hub) SetMCPExclusive(on bool) {
+	h.mu.Lock()
+	h.mcpExclusive = on
+	h.mu.Unlock()
+	log.Printf("mcp: exclusive mode %s — harnesses will %s their own MCP config",
+		map[bool]string{true: "ON", false: "off"}[on],
+		map[bool]string{true: "IGNORE", false: "also load"}[on])
+}
+
+func (h *Hub) mcpExclusiveEnabled() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.mcpExclusive
+}
+
+// discoverCwd picks a project directory to scan for project-level harness config. It uses the most
+// recently active session's cwd, which is the project the user is actually looking at.
+func (h *Hub) discoverCwd() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var newest *managedSession
+	for _, m := range h.sessions {
+		if m.meta.cwd == "" {
+			continue
+		}
+		if newest == nil || m.lastActivity.After(newest.lastActivity) {
+			newest = m
+		}
+	}
+	if newest == nil {
+		return ""
+	}
+	return newest.meta.cwd
 }

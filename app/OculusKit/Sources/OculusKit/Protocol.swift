@@ -75,6 +75,9 @@ public enum MessageType {
     public static let mcpCheck = "mcp.check"
     public static let mcpChanged = "mcp.changed"
     public static let mcpBrowse = "mcp.browse"
+    public static let mcpDiscover = "mcp.discover"
+    public static let mcpImport = "mcp.import"
+    public static let mcpExclusive = "mcp.exclusive"
     public static let turnState = "turn.state"
     public static let checkpointCreate = "checkpoint.create"
     public static let checkpointList = "checkpoint.list"
@@ -2157,4 +2160,46 @@ public struct MCPDirectory: Codable, Equatable {
         entries = try c.decodeIfPresent([MCPDirectoryEntry].self, forKey: .entries) ?? []
     }
     enum CodingKeys: String, CodingKey { case entries }
+}
+
+/// A server found in a harness's OWN config, offered for import. Never adopted automatically — a
+/// server definition carries a command that will run with your credentials.
+public struct MCPFound: Codable, Equatable, Identifiable {
+    public var name: String
+    public var transport: String
+    public var command: String?
+    public var args: [String]?
+    public var url: String?
+    public var envKeys: [String]?
+    public var source: String
+    public var path: String?
+    public var id: String { name }
+    enum CodingKeys: String, CodingKey {
+        case name, transport, command, args, url, source, path
+        case envKeys = "env_keys"
+    }
+}
+
+public struct MCPDiscovered: Codable, Equatable {
+    public var found: [MCPFound]
+    public var exclusive: Bool
+    public init(found: [MCPFound] = [], exclusive: Bool = false) {
+        self.found = found; self.exclusive = exclusive
+    }
+    public init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        found = try c.decodeIfPresent([MCPFound].self, forKey: .found) ?? []
+        exclusive = try c.decodeIfPresent(Bool.self, forKey: .exclusive) ?? false
+    }
+    enum CodingKeys: String, CodingKey { case found, exclusive }
+}
+
+public struct MCPImport: Codable {
+    public var names: [String]
+    public init(names: [String]) { self.names = names }
+}
+
+public struct MCPExclusiveSet: Codable {
+    public var enabled: Bool
+    public init(enabled: Bool) { self.enabled = enabled }
 }

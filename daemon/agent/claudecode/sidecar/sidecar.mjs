@@ -165,7 +165,16 @@ if (process.env.OCULUS_MODEL) options.model = process.env.OCULUS_MODEL; // creat
 if (process.env.OCULUS_MCP_CONFIG) {
   try {
     const servers = JSON.parse(process.env.OCULUS_MCP_CONFIG);
-    if (servers && typeof servers === "object" && Object.keys(servers).length) options.mcpServers = servers;
+    if (servers && typeof servers === "object" && Object.keys(servers).length) {
+      options.mcpServers = servers;
+      // EXCLUSIVE mode: ignore .mcp.json, user settings and plugins, so a server the daemon manages
+      // isn't ALSO started by the harness from its own config. Without this the SDK loads both sets:
+      // identical names collide unpredictably, and the same server under two names runs twice — two
+      // processes and two sets of credentials, which is exactly what the daemon's gateway exists to
+      // prevent. Opt-in, because turning it on when the user has servers we didn't import would
+      // silently remove tools they rely on.
+      if (process.env.OCULUS_MCP_EXCLUSIVE === "1") options.strictMcpConfig = true;
+    }
   } catch (e) {
     send({ t: "error", message: "ignoring malformed MCP config: " + (e?.message || e) });
   }

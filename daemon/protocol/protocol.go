@@ -153,6 +153,9 @@ const (
 	TypeMCPCheck             = "mcp.check"              // connect to a server and list its tools
 	TypeMCPChanged           = "mcp.changed"            // broadcast: the server set or a status changed
 	TypeMCPBrowse            = "mcp.browse"             // search the public MCP registry
+	TypeMCPDiscover          = "mcp.discover"           // find servers a harness is already configured with
+	TypeMCPImport            = "mcp.import"             // adopt discovered servers into the daemon registry
+	TypeMCPExclusive         = "mcp.exclusive"          // let the daemon own MCP for its harnesses
 	TypeApprovalRulesList    = "approval.rules.list"    // the persisted "always allow/deny" rules
 	TypeApprovalRuleDelete   = "approval.rules.delete"  // drop one rule by index
 	TypeApprovalRulesChanged = "approval.rules.changed" // broadcast: the rule set changed (any device)
@@ -1856,4 +1859,34 @@ type MCPBrowse struct {
 // MCPDirectory is a page of registry results.
 type MCPDirectory struct {
 	Entries []MCPDirectoryEntry `json:"entries"`
+}
+
+// MCPFound is one server discovered in a harness's OWN configuration, offered for import. Never
+// adopted automatically: a server definition carries a command that runs with the user's
+// credentials, so it gets confirmed rather than silently absorbed.
+type MCPFound struct {
+	Name      string   `json:"name"`
+	Transport string   `json:"transport"`
+	Command   string   `json:"command,omitempty"`
+	Args      []string `json:"args,omitempty"`
+	URL       string   `json:"url,omitempty"`
+	EnvKeys   []string `json:"env_keys,omitempty"`
+	Source    string   `json:"source"`
+	Path      string   `json:"path,omitempty"`
+}
+
+// MCPDiscovered is what a scan of the harnesses turned up, plus whether exclusive mode is on.
+type MCPDiscovered struct {
+	Found     []MCPFound `json:"found"`
+	Exclusive bool       `json:"exclusive"`
+}
+
+// MCPImport adopts the named discovered servers. Names must come from a recent discover.
+type MCPImport struct {
+	Names []string `json:"names"`
+}
+
+// MCPExclusiveSet turns exclusive mode on or off.
+type MCPExclusiveSet struct {
+	Enabled bool `json:"enabled"`
 }

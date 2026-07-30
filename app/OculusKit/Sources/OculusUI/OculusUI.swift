@@ -1731,6 +1731,41 @@ public final class Model: ObservableObject {
     /// MCP servers registered with the daemon (Settings → MCP servers). Kept live by mcp.changed.
     @Published public var mcpServers: [MCPServerInfo] = []
 
+    /// Servers your agents are already configured with, offered for import.
+    @Published public var mcpFound: [MCPFound] = []
+    /// Whether the daemon owns MCP exclusively (harnesses ignore their own config).
+    @Published public var mcpExclusive = false
+
+    /// Scans each harness's own config for servers the daemon doesn't have.
+    public func discoverMCPServers() async {
+        guard client != nil else { return }
+        if let env = try? await request(MessageType.mcpDiscover, payload: Optional<Int>.none),
+           let d = try? env.payload(as: MCPDiscovered.self) {
+            mcpFound = d.found
+            mcpExclusive = d.exclusive
+        }
+    }
+
+    /// Adopts the named discovered servers into the daemon registry.
+    public func importMCPServers(names: [String]) async {
+        guard client != nil, !names.isEmpty else { return }
+        if let env = try? await request(MessageType.mcpImport, payload: MCPImport(names: names)),
+           let list = try? env.payload(as: MCPList.self) {
+            mcpServers = list.servers
+            mcpFound.removeAll { names.contains($0.name) }
+        }
+    }
+
+    /// Turns exclusive mode on/off — whether harnesses ignore their own MCP config.
+    public func setMCPExclusive(_ on: Bool) async {
+        guard client != nil else { return }
+        let previous = mcpExclusive
+        mcpExclusive = on
+        if (try? await request(MessageType.mcpExclusive, payload: MCPExclusiveSet(enabled: on))) == nil {
+            mcpExclusive = previous
+        }
+    }
+
     /// Results from the public MCP registry.
     @Published public var mcpDirectory: [MCPDirectoryEntry] = []
     @Published public var mcpBrowsing = false

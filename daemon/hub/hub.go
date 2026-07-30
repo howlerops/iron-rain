@@ -102,6 +102,8 @@ type Hub struct {
 	mcpToken       string       // machine-wide bearer token for the gateway
 	mcpTokens      *mcpSessionTokens
 	mcpApprovals   map[string]chan string // approvalID -> waiter, for MCP calls blocked on a human
+	mcpFound       map[string]mcp.Found   // last discovery, so an import can only adopt what was offered
+	mcpExclusive   bool                   // daemon owns MCP: harnesses ignore their own config
 
 	// agentsFileMu serializes the load→mutate→save cycle on ~/.oculus/agents.json. agent.upsert and
 	// agent.delete are both in the async-dispatch allowlist, so without this two concurrent edits
@@ -342,7 +344,7 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 		g.AddSessionToken(mcpToken)
 	}
 	if servers := h.mcpServersForSession(req.ProjectID, mcpToken); len(servers) > 0 {
-		ctx = mcp.WithConfig(ctx, mcp.Config{Servers: servers})
+		ctx = mcp.WithConfig(ctx, mcp.Config{Servers: servers, Exclusive: h.mcpExclusiveEnabled()})
 	}
 	if planStart {
 		if pc, ok := p.(agent.PlanCreator); ok {
@@ -2289,7 +2291,8 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.broadcastSessionList() // the mode chip is part of the session row
 
 	case protocol.TypeMCPList, protocol.TypeMCPUpsert, protocol.TypeMCPDelete,
-		protocol.TypeMCPEnable, protocol.TypeMCPCheck, protocol.TypeMCPBrowse:
+		protocol.TypeMCPEnable, protocol.TypeMCPCheck, protocol.TypeMCPBrowse,
+		protocol.TypeMCPDiscover, protocol.TypeMCPImport, protocol.TypeMCPExclusive:
 		h.handleMCP(ctx, conn, env)
 
 	case protocol.TypeApprovalRulesList:

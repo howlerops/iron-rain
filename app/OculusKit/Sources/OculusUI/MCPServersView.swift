@@ -26,11 +26,13 @@ public struct MCPServersView: View {
         VStack(spacing: 0) {
             header
             Divider().overlay(palette.border)
-            if model.mcpServers.isEmpty {
+            if !model.mcpFound.isEmpty { importBanner }
+            if model.mcpServers.isEmpty && model.mcpFound.isEmpty {
                 emptyState
             } else {
                 List {
                     ForEach(model.mcpServers) { row($0) }
+                    if !model.mcpServers.isEmpty { exclusiveRow }
                 }
                 #if os(macOS)
                 .listStyle(.inset)
@@ -39,7 +41,10 @@ public struct MCPServersView: View {
         }
         .frame(minWidth: 520, minHeight: 400)
         .background(palette.background)
-        .task { await model.loadMCPServers() }
+        .task {
+            await model.loadMCPServers()
+            await model.discoverMCPServers()
+        }
         .sheet(isPresented: $adding) {
             MCPServerEditor(model: model, palette: palette, existing: nil, prefill: nil, onClose: { adding = false })
         }
@@ -57,6 +62,65 @@ public struct MCPServersView: View {
         .sheet(item: $editing) { server in
             MCPServerEditor(model: model, palette: palette, existing: server, prefill: nil, onClose: { editing = nil })
         }
+    }
+
+    /// Servers your agents already have. Offered rather than absorbed: each one carries a command
+    /// that will run with your credentials, so it gets a look first.
+    private var importBanner: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.down.circle").foregroundStyle(palette.primary)
+                Text("\(model.mcpFound.count) server\(model.mcpFound.count == 1 ? "" : "s") already set up in your agents")
+                    .font(.system(size: 12, weight: .medium)).foregroundStyle(palette.foreground)
+                Spacer()
+                Button("Import all") {
+                    Task { await model.importMCPServers(names: model.mcpFound.map(\.name)) }
+                }
+                .buttonStyle(.borderedProminent).tint(palette.primary).font(.system(size: 11))
+            }
+            ForEach(model.mcpFound) { f in
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(f.name).font(.system(size: 12)).foregroundStyle(palette.foreground)
+                        Text(f.source).font(.system(size: 10)).foregroundStyle(palette.mutedForeground)
+                    }
+                    Spacer()
+                    if let keys = f.envKeys, !keys.isEmpty {
+                        Text(keys.joined(separator: ", "))
+                            .font(.system(size: 9.5, design: .monospaced))
+                            .foregroundStyle(palette.mutedForeground).lineLimit(1)
+                    }
+                    Button("Import") { Task { await model.importMCPServers(names: [f.name]) } }
+                        .buttonStyle(.bordered).font(.system(size: 11))
+                }
+            }
+            Text("Importing copies the definition here. Turn the original off in that agent's own config so it isn't started twice — or use the switch below to have Iron Rain manage MCP for all of them.")
+                .font(.caption).foregroundStyle(palette.mutedForeground)
+        }
+        .padding(12)
+        .background(palette.card)
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.primary.opacity(0.35)))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .padding(.horizontal, 14).padding(.top, 10)
+    }
+
+    /// The dedupe switch. Off by default because turning it on when servers haven't been imported
+    /// would silently remove tools the user relies on.
+    private var exclusiveRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle(isOn: Binding(
+                get: { model.mcpExclusive },
+                set: { on in Task { await model.setMCPExclusive(on) } }
+            )) {
+                Text("Iron Rain manages MCP for my agents").font(.system(size: 12))
+            }
+            .toggleStyle(.switch).tint(palette.primary)
+            Text(model.mcpExclusive
+                 ? "Your agents ignore their own MCP config and use only the servers above — one process per server."
+                 : "Your agents ALSO load their own MCP config. A server configured in both places runs twice.")
+                .font(.caption).foregroundStyle(palette.mutedForeground)
+        }
+        .padding(.vertical, 4)
     }
 
     private var header: some View {
