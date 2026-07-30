@@ -40,6 +40,9 @@ const (
 	TypeDiscover              = "discover.list"
 	TypeDeviceRegister        = "device.register"
 	TypeClientIdentify        = "client.identify"   // this client's human name, used to attribute prompts
+	TypeParticipants          = "participants"      // who is connected and what they may do
+	TypeRoleGrant             = "role.grant"        // owner grants/revokes another participant's role
+	TypeRolesEnable           = "roles.enable"      // turn multi-user enforcement on/off
 	TypeProviderList          = "provider.list"     // agent providers registered on this daemon
 	TypeProviderRefresh       = "provider.refresh"  // re-detect agent harnesses on PATH (rescan) + rebroadcast the list
 	TypeAgentList             = "agent.list"        // full agent roster (native + detected + custom)
@@ -1764,4 +1767,28 @@ type MCPEnable struct {
 // permissions hang off.
 type ClientIdentify struct {
 	Name string `json:"name"`
+}
+
+// Participant is one connected client and what it may do.
+type Participant struct {
+	Name string `json:"name"`
+	Role string `json:"role"` // owner | steerer | observer
+}
+
+// ParticipantList is who is connected (participants / broadcast on change). Enabled reports whether
+// role enforcement is on at all — with it off everyone is the owner, which is the solo default.
+type ParticipantList struct {
+	Enabled      bool          `json:"enabled"`
+	Participants []Participant `json:"participants"`
+}
+
+// RoleGrant changes one participant's role. Only the owner may send it.
+type RoleGrant struct {
+	Name string `json:"name"`
+	Role string `json:"role"`
+}
+
+// RolesEnable turns multi-user enforcement on or off.
+type RolesEnable struct {
+	Enabled bool `json:"enabled"`
 }

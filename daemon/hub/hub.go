@@ -90,7 +90,8 @@ type Hub struct {
 	fanoutJudge       map[string]fanoutJudgeSpec     // groups that opted into an advisory judge
 	fanoutPrompt      map[string]string              // the task each group is racing (for the comparison header)
 
-	mcp *mcp.Registry // daemon-owned MCP server registry (nil = MCP not enabled)
+	mcp   *mcp.Registry // daemon-owned MCP server registry (nil = MCP not enabled)
+	roles *roleRegistry // who may steer vs. watch (see roles.go); disabled = everyone is the owner
 
 	// agentsFileMu serializes the load→mutate→save cycle on ~/.oculus/agents.json. agent.upsert and
 	// agent.delete are both in the async-dispatch allowlist, so without this two concurrent edits
@@ -992,6 +993,7 @@ func New() *Hub {
 		providers:       map[string]agent.Provider{},
 		sessions:        map[string]*managedSession{},
 		approvals:       map[string]*managedSession{},
+		roles:           newRoleRegistry(),
 		fanoutNotified:  map[string]bool{},
 		fanoutJudge:     map[string]fanoutJudgeSpec{},
 		fanoutPrompt:    map[string]string{},
@@ -2085,8 +2087,10 @@ func (h *Hub) dropClient(conn *transport.Conn) {
 	delete(h.clients, conn)
 	delete(h.logSubs, conn)
 	h.mu.Unlock()
+	h.roles.forget(conn) // a role belongs to a live connection, not a name
 	if c != nil {
 		c.close()
+		h.broadcastParticipants() // presence: everyone sees who left
 	}
 }
 
@@ -3386,6 +3390,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		m.subscribe(conn) // replays the transcript, then live events flow
 
 	case protocol.TypeSessionPrompt:
+		if !h.requireCapability(conn, env.ID, capSteer, "send a prompt") {
+			return
+		}
 		var req protocol.SessionPrompt
 		_ = env.Unmarshal(&req)
 		m := h.managed(req.SessionID)
@@ -3463,6 +3470,11 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, nil)
 
 	case protocol.TypeApprovalRespond:
+		// Owner-only: a steerer may ask the agent to do something, but only the person whose
+		// credentials are at stake may authorize a tool that acts with them.
+		if !h.requireCapability(conn, env.ID, capApprove, "answer an approval") {
+			return
+		}
 		var req protocol.ApprovalRespond
 		_ = env.Unmarshal(&req)
 		h.mu.Lock()
@@ -3593,6 +3605,46 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.autoRegisterProjects(items) // auto-create projects from active agents' cwds
 		h.sendOK(conn, env.ID, protocol.DiscoverList{Items: items})
 
+	case protocol.TypeParticipants:
+		h.sendOK(conn, env.ID, h.participants())
+
+	case protocol.TypeRolesEnable:
+		if !h.requireCapability(conn, env.ID, capApprove, "change sharing settings") {
+			return
+		}
+		var req protocol.RolesEnable
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad roles.enable")
+			return
+		}
+		// Whoever turns enforcement ON becomes the owner — otherwise enabling it would instantly
+		// demote the person doing the enabling to an observer of their own machine.
+		h.roles.setRole(conn, RoleOwner)
+		h.SetRolesEnabled(req.Enabled)
+		h.sendOK(conn, env.ID, h.participants())
+		h.broadcastParticipants()
+
+	case protocol.TypeRoleGrant:
+		if !h.requireCapability(conn, env.ID, capApprove, "grant a role") {
+			return
+		}
+		var req protocol.RoleGrant
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad role.grant")
+			return
+		}
+		switch req.Role {
+		case RoleOwner, RoleSteerer, RoleObserver:
+		default:
+			h.sendErr(conn, env.ID, "unknown role")
+			return
+		}
+		if !h.grantRole(req.Name, req.Role) {
+			h.sendErr(conn, env.ID, "no connected participant by that name")
+			return
+		}
+		h.sendOK(conn, env.ID, h.participants())
+
 	case protocol.TypeClientIdentify:
 		var req protocol.ClientIdentify
 		if err := env.Unmarshal(&req); err != nil {
@@ -3609,6 +3661,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		}
 		h.mu.Unlock()
 		h.sendOK(conn, env.ID, nil)
+		h.broadcastParticipants() // presence: everyone sees who joined
 
 	case protocol.TypeDeviceRegister:
 		var req protocol.DeviceRegister
@@ -3621,6 +3674,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, nil)
 
 	case protocol.TypeSessionInterrupt:
+		if !h.requireCapability(conn, env.ID, capSteer, "interrupt a turn") {
+			return
+		}
 		var req protocol.SessionRef
 		_ = env.Unmarshal(&req)
 		if m := h.managed(req.SessionID); m != nil {

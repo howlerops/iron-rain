@@ -1661,6 +1661,40 @@ public final class Model: ObservableObject {
         _ = try? await request(MessageType.clientIdentify, payload: ClientIdentify(name: identity))
     }
 
+    /// Who else is connected, and what they may do. Empty until the daemon reports it.
+    @Published public var participants: [Participant] = []
+    /// Whether multi-user enforcement is on. Off (the default) means everyone is the owner.
+    @Published public var sharingEnabled = false
+
+    public func loadParticipants() async {
+        guard client != nil else { return }
+        if let env = try? await request(MessageType.participants, payload: Optional<Int>.none),
+           let pl = try? env.payload(as: ParticipantList.self) {
+            participants = pl.participants
+            sharingEnabled = pl.enabled
+        }
+    }
+
+    /// Turns sharing on or off. Whoever enables it becomes the owner.
+    public func setSharingEnabled(_ on: Bool) async {
+        guard client != nil else { return }
+        if let env = try? await request(MessageType.rolesEnable, payload: RolesEnable(enabled: on)),
+           let pl = try? env.payload(as: ParticipantList.self) {
+            participants = pl.participants
+            sharingEnabled = pl.enabled
+        }
+    }
+
+    /// Grants or revokes another participant's ability to steer.
+    public func grantRole(name: String, role: String) async {
+        guard client != nil else { return }
+        if let env = try? await request(MessageType.roleGrant, payload: RoleGrant(name: name, role: role)),
+           let pl = try? env.payload(as: ParticipantList.self) {
+            participants = pl.participants
+            sharingEnabled = pl.enabled
+        }
+    }
+
     /// MCP servers registered with the daemon (Settings → MCP servers). Kept live by mcp.changed.
     @Published public var mcpServers: [MCPServerInfo] = []
 
@@ -2918,6 +2952,11 @@ public final class Model: ObservableObject {
                     if let ll = try? env.payload(as: LoopList.self) { loops = ll.loops; loopRuns = ll.runs }
                 case MessageType.providerList: // pushed after a custom agent is added/removed
                     if let pl = try? env.payload(as: ProviderList.self) { applyProviders(pl.providers); providersLoaded = true }
+                case MessageType.participants: // someone joined, left, or had their role changed
+                    if let pl = try? env.payload(as: ParticipantList.self) {
+                        participants = pl.participants
+                        sharingEnabled = pl.enabled
+                    }
                 case MessageType.mcpChanged: // a server was added/removed/toggled, or a probe finished
                     if let list = try? env.payload(as: MCPList.self) { mcpServers = list.servers }
                 case MessageType.fanoutSummary: // every variant in a fan-out group finished

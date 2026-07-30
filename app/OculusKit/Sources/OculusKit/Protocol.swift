@@ -61,6 +61,9 @@ public enum MessageType {
     public static let approvalRulesChanged = "approval.rules.changed"
     public static let sessionModeSet = "session.mode.set"
     public static let clientIdentify = "client.identify"
+    public static let participants = "participants"
+    public static let roleGrant = "role.grant"
+    public static let rolesEnable = "roles.enable"
     public static let fanoutSummary = "fanout.summary"
     public static let mcpList = "mcp.list"
     public static let mcpUpsert = "mcp.upsert"
@@ -2018,4 +2021,54 @@ public struct MCPEnable: Codable {
 public struct ClientIdentify: Codable {
     public var name: String
     public init(name: String) { self.name = name }
+}
+
+/// What a participant may do. Enforced by the DAEMON — the client renders these but never decides
+/// them, because a client cannot be trusted to enforce a permission it also displays.
+public enum ParticipantRole {
+    /// Everything, including answering approvals (which act with this machine's credentials).
+    public static let owner = "owner"
+    /// May prompt and interrupt, but NOT answer approvals.
+    public static let steerer = "steerer"
+    /// Watch only.
+    public static let observer = "observer"
+
+    public static func label(_ r: String) -> String {
+        switch r {
+        case owner: return "Owner"
+        case steerer: return "Can steer"
+        default: return "Watching"
+        }
+    }
+}
+
+public struct Participant: Codable, Equatable, Identifiable {
+    public var name: String
+    public var role: String
+    public var id: String { name }
+}
+
+public struct ParticipantList: Codable, Equatable {
+    public var enabled: Bool
+    public var participants: [Participant]
+    public init(enabled: Bool = false, participants: [Participant] = []) {
+        self.enabled = enabled; self.participants = participants
+    }
+    public init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        participants = try c.decodeIfPresent([Participant].self, forKey: .participants) ?? []
+    }
+    enum CodingKeys: String, CodingKey { case enabled, participants }
+}
+
+public struct RoleGrant: Codable {
+    public var name: String
+    public var role: String
+    public init(name: String, role: String) { self.name = name; self.role = role }
+}
+
+public struct RolesEnable: Codable {
+    public var enabled: Bool
+    public init(enabled: Bool) { self.enabled = enabled }
 }
