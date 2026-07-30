@@ -15,6 +15,17 @@ struct ActivityView: View {
     private var needsYou: [ActivityEvent] { model.activityFeed.filter { $0.needsYou && !$0.read } }
     private var rest: [ActivityEvent] { model.activityFeed.filter { !($0.needsYou && !$0.read) } }
 
+    /// "Needs you" items pointing at a session that no longer exists — stale errors from deleted /
+    /// husk sessions. They're un-actionable (tapping opens nothing), so they're auto-dismissed on
+    /// appear rather than sitting in the count forever.
+    private var orphanedNeedsYou: [ActivityEvent] {
+        let live = Set(model.sessions.map { $0.id })
+        return needsYou.filter { e in
+            guard let sid = e.sessionID else { return false }
+            return !live.contains(sid)
+        }
+    }
+
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
@@ -22,7 +33,12 @@ struct ActivityView: View {
                     emptyState
                 } else {
                     if !needsYou.isEmpty {
-                        sectionHeader("Needs you", count: needsYou.count, tint: Color(hex: 0xE0912A))
+                        HStack {
+                            sectionHeader("Needs you", count: needsYou.count, tint: Color(hex: 0xE0912A))
+                            Button("Clear") { Task { await model.markActivityRead(needsYou.map(\.id)) } }
+                                .font(.system(size: 11)).buttonStyle(.plain)
+                                .foregroundStyle(palette.mutedForeground).padding(.trailing, 16)
+                        }
                         ForEach(needsYou) { row($0) }
                         Divider().overlay(palette.border).padding(.vertical, 6)
                     }
@@ -35,6 +51,10 @@ struct ActivityView: View {
             .padding(.vertical, 8)
         }
         .background(palette.background)
+        .task(id: orphanedNeedsYou.map(\.id)) {
+            let ids = orphanedNeedsYou.map(\.id)
+            if !ids.isEmpty { await model.markActivityRead(ids) }
+        }
         .toolbar {
             if !needsYou.isEmpty {
                 ToolbarItem(placement: .primaryAction) {

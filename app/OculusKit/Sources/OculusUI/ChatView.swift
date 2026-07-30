@@ -406,6 +406,15 @@ public struct ChatView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 8) {
                         ToolActivityView(activity: model.activity, palette: palette, detail: model.activityDetail)
+                        // Fan-out progress: "sub-agents 19/20" from the Turn Engine's child states, so a
+                        // long fanout with one straggler reads as PROGRESS, not a stuck "Delegating…".
+                        if let kids = model.turn?.children, !kids.isEmpty {
+                            let done = kids.filter { $0.state != "running" }.count
+                            Text("sub-agents \(done)/\(kids.count)")
+                                .font(.caption.monospacedDigit()).foregroundStyle(palette.mutedForeground)
+                                .padding(.horizontal, 6).padding(.vertical, 1)
+                                .background(Capsule().fill(palette.muted.opacity(0.4)))
+                        }
                         // Daemon-vouched patience: while the Turn Engine says the provider is alive but
                         // quiet, say so honestly ("still working · 47s since output") — never a guessed timeout.
                         if let last = model.turn?.lastEventAt, model.turn?.state == SessionStatusValue.running {
@@ -426,7 +435,7 @@ public struct ChatView: View {
             }
             Spacer(minLength: 0)
         }
-        .frame(height: 26) // reserved height → no layout shift when it appears/disappears
+        .frame(minHeight: 26, alignment: .leading) // reserve a line; grow for the reasoning tail
         .padding(.horizontal, 16)
         .animation(.easeInOut(duration: 0.2), value: model.streamMaybeStalled)
     }
