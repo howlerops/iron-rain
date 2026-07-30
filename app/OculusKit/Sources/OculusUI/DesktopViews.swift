@@ -212,6 +212,9 @@ public struct RootView: View {
     @Environment(\.colorScheme) private var scheme
     private var palette: OculusPalette { .current(scheme) }
     @State private var selection: String?
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var hSize
+    #endif
     @State private var showSessionDetail = false // iOS: pushes ChatView when a session opens
     @State private var checkForUpdates = false   // macOS: Settings → "Check for updates" trigger
     // Loops + Agents share ONE sheet slot — stacking two .sheet modifiers on the same view breaks
@@ -383,8 +386,37 @@ public struct RootView: View {
     /// lives in the sidebar, the detail swaps) — a TabView wrapping a split view with
     /// per-view toolbars corrupts AppKit's toolbar bridge and crashes on window
     /// close/reopen. iOS keeps a bottom TabView, which is the right idiom there.
-    @ViewBuilder private func mainSurface(_ model: Model) -> some View {
+    /// Whether to show the full management layout (destination rail + list + detail) rather than the
+    /// phone's tab layout.
+    ///
+    /// This is the iPad question. An iPad in full width has the room for the same rail-and-columns
+    /// surface the Mac uses, and treating it as a big phone wasted that — you'd get a triage inbox on
+    /// a 13" screen. So the choice is by AVAILABLE WIDTH, not by OS: an iPad in Slide Over is genuinely
+    /// narrow and falls back to tabs, and an iPhone never gets the split layout regardless of
+    /// orientation (some Max models report a regular width in landscape, which is not the same thing
+    /// as having room for three columns).
+    private var usesSplitLayout: Bool {
         #if os(macOS)
+        return true
+        #else
+        return idiomIsPad && hSize == .regular
+        #endif
+    }
+
+    #if os(iOS)
+    private var idiomIsPad: Bool { UIDevice.current.userInterfaceIdiom == .pad }
+    #endif
+
+    @ViewBuilder private func mainSurface(_ model: Model) -> some View {
+        if usesSplitLayout {
+            splitSurface(model)
+        } else {
+            tabSurface(model)
+        }
+    }
+
+    /// The rail + list + detail layout: macOS, and iPad at full width.
+    @ViewBuilder private func splitSurface(_ model: Model) -> some View {
         // Command Deck always renders the split view — the destination rail (Sessions · Loops ·
         // Fleet · Issues · Activity) plus the per-destination list and detail. Empty/connecting
         // states are handled inside the sidebar list and the Sessions detail, so there's no second
@@ -440,24 +472,18 @@ public struct RootView: View {
             }
         }
         }
-        #else
-        // iPhone: the Command Deck collapses to a five-tab bar — the same five destinations, with
-        // Activity CENTERED and default, because the phone is a remote triage inbox ("what needs
-        // me?"). Each tab is its own NavigationStack (list → push detail). The needs-you count
-        // badges the Activity tab.
+    }
+
+    /// The compact layout: the Command Deck collapsed to a five-tab bar — the same five
+    /// destinations, with Activity CENTERED and default, because a phone is a remote triage inbox
+    /// ("what needs me?"). Each tab is its own NavigationStack (list → push detail), and the
+    /// needs-you count badges the Activity tab. Also used by an iPad in Slide Over, which is just as
+    /// narrow as a phone.
+    @ViewBuilder private func tabSurface(_ model: Model) -> some View {
         TabView(selection: $destination) {
             // Sessions
             NavigationStack {
-                SessionSidebar(store: store, model: model, selection: $selection, searchText: $searchText,
-                               onOpenLoops: { destination = .loops },
-                               onOpenAgents: { panel = .agents },
-                               onOpenApprovalRules: { panel = .approvalRules },
-                               onOpenMCP: { panel = .mcp },
-                               onOpenSharing: { panel = .sharing },
-                               onOpenDictionary: { panel = .dictionary },
-                               onOpenAccounts: { panel = .accounts },
-                               onOpenRemotes: { panel = .remotes },
-                               onManageSessions: { panel = .sessions })
+                sessionSidebar(model)
                     .navigationDestination(isPresented: $showSessionDetail) { ChatView(model: model) }
                     // Code & change review pushes over the chat when the toolbar button sets the target.
                     .navigationDestination(isPresented: Binding(
@@ -466,7 +492,7 @@ public struct RootView: View {
                         CodeSurface(model: model, sessionID: model.codeReviewTarget, reviewSessionID: model.codeReviewTarget)
                     }
                     .toolbar {
-                        ToolbarItem(placement: .topBarTrailing) {
+                        ToolbarItem(placement: .automatic) {
                             Button { showPalette = true } label: { Image(systemName: "magnifyingglass") }
                         }
                     }
@@ -513,17 +539,14 @@ public struct RootView: View {
                 .tabItem { Label("Issues", systemImage: Destination.issues.symbol) }
                 .tag(Destination.issues)
         }
-        #endif
     }
 
-    #if !os(macOS)
     /// Open a session from Activity/Fleet on iOS: switch to Sessions and push the chat.
     private func openMobile(_ sid: String, _ model: Model) {
         Task { await model.openSession(sid) }
         destination = .sessions
         showSessionDetail = true
     }
-    #endif
 
     /// The initial Design-Mode URL: the active session's dev-server port if a setup hook allocated
     /// one, else a sensible localhost default.
@@ -609,30 +632,52 @@ public struct RootView: View {
         return out
     }
 
-    #if os(macOS)
     /// The sidebar's contextual LIST column, per destination. Sessions & Fleet share the session
     /// list (the fleet IS the set of sessions); Loops gets a compact loop list; Issues a slim board
     /// hint (its own project picker lives in the detail board); Activity is list-dominant.
+
+    /// The sessions/fleet sidebar. Split by platform only because launch-at-login and the
+    /// self-update card are macOS concepts — iOS updates through the App Store and has no login
+    /// item — not because the list itself differs.
+    @ViewBuilder private func sessionSidebar(_ model: Model) -> some View {
+        #if os(macOS)
+        SessionSidebar(store: store, model: model, selection: $selection, searchText: $searchText,
+                       onReview: { sid in model.codeReviewTarget = sid },
+                       onTakeOver: { newSessionTakeOver = true; showNewSession = true },
+                       onCheckForUpdates: { checkForUpdates = true },
+                       loginAtLogin: loginItem.enabled,
+                       loginAtLoginError: loginItem.lastError,
+                       onToggleLoginAtLogin: { on in Task { await loginItem.setEnabled(on, launcher: launcher) } },
+                       updates: updates,
+                       onOpenLoops: { destination = .loops },
+                       onOpenAgents: { panel = .agents },
+                       onOpenApprovalRules: { panel = .approvalRules },
+                       onOpenMCP: { panel = .mcp },
+                       onOpenSharing: { panel = .sharing },
+                       onOpenDictionary: { panel = .dictionary },
+                       onOpenAccounts: { panel = .accounts },
+                       onOpenRemotes: { panel = .remotes },
+                       onManageSessions: { panel = .sessions })
+        #else
+        SessionSidebar(store: store, model: model, selection: $selection, searchText: $searchText,
+                       onReview: { sid in model.codeReviewTarget = sid },
+                       onTakeOver: { newSessionTakeOver = true; showNewSession = true },
+                       onOpenLoops: { destination = .loops },
+                       onOpenAgents: { panel = .agents },
+                       onOpenApprovalRules: { panel = .approvalRules },
+                       onOpenMCP: { panel = .mcp },
+                       onOpenSharing: { panel = .sharing },
+                       onOpenDictionary: { panel = .dictionary },
+                       onOpenAccounts: { panel = .accounts },
+                       onOpenRemotes: { panel = .remotes },
+                       onManageSessions: { panel = .sessions })
+        #endif
+    }
+
     @ViewBuilder private func deckList(_ model: Model) -> some View {
         switch destination {
         case .sessions, .fleet:
-            SessionSidebar(store: store, model: model, selection: $selection, searchText: $searchText,
-                           onReview: { sid in model.codeReviewTarget = sid },
-                           onTakeOver: { newSessionTakeOver = true; showNewSession = true },
-                           onCheckForUpdates: { checkForUpdates = true },
-                           loginAtLogin: loginItem.enabled,
-                           loginAtLoginError: loginItem.lastError,
-                           onToggleLoginAtLogin: { on in Task { await loginItem.setEnabled(on, launcher: launcher) } },
-                           updates: updates,
-                           onOpenLoops: { destination = .loops },
-                           onOpenAgents: { panel = .agents },
-                           onOpenApprovalRules: { panel = .approvalRules },
-                           onOpenMCP: { panel = .mcp },
-                           onOpenSharing: { panel = .sharing },
-                           onOpenDictionary: { panel = .dictionary },
-                           onOpenAccounts: { panel = .accounts },
-                               onOpenRemotes: { panel = .remotes },
-                               onManageSessions: { panel = .sessions })
+            sessionSidebar(model)
 
         case .loops:
             LoopsListColumn(model: model, palette: palette, selected: $selectedLoopID,
@@ -678,7 +723,10 @@ public struct RootView: View {
         }
         .id(destination)
         .background(palette.background)
+        // .windowToolbar is macOS-only; the detail pane now compiles for iPad too.
+        #if os(macOS)
         .toolbarBackground(.visible, for: .windowToolbar)
+        #endif
         .onChange(of: model.currentSession?.id) { _ in
             // Switching sessions (id changed) must drop any open Code/Review detail — otherwise the
             // pane keeps rendering the PREVIOUS session's code surface, which reads as a stale/white
@@ -724,7 +772,6 @@ public struct RootView: View {
         Task { await model.openSession(sid) }
         showSessionDetail = true
     }
-    #endif
 
     private func hasSession(_ model: Model) -> Bool {
         model.currentSession != nil || model.codeReviewTarget != nil
