@@ -239,3 +239,28 @@ func TestSubstituteMCPConfig(t *testing.T) {
 		t.Errorf("unexpanded token leaked into argv: %v", got)
 	}
 }
+
+// TestDetectRejectsNameCollisions is the guard for a real incident: `copilot` on a machine with
+// AWS's ECS tool installed resolves on PATH, and a name-only check would have routed coding prompts
+// to it. An entry that declares an identity marker must PROVE it is the tool we meant.
+func TestDetectRejectsNameCollisions(t *testing.T) {
+	// A command that exists but identifies as something else must not match.
+	if identityMatches("echo", "definitely-not-in-echo-output") {
+		t.Error("identityMatches must reject a binary that doesn't identify as the expected tool")
+	}
+	// A command whose output DOES contain the marker matches. `sh --version` prints its name.
+	if !identityMatches("sh", "sh") {
+		t.Skip("sh --version/--help didn't mention sh on this platform; identity probing is best-effort")
+	}
+}
+
+// TestBuiltinsDeclareIdentityForCollisionProneNames locks the policy in place: any short, generic
+// command name must carry a marker, or a future edit silently reintroduces the copilot bug.
+func TestBuiltinsDeclareIdentityForCollisionProneNames(t *testing.T) {
+	risky := map[string]bool{"copilot": true, "amp": true, "grok": true, "crush": true, "goose": true, "qwen": true}
+	for _, b := range builtinAgents {
+		if risky[b.cfg.Command] && b.identity == "" {
+			t.Errorf("builtin %q has a collision-prone command name but declares no identity marker", b.cfg.Name)
+		}
+	}
+}

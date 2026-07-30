@@ -224,7 +224,12 @@ func (s *session) runTurn(ctx context.Context, argv []string) {
 		return
 	}
 	cmd.Stderr = cmd.Stdout // fold stderr into the streamed output (agents log progress there)
-	procutil.Isolate(cmd)   // a CLI agent forks compilers/test runners — Stop() must kill the tree
+	// No stdin. These are third-party CLIs invoked with flags we believe are non-interactive, but
+	// that is third-party surface that can change under us — and a tool that decides to prompt would
+	// otherwise block forever with nobody to answer it. An empty stdin turns "hang until killed" into
+	// "read EOF and exit", which surfaces as a normal failed turn the user can actually see.
+	cmd.Stdin = nil
+	procutil.Isolate(cmd) // a CLI agent forks compilers/test runners — Stop() must kill the tree
 	if err := cmd.Start(); err != nil {
 		turnErr = err
 		return
