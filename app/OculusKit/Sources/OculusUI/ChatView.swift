@@ -524,12 +524,14 @@ public struct ChatView: View {
 
     /// Shown while a just-opened session's transcript is replaying — makes a swap read as "loading…"
     /// instead of a white flash.
+    /// A skeleton of the conversation rather than a spinner on blank.
+    ///
+    /// Two reasons it's shaped like this. A spinner tells you nothing is here yet; a skeleton tells
+    /// you what is ABOUT to be here, which reads as faster even at identical latency. And it is
+    /// BOTTOM-ALIGNED, mirroring the real transcript — so when the actual messages swap in, the
+    /// visual mass is already where they'll land and the view doesn't lurch from centre to bottom.
     private var sessionLoadingView: some View {
-        VStack(spacing: OculusSpace.md) {
-            ProgressView().controlSize(.large)
-            Text("Loading conversation…").font(.callout).foregroundStyle(palette.mutedForeground)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        TranscriptSkeleton(palette: palette)
     }
 
     private func sessionErrorView(_ err: String) -> some View {
@@ -1793,5 +1795,68 @@ struct TestResultPanel: View {
         .overlay(RoundedRectangle(cornerRadius: 14).stroke((passed == false ? Color(hex: 0xF85149) : palette.border).opacity(0.5)))
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .padding(.horizontal, 12).padding(.bottom, 6)
+    }
+}
+
+
+/// Placeholder message bubbles shown while a conversation loads.
+///
+/// Alternates user-side and agent-side rows with varied widths, because a uniform stack of identical
+/// bars reads as a progress bar rather than as a conversation. Bottom-aligned to match the real
+/// transcript so the swap is visually stable.
+struct TranscriptSkeleton: View {
+    let palette: OculusPalette
+    @State private var shimmer = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Width fractions + sides, fixed rather than random so the skeleton doesn't reshuffle on every
+    /// redraw (which would look like content changing under you).
+    private static let rows: [(frac: CGFloat, mine: Bool, lines: Int)] = [
+        (0.55, true, 1), (0.85, false, 3), (0.40, true, 1),
+        (0.92, false, 4), (0.62, true, 2), (0.78, false, 2),
+    ]
+
+    var body: some View {
+        // One GeometryReader for the whole skeleton (containerRelativeFrame needs macOS 14; we
+        // support 13) — and measuring once beats a reader per row.
+        GeometryReader { geo in
+            VStack(alignment: .leading, spacing: 14) {
+                Spacer(minLength: 0) // push the stack to the bottom, where the real transcript sits
+                ForEach(Array(Self.rows.enumerated()), id: \.offset) { _, row in
+                    bubble(row, width: geo.size.width - 32)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        }
+        .accessibilityElement()
+        .accessibilityLabel("Loading conversation")
+        .onAppear { if !reduceMotion { shimmer = true } }
+    }
+
+    private func bubble(_ row: (frac: CGFloat, mine: Bool, lines: Int), width: CGFloat) -> some View {
+        HStack {
+            if row.mine { Spacer(minLength: 40) }
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(0..<row.lines, id: \.self) { i in
+                    RoundedRectangle(cornerRadius: 5)
+                        // The last line of a paragraph is short — that irregularity is most of what
+                        // makes this read as text rather than as bars.
+                        .frame(height: 10)
+                        .frame(maxWidth: .infinity)
+                        .scaleEffect(x: i == row.lines - 1 && row.lines > 1 ? 0.6 : 1, anchor: .leading)
+                }
+            }
+            .padding(.horizontal, row.mine ? 12 : 0)
+            .padding(.vertical, row.mine ? 9 : 0)
+            .background(row.mine ? palette.secondary : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: OculusRadius.md))
+            .frame(width: max(width * row.frac, 80), alignment: .leading)
+            if !row.mine { Spacer(minLength: 40) }
+        }
+        .foregroundStyle(palette.mutedForeground)
+        .opacity(shimmer ? 0.30 : 0.14)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 1.1).repeatForever(autoreverses: true), value: shimmer)
     }
 }

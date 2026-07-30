@@ -2195,18 +2195,43 @@ public final class Model: ObservableObject {
     /// Sends a request and awaits its correlated OK/error reply by envelope id. Unlike prompts
     /// (fire-and-forget events), fs.* calls need a response, so receiveLoop resolves the
     /// matching continuation.
+    /// Feature messages this daemon didn't recognize. A daemon older than the app answers
+    /// "unknown type: …", and because most feature calls use `try?`, that used to be INDISTINGUISHABLE
+    /// from "there's nothing to show" — an out-of-date daemon looked exactly like an empty screen.
+    /// Recording it lets the UI say so instead of silently doing nothing.
+    @Published public var unsupportedByDaemon: Set<String> = []
+
+    /// True once any feature call has been refused as unknown — the daemon predates this app.
+    public var daemonOutdated: Bool { !unsupportedByDaemon.isEmpty }
+
+    /// Notes an "unknown type" refusal. Returns true when that's what the error was.
+    @discardableResult
+    private func noteIfUnsupported(_ type: String, _ error: Error) -> Bool {
+        guard error.localizedDescription.localizedCaseInsensitiveContains("unknown type") else { return false }
+        if !unsupportedByDaemon.contains(type) {
+            unsupportedByDaemon.insert(type)
+            status = "Daemon is out of date"
+        }
+        return true
+    }
+
     private func request(_ type: String, payload: some Encodable) async throws -> Envelope {
         guard let client else {
             throw NSError(domain: "Oculus", code: -1, userInfo: [NSLocalizedDescriptionKey: "not connected"])
         }
         let id = UUID().uuidString
         let env = try Protocol.encode(id: id, type: type, payload: payload)
-        return try await withCheckedThrowingContinuation { cont in
-            pendingRequests[id] = cont
-            Task {
-                do { try await client.send(env) }
-                catch { if let c = pendingRequests.removeValue(forKey: id) { c.resume(throwing: error) } }
+        do {
+            return try await withCheckedThrowingContinuation { cont in
+                pendingRequests[id] = cont
+                Task {
+                    do { try await client.send(env) }
+                    catch { if let c = pendingRequests.removeValue(forKey: id) { c.resume(throwing: error) } }
+                }
             }
+        } catch {
+            noteIfUnsupported(type, error)
+            throw error
         }
     }
 

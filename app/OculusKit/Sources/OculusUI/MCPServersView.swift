@@ -26,6 +26,7 @@ public struct MCPServersView: View {
         VStack(spacing: 0) {
             header
             Divider().overlay(palette.border)
+            if model.daemonOutdated { outdatedBanner }
             if !model.mcpFound.isEmpty { importBanner }
             if model.mcpServers.isEmpty && model.mcpFound.isEmpty {
                 emptyState
@@ -121,6 +122,28 @@ public struct MCPServersView: View {
                 .font(.caption).foregroundStyle(palette.mutedForeground)
         }
         .padding(.vertical, 4)
+    }
+
+    /// An out-of-date daemon used to look EXACTLY like an empty screen: the app sends mcp.list, the
+    /// daemon answers "unknown type", the `try?` swallows it, and nothing renders. Saying so directly
+    /// is the difference between "this feature is broken" and "restart your daemon".
+    private var outdatedBanner: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(Color(hex: 0xE0912A))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Your daemon is older than this app").font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(palette.foreground)
+                Text("It doesn't know about MCP servers yet, so nothing here will work. Quit and reopen Iron Rain to restart the daemon — it updates itself on start.")
+                    .font(.caption).foregroundStyle(palette.mutedForeground)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+        }
+        .padding(12)
+        .background(palette.card)
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color(hex: 0xE0912A).opacity(0.5)))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .padding(.horizontal, 14).padding(.top, 10)
     }
 
     private var header: some View {
