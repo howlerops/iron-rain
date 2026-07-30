@@ -69,8 +69,28 @@ Build this as shared supervisor code — §1's MCP manager needs the identical l
 (§7's form component needs `Values`) or delete the dead surface. Defer decision to §7;
 document as known-dead in the meantime.
 
-Suggested batch: 0.1–0.3 + 0.5 + 0.7-doc in one fix release; 0.4 + 0.6 as the opening
-commits of the MCP host work (they are its foundation).
+**0.8 — no signal handling anywhere: every graceful-shutdown defer is dead code.** Zero
+`signal.Notify`/`os.Interrupt` hits in the daemon. `serve()` blocks in ListenAndServe and
+the process is signal-killed, so `defer h.Shutdown()` (main.go:150), `defer db.Close()`
+(:167) and `defer tr.Close()` (:179) never run — `lsp.Manager.Shutdown` (lsp.go:245-263)
+is the only graceful child teardown in the codebase and it is unreachable in practice. On
+every daemon exit the sidecars orphan (opencode is re-adopted next boot via the port file;
+node/pi leak until their stdin dies). Self-update is worse: selfupdate.go:81 does an
+in-process `syscall.Exec` with no child cleanup. Also: `cmd.WaitDelay` is used nowhere
+(CommandContext = straight SIGKILL), and the managed opencode server never gets
+`cmd.Wait()` at all (autodetect.go:142) — zombie. Fix: `signal.Notify(SIGTERM/SIGINT)` →
+real shutdown path (children first, then stores), `WaitDelay` on all children, `Wait` the
+opencode process. Pairs with 0.4 — together they are the process-hygiene prerequisite for §1.
+
+**0.9 — agents.json read-modify-write race.** hub.go:2423-2438 (upsert) and :2456-2463
+(delete) do `cli.Load → mutate → cli.Save` with no lock held across the RMW — and both run
+on separate goroutines via the asyncDispatch allowlist (hub.go:1841-1923). Two concurrent
+upserts can lose one. Every other settings file serializes through a mutex; agents.json is
+the outlier. Also `cli.Save` (config.go:53-65) never MkdirAlls. Fix: serialize under a
+registry mutex (loops.Engine pattern, see §1).
+
+Suggested batch: 0.1–0.3 + 0.5 + 0.7-doc + 0.9 in one fix release; 0.4 + 0.6 + 0.8 as the
+opening commits of the MCP host work (they are its foundation).
 
 ---
 
@@ -88,11 +108,15 @@ gen-UI plan is unbuilt. This is greenfield — but three near-exact templates ex
   `pending map[int64]chan` (108-124), ctx-aware `call` (161-189), once-only init handshake
   (209-220), graceful stop-then-kill (224-238). `lsp.Manager` (lsp.go:51-91) has lazy spawn
   keyed by root, with the lock never held across server I/O.
-- **The agent registry is the plugin-surface template.** protocol.go:41-46 + 1438-1477
-  (AgentInfo/AgentList/AgentUpsert/AgentRef/AgentVisible), persistence in
-  daemon/agent/cli/config.go:53-108 (JSON array, 0600, Merge user-over-builtin),
-  hub dispatch at hub.go:2390-2493, visibility pair `agents.json`/`agent-visibility.json`,
-  broadcast-after-mutate. An `mcp.*` API should mirror this line-for-line.
+- **The agent registry is the plugin-surface template — for handler *shape* only.**
+  protocol.go:41-46 + 1438-1477 (AgentInfo/AgentList/AgentUpsert/AgentRef/AgentVisible),
+  hub dispatch at hub.go:2390-2493, visibility pair `agents.json`/`agent-visibility.json`.
+  **Do not copy its persistence** — it has the §0.9 RMW race. The structural template for
+  `mcp.*` is the **Loops engine**: loops.go:71-97 (Engine with its own mutex + `persisted`
+  wrapper + `New(path)` loader), :373-383 `persist()` (snapshot under lock, write
+  unlocked), handler arms hub.go:2556-2608 (list/upsert/delete/enabled), enable+broadcast
+  wiring hub.go:737-751/:863-869 — loops is exactly a list/upsert/delete/toggle registry
+  *with broadcast*, which agents.json is not.
 - **PATH resolution is already solved** — `augmentPATH()` (main.go:589-647) runs a login
   shell and merges homebrew/npm/cargo/etc, which is what makes `npx`/`uvx`-launched servers
   findable under launchd.
@@ -153,19 +177,49 @@ Harness injection points (all verified):
   agents.json/agent-visibility.json pair. Entry:
   `{name, transport: "stdio"|"http", command, args, env, url, headers, enabled, scope}`.
 - Protocol: `mcp.list` / `mcp.upsert` / `mcp.delete` / `mcp.enable` / `mcp.status`
-  (+ `mcp.tools` for the inspector), dispatched like hub.go:2390-2493.
-  **Must be added to the async-registration type list (hub.go:~1855-1900)** or a slow
-  server spawn blocks the connection read loop.
+  (+ `mcp.tools` for the inspector). New-command recipe (all seven steps, in order):
+  protocol const + payload structs (protocol.go) → dispatch arm (hub.go:1997+ switch;
+  unmarshal → validate → sendErr-or-mutate → broadcast → sendOK) → **add to
+  `asyncDispatch` (hub.go:1841-1923)** or a slow server spawn blocks that client's entire
+  read loop → Hub fields + `Set…Path` setter wired from main.go:188-194 → Swift mirror in
+  Protocol.swift (use AgentInfo's decodeIfPresent-with-defaults init, :879-911, so an
+  older daemon degrades gracefully) → Model async method + broadcast-switch arm in
+  OculusUI.swift. Note the protocol/ vectors dir only locks four messages — adding a
+  vector is not enforced; add one for `mcp.upsert` anyway.
+- **Cross-device sync:** `mcp.enable` must broadcast (loop/provider pattern, hub.go:1535),
+  not reply-to-caller-only — precedents to avoid: agent.list is never broadcast (second
+  device's ManageAgentsView goes stale until reopened), notify.prefs.set replies to caller
+  only (hub.go:2115), and the default agent is client-local UserDefaults that never syncs
+  (OculusUI.swift:891-906). A phone toggling a server while the Mac watches is the demo —
+  make it live.
 - App: `ManageMCPView` modeled on AgentsView.swift (list + editor + per-server status dot
   like Zed's green dot), reached from the sidebar overflow menu. Tool inspector per server
   (name/description list from `tools/list`) for verification.
 
 ### Net-new hard parts (nothing in-tree does these)
 
-1. Process groups + grandchild reaping (§0.4).
+1. Process groups + grandchild reaping (§0.4) **and** real shutdown: signal handling +
+   `WaitDelay` (§0.8). Today the only crash-restart supervision that exists at all is
+   launchd's `KeepAlive true` on the daemon itself (LoginItemManager.swift:64-102 /
+   install.sh:81-99) — if MCP servers are daemon children, launchd restarting the daemon
+   is currently their entire restart story.
 2. Restart with exponential backoff + health checking (§0.6; LSP never restarts, opencode
-   is start-once).
-3. stderr → loghub (§0.5).
+   is start-once). In-repo templates to reuse: opencode `reconnectEvents`
+   (opencode.go:555-586 — 500ms→15s cap, warn-once-then-keep-retrying, recovered notice),
+   relayHost full-jitter backoff with "ran >5s ⇒ reset" (main.go:367-384),
+   crash-vs-intentional classifier via non-blocking done-select (pi.go:88-110), give-up
+   budget constants (heartbeat.go:21-30). Note the Turn Engine's own carve-out
+   (turn.go:237-240): subprocess agents are supervised by stream-EOF, not probes — an MCP
+   server has no turn stream, so it needs a real probe (periodic `tools/list` or ping
+   against old-spec; `server/discover` on new-spec). Half-open detection:
+   `idleTimeoutConn` (opencode.go:41-92) for HTTP transports. Port allocation for the
+   gateway fleet: `worktree.AllocPort` (setup.go:143-152), not the race-prone
+   `freePort()`.
+3. stderr → loghub (§0.5) — **as a file or drained pipe, never an unread pipe.** Two
+   landmines already documented in-tree: an app-held pipe dies with the app and the
+   child's next write takes SIGPIPE (DaemonLauncher.swift:62-71 — this can *kill* the
+   child), and an attached-but-unread pipe fills and blocks the child (why lsp
+   server.go:79 discards). The daemon must own the read loop for as long as the child lives.
 4. Secrets: server env/headers land in `mcp.json` 0600 like agents.json for v1; OAuth
    tokens (stage 4) issuer-bound in a separate 0600 store per SEP-2352 — never into
    harness-visible config (the gateway makes this possible: harnesses only ever see the
@@ -485,11 +539,11 @@ MCP-2 → G-4; handoffs (shipped) → FO-1; relay+pairing (shipped) → MU-1.
 
 | Release | Contents | Why this order |
 |---|---|---|
-| v0.2.107 | §0 fix batch (0.1, 0.2, 0.3, 0.5, 0.7-doc) + AP-1 (invisible rules upgrade) + §5 registry breadth | Cheap wins, zero-risk, clears debt |
+| v0.2.107 | §0 fix batch (0.1, 0.2, 0.3, 0.5, 0.7-doc, 0.9) + AP-1 (invisible rules upgrade) + §5 registry breadth | Cheap wins, zero-risk, clears debt |
 | v0.2.108 | AP-2 + AP-3 (scoped Always + input display + rules UI) | First user-visible approvals win; small |
 | v0.2.109 | FO-1 compare view | Differentiator, demo-able, mostly-built plumbing |
 | v0.2.110 | FO-2 judge + §6 visual capture v1 | Completes the fan-out story |
-| v0.2.111–112 | §0.4 + §0.6 then MCP-1 + MCP-2 (supervisor, registry, UI, gateway) | The P0, sequenced after quick wins because it's the long pole |
+| v0.2.111–112 | §0.4 + §0.6 + §0.8 then MCP-1 + MCP-2 (supervisor, registry, UI, gateway) | The P0, sequenced after quick wins because it's the long pole |
 | v0.2.113 | MCP-3 injection + AP-4 modes | Modes reuse the rule engine; MCP servers reach every harness |
 | v0.2.114+ | MCP-4 OAuth/remote, MCP-5 ecosystem, G-1..3 | Ecosystem depth |
 | parallel track | MU-1 → MU-4 across releases | Independent of the MCP/approvals track |
