@@ -350,7 +350,7 @@ public struct ChatView: View {
                     // demand. All messages stay in memory — this bounds LAYOUT, not data.
                     if model.messages.count > visibleWindow {
                         Button {
-                            visibleWindow += 150
+                            visibleWindow += windowStep
                         } label: {
                             Label("Show earlier messages (\(model.messages.count - visibleWindow) more)", systemImage: "arrow.up.circle")
                                 .font(.caption).foregroundStyle(palette.mutedForeground)
@@ -370,6 +370,7 @@ public struct ChatView: View {
                                            guard let b = try? await model.fsReadBytes(path) else { return nil }
                                            return Data(base64Encoded: b.data)
                                        })
+                                .equatable() // skip rebuilding rows whose message did not change
                         }
                     }
                     Color.clear.frame(height: 1).id("bottom")
@@ -395,7 +396,7 @@ public struct ChatView: View {
             // which oscillated the view up/down during heavy multi-agent runs. After the window, native
             // bottom-anchoring alone follows streaming smoothly.
             .onAppear { armInitialAnchor(); anchorBottom(proxy) }
-            .onChange(of: model.sessionID) { _ in visibleWindow = 80; armInitialAnchor(); anchorBottom(proxy) }
+            .onChange(of: model.sessionID) { _ in visibleWindow = Self.initialWindow; armInitialAnchor(); anchorBottom(proxy) }
             .onChange(of: model.messages.count) { _ in
                 if Date() < initialAnchorDeadline { anchorBottom(proxy) }
             }
@@ -404,7 +405,21 @@ public struct ChatView: View {
 
     /// How many trailing messages the transcript LAYS OUT (see the window note above). Reset on
     /// session switch so every open starts cheap; "Show earlier" grows it backwards.
-    @State private var visibleWindow = 80
+    /// How many messages are laid out at once.
+    ///
+    /// This VStack is deliberately NOT lazy (see the note above — laziness estimated off-screen
+    /// heights and fought the bottom anchor), which means every message in the window is laid out
+    /// eagerly. That's affordable on a Mac and is not on a phone: 80 rows of markdown, tool cards and
+    /// images is the choppiness. A phone gets a smaller window and grows it in smaller steps; the
+    /// data is all still in memory either way, this bounds LAYOUT only.
+    #if os(macOS)
+    static let initialWindow = 80
+    private let windowStep = 150
+    #else
+    static let initialWindow = 25
+    private let windowStep = 40
+    #endif
+    @State private var visibleWindow = Self.initialWindow
 
     private func armInitialAnchor() {
         initialAnchorDeadline = Date().addingTimeInterval(1.5) // catch the post-open history burst only
@@ -617,7 +632,22 @@ struct InlineImagesView: View {
     }
 }
 
-struct MessageRow: View {
+/// A transcript row.
+///
+/// Equatable on purpose: while a turn streams, `model.messages` changes on every flush, which
+/// re-evaluates the whole non-lazy VStack. Without an equality check SwiftUI rebuilds the body of
+/// every row on every frame even though only the LAST message actually changed. Conforming lets it
+/// skip the untouched rows — the single biggest win while an agent is talking.
+///
+/// The closures are deliberately excluded from equality: they're recreated per rebuild and would
+/// make every row compare unequal, defeating the whole thing. They're derived from `message` and the
+/// model, so a row whose message is unchanged behaves identically with either copy.
+struct MessageRow: View, Equatable {
+    static func == (a: MessageRow, b: MessageRow) -> Bool {
+        a.message == b.message && a.palette == b.palette
+            && (a.onRetry == nil) == (b.onRetry == nil)
+    }
+
     let message: ChatMessage
     let palette: OculusPalette
     var onRetry: (() -> Void)? = nil
@@ -636,7 +666,9 @@ struct MessageRow: View {
     private var chatBody: Font { .system(size: 15 * chatFactor, design: chatDesign) }
     // Real leading — transcript prose was rendered with default (tight) line spacing, which read
     // cramped. ~4pt (scaled) opens it up so multi-line answers breathe like a document.
-    private var chatLineSpacing: CGFloat { 4 * chatFactor }
+    /// Leading for the non-markdown text paths (user bubble, thinking, plain streamed text). Kept in
+    /// step with ChatMarkdownView so a turn doesn't change rhythm halfway down as it finalizes.
+    private var chatLineSpacing: CGFloat { 6 * chatFactor }
 
     var body: some View {
         switch message.role {
@@ -1490,6 +1522,12 @@ struct ChatMarkdownView: View {
     var body: some View {
         Text(attributed())
             .foregroundStyle(palette.foreground)
+            // Assistant markdown is the bulk of what anyone actually READS here, and it was the one
+            // text path with no added leading — rendered at the system default while every other
+            // path added 4pt, so long answers came out as a dense slab. Matching the rest (and then
+            // some: ~1.5 line-height is the range long-form reading wants) is most of the
+            // "hard to read" complaint.
+            .lineSpacing(6 * factor)
             .frame(maxWidth: .infinity, alignment: .leading)
             .textSelection(.enabled)
             .contextMenu {
@@ -1503,15 +1541,26 @@ struct ChatMarkdownView: View {
     // built AttributedString by message text so an unchanged (finished) message is O(1) on
     // re-layout; a streaming message still re-parses each flush (its text actually changed).
     private static var cache: [String: AttributedString] = [:]
-    private static let cacheLimit = 256
+    /// Insertion order, for eviction. A plain dictionary has no oldest entry.
+    private static var cacheOrder: [String] = []
+    private static let cacheLimit = 512
 
     private func attributed() -> AttributedString {
         // Font design + scale change the built runs, so they're part of the key.
         let key = "\(fontDesignRaw)|\(fontScaleRaw)|\(text)"
         if let hit = Self.cache[key] { return hit }
         let out = build()
-        if Self.cache.count >= Self.cacheLimit { Self.cache.removeAll(keepingCapacity: true) }
+        // Evict the OLDEST quarter rather than dumping the whole cache. The full dump was a cliff:
+        // one insert past the limit invalidated every visible row at once, so the next scroll frame
+        // re-parsed the entire viewport — the stutter that read as a freeze. Partial eviction keeps
+        // the rows you're actually looking at warm.
+        if Self.cache.count >= Self.cacheLimit {
+            let drop = Self.cacheLimit / 4
+            for k in Self.cacheOrder.prefix(drop) { Self.cache.removeValue(forKey: k) }
+            Self.cacheOrder.removeFirst(min(drop, Self.cacheOrder.count))
+        }
         Self.cache[key] = out
+        Self.cacheOrder.append(key)
         return out
     }
 

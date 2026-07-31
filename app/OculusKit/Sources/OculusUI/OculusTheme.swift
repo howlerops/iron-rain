@@ -3,7 +3,7 @@ import SwiftUI
 /// The Oculus/HowlerOps palette, migrated from linear-orchestrator's design system
 /// (`apps/mobile/src/theme/colors.ts`). Amber (`#d9a520`) on black — a sparse, dark,
 /// session-first command surface. Use `OculusPalette.current(scheme)` in views.
-public struct OculusPalette {
+public struct OculusPalette: Equatable {
     public let background: Color
     public let foreground: Color
     public let card: Color
