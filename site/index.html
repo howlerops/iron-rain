@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Iron Rain — the native Apple Agent Development Environment</title>
 <link rel="icon" href="./assets/favicon.png" />
-<meta name="description" content="Iron Rain is a native macOS + iOS Agent Development Environment. Run real coding agents (opencode, claude-code, pi, or any CLI) on your own Mac, then launch, watch, steer, and approve them from anywhere. End-to-end encrypted. Your hardware, your keys." />
+<meta name="description" content="Iron Rain is a native macOS, iPadOS + iOS Agent Development Environment. Run real coding agents (opencode, claude-code, pi, or any CLI) on your own Mac, then launch, watch, steer, and approve them from anywhere. One MCP registry every agent shares, permissions scoped to the command, and end-to-end encryption. Your hardware, your keys." />
 <meta property="og:title" content="Iron Rain — the native Apple Agent Development Environment" />
-<meta property="og:description" content="Run opencode, claude-code, pi, and CLI agents on your Mac. Drive and approve them from your iPhone, from anywhere. Generative-UI chat, rich tool cards, full Jira/Linear editing, a built-in IDE, parallel fan-out, and autonomous loops — end-to-end encrypted." />
+<meta property="og:description" content="Run opencode, claude-code, pi, and CLI agents on your Mac. Drive and approve them from your iPhone or iPad, from anywhere. One MCP registry every agent shares, scoped permissions, generative-UI chat, full Jira/Linear editing, a built-in IDE, and fan-out with a real comparison — end-to-end encrypted." />
 <meta property="og:image" content="./assets/howlerops-icon-dark.png" />
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:image" content="./assets/howlerops-icon-dark.png" />
@@ -57,7 +57,7 @@
   </div>
   <div class="hero-eyebrow">
     <span class="eyebrow-dot" aria-hidden="true"></span>
-    Native macOS + iOS &nbsp;·&nbsp; Agent Development Environment
+    Native macOS · iPadOS · iOS &nbsp;·&nbsp; Agent Development Environment
   </div>
   <h1 class="hero-h1">
     Run real coding agents<br />
@@ -68,7 +68,8 @@
     Iron Rain is a native Apple ADE for opencode, claude-code, pi, and any CLI agent.
     Launch a session on your Mac, then watch it stream, steer it mid-run, and approve
     its tool calls from your iPhone lock screen — over an end-to-end encrypted link.
-    Your hardware, your subscriptions, your keys. No cloud middleman, no per-seat compute.
+    Configure an MCP server once and every agent gets it. Your hardware, your
+    subscriptions, your keys. No cloud middleman, no per-seat compute.
   </p>
   <div class="hero-cta">
     <a class="btn primary" href="#install">Install on your Mac</a>
@@ -80,10 +81,11 @@
   <ul class="hero-chips" aria-label="Key capabilities">
     <li>opencode · claude-code · pi · CLI</li>
     <li>Lock-screen approvals</li>
-    <li>Generative-UI chat</li>
+    <li>One MCP registry for every agent</li>
+    <li>Scoped permissions &amp; read-only modes</li>
     <li>Jira &amp; Linear editing</li>
     <li>Built-in IDE with LSP</li>
-    <li>Parallel fan-out</li>
+    <li>Fan out &amp; compare</li>
     <li>End-to-end encrypted</li>
   </ul>
 </section>
@@ -114,7 +116,7 @@
         </div>
         <div>
           <h3>Any agent, one interface</h3>
-          <p>opencode over HTTP/SSE, claude-code via the Agent SDK, pi over JSONL, plus any custom CLI — codex, gemini, aider. Auto-detected on install.</p>
+          <p>opencode over HTTP/SSE, claude-code via the Agent SDK, pi over JSONL, plus any custom CLI — codex, gemini, cursor-agent, aider, goose, crush and more. Detected on install, and verified to be the tool it claims before anything is routed to it.</p>
         </div>
       </div>
       <div class="problem-card">
@@ -256,19 +258,22 @@
       <article class="cap-card">
         <div class="cap-body">
           <span class="cap-num" aria-hidden="true">06</span>
-          <h3>Parallel fan-out &amp; loops</h3>
+          <h3>Fan out, then actually compare</h3>
           <p>
-            Race the same prompt across N agents in isolated git worktrees, then compare
-            the results and merge the winner. Take checkpoints to snapshot or roll back a
-            worktree. Set up Loops — recurring autonomous workflows that watch for new
-            tickets, plan, build, and open PRs hands-free.
+            Race the same prompt across N agents in isolated git worktrees — or split a job into
+            subtasks and run them in parallel. When they finish you get one comparison screen:
+            what each agent says it did, how many files it touched, how long it took. Keep the
+            winner and the rest are discarded with their worktrees. Ask for a recommendation and
+            a fresh agent reads every attempt and suggests one. Plus checkpoints to roll back,
+            and Loops — recurring workflows that watch for tickets, plan, build, and open PRs
+            hands-free.
           </p>
         </div>
         <figure class="cap-media" aria-label="Demo placeholder: parallel fan-out">
           <div class="media-placeholder">
-            <span class="media-label">&#9654; demo: N-agent fan-out + merge winner</span>
+            <span class="media-label">&#9654; demo: fan out, compare, keep the winner</span>
           </div>
-          <figcaption>Isolated worktrees racing one prompt, with checkpoints</figcaption>
+          <figcaption>Every attempt side by side — summary, diffstat, and one tap to keep</figcaption>
         </figure>
       </article>
 
@@ -309,6 +314,70 @@
             <span class="media-label">&#9654; demo: fleet dashboard + needs-you inbox</span>
           </div>
           <figcaption>Sessions · Loops · Fleet · Issues · Activity, plus Cmd-K</figcaption>
+        </figure>
+      </article>
+
+      <!-- 09 MCP host -->
+      <article class="cap-card">
+        <div class="cap-body">
+          <span class="cap-num" aria-hidden="true">09</span>
+          <h3>One MCP registry for every agent</h3>
+          <p>
+            Add an MCP server once and every agent gets it — opencode, claude-code, and any
+            CLI agent you&rsquo;ve configured. Iron Rain imports the servers your agents are
+            already set up with, then supervises each one <em>once</em> behind a local gateway,
+            so the same server stops running three times with three copies of your credentials.
+            Browse the public registry to install, test a server to see its real tool list, and
+            keep every key on your Mac.
+          </p>
+        </div>
+        <figure class="cap-media" aria-label="Demo placeholder: MCP registry">
+          <div class="media-placeholder">
+            <span class="media-label">&#9654; demo: import, test, and share MCP servers</span>
+          </div>
+          <figcaption>Import from your agents, supervise once, inject everywhere</figcaption>
+        </figure>
+      </article>
+
+      <!-- 10 Approval rules + modes -->
+      <article class="cap-card">
+        <div class="cap-body">
+          <span class="cap-num" aria-hidden="true">10</span>
+          <h3>Permissions that fit the task</h3>
+          <p>
+            &ldquo;Always allow&rdquo; can mean <em>this exact command shape</em>, <em>this folder</em>,
+            or <em>this project</em> — not a blanket yes to every shell call forever. Switch a session
+            to Ask for read-only or Architect to plan first, and see every standing rule in one place
+            to revoke it. All of it is enforced in the daemon, so it applies to every agent equally —
+            including the ones that have no permission model of their own, and to MCP tools too.
+          </p>
+        </div>
+        <figure class="cap-media" aria-label="Demo placeholder: approval rules">
+          <div class="media-placeholder">
+            <span class="media-label">&#9654; demo: scoped &ldquo;always allow&rdquo; + Ask mode</span>
+          </div>
+          <figcaption>Scoped rules, read-only modes, one place to take them back</figcaption>
+        </figure>
+      </article>
+
+      <!-- 11 Sharing -->
+      <article class="cap-card">
+        <div class="cap-body">
+          <span class="cap-num" aria-hidden="true">11</span>
+          <h3>Hand someone the wheel</h3>
+          <p>
+            Send a share link and a teammate can watch a live session — or steer it, if you let them.
+            Invites carry their own credential and expire, so sharing never means handing over your
+            keys, and they can be revoked at any time. Approvals stay yours: someone you&rsquo;ve let
+            steer can ask the agent to act, but only you authorize a tool that runs with your
+            credentials on your Mac.
+          </p>
+        </div>
+        <figure class="cap-media" aria-label="Demo placeholder: sharing a session">
+          <div class="media-placeholder">
+            <span class="media-label">&#9654; demo: invite, watch, grant steering</span>
+          </div>
+          <figcaption>Watch-only by default, revocable, approvals stay with the owner</figcaption>
         </figure>
       </article>
 
@@ -463,6 +532,30 @@
             <td><span class="cmp-dim">local only</span></td>
           </tr>
           <tr>
+            <td>One MCP registry shared by every agent</td>
+            <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
+            <td><span class="cmp-dim">per-agent</span></td>
+            <td><span class="cmp-dim">per-editor</span></td>
+          </tr>
+          <tr>
+            <td>Permissions scoped to a command, folder, or project</td>
+            <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
+            <td><span class="cmp-dim">varies</span></td>
+            <td><span class="cmp-dim">per-tool</span></td>
+          </tr>
+          <tr>
+            <td>Fan out <em>and</em> compare the results side by side</td>
+            <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
+            <td><span class="cmp-dim">varies</span></td>
+            <td><span class="cmp-no">&#8212;</span></td>
+          </tr>
+          <tr>
+            <td>Share a live session, watch-only by default</td>
+            <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
+            <td><span class="cmp-dim">varies</span></td>
+            <td><span class="cmp-no">&#8212;</span></td>
+          </tr>
+          <tr>
             <td>Generative-UI chat &amp; rich inline tool cards</td>
             <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
             <td><span class="cmp-dim">varies</span></td>
@@ -519,7 +612,7 @@
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
         </div>
         <h3>End-to-end encrypted</h3>
-        <p>The iOS app and Mac daemon establish keys with X25519 and encrypt every session
+        <p>The iPhone/iPad app and Mac daemon establish keys with X25519 and encrypt every session
         with ChaCha20-Poly1305. The relay — Cloudflare Durable Objects, with a Fly fallback —
         forwards only opaque ciphertext.</p>
       </div>
@@ -582,10 +675,11 @@
       <div class="install-step">
         <div class="step-num" aria-hidden="true">2</div>
         <div class="step-body">
-          <h3>Join the iOS TestFlight</h3>
-          <p>Join the TestFlight beta, install the Iron Rain iOS app,
+          <h3>Join the iPhone &amp; iPad TestFlight</h3>
+          <p>Join the TestFlight beta, install Iron Rain on your iPhone or iPad,
           then scan the QR code shown by the Mac app to pair your devices.
-          Everything after that is automatic.</p>
+          Everything after that is automatic — and on iPad you get the full
+          management layout, not a stretched phone app.</p>
           <a class="btn primary" href="./support.html#testflight">Join the TestFlight &rarr;</a>
         </div>
       </div>

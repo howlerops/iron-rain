@@ -53,7 +53,9 @@
     <ul>
       <li><a href="#how">How it fits together</a></li>
       <li><a href="#providers">Providers &amp; models</a></li>
+      <li><a href="#mcp">MCP servers</a></li>
       <li><a href="#remote">Remote &amp; security model</a></li>
+      <li><a href="#sharing">Sharing a session</a></li>
       <li><a href="#approvals">Approvals &amp; guardrails</a></li>
       <li><a href="#chat">Chat, tools &amp; sub-agents</a></li>
       <li><a href="#generative-ui">Generative UI</a></li>
@@ -94,6 +96,26 @@
   <p class="note">An agent only works if its own tool is installed and authenticated. If a session
   fails to start, Iron Rain tells you why instead of doing nothing.</p>
 
+
+  <h2 id="mcp">MCP servers</h2>
+  <p>Model Context Protocol servers give agents extra tools — your issue tracker, your database, a
+  browser. Iron Rain owns the registry so you configure a server once instead of once per agent.</p>
+  <ul>
+    <li><strong>Import what you already have.</strong> Iron Rain reads the MCP servers your agents are
+    already configured with (Claude Code&rsquo;s project and user config, opencode&rsquo;s) and offers
+    them for import. Nothing is adopted automatically — a server definition is a command that will run
+    with your credentials, so you confirm it.</li>
+    <li><strong>Supervised once.</strong> Enabled servers run behind a local gateway and are injected
+    into every agent, so the same server isn&rsquo;t started separately by each one with its own copy
+    of your keys. Turn on exclusive mode and your agents stop loading their own MCP config entirely.</li>
+    <li><strong>Browse and install.</strong> Search the public MCP registry and add a server from a
+    pre-filled form. Test any server to connect for real and see the tools it actually offers.</li>
+    <li><strong>Local and hosted.</strong> Both stdio servers and hosted HTTP endpoints, across both
+    the current and previous protocol revisions.</li>
+    <li><strong>Credentials stay put.</strong> Server keys live on your Mac at owner-only permissions
+    and are never sent to a client — the app shows which keys are set, never their values.</li>
+  </ul>
+
   <h2 id="remote">Remote &amp; security model</h2>
   <p>Iron Rain works off your home network with zero setup, and the security model is the same
   wherever you are.</p>
@@ -110,11 +132,39 @@
     <li><strong>APNs push.</strong> Session events reach your phone even when the app is closed.</li>
   </ul>
 
+
+  <h2 id="sharing">Sharing a session</h2>
+  <p>Sharing is off by default: every device you&rsquo;ve paired is yours and has full control. Turn it
+  on when you want someone else to see what an agent is doing.</p>
+  <ul>
+    <li><strong>Invites carry their own credential.</strong> A share link has its own secret and its
+    own role, so inviting someone never means handing over the pairing secret for your Mac. Links
+    expire and can be revoked, which un-links anyone who used them.</li>
+    <li><strong>Watch by default, steer by grant.</strong> A guest arrives watch-only. Granting them
+    steering lets them prompt and interrupt, and it is revocable at any time. An invite can never
+    grant ownership.</li>
+    <li><strong>Approvals stay with the owner.</strong> Someone steering can ask the agent to act, but
+    only you authorize a tool call — those run with your credentials, on your machine. Every prompt
+    and interrupt is attributed to whoever sent it.</li>
+  </ul>
+
   <h2 id="approvals">Approvals &amp; guardrails</h2>
   <p>When an agent wants to run a shell command, write a file, or push a commit, it pauses for you.</p>
   <ul>
     <li><strong>Lock-screen approvals.</strong> A push arrives; tap through to approve or deny the
     tool call without unlocking into the app. The agent continues from exactly where it stopped.</li>
+    <li><strong>See what you&rsquo;re approving.</strong> The card shows the tool&rsquo;s real
+    arguments, not a truncated summary.</li>
+    <li><strong>Scoped &ldquo;always allow&rdquo;.</strong> Saying always can mean this command shape
+    (<code>git status *</code>), this folder, or this project — rather than a blanket yes to every
+    shell call forever. Every standing rule is listed in one place and can be revoked; deny rules
+    always beat allow rules.</li>
+    <li><strong>Session modes.</strong> <em>Code</em> is normal, <em>Ask</em> is read-only (edits and
+    commands are refused), and <em>Architect</em> plans first. Modes are enforced by the daemon, so
+    they apply to every agent equally — including the ones with no permission model of their own —
+    and a standing allow rule cannot punch through a read-only mode.</li>
+    <li><strong>MCP tools obey the same rules.</strong> A tool call through an MCP server is gated by
+    the same modes and rules as a native one, and is attributed to the session that made it.</li>
     <li><strong>Spending guardrails.</strong> Set a cost budget per session; the run stops before it
     overspends. Live cost and token meters show spend as it happens.</li>
   </ul>
@@ -162,7 +212,11 @@
   <p>Run more than one agent, and keep long jobs on the rails.</p>
   <ul>
     <li><strong>Parallel fan-out.</strong> Launch N agents on the same prompt in isolated worktrees,
-    let them race, then compare and merge the winner.</li>
+    let them race, then keep one. When they finish you get a comparison built from what each agent
+    says it did plus a real diffstat — no extra model call needed. Optionally ask for a
+    recommendation: a fresh agent reads every attempt and suggests one, advisory only.</li>
+    <li><strong>Divided fan-out.</strong> Instead of racing the same prompt, give each agent its own
+    subtask and run them in parallel, each on its own branch so they stay reviewable separately.</li>
     <li><strong>Scoped sub-agents.</strong> Delegate a bounded piece of work to a sub-agent that
     streams back inline.</li>
     <li><strong>Heartbeat.</strong> An autonomous supervisor nudges a session toward completion
