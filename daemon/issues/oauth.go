@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -21,9 +22,13 @@ const (
 // Atlassian (Jira) OAuth 2.0 3LO endpoints (developer.atlassian.com/cloud/jira/platform/oauth-2-3lo-apps).
 const (
 	jiraAuthorizeURL = "https://auth.atlassian.com/authorize"
-	jiraTokenURL     = "https://auth.atlassian.com/oauth/token"
 	jiraResourcesURL = "https://api.atlassian.com/oauth/token/accessible-resources"
 )
+
+// jiraTokenURL is a var (not const) purely so the refresh-race test can point it at a local fake
+// IdP — the single-flight guarantee is only worth having if a test can prove it against a server
+// that detects rotation reuse.
+var jiraTokenURL = "https://auth.atlassian.com/oauth/token"
 
 // linearScopes grant read + write (issue updates + comments) as the authorizing USER.
 var linearScopes = []string{"read", "write"}
@@ -169,8 +174,34 @@ func exchangeCode(ctx context.Context, tokenURL string, form url.Values) (oauthT
 		return oauthToken{}, err
 	}
 	defer drainClose(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return oauthToken{}, err
+	}
+	// A non-2xx from the token endpoint used to be swallowed: the error body ("invalid_grant") isn't
+	// an oauthToken, so decoding yielded an EMPTY token and the caller reported the useless "no
+	// access_token". The status + OAuth error code are the diagnosis — a revoked refresh token reads
+	// completely differently from a network blip, and downstream messages depend on seeing it.
+	if resp.StatusCode/100 != 2 {
+		var oe struct {
+			Error string `json:"error"`
+			Desc  string `json:"error_description"`
+		}
+		_ = json.Unmarshal(body, &oe)
+		msg := oe.Error
+		if oe.Desc != "" {
+			msg += ": " + oe.Desc
+		}
+		if msg == "" {
+			msg = strings.TrimSpace(string(body))
+			if len(msg) > 200 {
+				msg = msg[:200]
+			}
+		}
+		return oauthToken{}, fmt.Errorf("token endpoint HTTP %d: %s", resp.StatusCode, msg)
+	}
 	var tok oauthToken
-	if err := json.NewDecoder(resp.Body).Decode(&tok); err != nil {
+	if err := json.Unmarshal(body, &tok); err != nil {
 		return oauthToken{}, err
 	}
 	return tok, nil
@@ -179,7 +210,7 @@ func exchangeCode(ctx context.Context, tokenURL string, form url.Values) (oauthT
 // jiraCloudID returns the first Jira site (cloudid) the access token can reach.
 // JiraSiteInfo is one Atlassian site (cloud) the OAuth token can access.
 type JiraSiteInfo struct {
-	ID   string `json:"id"`   // cloud id (routes /ex/jira/{id})
+	ID   string `json:"id"` // cloud id (routes /ex/jira/{id})
 	Name string `json:"name"`
 	URL  string `json:"url"`
 }

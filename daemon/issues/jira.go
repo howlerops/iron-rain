@@ -28,6 +28,16 @@ type Jira struct {
 	mu   sync.Mutex // guards auth/tokens (an OAuth token can rotate under concurrent calls)
 	auth string     // "Basic ..." or "Bearer ..."
 
+	// refreshMu serializes the WHOLE token exchange, network round trip included. j.mu alone was not
+	// enough: it was released during the HTTP call, so the 40-minute proactive cron and a
+	// 401-triggered refresh (or several parallel API calls all expiring together — a board load
+	// fires many) could each present the SAME refresh token. Atlassian ROTATES refresh tokens and
+	// treats reuse of a rotated one as theft, revoking the whole token family — which is exactly the
+	// "have to re-auth every day" failure: the connection died on the first concurrent refresh after
+	// each ~1h expiry.
+	refreshMu  sync.Mutex
+	refreshGen uint64 // bumped on every successful refresh; lets a waiter skip a redundant exchange
+
 	// OAuth refresh state (empty for basic-auth connections):
 	oauth        bool
 	clientID     string
@@ -135,12 +145,34 @@ func (j *Jira) RefreshToken(ctx context.Context) error {
 }
 
 // refresh swaps the refresh token for a fresh access (+ rotated refresh) token and persists it.
+// SINGLE-FLIGHT: exactly one exchange runs at a time, and a caller that was waiting behind one
+// reuses its result instead of re-presenting the (now rotated, now poisonous) old token.
 func (j *Jira) refresh(ctx context.Context) error {
 	j.mu.Lock()
+	genBefore := j.refreshGen
+	j.mu.Unlock()
+
+	j.refreshMu.Lock()
+	defer j.refreshMu.Unlock()
+
+	// While we waited for the lock, someone else completed a refresh. Their token is fresh (seconds
+	// old); running another exchange would burn a rotation for nothing — and the whole point of the
+	// serialization is that nobody ever presents a superseded refresh token.
+	j.mu.Lock()
+	if j.refreshGen != genBefore {
+		j.mu.Unlock()
+		return nil
+	}
 	clientID, clientSecret, refreshTok := j.clientID, j.clientSecret, j.refreshToken
 	j.mu.Unlock()
+
 	tok, err := refreshJiraToken(ctx, clientID, clientSecret, refreshTok)
 	if err != nil {
+		// A definitively dead refresh token (revoked family, expired grant) is a "reconnect Jira"
+		// situation, not a transient failure — say so, because this string drives the reconnect pill.
+		if strings.Contains(err.Error(), "invalid_grant") || strings.Contains(err.Error(), "403") {
+			return fmt.Errorf("jira: authorization expired — reconnect Jira in Integrations (%w)", err)
+		}
 		return err
 	}
 	if tok.AccessToken == "" {
@@ -152,6 +184,7 @@ func (j *Jira) refresh(ctx context.Context) error {
 	if tok.RefreshToken != "" {
 		j.refreshToken = tok.RefreshToken // Atlassian rotates refresh tokens
 	}
+	j.refreshGen++
 	onRefresh, newRefresh := j.onRefresh, j.refreshToken
 	j.mu.Unlock()
 	if onRefresh != nil {
@@ -261,8 +294,8 @@ func (j *Jira) ListAssigned(ctx context.Context) ([]Issue, error) {
 		sprintName, sprintState := jiraSprint(is.Fields.Sprint)
 		out = append(out, Issue{
 			ID: is.Key, Key: is.Key, Title: is.Fields.Summary,
-			Body:     adfToText(is.Fields.Description),
-			Status:   is.Fields.Status.Name, Category: jiraCategory(is.Fields.Status.StatusCategory.Key),
+			Body:   adfToText(is.Fields.Description),
+			Status: is.Fields.Status.Name, Category: jiraCategory(is.Fields.Status.StatusCategory.Key),
 			Assignee: is.Fields.Assignee.DisplayName, Priority: jiraPriority(is.Fields.Priority.Name),
 			Provider: "jira", TeamID: is.Fields.Project.Key, TeamName: is.Fields.Project.Name,
 			BranchName: branchNameFor(is.Key, is.Fields.Summary),
