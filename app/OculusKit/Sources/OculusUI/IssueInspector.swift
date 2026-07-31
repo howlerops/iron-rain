@@ -694,7 +694,8 @@ enum MarkdownBlock {
 enum MarkdownParser {
     static func parse(_ text: String) -> [MarkdownBlock] {
         var blocks: [MarkdownBlock] = []
-        let lines = text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
+        let lines = separateJammedBold(text.replacingOccurrences(of: "\r\n", with: "\n"))
+            .components(separatedBy: "\n")
         var i = 0
         var para: [String] = []
         func flush() {
@@ -726,6 +727,54 @@ enum MarkdownParser {
         }
         flush()
         return blocks
+    }
+
+
+    /// Restores line breaks that were lost between a bold run and what follows it.
+    ///
+    /// Agents emit reasoning-step titles as bold runs (`**Confirming repository paths**`) and some
+    /// providers stream them with NO separator at all, so a turn arrives as one unbroken string:
+    /// `**Title**The filesystem tool batch is aborting...` and, where two titles are adjacent,
+    /// `paths****Inspecting`. Rendered faithfully that is a wall of text with words fused to
+    /// headings — which is exactly what it looked like.
+    ///
+    /// Both shapes are unambiguous artifacts rather than meaningful markdown: `****` is an empty
+    /// bold (never intentional), and a bold run butting straight into a capital letter is a lost
+    /// break. Repairing them here fixes every provider at once, and fixes history too, since the
+    /// durable transcript stores the raw text and this runs at render time.
+    ///
+    /// Deliberately conservative — it will not touch `**bold**, then prose` or `**bold**s`, because
+    /// those continue a sentence rather than starting one.
+    static func separateJammedBold(_ s: String) -> String {
+        guard s.contains("**") else { return s }
+        var out = ""
+        out.reserveCapacity(s.count + 16)
+        let chars = Array(s)
+        var i = 0
+        // Tracks whether we're inside a bold run, so a CLOSING `**` can be told from an opening one.
+        var inBold = false
+        while i < chars.count {
+            if chars[i] == "*", i + 1 < chars.count, chars[i + 1] == "*" {
+                // Four in a row: two bold runs collided. Break between them.
+                if i + 3 < chars.count, chars[i + 2] == "*", chars[i + 3] == "*" {
+                    out += "**\n\n**"
+                    i += 4
+                    continue
+                }
+                out += "**"
+                i += 2
+                inBold.toggle()
+                // A bold run just CLOSED and the next character starts a new sentence — the break
+                // between heading and body was dropped upstream.
+                if !inBold, i < chars.count, chars[i].isUppercase {
+                    out += "\n"
+                }
+                continue
+            }
+            out.append(chars[i])
+            i += 1
+        }
+        return out
     }
 
     private static func heading(_ s: String) -> (Int, String)? {
