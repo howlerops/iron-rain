@@ -13,7 +13,19 @@ import AppKit
 /// send) along the bottom. iOS + macOS.
 struct Composer: View {
     @ObservedObject var model: Model
+    /// The per-session store (Model.drafts). Read on open, written on send / session switch /
+    /// idle — NOT on every keystroke.
     @Binding var draft: String
+    /// What you're typing, held locally.
+    ///
+    /// This used to be bound straight through to `model.drafts`, so every keystroke published on the
+    /// Model and invalidated everything observing it — including the whole transcript. On a phone with
+    /// a long conversation open that is the typing lag: each character re-evaluated hundreds of rows.
+    /// Keeping the in-progress text local means a keystroke re-renders the composer and nothing else.
+    @State private var entry: String = ""
+    /// The session `entry` belongs to, so a switch can flush it to the RIGHT session's draft.
+    @State private var entrySession: String? = nil
+    @State private var flushTask: Task<Void, Never>? = nil
     let palette: OculusPalette
 
     @StateObject private var dictator = SpeechDictator()
@@ -27,21 +39,21 @@ struct Composer: View {
     /// Highlighted row in the slash-command popup (Tab completes it, ↑/↓ move it).
     @State private var cmdIndex = 0
     // Shell-style prompt history: ↑/↓ recall previously SENT prompts when the slash popup is closed.
-    // historyIndex nil = not browsing (editing a fresh draft); 0 = most recent sent; up counts back.
+    // historyIndex nil = not browsing (editing a fresh entry); 0 = most recent sent; up counts back.
     @State private var historyIndex: Int? = nil
-    @State private var historyStash = "" // the in-progress draft, preserved so ↓ past the newest restores it
+    @State private var historyStash = "" // the in-progress entry, preserved so ↓ past the newest restores it
     #if os(iOS)
     @State private var photoItem: PhotosPickerItem?
     #endif
 
-    /// The command palette is active while the draft is a single "/token" or "$token" (no space
+    /// The command palette is active while the entry is a single "/token" or "$token" (no space
     /// yet). It filters to commands with the matching prefix — so codex "$" skills and "/" commands
     /// each appear under their own trigger.
     private var commandMatches: [SlashCommand] {
-        guard let first = draft.first, first == "/" || first == "$",
-              !draft.dropFirst().contains(" "), !model.commands.isEmpty else { return [] }
+        guard let first = entry.first, first == "/" || first == "$",
+              !entry.dropFirst().contains(" "), !model.commands.isEmpty else { return [] }
         let prefix = String(first)
-        let q = draft.dropFirst().lowercased()
+        let q = entry.dropFirst().lowercased()
         return model.commands.filter { ($0.prefix ?? "/") == prefix && (q.isEmpty || $0.name.lowercased().hasPrefix(q)) }
     }
 
@@ -78,12 +90,12 @@ struct Composer: View {
         }
         .background(palette.background)
         .onChange(of: dictator.transcript) { newValue in
-            if dictator.isRecording { draft = newValue }
+            if dictator.isRecording { entry = newValue }
         }
-        // Design Mode (or any tool) injects context into the draft via model.draftInsert.
+        // Design Mode (or any tool) injects context into the entry via model.draftInsert.
         .onChange(of: model.draftInsert) { text in
             guard !text.isEmpty else { return }
-            draft = draft.isEmpty ? text : draft + "\n\n" + text
+            entry = entry.isEmpty ? text : entry + "\n\n" + text
             model.draftInsert = ""
         }
         // Voice mode: a finished turn (busy → false) → speak the agent's reply, which then resumes
@@ -93,7 +105,25 @@ struct Composer: View {
                 voice.speak(model.messages.last(where: { $0.role == .assistant })?.text ?? "")
             }
         }
+        // Adopt the stored draft on open, and whenever something OUTSIDE the composer writes one
+        // (a suggested prompt, an injected snippet, a session switch). Because typing no longer
+        // writes back on every keystroke, this fires only for those real external changes.
+        .onChange(of: draft) { stored in
+            if stored != entry { entry = stored }
+        }
+        .onChange(of: model.sessionID) { newID in
+            flushTask?.cancel()
+            // Flush to the session being LEFT, not the one arriving — otherwise a half-typed message
+            // lands in the wrong conversation.
+            if let prev = entrySession, model.drafts[prev] != entry { model.drafts[prev] = entry }
+            entrySession = newID
+            entry = model.drafts[newID ?? ""] ?? ""
+        }
+        .onChange(of: entry) { _ in scheduleFlush() }
+        .onDisappear { flushTask?.cancel(); flushNow() }
         .onAppear {
+            entrySession = model.sessionID
+            entry = draft
             refreshThumbs()
             voice.onUtterance = { text in
                 guard !text.isEmpty else { return }
@@ -133,7 +163,7 @@ struct Composer: View {
     }
 
     /// Autocomplete of the agent's slash commands (built-in + custom), shown above the input when
-    /// the draft begins with "/". Tapping inserts "/name " so you can add args, then send.
+    /// the entry begins with "/". Tapping inserts "/name " so you can add args, then send.
     private var commandPalette: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -188,9 +218,9 @@ struct Composer: View {
         return min(max(0, cmdIndex), commandMatches.count - 1)
     }
 
-    /// Completes a command into the draft (full name + trailing space, which closes the popup).
+    /// Completes a command into the entry (full name + trailing space, which closes the popup).
     private func complete(_ cmd: SlashCommand) {
-        draft = "\(cmd.glyph)\(cmd.name) "
+        entry = "\(cmd.glyph)\(cmd.name) "
         focused = true
     }
 
@@ -199,13 +229,13 @@ struct Composer: View {
     /// Enter sends, Shift+Enter inserts a newline. A SwiftUI overlay draws the placeholder.
     @ViewBuilder private var messageField: some View {
         ZStack(alignment: .topLeading) {
-            if draft.isEmpty {
+            if entry.isEmpty {
                 Text("Message the agent…")
                     .font(.body).foregroundStyle(palette.mutedForeground)
                     .padding(.top, 7).padding(.leading, 2).allowsHitTesting(false)
             }
             ComposerTextView(
-                text: $draft, maxHeight: 160,
+                text: $entry, maxHeight: 160,
                 onSubmit: { submit() },
                 // Tab completes the highlighted command; ↑/↓ move the highlight. Each only consumes
                 // the key while the popup is open, so normal typing/tabbing is unaffected.
@@ -215,7 +245,7 @@ struct Composer: View {
             )
         }
         // Reset the highlight to the top whenever the set of matches changes (new keystroke).
-        .onChange(of: draft) { _ in
+        .onChange(of: entry) { _ in
             cmdIndex = 0
             if !settingFromHistory { historyIndex = nil } // a manual edit ends history browsing
         }
@@ -237,7 +267,7 @@ struct Composer: View {
     }
 
     /// Shell-style history recall. delta -1 = older (↑), +1 = newer (↓). Returns true to CONSUME the
-    /// arrow only when it actually moved through history — so in a multi-line draft the arrows still
+    /// arrow only when it actually moved through history — so in a multi-line entry the arrows still
     /// navigate text normally until you're at the top/bottom with nothing to recall. Runs only when
     /// the slash popup is closed (moveSelection is tried first).
     private func recallHistory(_ delta: Int) -> Bool {
@@ -246,13 +276,13 @@ struct Composer: View {
         switch historyIndex {
         case nil:
             guard delta < 0 else { return false } // ↓ with no active recall = let the caret move
-            // Only hijack ↑ from an empty/at-top draft, so editing a long message isn't disrupted.
-            if !draft.isEmpty && draft != hist.last { return false }
-            historyStash = draft
+            // Only hijack ↑ from an empty/at-top entry, so editing a long message isn't disrupted.
+            if !entry.isEmpty && entry != hist.last { return false }
+            historyStash = entry
             historyIndex = 0
         case .some(let i):
             let next = i - delta // delta -1 (older) increases the back-index
-            if next < 0 { // ↓ past the newest → restore the stashed in-progress draft
+            if next < 0 { // ↓ past the newest → restore the stashed in-progress entry
                 historyIndex = nil
                 setDraftFromHistory(historyStash)
                 return true
@@ -266,10 +296,10 @@ struct Composer: View {
         return true
     }
 
-    /// Sets the draft from history WITHOUT the onChange handler treating it as a manual edit.
+    /// Sets the entry from history WITHOUT the onChange handler treating it as a manual edit.
     private func setDraftFromHistory(_ text: String) {
         settingFromHistory = true
-        draft = text
+        entry = text
         DispatchQueue.main.async { settingFromHistory = false }
     }
 
@@ -282,19 +312,40 @@ struct Composer: View {
         return true
     }
 
+    /// Persists the in-progress text to the per-session store once typing pauses.
+    ///
+    /// Deliberately debounced: the store is `@Published`, so writing it re-renders every observer.
+    /// Once per pause preserves the draft across session switches and quits without paying that cost
+    /// on every character.
+    private func scheduleFlush() {
+        flushTask?.cancel()
+        flushTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            guard !Task.isCancelled else { return }
+            flushNow()
+        }
+    }
+
+    private func flushNow() {
+        let key = entrySession ?? model.sessionID
+        if model.drafts[key ?? ""] != entry { model.drafts[key ?? ""] = entry }
+    }
+
     private func submit() {
         // Enter with the popup open completes the highlighted command instead of sending.
         if !commandMatches.isEmpty { _ = completeSelected(); return }
         guard canSend else { return }
-        let text = draft
-        draft = ""
+        let text = entry
+        entry = ""
+        flushTask?.cancel()
+        model.drafts[entrySession ?? model.sessionID ?? ""] = ""
         historyIndex = nil; historyStash = ""
         if dictator.isRecording { dictator.stop() }
         Task { await model.send(text) }
     }
 
     private var canSend: Bool {
-        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.pendingImages.isEmpty || !model.pendingFiles.isEmpty
+        !entry.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.pendingImages.isEmpty || !model.pendingFiles.isEmpty
     }
 
     private var attachmentChips: some View {
@@ -401,10 +452,10 @@ struct Composer: View {
     /// Opens the slash-command palette — especially handy on iPhone where "type /" isn't obvious.
     private var slashButton: some View {
         Button {
-            if draft.isEmpty {
-                draft = "/"
-            } else if !draft.hasPrefix("/") && !draft.hasPrefix("$") {
-                draft = "/" + draft
+            if entry.isEmpty {
+                entry = "/"
+            } else if !entry.hasPrefix("/") && !entry.hasPrefix("$") {
+                entry = "/" + entry
             }
             focused = true
         } label: {

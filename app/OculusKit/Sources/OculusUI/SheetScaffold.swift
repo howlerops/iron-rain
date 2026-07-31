@@ -54,7 +54,14 @@ struct OculusSheet<Content: View>: View {
                 content()
             }
         }
+        // A minimum size is a macOS idea: sheets there are free-floating windows that would otherwise
+        // open comically small. On a phone the sheet is already the width of the screen, and asking
+        // for 560pt forced the content WIDER than the device and let the page scroll sideways.
+        #if os(macOS)
         .frame(minWidth: minW, minHeight: minH)
+        #else
+        .frame(maxWidth: .infinity)
+        #endif
         .background(palette.background)
     }
 

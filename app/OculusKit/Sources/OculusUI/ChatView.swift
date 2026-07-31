@@ -31,6 +31,9 @@ public struct ChatView: View {
     @State private var showHandoff = false
     @State private var showWorkspace = false
     @State private var showDelegate = false
+    /// iOS: the session's controls live on a sheet instead of eight squeezed navigation-bar items.
+    @State private var showSessionControls = false
+    @State private var showUsage = false
 
     public init(model: Model) { self.model = model }
 
@@ -111,6 +114,31 @@ public struct ChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
         .toolbar {
+            #if os(iOS)
+            // A phone navigation bar fits about three things. It used to be given eight — the cost
+            // meter, heartbeat, activity, agent count, handoff, model, autonomy, mode and an overflow
+            // menu — so everything truncated ("$0.0…") and every target was a sliver. The state you
+            // GLANCE at is now one legible chip; the state you CHANGE is one tap away with room to
+            // breathe.
+            if model.sessionID != nil {
+                ToolbarItem(placement: .principal) {
+                    Button { showSessionControls = true } label: {
+                        SessionTitleChip(model: model, palette: palette, status: statusLabel)
+                    }
+                    .buttonStyle(.plain)
+                }
+                if model.activeHandoff != nil {
+                    ToolbarItem(placement: .navigationBarTrailing) {
+                        Button { showHandoff = true } label: { Image(systemName: "doc.text.magnifyingglass") }
+                            .help("The agent saved its progress to a handoff file.")
+                    }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button { showSessionControls = true } label: { Image(systemName: "slider.horizontal.3") }
+                        .help("Session controls — model, mode, tools, usage")
+                }
+            }
+            #else
             if let s = model.currentSession, (s.costUSD ?? 0) > 0 || (s.inputTokens ?? 0) > 0 {
                 ToolbarItem(placement: .automatic) { UsageChip(session: s, palette: palette) }
             }
@@ -272,6 +300,21 @@ public struct ChatView: View {
                     .help("Review workspace changes across all repos")
                 }
             }
+            #endif
+        }
+        .sheet(isPresented: $showSessionControls) {
+            SessionControlsSheet(
+                model: model, palette: palette,
+                onClose: { showSessionControls = false },
+                onOpenCode: { model.codeReviewTarget = model.sessionID },
+                onOpenDesign: { model.designRequested = true },
+                onDelegate: { showDelegate = true },
+                onWorktree: { showWorktreePanel = true },
+                onWorkspace: { showWorkspace = true; Task { await model.workspaceDiff() } },
+                onUsage: { showUsage = true })
+        }
+        .sheet(isPresented: $showUsage) {
+            UsageView(model: model, palette: palette) { showUsage = false }
         }
         .sheet(isPresented: $showWorktreePanel) {
             WorktreePanel(model: model, palette: palette) { showWorktreePanel = false }
@@ -390,6 +433,10 @@ public struct ChatView: View {
                 }
                 .padding(16)
             }
+            // Breathing room at the top edge. Without it a scrolled transcript butts straight into
+            // the to-do bar above it, and the top line is sliced in half — it reads as a layout bug
+            // rather than as content continuing upward.
+            .modifier(TopScrollInset())
             Group {
                 if #available(macOS 14.0, iOS 17.0, *) {
                     // Native bottom anchoring keeps the view pinned as a message streams (text grows
@@ -1149,6 +1196,9 @@ struct TodoBar: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+        // Opaque, not tinted-translucent: this bar sits directly above a scrolling transcript, and a
+        // see-through background let text slide underneath it and show through as a smear.
+        .background(palette.background)
         .background(palette.card.opacity(0.4))
         .overlay(alignment: .bottom) { Divider().overlay(palette.border) }
     }
@@ -1929,5 +1979,19 @@ struct TranscriptSkeleton: View {
         .foregroundStyle(palette.mutedForeground)
         .opacity(shimmer ? 0.30 : 0.14)
         .animation(reduceMotion ? nil : .easeInOut(duration: 1.1).repeatForever(autoreverses: true), value: shimmer)
+    }
+}
+
+
+/// Insets the top of a transcript's scroll content. `contentMargins` needs macOS 14 / iOS 17; on
+/// older systems the transcript keeps its previous flush edge rather than faking it with padding
+/// (which would move the content itself, not the scroll inset).
+struct TopScrollInset: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 14.0, iOS 17.0, *) {
+            content.contentMargins(.top, 10, for: .scrollContent)
+        } else {
+            content
+        }
     }
 }

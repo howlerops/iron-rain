@@ -54,6 +54,10 @@ struct ComposerTextView: View {
     var body: some View {
         Representable(text: $text, maxHeight: maxHeight, height: $measured,
                       onSubmit: onSubmit, onTab: onTab, onMoveUp: onMoveUp, onMoveDown: onMoveDown)
+            // maxWidth pins the composer to its container. Without it the platform text view's own
+            // intrinsic width (the width of the LONGEST UNWRAPPED LINE) can propose a size wider than
+            // the screen, which on iOS widened the entire chat and let it scroll sideways.
+            .frame(maxWidth: .infinity)
             .frame(height: min(max(34, measured), maxHeight))
     }
 }
@@ -171,7 +175,14 @@ private struct Representable: UIViewRepresentable {
         tv.delegate = context.coordinator
         tv.font = .preferredFont(forTextStyle: .body)
         tv.backgroundColor = .clear
+        // Scrolling stays ON permanently. A UITextView with scrolling DISABLED advertises an
+        // intrinsic content size — including a width equal to its longest unwrapped line — and
+        // SwiftUI honours it, which is exactly how one long pasted path used to stretch the whole
+        // chat wider than the screen. Height is measured explicitly below instead.
         tv.isScrollEnabled = true
+        tv.alwaysBounceVertical = false
+        tv.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        tv.setContentHuggingPriority(.defaultLow, for: .horizontal)
         tv.textContainerInset = UIEdgeInsets(top: 7, left: 0, bottom: 7, right: 0)
         tv.textContainer.lineFragmentPadding = 0
         // Native writing aids: autocorrect, spell-check, and the predictive/QuickType bar for the prompt.
@@ -193,10 +204,24 @@ private struct Representable: UIViewRepresentable {
         recompute(tv)
     }
 
+    /// Reports the composer's size to SwiftUI directly, so the layout never has to consult the text
+    /// view's intrinsic size. Width is always whatever the parent proposed; only height is measured.
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView tv: UITextView, context: Context) -> CGSize {
+        let w = proposal.width ?? tv.bounds.width
+        guard w.isFinite, w > 0 else { return CGSize(width: 10, height: max(34, height)) }
+        let fit = tv.sizeThatFits(CGSize(width: w, height: .greatestFiniteMagnitude))
+        return CGSize(width: w, height: min(max(34, fit.height), maxHeight))
+    }
+
     func recompute(_ tv: UITextView) {
-        let size = tv.sizeThatFits(CGSize(width: tv.bounds.width, height: .greatestFiniteMagnitude))
+        // Measure against the LAID-OUT width. Before first layout bounds.width is 0, and measuring at
+        // width 0 returns the whole text on one unwrapped line — a wildly tall/wide result that then
+        // drove the next layout pass.
+        let w = tv.bounds.width
+        guard w > 0 else { return }
+        let size = tv.sizeThatFits(CGSize(width: w, height: .greatestFiniteMagnitude))
         let h = min(max(34, size.height), maxHeight)
-        tv.isScrollEnabled = size.height > maxHeight
+        tv.showsVerticalScrollIndicator = size.height > maxHeight
         if abs(h - height) > 0.5 { DispatchQueue.main.async { height = h } }
     }
 
