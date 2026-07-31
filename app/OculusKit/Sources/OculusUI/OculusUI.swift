@@ -1413,14 +1413,19 @@ public final class Model: ObservableObject {
     /// Observes an existing hub-managed session (replays its transcript, then live).
     public func openSession(_ id: String) async {
         guard let client else { return }
-        // A self-replaying provider may re-stream history right after we subscribe, on top of the
-        // daemon's replay. Arm the de-duplicator for the same reason re-attach does — cheap, and it
-        // makes the overlap between the two sources harmless rather than doubled.
-        dedupReplay = true
-        Task { try? await Task.sleep(nanoseconds: 5_000_000_000); dedupReplay = false }
         // Already the open session → no-op. Re-running the full clear+resubscribe (e.g. when you
         // click the active row again) briefly wiped messages/currentSession and blanked the detail.
+        //
+        // This check comes FIRST on purpose: arming the de-duplicator before it meant a harmless
+        // re-click on the active session put a live, streaming conversation into dedup mode for five
+        // seconds, where any new message repeating earlier text would be silently dropped.
         if id == currentSession?.id, !messages.isEmpty { return }
+        // A self-replaying provider may re-stream history right after we subscribe, on top of the
+        // daemon's replay — and a trimmed ring now replays durable history in front of the live
+        // window, which overlaps too. Arm the de-duplicator so those overlaps collapse instead of
+        // doubling. Only for a real switch, where the transcript is about to be cleared anyway.
+        dedupReplay = true
+        Task { try? await Task.sleep(nanoseconds: 5_000_000_000); dedupReplay = false }
         // A stopped session (daemon restarted, provider couldn't re-attach) has nothing to subscribe
         // to — load it and let ChatView show a Restart affordance, instead of erroring on subscribe.
         if let s = sessions.first(where: { $0.id == id }), s.status == SessionStatusValue.stopped {

@@ -109,9 +109,12 @@ type managedSession struct {
 	// sequence for ordering persisted events (seeded past any restored rows), the accumulated assistant
 	// delta text for the current turn, and whether a real assistant message was already persisted this
 	// turn (so the synthetic delta-accumulated one isn't a duplicate).
-	txSeq         int64
-	asstAccum     strings.Builder
-	asstPersisted bool
+	txSeq int64
+	// transcriptTrimmed records that the in-memory ring has DROPPED events. Once true, the ring is no
+	// longer a complete record of the session and must not be replayed as if it were.
+	transcriptTrimmed bool
+	asstAccum         strings.Builder
+	asstPersisted     bool
 
 	// createdAt is when this binding was made (create or attach). It bounds the window in which a
 	// self-replaying provider might still be re-streaming its history — see subscribe().
@@ -371,6 +374,21 @@ func (m *managedSession) subscribe(conn *transport.Conn) {
 	// wiped) before it has streamed anything new — replay the DURABLE transcript from SQLite so the
 	// full history comes back for EVERY provider (not just opencode/claude, which also re-stream on
 	// attach).
+	// A ring that has been TRIMMED is a recent window, not the session. Big tool outputs blow the 8MB
+	// byte cap quickly, so a long session could keep only its last few events — and re-opening it
+	// showed a handful of messages where there had been hours of work, while the full history sat
+	// safely in SQLite the whole time. Put the durable history in front of the window; the client
+	// de-duplicates the overlap (it arms its replay de-duplicator on every open).
+	m.mu.Lock()
+	trimmed := m.transcriptTrimmed
+	m.mu.Unlock()
+	if trimmed && len(replay) > 0 {
+		if db := m.hub.db; db != nil {
+			if durable, err := db.Transcript(m.sess.ID()); err == nil && len(durable) > 0 {
+				replay = append(append([][]byte(nil), durable...), replay...)
+			}
+		}
+	}
 	if len(replay) == 0 {
 		// Providers that RE-STREAM their own history (opencode/claude-code) are the single source of
 		// replay truth WHILE that re-stream is in flight — layering the durable transcript on top of
@@ -609,6 +627,7 @@ func (m *managedSession) trimTranscript() {
 		m.transcriptBytes -= len(m.transcript[0])
 		m.transcript[0] = nil // release the backing bytes for GC
 		m.transcript = m.transcript[1:]
+		m.transcriptTrimmed = true // the ring is now a WINDOW, not the whole session
 	}
 }
 
