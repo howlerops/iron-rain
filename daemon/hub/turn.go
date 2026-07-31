@@ -137,9 +137,36 @@ func (m *managedSession) closeTurn(state, reason string) {
 	m.turnPhase = ""
 	stop := m.turnStopLoop
 	m.turnStopLoop = nil
+	// Seal the children. The provider-level seal (opencode marks its kids done when ITS session.idle
+	// arrives) only covers the clean path — a turn ended by the reconciler, by abandonment, or by
+	// stream loss never got that event, and a fan-out's sub-agent cards then spun forever with no way
+	// to recover short of restarting the app. The parent's turn being over means no child can still
+	// be running, whatever state we last heard for it; this is the one choke point every close path
+	// shares, so the invariant lives here.
+	sealed := "done"
+	if state == protocol.StatusError || state == "abandoned" {
+		sealed = "error" // don't dress a dead turn's children as cleanly finished
+	}
+	var toSeal []protocol.SubAgent
+	for _, k := range m.turnKids {
+		if k.State != "done" && k.State != "error" {
+			k.State = sealed
+			toSeal = append(toSeal, protocol.SubAgent{ParentID: m.sess.ID(), ID: k.ID, Status: sealed})
+		}
+	}
 	m.mu.Unlock()
 	if stop != nil {
 		close(stop)
+	}
+	// Broadcast the seals as ordinary sub-agent events so every subscriber's per-card state resolves —
+	// the terminal turn snapshot alone doesn't reach the inline cards, which key off these.
+	for _, sa := range toSeal {
+		if raw, err := (agent.Event{Type: protocol.TypeSessionSubAgent, Payload: sa}).Encode(); err == nil {
+			m.broadcast(raw)
+		}
+	}
+	if len(toSeal) > 0 {
+		log.Printf("turn: session %s sealed %d sub-agent(s) as %s on %s close", m.sess.ID(), len(toSeal), sealed, state)
 	}
 	m.emitTurn2(state, reason)
 	if state == protocol.StatusError || state == "abandoned" {

@@ -717,6 +717,16 @@ public final class Model: ObservableObject {
         default: // idle | error — session.status events already finalize the UI for these
             busy = false
         }
+        // Terminal turn ⇒ no sub-agent can still be running. The daemon now seals children on every
+        // close path too; this is the client-side backstop for an OLDER daemon (and for any seal
+        // event lost in transit), because a card that spins forever is the failure users actually
+        // saw — dozens of "Searching…" badges with no way to recover short of restarting the app.
+        if ts.state != SessionStatusValue.running && ts.state != SessionStatusValue.awaitingApproval {
+            let sealed = (ts.state == "abandoned" || ts.state == SessionStatusValue.error) ? "error" : "done"
+            for (id, status) in subAgentStatus where status != "done" && status != "error" {
+                subAgentStatus[id] = sealed
+            }
+        }
     }
 
     /// Deletes a daemon-managed session: halts its agent (which ends the session server-side)

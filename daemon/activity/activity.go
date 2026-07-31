@@ -16,14 +16,14 @@ import (
 
 // Kind classifies an activity event. needs-you kinds sort to the top and drive the badge.
 const (
-	KindFinished    = "finished"     // an agent turn completed (was running → idle/done)
-	KindNeedsInput  = "needs_input"  // the agent is asking a question / awaiting approval (NEEDS YOU)
-	KindError       = "error"        // a session errored / a send got no response (NEEDS YOU)
-	KindLoopRun     = "loop_run"     // a loop started an agent on a ticket
-	KindLoopPR      = "loop_pr"      // a loop run opened a PR
-	KindStarted     = "started"      // a session started a turn (low-signal; kept for the feed)
-	KindFanoutRun   = "fanout_run"   // N agents started racing the same prompt
-	KindFanoutDone  = "fanout_done"  // every variant finished — a comparison is ready
+	KindFinished   = "finished"    // an agent turn completed (was running → idle/done)
+	KindNeedsInput = "needs_input" // the agent is asking a question / awaiting approval (NEEDS YOU)
+	KindError      = "error"       // a session errored / a send got no response (NEEDS YOU)
+	KindLoopRun    = "loop_run"    // a loop started an agent on a ticket
+	KindLoopPR     = "loop_pr"     // a loop run opened a PR
+	KindStarted    = "started"     // a session started a turn (low-signal; kept for the feed)
+	KindFanoutRun  = "fanout_run"  // N agents started racing the same prompt
+	KindFanoutDone = "fanout_done" // every variant finished — a comparison is ready
 )
 
 // Event is one activity item. ID is stable (dedup + unread tracking).
@@ -42,12 +42,12 @@ type Event struct {
 
 // Store appends events, keeps a ring, and notifies a listener (the hub) of each new one.
 type Store struct {
-	mu     sync.Mutex
-	path   string
-	ring   []Event
-	max    int
-	seq    int64
-	onNew  func(Event)
+	mu    sync.Mutex
+	path  string
+	ring  []Event
+	max   int
+	seq   int64
+	onNew func(Event)
 }
 
 // New opens/creates the activity log; nil Store if the dir can't be made (daemon still runs).
@@ -106,13 +106,34 @@ func (s *Store) Record(e Event) Event {
 		s.seq++
 		e.ID = itoa(e.TS) + "-" + itoa(s.seq)
 	}
+	// A session gets ONE live needs-you at a time. A stuck fan-out once emitted a needs-you per
+	// wedged sub-agent event, so the badge read "6" while there was exactly one session to deal
+	// with — and answering it cleared one count, leaving five phantom entries pointing at the same
+	// place. The newest ask supersedes the older ones (marked read, not deleted, so the feed still
+	// shows the history); the badge then counts SESSIONS needing you, which is what it ever meant.
+	superseded := false
+	if e.NeedsYou && e.SessionID != "" {
+		for i := range s.ring {
+			if s.ring[i].NeedsYou && !s.ring[i].Read && s.ring[i].SessionID == e.SessionID {
+				s.ring[i].Read = true
+				superseded = true
+			}
+		}
+	}
 	s.ring = append(s.ring, e)
 	if len(s.ring) > s.max {
 		s.ring = s.ring[len(s.ring)-s.max:]
 	}
+	snapshot := append([]Event(nil), s.ring...)
 	cb := s.onNew
 	s.mu.Unlock()
-	s.appendLine(e)
+	if superseded {
+		// The flips above must survive a restart; an append alone would resurrect the phantoms on
+		// next load. Same durability path MarkRead uses.
+		s.rewrite(snapshot)
+	} else {
+		s.appendLine(e)
+	}
 	if cb != nil {
 		cb(e)
 	}
