@@ -95,7 +95,7 @@ struct RemotesView: View {
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 10).fill(palette.secondary.opacity(0.4))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.border)))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(palette.border)))
     }
 }
 
@@ -126,7 +126,7 @@ struct RemoteRunSheet: View {
                 Text("TASK").font(.system(size: 10, weight: .semibold)).foregroundStyle(palette.mutedForeground)
                 TextEditor(text: $prompt).frame(height: 80)
                     .padding(6).background(RoundedRectangle(cornerRadius: 8).fill(palette.secondary.opacity(0.5)))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(palette.border))
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(palette.border))
             }
             HStack {
                 Spacer()

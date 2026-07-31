@@ -44,7 +44,7 @@ struct FanoutSheet: View {
                 TextEditor(text: $prompt)
                     .font(.body).frame(height: 90).focused($promptFocused)
                     .padding(6).background(RoundedRectangle(cornerRadius: 8).fill(palette.secondary.opacity(0.5)))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(palette.border))
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(palette.border))
             }
 
             HStack(spacing: 16) {

@@ -352,7 +352,7 @@ struct MCPServerEditor: View {
                 TextEditor(text: $envText)
                     .font(.system(size: 12, design: .monospaced))
                     .frame(height: 70)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(palette.border))
+                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(palette.border))
                 Text("One KEY=value per line. Stored on this Mac only, readable by you alone. Existing secrets show as •••• and are kept unless you replace them.")
                     .font(.caption).foregroundStyle(palette.mutedForeground)
             }

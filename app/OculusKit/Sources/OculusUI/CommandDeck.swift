@@ -119,7 +119,7 @@ struct DestinationRail: View {
                     .foregroundStyle(Color(hex: 0xE0912A))
                     .padding(.horizontal, 10).padding(.vertical, 7)
                     .background(RoundedRectangle(cornerRadius: 8).fill(Color(hex: 0xE0912A).opacity(0.12))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(hex: 0xE0912A).opacity(0.32))))
+                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color(hex: 0xE0912A).opacity(0.32))))
                 }
                 .buttonStyle(.plain)
                 .padding(.bottom, 4)
@@ -184,7 +184,7 @@ struct DeckSearchBar: View {
         }
         .padding(.horizontal, 9).padding(.vertical, 6)
         .background(RoundedRectangle(cornerRadius: 8).fill(palette.secondary.opacity(0.6))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(palette.border)))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(palette.border)))
         .padding(.horizontal, 10)
         .padding(.top, 10)   // breathing room after the destination rail (the "top section")
         .padding(.bottom, 4)
@@ -385,7 +385,7 @@ public struct StatusChip: View {
         .background(
             RoundedRectangle(cornerRadius: 5)
                 .fill(tint.opacity(state == .running || state == .needsYou ? 0.14 : 0.0))
-                .overlay(RoundedRectangle(cornerRadius: 5).stroke(tint.opacity(0.35), lineWidth: showLabel ? 1 : 0))
+                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(tint.opacity(0.35), lineWidth: showLabel ? 1 : 0))
         )
     }
 }

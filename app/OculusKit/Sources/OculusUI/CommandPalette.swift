@@ -61,7 +61,7 @@ struct CommandPalette: View {
             .frame(maxHeight: 380)
         }
         .background(palette.card)
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(palette.border))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(palette.border))
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .frame(maxWidth: 560)
         .shadow(color: .black.opacity(0.35), radius: 30, y: 12)

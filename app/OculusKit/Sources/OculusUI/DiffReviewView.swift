@@ -212,7 +212,7 @@ public struct DiffReviewView: View {
         }
         .background(palette.background)
         .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.border, lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(palette.border, lineWidth: 1))
     }
 
     private var totals: (add: Int, del: Int) {
@@ -311,7 +311,7 @@ private struct DiffFileCard: View {
         }
         .background(palette.card.opacity(0.3))
         .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(palette.border, lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(palette.border, lineWidth: 1))
     }
 
     private var header: some View {
@@ -462,7 +462,7 @@ private struct CommentComposer: View {
                         .padding(8)
                         .background(palette.input)
                         .clipShape(RoundedRectangle(cornerRadius: 6))
-                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(palette.border, lineWidth: 1))
+                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(palette.border, lineWidth: 1))
                         #if os(iOS)
                         .textInputAutocapitalization(.sentences)
                         #endif

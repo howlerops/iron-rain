@@ -139,7 +139,7 @@ struct SearchField: View {
         .clipShape(RoundedRectangle(cornerRadius: OculusRadius.sm))
         .overlay(
             RoundedRectangle(cornerRadius: OculusRadius.sm)
-                .stroke(focused ? palette.primary.opacity(0.5) : palette.border)
+                .strokeBorder(focused ? palette.primary.opacity(0.5) : palette.border)
         )
         .frame(maxWidth: 260)
         .animation(.easeOut(duration: 0.12), value: text.isEmpty)
@@ -242,7 +242,7 @@ struct SheetCard<Content: View>: View {
         .background(palette.card)
         .overlay(
             RoundedRectangle(cornerRadius: OculusRadius.md)
-                .stroke(tint?.opacity(0.45) ?? palette.border)
+                .strokeBorder(tint?.opacity(0.45) ?? palette.border)
         )
         .clipShape(RoundedRectangle(cornerRadius: OculusRadius.md))
     }

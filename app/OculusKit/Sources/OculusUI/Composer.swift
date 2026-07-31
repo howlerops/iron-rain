@@ -84,7 +84,7 @@ struct Composer: View {
             }
             .padding(12)
             .background(palette.input)
-            .overlay(RoundedRectangle(cornerRadius: 18).stroke(focused ? palette.primary.opacity(0.5) : palette.border))
+            .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(focused ? palette.primary.opacity(0.5) : palette.border))
             .clipShape(RoundedRectangle(cornerRadius: 18))
             .padding(12)
         }

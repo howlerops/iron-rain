@@ -208,7 +208,7 @@ struct DesignModeView: View {
                     if let shot = lastShot, let img = platformImage(shot) {
                         img.resizable().aspectRatio(contentMode: .fit)
                             .frame(width: 48, height: 36).clipShape(RoundedRectangle(cornerRadius: 4))
-                            .overlay(RoundedRectangle(cornerRadius: 4).stroke(palette.border))
+                            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(palette.border))
                     }
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Picked: \(el.selector)").font(.system(size: 12, weight: .medium)).lineLimit(1)

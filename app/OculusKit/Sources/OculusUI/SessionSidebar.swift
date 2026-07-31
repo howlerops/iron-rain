@@ -297,12 +297,17 @@ struct SessionSidebar: View {
     @ViewBuilder private func rowSelectionBackground(_ selected: Bool) -> some View {
         if selected {
             // strokeBorder (not stroke) draws the border INSIDE the shape, so its outer half doesn't
-            // spill past the row bounds and get clipped by the List cell (the "clipped border" on
-            // mobile). Keep the glow subtle so it doesn't clip either.
+            // spill past the row bounds.
+            //
+            // The DROP SHADOW had to go. A List cell clips to its own bounds, and a shadow by
+            // definition renders outside the shape that casts it — so the glow was sliced off at the
+            // row edges, which is what made the selected card look like its border was cut at the
+            // corners. Insetting the card by a point leaves the hairline clear of the boundary; the
+            // gold wash and border carry the "raised" read on their own.
             RoundedRectangle(cornerRadius: 8)
                 .fill(palette.primary.opacity(scheme == .dark ? 0.18 : 0.12))
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(palette.primary.opacity(0.30), lineWidth: 1))
-                .shadow(color: palette.primary.opacity(scheme == .dark ? 0.18 : 0.10), radius: 2, y: 1)
+                .padding(1)
         } else {
             Color.clear
         }
@@ -480,7 +485,7 @@ struct SessionSidebar: View {
                     }
                     .padding(10)
                     .background(palette.card, in: RoundedRectangle(cornerRadius: 12))
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(palette.primary.opacity(0.3)))
+                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(palette.primary.opacity(0.3)))
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)

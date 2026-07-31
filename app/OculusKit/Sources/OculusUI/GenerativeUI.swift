@@ -24,7 +24,7 @@ struct UIComponentView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
         .background(palette.secondary.opacity(0.25), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.border))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(palette.border))
         .overlay(alignment: .topTrailing) { provenanceChip }
     }
 
@@ -144,7 +144,7 @@ private struct TableView: View {
                         }
                     }
                 }
-                .overlay(RoundedRectangle(cornerRadius: OculusRadius.sm).stroke(palette.border))
+                .overlay(RoundedRectangle(cornerRadius: OculusRadius.sm).strokeBorder(palette.border))
                 .clipShape(RoundedRectangle(cornerRadius: OculusRadius.sm))
                 .padding(1) // keep the hairline stroke inside the scroll viewport
             }
@@ -207,7 +207,7 @@ private struct CalloutView: View {
         }
         .padding(8)
         .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(tint.opacity(0.4)))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(tint.opacity(0.4)))
     }
     private var symbol: String {
         switch props.level { case "error": return "exclamationmark.octagon.fill"; case "warn": return "exclamationmark.triangle.fill"
@@ -286,7 +286,7 @@ private struct InteractiveView: View {
                         .padding(.horizontal, 12).padding(.vertical, 8)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(bg(a), in: RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(border(a)))
+                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(border(a)))
                     }
                     .buttonStyle(.plain)
                     .disabled(chosen != nil)
@@ -392,7 +392,7 @@ struct FormView: View {
             case "textarea":
                 TextEditor(text: binding(f.id))
                     .font(.system(size: 12)).frame(height: 64)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(palette.border))
+                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(palette.border))
             case "select":
                 Picker("", selection: binding(f.id)) {
                     ForEach(f.options ?? []) { o in Text(o.label ?? o.value).tag(o.value) }

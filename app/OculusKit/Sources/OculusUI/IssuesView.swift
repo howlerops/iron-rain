@@ -195,7 +195,7 @@ public struct IssuesView: View {
         .padding(12)
         .frame(maxWidth: 460)
         .background(palette.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.primary.opacity(0.4)))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(palette.primary.opacity(0.4)))
     }
 
     /// Shown when trackers are connected but the board is empty — distinguishes "working, but no
@@ -230,7 +230,7 @@ public struct IssuesView: View {
                     .padding(12)
                     .frame(maxWidth: 460)
                     .background(palette.card, in: RoundedRectangle(cornerRadius: 10))
-                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.border))
+                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(palette.border))
                 }
             }
             Spacer()
@@ -341,7 +341,7 @@ public struct IssuesView: View {
             }
             .padding(.horizontal, 10).padding(.vertical, 6)
             .background(palette.card).clipShape(Capsule())
-            .overlay(Capsule().stroke(palette.border))
+            .overlay(Capsule().strokeBorder(palette.border))
 
             Menu {
                 Menu("Priority") {
@@ -547,7 +547,7 @@ public struct IssuesView: View {
         .frame(maxWidth: 560, alignment: .leading)
         .background(Color.orange.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.orange.opacity(0.22)))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.orange.opacity(0.22)))
         .padding(.horizontal, 20)
     }
 
@@ -685,7 +685,7 @@ public struct IssuesView: View {
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .overlay(
             RoundedRectangle(cornerRadius: 14)
-                .stroke(dropTargetColumn == col.id ? palette.primary : Color.clear, lineWidth: 1.5)
+                .strokeBorder(dropTargetColumn == col.id ? palette.primary : Color.clear, lineWidth: 1.5)
         )
         .modifier(ColumnDropModifier(columnID: col.id, dropTarget: $dropTargetColumn,
                                      onDropID: { id in Task { await model.moveIssue(id, toStatus: col.id) } }))
@@ -716,7 +716,7 @@ public struct IssuesView: View {
         }
         .padding(12)
         .background(palette.card)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(selectedIssue?.id == issue.id ? palette.primary : palette.border))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(selectedIssue?.id == issue.id ? palette.primary : palette.border))
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .contentShape(Rectangle())
         .opacity(model.hiddenIssueIDs.contains(issue.id) ? 0.5 : 1) // dim while revealed via "show hidden"
@@ -1003,7 +1003,7 @@ struct TrackerConnectCard: View {
         .frame(maxWidth: 460, alignment: .leading)
         .background(palette.card)
         .clipShape(RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(palette.border))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(palette.border))
     }
 
     /// Inline OAuth app credential form (client_id + secret) with setup instructions and a cancel affordance.

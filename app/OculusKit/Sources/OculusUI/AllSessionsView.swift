@@ -217,7 +217,7 @@ public struct AllSessionsView: View {
             }
             .padding(.horizontal, 10).padding(.vertical, 7)
             .background(palette.input, in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(palette.border))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(palette.border))
         }
         .padding(.horizontal, 16).padding(.vertical, 12)
     }

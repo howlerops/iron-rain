@@ -656,7 +656,7 @@ struct TrackerImage: View {
                 Image(platformImage: image).resizable().scaledToFit()
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(palette.border))
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(palette.border))
             } else if failed {
                 Button { if let u = URL(string: url) { openURL(u) } } label: {
                     Label(alt.isEmpty ? "View image" : alt, systemImage: "photo").font(.caption)

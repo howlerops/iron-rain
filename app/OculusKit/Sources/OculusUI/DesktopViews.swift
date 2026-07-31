@@ -943,7 +943,7 @@ struct DaemonStatusBanner: View {
         }
         .padding(12)
         .background(palette.secondary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.border))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(palette.border))
     }
 
     @ViewBuilder private func troubleHelp(_ t: DaemonLauncher.Trouble) -> some View {

@@ -284,7 +284,7 @@ struct NewSessionView: View {
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
             .background(RoundedRectangle(cornerRadius: 8).fill(sel ? palette.primary.opacity(0.10) : palette.muted.opacity(0.22)))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(sel ? palette.primary.opacity(0.3) : .clear))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(sel ? palette.primary.opacity(0.3) : .clear))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

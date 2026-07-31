@@ -100,7 +100,7 @@ public struct LoopsView: View {
             }
         }
         .padding(12)
-        .background(palette.card).overlay(RoundedRectangle(cornerRadius: 12).stroke(palette.border)).clipShape(RoundedRectangle(cornerRadius: 12))
+        .background(palette.card).overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(palette.border)).clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
     private var runsSection: some View {

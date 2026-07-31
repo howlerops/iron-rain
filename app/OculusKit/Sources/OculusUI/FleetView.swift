@@ -121,7 +121,7 @@ private struct FleetCard: View {
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(palette.secondary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(palette.border))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(palette.border))
         }
         .buttonStyle(.plain)
     }

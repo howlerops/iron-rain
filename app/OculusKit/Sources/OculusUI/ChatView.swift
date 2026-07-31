@@ -578,7 +578,7 @@ public struct ChatView: View {
                             .foregroundStyle(palette.foreground)
                             .padding(.horizontal, 12).padding(.vertical, 7)
                             .background(Capsule().fill(palette.muted.opacity(0.45)))
-                            .overlay(Capsule().stroke(palette.border))
+                            .overlay(Capsule().strokeBorder(palette.border))
                     }
                     .buttonStyle(.plain)
                 }
@@ -672,7 +672,7 @@ struct InlineImagesView: View {
                         .resizable().scaledToFit()
                         .frame(maxWidth: 420, maxHeight: 280)
                         .clipShape(RoundedRectangle(cornerRadius: OculusRadius.sm))
-                        .overlay(RoundedRectangle(cornerRadius: OculusRadius.sm).stroke(palette.border))
+                        .overlay(RoundedRectangle(cornerRadius: OculusRadius.sm).strokeBorder(palette.border))
                 } else {
                     HStack(spacing: 6) {
                         Image(systemName: "photo").font(.caption)
@@ -759,7 +759,7 @@ struct MessageRow: View, Equatable {
                         .padding(.horizontal, OculusSpace.md).padding(.vertical, OculusSpace.sm)
                         .background(palette.secondary)
                         .overlay(RoundedRectangle(cornerRadius: OculusRadius.md)
-                            .stroke(message.delivery == .failed ? palette.destructive : palette.border))
+                            .strokeBorder(message.delivery == .failed ? palette.destructive : palette.border))
                         .clipShape(RoundedRectangle(cornerRadius: OculusRadius.md))
                         .textSelection(.enabled)
                 }
@@ -833,7 +833,7 @@ struct MessageRow: View, Equatable {
                 .padding(.horizontal, 12).padding(.vertical, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(palette.accent)
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.primary.opacity(0.25)))
+                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(palette.primary.opacity(0.25)))
                 .clipShape(RoundedRectangle(cornerRadius: 10))
             }
         case .subagent:
@@ -897,7 +897,7 @@ struct ToolCallCard: View {
         .padding(.horizontal, 12).padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(palette.secondary.opacity(0.3), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke((isError ? palette.destructive : palette.primary).opacity(running ? 0.4 : 0.2)))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder((isError ? palette.destructive : palette.primary).opacity(running ? 0.4 : 0.2)))
         // Tap ANYWHERE on the card to expand/collapse its output. This is its own tap target, so a tool
         // card nested inside a sub-agent card handles its own taps and never collapses the parent.
         .contentShape(Rectangle())
@@ -973,7 +973,7 @@ struct StreamStallBar: View {
         }
         .padding(.horizontal, 8).padding(.vertical, 3)
         .background(Capsule().fill(Color(hex: 0xE0912A).opacity(0.12)))
-        .overlay(Capsule().stroke(Color(hex: 0xE0912A).opacity(0.35)))
+        .overlay(Capsule().strokeBorder(Color(hex: 0xE0912A).opacity(0.35)))
     }
 }
 
@@ -1027,7 +1027,7 @@ struct ToolActivityView: View {
         }
         .padding(.horizontal, 8).padding(.vertical, 3)
         .background(Capsule().fill(palette.primary.opacity(0.12)))
-        .overlay(Capsule().stroke(palette.primary.opacity(0.18)))
+        .overlay(Capsule().strokeBorder(palette.primary.opacity(0.18)))
         .onAppear { withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) { pulse = true } }
     }
 
@@ -1130,7 +1130,7 @@ struct ApprovalCard: View {
         }
         .padding(14)
         .background(palette.card)
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(palette.primary.opacity(0.4)))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(palette.primary.opacity(0.4)))
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .padding(.horizontal, 12).padding(.bottom, 6)
     }
@@ -1404,7 +1404,7 @@ struct InlineSubAgentCard: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 9)
         .background(palette.secondary.opacity(0.3), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.primary.opacity(running ? 0.4 : 0.2)))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(palette.primary.opacity(running ? 0.4 : 0.2)))
         // Tap anywhere on the card to expand/collapse. Nested tool cards + the Collapse button are their
         // own tap targets, so tapping INSIDE a running tool toggles that tool — it doesn't fold the
         // whole sub-agent (child taps win over this parent gesture, so inheritance is respected).
@@ -1513,7 +1513,7 @@ struct SubAgentsStrip: View {
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
         .background(palette.background, in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(palette.border))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(palette.border))
     }
 
     /// The nested lane: a bordered, scrollable compact transcript of the child's messages (reusing
@@ -1750,14 +1750,14 @@ struct DelegateSheet: View {
                 TextEditor(text: $subtask)
                     .font(.system(size: 13))
                     .frame(minHeight: 80)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(palette.border))
+                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(palette.border))
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text("Files it may change (optional, one per line)").font(.caption).foregroundStyle(palette.mutedForeground)
                 TextEditor(text: $filesText)
                     .font(.system(size: 12, design: .monospaced))
                     .frame(minHeight: 54)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(palette.border))
+                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(palette.border))
             }
             Toggle(isOn: $autonomous) {
                 Text("Run autonomously (heartbeat keeps it going)").font(.system(size: 13))
@@ -1913,7 +1913,7 @@ struct TestResultPanel: View {
             .frame(maxHeight: 180)
         }
         .background(palette.input)
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke((passed == false ? Color(hex: 0xF85149) : palette.border).opacity(0.5)))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder((passed == false ? Color(hex: 0xF85149) : palette.border).opacity(0.5)))
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .padding(.horizontal, 12).padding(.bottom, 6)
     }
