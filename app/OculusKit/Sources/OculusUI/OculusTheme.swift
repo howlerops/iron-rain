@@ -123,7 +123,7 @@ public enum ChatFontDesign: Int, CaseIterable, Identifiable {
     public static var displayOrder: [ChatFontDesign] { [.system, .mono, .rounded, .serif] }
     public var label: String {
         switch self {
-        case .system: return "Sans (default)"
+        case .system: return "Reading (default)"
         case .rounded: return "Rounded"
         case .serif: return "Serif"
         case .mono: return "Monospaced"
@@ -144,6 +144,26 @@ public enum ChatFontDesign: Int, CaseIterable, Identifiable {
         case .serif: return .serif
         case .mono: return .monospaced
         }
+    }
+
+    /// The face for AGENT RESPONSE text, as opposed to UI chrome and your own messages.
+    ///
+    /// Claude's web app sets `--font-claude-response` to its SERIF family while UI and user messages
+    /// stay sans — a deliberate split that does most of the work of making a long answer read like
+    /// prose instead of like console output. The default option mirrors it; an explicit pick
+    /// (Monospaced, Rounded, Serif) is a choice about the whole transcript and is applied uniformly.
+    public var responseDesign: Font.Design {
+        switch self {
+        case .system: return .serif
+        default: return design
+        }
+    }
+
+    /// Point size for response text. New York's x-height is ~10% below SF Pro's at the same nominal
+    /// size (measured from the outlines, not the OS/2 table, which is unreliable on variable fonts),
+    /// so serif needs a point or two to read at the same apparent size.
+    public func responseSize(_ base: CGFloat) -> CGFloat {
+        responseDesign == .serif ? base + 2 : base
     }
 }
 

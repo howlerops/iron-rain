@@ -661,7 +661,13 @@ struct MessageRow: View, Equatable {
     // plain text) shares the chosen font, not just finalized assistant markdown.
     @AppStorage("oculus.chatFontDesign") private var fontDesignRaw = ChatFontDesign.system.rawValue
     @AppStorage("oculus.chatFontScale") private var fontScaleRaw = ChatFontScale.standard.rawValue
-    private var chatDesign: Font.Design { ChatFontDesign(rawValue: fontDesignRaw)?.design ?? .default }
+    private var chosenFont: ChatFontDesign { ChatFontDesign(rawValue: fontDesignRaw) ?? .system }
+    private var chatDesign: Font.Design { chosenFont.design }
+    /// The AGENT-RESPONSE face. Streaming plain text and finalized markdown must use the SAME face
+    /// and size, or the whole answer visibly re-sets itself the instant the turn ends — the jump this
+    /// view goes to some length elsewhere to avoid.
+    private var responseDesign: Font.Design { chosenFont.responseDesign }
+    private var responseBody: Font { .system(size: chosenFont.responseSize(15) * chatFactor, design: responseDesign) }
     private var chatFactor: CGFloat { ChatFontScale(rawValue: fontScaleRaw)?.factor ?? 1.0 }
     private var chatBody: Font { .system(size: 15 * chatFactor, design: chatDesign) }
     // Real leading — transcript prose was rendered with default (tight) line spacing, which read
@@ -729,7 +735,7 @@ struct MessageRow: View, Equatable {
                 // snap to full markdown the instant the turn ends (the `else` below). Line breaks are
                 // preserved so lists/paragraphs still read naturally mid-stream.
                 Text(message.text)
-                    .font(chatBody)
+                    .font(responseBody) // same face/size the finalized markdown will use
                     .lineSpacing(chatLineSpacing)
                     .foregroundStyle(palette.foreground)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1513,7 +1519,10 @@ struct ChatMarkdownView: View {
     // AttributedString built with the old font.
     @AppStorage("oculus.chatFontDesign") private var fontDesignRaw = ChatFontDesign.system.rawValue
     @AppStorage("oculus.chatFontScale") private var fontScaleRaw = ChatFontScale.standard.rawValue
-    private var design: Font.Design { ChatFontDesign(rawValue: fontDesignRaw)?.design ?? .default }
+    /// Response text, not UI: Claude's own web app renders its answers in serif while keeping UI and
+    /// user messages sans, and that split is most of why a long answer reads as prose.
+    private var chosen: ChatFontDesign { ChatFontDesign(rawValue: fontDesignRaw) ?? .system }
+    private var design: Font.Design { chosen.responseDesign }
     private var factor: CGFloat { ChatFontScale(rawValue: fontScaleRaw)?.factor ?? 1.0 }
 
     // ONE Text built from a single AttributedString — so a selection can span the whole message
@@ -1609,7 +1618,7 @@ struct ChatMarkdownView: View {
         (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(s)
     }
     /// A body-sized font in the user's chosen design + scale.
-    private var bodyFont: Font { scaled(15) }
+    private var bodyFont: Font { scaled(chosen.responseSize(15)) }
     private func scaled(_ base: CGFloat) -> Font { .system(size: base * factor, design: design) }
     private func headingSize(_ l: Int) -> CGFloat {
         switch l { case 1: return 22; case 2: return 19; case 3: return 16.5; default: return 15 }
