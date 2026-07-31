@@ -356,6 +356,9 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 		sess, err = p.Create(ctx, cwd, createPrompt)
 	}
 	if err != nil {
+		// The token was minted for a session that will never exist — a live, unattributable gateway
+		// credential nobody could ever revoke. Take it back before reporting the failure.
+		h.discardMCPToken(mcpToken)
 		log.Printf("session.create: FAILED — provider %s start: %v", req.Provider, err)
 		return nil, err
 	}
@@ -1114,6 +1117,40 @@ func (h *Hub) removeSession(id string, owner *managedSession) {
 	}
 	h.forgetFanoutIfEmpty(group) // last variant gone → drop the group's notify marker
 	h.revokeMCPToken(id)
+	h.sweepSessionApprovals(id)
+}
+
+// sweepSessionApprovals clears every pending approval owned by a session that no longer exists.
+//
+// Without this, a session dying with questions outstanding leaked on three levels: the hub maps kept
+// their entries (holding the dead *managedSession un-collectable) forever, every client kept showing
+// an approval card whose Answer could only error with "no such approval", and an MCP tool call
+// blocked on askForMCPApproval sat out its full 10-minute ceiling waiting on a session that could
+// never answer. Yesterday's wedged fan-out multiplied all three by the number of stuck children.
+//
+// Resolved as DENY: the tool never ran, and clients render unknown decision strings as approved,
+// which would be a lie.
+func (h *Hub) sweepSessionApprovals(sessionID string) {
+	h.mu.Lock()
+	var ids []string
+	for id, m := range h.approvals {
+		if m != nil && m.sess.ID() == sessionID {
+			ids = append(ids, id)
+		}
+	}
+	for _, id := range ids {
+		delete(h.approvals, id)
+		delete(h.approvalReqs, id)
+	}
+	h.mu.Unlock()
+	for _, id := range ids {
+		// Unblock a held MCP call first (it's waiting on a channel, not on the broadcast).
+		h.resolveMCPApproval(id, protocol.DecisionDeny)
+		h.broadcast(protocol.TypeApprovalResolved, protocol.ApprovalResolved{ApprovalID: id, Decision: protocol.DecisionDeny})
+	}
+	if len(ids) > 0 {
+		log.Printf("approvals: swept %d pending approval(s) of dead session %s", len(ids), sessionID)
+	}
 }
 
 // detachSession removes a session from the LIVE map when its provider stream ended UNEXPECTEDLY (a
@@ -1130,6 +1167,10 @@ func (h *Hub) detachSession(id string, owner *managedSession) {
 	delete(h.sessions, id)
 	h.mu.Unlock()
 	if existed {
+		// The binding is gone even though the record survives: its gateway token dies with it (a
+		// restart mints a fresh one) and its unanswered approvals can never be answered.
+		h.revokeMCPToken(id)
+		h.sweepSessionApprovals(id)
 		log.Printf("session %s: provider stream ended unexpectedly — kept as stopped/restartable (record preserved)", id)
 		h.broadcastSessionList()
 	}

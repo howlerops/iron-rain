@@ -195,3 +195,14 @@ func (h *Hub) resolveMCPApproval(approvalID, decision string) bool {
 	}
 	return true
 }
+
+// discard drops a token that was minted but whose session never came to exist.
+func (t *mcpSessionTokens) discard(token string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.pending, token)
+	if sid, ok := t.toSess[token]; ok {
+		delete(t.toSess, token)
+		delete(t.fromSess, sid)
+	}
+}

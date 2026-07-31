@@ -442,3 +442,15 @@ func (h *Hub) discoverCwd() string {
 	}
 	return newest.meta.cwd
 }
+
+// discardMCPToken retracts a token minted for a session that failed to start: out of the gateway's
+// accept set and out of the pending map, so a failed create can't leave a live credential behind.
+func (h *Hub) discardMCPToken(token string) {
+	if token == "" {
+		return
+	}
+	h.mcpTokens.discard(token)
+	if g := h.mcpGatewayHandle(); g != nil {
+		g.RemoveSessionToken(token)
+	}
+}
