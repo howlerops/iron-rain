@@ -2316,6 +2316,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.setNotifyPref(req.Key, req.Enabled)
 		h.sendOK(conn, env.ID, h.notifyPrefs())
 
+	case protocol.TypeUsageReport:
+		h.sendOK(conn, env.ID, h.usageReport())
+
 	case protocol.TypeTranscriptPage:
 		var req protocol.TranscriptPage
 		if err := env.Unmarshal(&req); err != nil {

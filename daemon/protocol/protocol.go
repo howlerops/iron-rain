@@ -20,6 +20,7 @@ const (
 	TypeSessionGet     = "session.get"
 	TypeSessionCreate  = "session.create"
 	TypeSessionModeSet = "session.mode.set" // switch a live session between code/ask/architect
+	TypeUsageReport    = "usage.report"     // spend + tokens over time, with the rolling window
 	TypeTranscriptPage = "transcript.page"  // request older history for a session (client -> daemon)
 	// The page's frames are bracketed by these so a client can tell replayed HISTORY from live
 	// events and place it above what it already has, rather than appending it to the bottom.
@@ -1914,4 +1915,41 @@ type TranscriptPageEnd struct {
 	SessionID string `json:"session_id"`
 	Count     int    `json:"count"`
 	HasMore   bool   `json:"has_more"`
+}
+
+// UsageSlice is usage aggregated under one key (a provider, a model, a session).
+type UsageSlice struct {
+	Key          string  `json:"key"`
+	Label        string  `json:"label,omitempty"`
+	InputTokens  int     `json:"input_tokens"`
+	OutputTokens int     `json:"output_tokens"`
+	CostUSD      float64 `json:"cost_usd"`
+}
+
+// UsageWindow is the rolling limit window a subscription resets on.
+//
+// Claude's subscription plans meter on a rolling window that starts with your FIRST activity rather
+// than on the clock, so the reset time is derived from when usage actually began, not from midnight.
+type UsageWindow struct {
+	StartedAt int64   `json:"started_at"`
+	ResetsAt  int64   `json:"resets_at"`
+	Hours     int     `json:"hours"`
+	CostUSD   float64 `json:"cost_usd"`
+	Tokens    int     `json:"tokens"`
+	Active    bool    `json:"active"`
+}
+
+// UsageReport answers usage.report.
+type UsageReport struct {
+	Today     UsageSlice   `json:"today"`
+	Week      UsageSlice   `json:"week"`
+	Month     UsageSlice   `json:"month"`
+	Window    UsageWindow  `json:"window"`
+	Providers []UsageSlice `json:"providers"`
+	Models    []UsageSlice `json:"models"`
+	Sessions  []UsageSlice `json:"sessions"`
+	// Subscription reports a NOTIONAL API-equivalent cost rather than money billed, because a
+	// subscription-backed agent isn't charged per token. Clients must say so rather than implying
+	// a bill.
+	Subscription bool `json:"subscription"`
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/genui"
 	"github.com/howlerops/oculus/daemon/protocol"
+	"github.com/howlerops/oculus/daemon/store"
 	"github.com/howlerops/oculus/daemon/transcript"
 	"github.com/howlerops/oculus/daemon/transport"
 	"github.com/howlerops/oculus/daemon/worktree"
@@ -767,6 +768,19 @@ func (m *managedSession) run() {
 		}
 		if ev.Type == protocol.TypeSessionUsage {
 			if u, ok := ev.Payload.(protocol.SessionUsage); ok {
+				// Persist the increment before folding it into the live meter. The live totals die
+				// with the session; these rows are what make "today" and "this week" answerable at
+				// all, and what a finished job cost.
+				if db := m.hub.db; db != nil {
+					m.mu.Lock()
+					model, projectID := m.model, m.meta.projectID
+					m.mu.Unlock()
+					_ = db.AppendUsage(store.UsageEvent{
+						SessionID: m.sess.ID(), Provider: m.sess.Provider(), Model: model,
+						ProjectID: projectID, InTokens: u.InputTokens, OutTokens: u.OutputTokens,
+						CostUSD: u.CostUSD,
+					})
+				}
 				m.mu.Lock()
 				m.inTok += u.InputTokens
 				m.outTok += u.OutputTokens

@@ -103,8 +103,10 @@ func (s *Store) migrate() error {
 	)`); err != nil {
 		return err
 	}
-	_, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS transcript_msgid ON transcript_events(session_id, msg_id) WHERE msg_id IS NOT NULL`)
-	return err
+	if _, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS transcript_msgid ON transcript_events(session_id, msg_id) WHERE msg_id IS NOT NULL`); err != nil {
+		return err
+	}
+	return s.initUsage()
 }
 
 // Close releases the database handle.

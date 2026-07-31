@@ -1690,6 +1690,20 @@ public final class Model: ObservableObject {
         _ = try? await request(MessageType.clientIdentify, payload: ClientIdentify(name: identity))
     }
 
+    /// Spend + tokens over time (Usage screen).
+    @Published public var usage: UsageReport? = nil
+    @Published public var loadingUsage = false
+
+    public func loadUsage() async {
+        guard client != nil else { return }
+        loadingUsage = true
+        defer { loadingUsage = false }
+        if let env = try? await request(MessageType.usageReport, payload: Optional<Int>.none),
+           let r = try? env.payload(as: UsageReport.self) {
+            usage = r
+        }
+    }
+
     /// Older history exists on the daemon beyond what's loaded. Drives "Show earlier messages".
     @Published public var hasEarlierHistory = false
     /// A page request is in flight.

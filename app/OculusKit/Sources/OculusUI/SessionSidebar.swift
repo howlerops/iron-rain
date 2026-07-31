@@ -102,6 +102,7 @@ struct SessionSidebar: View {
     var onOpenMCP: (() -> Void)? = nil
     var onOpenSharing: (() -> Void)? = nil
     var onOpenDictionary: (() -> Void)? = nil
+    var onOpenUsage: (() -> Void)? = nil
     var onOpenAccounts: (() -> Void)? = nil
     var onOpenRemotes: (() -> Void)? = nil
     var onManageSessions: (() -> Void)? = nil
@@ -350,6 +351,9 @@ struct SessionSidebar: View {
                 }
                 if let onOpenAgents {
                     Button { onOpenAgents() } label: { Label("Agents…", systemImage: "cpu") }
+                }
+                if let onOpenUsage {
+                    Button { onOpenUsage() } label: { Label("Usage & spend…", systemImage: "chart.bar") }
                 }
                 if let onOpenDictionary {
                     Button { onOpenDictionary() } label: { Label("Dictionary…", systemImage: "character.book.closed") }

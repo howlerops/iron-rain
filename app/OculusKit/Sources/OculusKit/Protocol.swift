@@ -60,6 +60,7 @@ public enum MessageType {
     public static let approvalRuleDelete = "approval.rules.delete"
     public static let approvalRulesChanged = "approval.rules.changed"
     public static let sessionModeSet = "session.mode.set"
+    public static let usageReport = "usage.report"
     public static let transcriptPage = "transcript.page"
     public static let transcriptPageBegin = "transcript.page.begin"
     public static let transcriptPageEnd = "transcript.page.end"
@@ -2229,4 +2230,46 @@ public struct TranscriptPageEnd: Codable {
     public var count: Int
     public var hasMore: Bool
     enum CodingKeys: String, CodingKey { case sessionID = "session_id", count; case hasMore = "has_more" }
+}
+
+public struct UsageSlice: Codable, Equatable, Identifiable {
+    public var key: String
+    public var label: String?
+    public var inputTokens: Int
+    public var outputTokens: Int
+    public var costUSD: Double
+    public var id: String { key }
+    public var tokens: Int { inputTokens + outputTokens }
+    enum CodingKeys: String, CodingKey {
+        case key, label
+        case inputTokens = "input_tokens", outputTokens = "output_tokens", costUSD = "cost_usd"
+    }
+}
+
+/// The rolling window a subscription meters on. It starts with your FIRST activity rather than on
+/// the clock, so the reset time comes from when usage began.
+public struct UsageWindow: Codable, Equatable {
+    public var startedAt: Int
+    public var resetsAt: Int
+    public var hours: Int
+    public var costUSD: Double
+    public var tokens: Int
+    public var active: Bool
+    enum CodingKeys: String, CodingKey {
+        case hours, tokens, active
+        case startedAt = "started_at", resetsAt = "resets_at", costUSD = "cost_usd"
+    }
+}
+
+public struct UsageReport: Codable, Equatable {
+    public var today: UsageSlice
+    public var week: UsageSlice
+    public var month: UsageSlice
+    public var window: UsageWindow
+    public var providers: [UsageSlice]
+    public var models: [UsageSlice]
+    public var sessions: [UsageSlice]
+    /// Dollar figures are NOTIONAL when a subscription-backed agent is in play — nothing is billed
+    /// per token. The UI must say so rather than implying a bill.
+    public var subscription: Bool
 }

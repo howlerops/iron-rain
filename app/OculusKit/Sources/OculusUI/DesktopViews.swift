@@ -205,7 +205,7 @@ struct SoftwareUpdateModifier: ViewModifier {
 
 /// The one shared sheet slot for the Loops / Agents panels (kept to a single `.sheet` so they
 /// don't collide with the New Session sheet).
-private enum PanelSheet: Int, Identifiable { case loops, agents, accounts, remotes, sessions, approvalRules, mcp, sharing, dictionary; var id: Int { rawValue } }
+private enum PanelSheet: Int, Identifiable { case loops, agents, accounts, remotes, sessions, approvalRules, mcp, sharing, dictionary, usage; var id: Int { rawValue } }
 
 public struct RootView: View {
     @ObservedObject var store: DesktopStore
@@ -303,6 +303,8 @@ public struct RootView: View {
                             SharingView(model: model, palette: palette, onClose: { panel = nil })
                         case .dictionary:
                             DictionaryView(palette: palette, onClose: { panel = nil })
+                        case .usage:
+                            UsageView(model: model, palette: palette, onClose: { panel = nil })
                         case .accounts:
                             AccountsView(model: model, palette: palette, onClose: { panel = nil })
                         case .remotes:
@@ -655,6 +657,7 @@ public struct RootView: View {
                        onOpenMCP: { panel = .mcp },
                        onOpenSharing: { panel = .sharing },
                        onOpenDictionary: { panel = .dictionary },
+                       onOpenUsage: { panel = .usage },
                        onOpenAccounts: { panel = .accounts },
                        onOpenRemotes: { panel = .remotes },
                        onManageSessions: { panel = .sessions })
@@ -668,6 +671,7 @@ public struct RootView: View {
                        onOpenMCP: { panel = .mcp },
                        onOpenSharing: { panel = .sharing },
                        onOpenDictionary: { panel = .dictionary },
+                       onOpenUsage: { panel = .usage },
                        onOpenAccounts: { panel = .accounts },
                        onOpenRemotes: { panel = .remotes },
                        onManageSessions: { panel = .sessions })
