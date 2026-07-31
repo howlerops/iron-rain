@@ -1690,6 +1690,29 @@ public final class Model: ObservableObject {
         _ = try? await request(MessageType.clientIdentify, payload: ClientIdentify(name: identity))
     }
 
+    /// Older history exists on the daemon beyond what's loaded. Drives "Show earlier messages".
+    @Published public var hasEarlierHistory = false
+    /// A page request is in flight.
+    @Published public var loadingEarlier = false
+    /// Where the incoming page's messages start, so they can be lifted above the existing ones once
+    /// the page closes. Page frames arrive through the same channel as live events and append
+    /// normally; reordering once at the end is simpler and safer than teaching every event handler
+    /// about insertion points.
+    private var pageAnchor: Int? = nil
+
+    /// Fetches the history immediately before what's loaded. The daemon streams it bracketed by
+    /// page.begin / page.end.
+    public func loadEarlierHistory() async {
+        guard let client, let sid = sessionID, !loadingEarlier, hasEarlierHistory else { return }
+        loadingEarlier = true
+        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.transcriptPage,
+                                          payload: TranscriptPage(sessionID: sid, loaded: messages.count)) {
+            try? await client.send(env)
+        } else {
+            loadingEarlier = false
+        }
+    }
+
     /// Outstanding share invites (owner-only).
     @Published public var invites: [Invite] = []
     /// The most recently minted invite link. Shown once, then cleared — the daemon never returns a
@@ -3022,6 +3045,25 @@ public final class Model: ObservableObject {
                         appendTool("\(verb) \(ap.tool)\(cmd)")
                         pendingApproval = nil
                         refreshLiveActivity()
+                    }
+                case MessageType.transcriptPageBegin:
+                    if let b = try? env.payload(as: TranscriptPageBegin.self), b.sessionID == sessionID {
+                        pageAnchor = messages.count
+                        dedupReplay = true // the page can overlap what's on screen
+                    }
+                case MessageType.transcriptPageEnd:
+                    if let e = try? env.payload(as: TranscriptPageEnd.self), e.sessionID == sessionID {
+                        // Lift the page above the messages that were already there. It arrived in
+                        // chronological order and appended, so one rotation puts it in place.
+                        if let anchor = pageAnchor, messages.count > anchor {
+                            let page = Array(messages[anchor...])
+                            messages.removeSubrange(anchor...)
+                            messages.insert(contentsOf: page, at: 0)
+                        }
+                        pageAnchor = nil
+                        hasEarlierHistory = e.hasMore
+                        loadingEarlier = false
+                        dedupReplay = false
                     }
                 case MessageType.turnState:
                     if let ts = try? env.payload(as: TurnState.self) { applyTurnState(ts) }

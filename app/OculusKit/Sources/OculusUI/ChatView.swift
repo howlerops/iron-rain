@@ -348,16 +348,29 @@ public struct ChatView: View {
                     // Render WINDOW: a huge (taken-over) session opens instantly at the bottom by
                     // laying out only the most recent messages; earlier history loads backwards on
                     // demand. All messages stay in memory — this bounds LAYOUT, not data.
-                    if model.messages.count > visibleWindow {
+                    // Two different "earlier": more already loaded but not laid out, or more still
+                    // on the daemon. The button does whichever applies, so it always means the
+                    // same thing to the user.
+                    if model.messages.count > visibleWindow || model.hasEarlierHistory {
                         Button {
-                            visibleWindow += windowStep
+                            if model.messages.count > visibleWindow {
+                                visibleWindow += windowStep
+                            } else {
+                                Task { await model.loadEarlierHistory() }
+                            }
                         } label: {
-                            Label("Show earlier messages (\(model.messages.count - visibleWindow) more)", systemImage: "arrow.up.circle")
+                            Label(model.loadingEarlier
+                                    ? "Loading earlier messages…"
+                                    : (model.messages.count > visibleWindow
+                                        ? "Show earlier messages (\(model.messages.count - visibleWindow) more)"
+                                        : "Load earlier messages"),
+                                  systemImage: "arrow.up.circle")
                                 .font(.caption).foregroundStyle(palette.mutedForeground)
                                 .frame(maxWidth: .infinity).padding(.vertical, 6)
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .disabled(model.loadingEarlier)
                     }
                     ForEach(Array(model.messages.suffix(visibleWindow))) { msg in
                         if msg.role == .subagent, let sid = msg.subAgentID {

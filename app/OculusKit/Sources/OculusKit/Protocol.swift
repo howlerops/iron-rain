@@ -60,6 +60,9 @@ public enum MessageType {
     public static let approvalRuleDelete = "approval.rules.delete"
     public static let approvalRulesChanged = "approval.rules.changed"
     public static let sessionModeSet = "session.mode.set"
+    public static let transcriptPage = "transcript.page"
+    public static let transcriptPageBegin = "transcript.page.begin"
+    public static let transcriptPageEnd = "transcript.page.end"
     public static let clientIdentify = "client.identify"
     public static let participants = "participants"
     public static let roleGrant = "role.grant"
@@ -2202,4 +2205,28 @@ public struct MCPImport: Codable {
 public struct MCPExclusiveSet: Codable {
     public var enabled: Bool
     public init(enabled: Bool) { self.enabled = enabled }
+}
+
+/// Asks for the history immediately before what's already loaded. `loaded` is the count the client
+/// holds, so the daemon needs no per-client cursor.
+public struct TranscriptPage: Codable {
+    public var sessionID: String
+    public var loaded: Int
+    public var limit: Int?
+    public init(sessionID: String, loaded: Int, limit: Int? = nil) {
+        self.sessionID = sessionID; self.loaded = loaded; self.limit = limit
+    }
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id", loaded, limit }
+}
+
+public struct TranscriptPageBegin: Codable {
+    public var sessionID: String
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id" }
+}
+
+public struct TranscriptPageEnd: Codable {
+    public var sessionID: String
+    public var count: Int
+    public var hasMore: Bool
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id", count; case hasMore = "has_more" }
 }

@@ -2316,6 +2316,20 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.setNotifyPref(req.Key, req.Enabled)
 		h.sendOK(conn, env.ID, h.notifyPrefs())
 
+	case protocol.TypeTranscriptPage:
+		var req protocol.TranscriptPage
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad transcript.page")
+			return
+		}
+		m := h.managed(req.SessionID)
+		if m == nil {
+			h.sendErr(conn, env.ID, "no such session")
+			return
+		}
+		m.sendHistoryPage(conn, req.Loaded, req.Limit)
+		h.sendOK(conn, env.ID, nil)
+
 	case protocol.TypeSessionModeSet:
 		var req protocol.SessionModeSet
 		if err := env.Unmarshal(&req); err != nil {

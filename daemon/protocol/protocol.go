@@ -16,10 +16,15 @@ import (
 // Message types.
 const (
 	// requests (client -> daemon), carry an id echoed on the response
-	TypeSessionList           = "session.list"
-	TypeSessionGet            = "session.get"
-	TypeSessionCreate         = "session.create"
-	TypeSessionModeSet        = "session.mode.set" // switch a live session between code/ask/architect
+	TypeSessionList    = "session.list"
+	TypeSessionGet     = "session.get"
+	TypeSessionCreate  = "session.create"
+	TypeSessionModeSet = "session.mode.set" // switch a live session between code/ask/architect
+	TypeTranscriptPage = "transcript.page"  // request older history for a session (client -> daemon)
+	// The page's frames are bracketed by these so a client can tell replayed HISTORY from live
+	// events and place it above what it already has, rather than appending it to the bottom.
+	TypeTranscriptPageBegin   = "transcript.page.begin"
+	TypeTranscriptPageEnd     = "transcript.page.end"
 	TypeSessionPrompt         = "session.prompt"
 	TypeCommandList           = "command.list"
 	TypeLoopList              = "loop.list"
@@ -1889,4 +1894,24 @@ type MCPImport struct {
 // MCPExclusiveSet turns exclusive mode on or off.
 type MCPExclusiveSet struct {
 	Enabled bool `json:"enabled"`
+}
+
+// TranscriptPage asks for the events immediately before the ones already held. Loaded is how many
+// the client currently has, so the daemon needs no per-client cursor state.
+type TranscriptPage struct {
+	SessionID string `json:"session_id"`
+	Loaded    int    `json:"loaded"`
+	Limit     int    `json:"limit,omitempty"`
+}
+
+// TranscriptPageBegin marks the start of a page's frames.
+type TranscriptPageBegin struct {
+	SessionID string `json:"session_id"`
+}
+
+// TranscriptPageEnd closes a page and reports whether older history remains.
+type TranscriptPageEnd struct {
+	SessionID string `json:"session_id"`
+	Count     int    `json:"count"`
+	HasMore   bool   `json:"has_more"`
 }

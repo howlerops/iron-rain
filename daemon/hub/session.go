@@ -30,6 +30,11 @@ const responseTimeout = 25 * time.Second
 // re-stream again, so the durable transcript is the only history a new subscriber can get.
 const replayGrace = 15 * time.Second
 
+// replayTailLimit bounds the events a subscribe replays. Everything older is reachable through
+// transcript.page. Large enough that most conversations arrive whole, small enough that the biggest
+// ones still open instantly.
+const replayTailLimit = 200
+
 // armResponseWatchdog marks the session as awaiting a first event and, if none arrives within
 // responseTimeout, synthesizes a StatusError so every client sees it (and it lands in the durable
 // transcript). The generation counter makes a newer prompt/response cancel an older watchdog.
@@ -113,8 +118,11 @@ type managedSession struct {
 	// transcriptTrimmed records that the in-memory ring has DROPPED events. Once true, the ring is no
 	// longer a complete record of the session and must not be replayed as if it were.
 	transcriptTrimmed bool
-	asstAccum         strings.Builder
-	asstPersisted     bool
+	// replayTotal is how many events the last assembled history held, so a page request knows how far
+	// back it can go without re-deciding what "the history" is.
+	replayTotal   int
+	asstAccum     strings.Builder
+	asstPersisted bool
 
 	// createdAt is when this binding was made (create or attach). It bounds the window in which a
 	// self-replaying provider might still be re-streaming its history — see subscribe().
@@ -414,6 +422,28 @@ func (m *managedSession) subscribe(conn *transport.Conn) {
 			}
 		}
 	}
+	// Only the TAIL. A long conversation used to replay in full on every open — thousands of frames
+	// decoded on the main thread before anything could render, which is the "clunky" pause. The rest
+	// is fetched on demand (transcript.page), so opening a session costs the same whether it holds
+	// twenty messages or two thousand.
+	m.mu.Lock()
+	m.replayTotal = len(replay)
+	m.mu.Unlock()
+	truncated := false
+	if len(replay) > replayTailLimit {
+		replay = replay[len(replay)-replayTailLimit:]
+		truncated = true
+	}
+	// A page.end with hasMore tells the client older history exists. Sending it up front means the
+	// "Show earlier messages" affordance is correct the moment the transcript appears, rather than
+	// only after the first page request.
+	if truncated {
+		if raw, err := (agent.Event{Type: protocol.TypeTranscriptPageEnd, Payload: protocol.TranscriptPageEnd{
+			SessionID: m.sess.ID(), Count: 0, HasMore: true}}).Encode(); err == nil {
+			replay = append(replay, raw)
+		}
+	}
+
 	// Deliver the CURRENT turn snapshot to this subscriber: turn.state is transient (never replayed
 	// from the transcript), so without this a client that subscribes mid-turn — including the CREATOR
 	// of a session started with a prompt, and any session switch — would see no turn state until the
@@ -618,6 +648,59 @@ func (m *managedSession) broadcast(raw []byte) {
 			m.drop(s) // slow client: drop it rather than block delivery to everyone else
 		}
 	}
+}
+
+// fullHistory assembles this session's complete replayable history: the durable transcript in front
+// of the live ring when the ring has been trimmed to a window, otherwise just the ring (or the
+// durable transcript when the ring is empty). Subscribe and transcript.page both go through here so
+// a page can never disagree with what the initial replay showed.
+func (m *managedSession) fullHistory() [][]byte {
+	m.mu.Lock()
+	out := append([][]byte(nil), m.transcript...)
+	trimmed := m.transcriptTrimmed
+	m.mu.Unlock()
+
+	selfReplaying := false
+	if r, ok := m.sess.(agent.Replayer); ok {
+		selfReplaying = r.SelfReplaying()
+	}
+	m.mu.Lock()
+	withinAttachWindow := time.Since(m.createdAt) < replayGrace
+	m.mu.Unlock()
+
+	db := m.hub.db
+	if db == nil {
+		return out
+	}
+	if len(out) == 0 {
+		if !selfReplaying || !withinAttachWindow {
+			if durable, err := db.Transcript(m.sess.ID()); err == nil && len(durable) > 0 {
+				return durable
+			}
+		}
+		return out
+	}
+	if trimmed {
+		if durable, err := db.Transcript(m.sess.ID()); err == nil && len(durable) > 0 {
+			return append(append([][]byte(nil), durable...), out...)
+		}
+	}
+	return out
+}
+
+// historyPage returns the events immediately BEFORE the newest `loaded` ones, oldest-first, plus
+// whether anything older still remains.
+func (m *managedSession) historyPage(loaded, limit int) (page [][]byte, more bool) {
+	all := m.fullHistory()
+	end := len(all) - loaded
+	if end <= 0 {
+		return nil, false
+	}
+	start := end - limit
+	if start < 0 {
+		start = 0
+	}
+	return all[start:end], start > 0
 }
 
 // trimTranscript enforces the retention cap (by event count and total bytes), dropping
@@ -871,4 +954,48 @@ func todosChanged(prev, next []protocol.Todo) bool {
 		}
 	}
 	return false
+}
+
+// sendHistoryPage streams one page of older history to ONE subscriber, bracketed by begin/end so the
+// client can place it above what it already has instead of appending it to the bottom.
+//
+// The frames go through that subscriber's own outbound channel — the same path the initial replay
+// uses — so begin, the events, and end arrive in that order. Sending the bracket over the request
+// socket while the events went through the subscriber queue would race.
+func (m *managedSession) sendHistoryPage(conn *transport.Conn, loaded, limit int) {
+	if limit <= 0 {
+		limit = replayTailLimit
+	}
+	m.mu.Lock()
+	sub := m.subs[conn]
+	m.mu.Unlock()
+	if sub == nil {
+		return
+	}
+	page, more := m.historyPage(loaded, limit)
+	sid := m.sess.ID()
+	begin, err1 := (agent.Event{Type: protocol.TypeTranscriptPageBegin, Payload: protocol.TranscriptPageBegin{SessionID: sid}}).Encode()
+	end, err2 := (agent.Event{Type: protocol.TypeTranscriptPageEnd, Payload: protocol.TranscriptPageEnd{SessionID: sid, Count: len(page), HasMore: more}}).Encode()
+	if err1 != nil || err2 != nil {
+		return
+	}
+	go func() {
+		send := func(raw []byte) bool {
+			select {
+			case sub.ch <- raw:
+				return true
+			case <-sub.done:
+				return false
+			}
+		}
+		if !send(begin) {
+			return
+		}
+		for _, raw := range page {
+			if !send(raw) {
+				return
+			}
+		}
+		send(end)
+	}()
 }
