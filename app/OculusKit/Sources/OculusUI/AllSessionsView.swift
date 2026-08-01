@@ -32,6 +32,7 @@ public struct AllSessionsView: View {
         var id: String { rawValue }
     }
 
+    @State private var hovered: String?
     @State private var sort: SortKey = .updated
     @State private var ascending = false
     @State private var scope: Scope = .all
@@ -137,23 +138,27 @@ public struct AllSessionsView: View {
             header
             Divider().overlay(palette.border)
             if !selection.isEmpty { bulkBar; Divider().overlay(palette.border) }
-            // Sessions running in a terminal that this app does not yet manage. This is the full
-            // list — the New Session sheet offers the same thing at the moment of creating, and the
-            // sidebar deliberately shows neither, because it is your recent conversations.
-            if !terminalCandidates.isEmpty { terminalSection; Divider().overlay(palette.border) }
             columnHeader
             Divider().overlay(palette.border.opacity(0.6))
-            if rows.isEmpty {
+            if rows.isEmpty && terminalCandidates.isEmpty {
                 emptyState
             } else {
+                // Everything below the sticky header scrolls, including the terminal section — it is
+                // content, not chrome, and pinning it stole height from the list on short windows.
                 ScrollView {
                     LazyVStack(spacing: 0) {
+                        if !terminalCandidates.isEmpty {
+                            terminalSection
+                            Divider().overlay(palette.border)
+                        }
                         ForEach(rows) { s in
                             row(s)
                             Divider().overlay(palette.border.opacity(0.4))
                         }
+                        if rows.isEmpty { emptyState.frame(height: 160) }
                     }
                 }
+                .scrollIndicators(.automatic)
             }
         }
         .modifier(SheetSizing(embedded: embedded))
@@ -262,14 +267,11 @@ public struct AllSessionsView: View {
     private var header: some View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
-                Text("Manage sessions").font(.headline)
+                Text("All sessions").font(.system(size: 15, weight: .semibold))
                 Text("\(model.sessions.filter { $0.ephemeral != true }.count) total · \(worktreeCount) worktrees")
                     .font(.caption).foregroundStyle(palette.mutedForeground)
                 Spacer()
-                Picker("", selection: $scope) {
-                    ForEach(Scope.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented).labelsHidden().frame(maxWidth: 240)
+                Spacer(minLength: 0)
                 if !embedded {
                     Button { onClose() } label: {
                         Image(systemName: "xmark.circle.fill").font(.title3)
@@ -286,8 +288,45 @@ public struct AllSessionsView: View {
             .padding(.horizontal, 10).padding(.vertical, 7)
             .background(palette.input, in: RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(palette.border))
+            scopeChips
         }
         .padding(.horizontal, 16).padding(.vertical, 12)
+    }
+
+    /// Filter chips carrying live counts — "Stopped 3" tells you whether it is worth clicking before
+    /// you click it, which a bare segmented control cannot.
+    private var scopeChips: some View {
+        HStack(spacing: 6) {
+            ForEach(Scope.allCases) { sc in
+                let n = count(for: sc)
+                let active = scope == sc
+                Button { scope = sc } label: {
+                    HStack(spacing: 5) {
+                        Text(sc.rawValue).font(.system(size: 11.5, weight: active ? .semibold : .regular))
+                        if n > 0 {
+                            Text("\(n)").font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .opacity(0.75)
+                        }
+                    }
+                    .foregroundStyle(active ? palette.primaryForeground : palette.mutedForeground)
+                    .padding(.horizontal, 9).padding(.vertical, 4)
+                    .background(Capsule().fill(active ? palette.primary : palette.muted.opacity(0.5)))
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer(minLength: 0)
+        }
+        .animation(.easeOut(duration: 0.14), value: scope)
+    }
+
+    private func count(for sc: Scope) -> Int {
+        let base = model.sessions.filter { $0.ephemeral != true }
+        switch sc {
+        case .all: return base.count
+        case .worktrees: return base.filter { $0.branch?.isEmpty == false }.count
+        case .stopped: return base.filter { $0.status == SessionStatusValue.stopped }.count
+        }
     }
 
     private var columnHeader: some View {
@@ -343,10 +382,17 @@ public struct AllSessionsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             Text(s.provider).font(.caption).foregroundStyle(palette.mutedForeground)
                 .frame(width: 90, alignment: .leading).lineLimit(1)
-            HStack(spacing: 5) {
-                Circle().fill(statusColor(s.status)).frame(width: 6, height: 6)
-                Text(statusLabel(s.status)).font(.caption).lineLimit(1)
-            }.frame(width: 90, alignment: .leading)
+            // A pill, not a dot beside grey text. Status is the column you scan down when you are
+            // looking for the session that needs you, and it has to read at a glance.
+            HStack(spacing: 4) {
+                Circle().fill(statusColor(s.status)).frame(width: 5, height: 5)
+                Text(statusLabel(s.status))
+                    .font(.system(size: 10.5, weight: .medium)).lineLimit(1)
+            }
+            .foregroundStyle(statusColor(s.status))
+            .padding(.horizontal, 7).padding(.vertical, 2.5)
+            .background(Capsule().fill(statusColor(s.status).opacity(0.14)))
+            .frame(width: 90, alignment: .leading)
             Text(s.costUSD.map { String(format: "$%.3f", $0) } ?? "—")
                 .font(.caption.monospacedDigit()).foregroundStyle(palette.mutedForeground)
                 .frame(width: 66, alignment: .trailing)
@@ -354,9 +400,14 @@ public struct AllSessionsView: View {
                 .frame(width: 92, alignment: .trailing)
             rowMenu(s).frame(width: 28)
         }
-        .padding(.horizontal, 16).padding(.vertical, 8)
+        .padding(.horizontal, 16).padding(.vertical, 9)
+        .background(hovered == s.id ? palette.muted.opacity(0.35) : .clear)
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) { open(s) }
+        // SINGLE click opens. Double-click-to-open is a Finder convention that nothing else in this
+        // app uses, and a row that looks clickable and does nothing reads as broken.
+        .onTapGesture { open(s) }
+        .onHover { hovered = $0 ? s.id : (hovered == s.id ? nil : hovered) }
+        .help("Open this session")
     }
 
     private func rowMenu(_ s: Session) -> some View {

@@ -221,6 +221,10 @@ public struct RootView: View {
     // SwiftUI's sheet presentation (it silently killed the New Session sheet after the first session).
     @State private var panel: PanelSheet?
     @State private var showNewSession = false
+    /// True when the Sessions destination should show the INDEX rather than the open conversation.
+    /// An explicit flag rather than inferring it from "no session is open": inferring meant the only
+    /// way to reach the table was to destroy your place in the chat first.
+    @State private var showAllSessions = false
     @State private var newSessionTakeOver = false
     @State private var selectedTab = 0
     // Command Deck: the active top-level destination. macOS = nav-rail selection; iOS = bottom tab.
@@ -437,7 +441,11 @@ public struct RootView: View {
                 // is a modal sheet or a "⋯" menu item.
                 VStack(spacing: 0) {
                     DestinationRail(destination: $destination,
-                                    onShowAllSessions: { model.newSession() },
+                                    // Show the index. Deliberately does NOT close the open
+                                    // conversation: an explicit flag means the table appears because
+                                    // it was asked for, not as a side effect of clearing state — and
+                                    // your place in the chat is still there when you click back.
+                                    onShowAllSessions: { showAllSessions = true },
                                     model: model, palette: palette)
                         .padding(.top, 4)
                     Divider().overlay(palette.border)
@@ -704,13 +712,19 @@ public struct RootView: View {
         Group {
             switch destination {
             case .sessions:
-                if let codeSession = codeTarget(model) {
+                if showAllSessions {
+                    AllSessionsView(model: model, palette: palette, onClose: { showAllSessions = false },
+                                    onOpen: { sid in
+                                        showAllSessions = false
+                                        Task { await model.openSession(sid) }
+                                        showSessionDetail = true
+                                    },
+                                    embedded: true)
+                } else if let codeSession = codeTarget(model) {
                     CodeSurface(model: model, sessionID: codeSession, reviewSessionID: model.codeReviewTarget)
                         .id((codeSession) + (model.codeReviewTarget != nil ? ":review" : ""))
                 } else if model.sessionID == nil {
-                    // No conversation open → show every session, not an empty chat pane. The sidebar
-                    // lists only RECENTS; this is the whole history, with restart and inspection on
-                    // each row. Selecting the Sessions destination is the way back to it.
+                    // Nothing open: the index is a better landing than an empty chat pane.
                     AllSessionsView(model: model, palette: palette, onClose: {},
                                     onOpen: { sid in Task { await model.openSession(sid) }; showSessionDetail = true },
                                     embedded: true)
@@ -792,6 +806,7 @@ public struct RootView: View {
 
     private func handleSelection(_ sel: String?, _ model: Model) {
         guard let sel else { return }
+        showAllSessions = false // picking a session means you want that session, not the index
         if sel == SessionSidebar.newSessionTag {
             newSessionTakeOver = false // the ✎ / empty-state "New session" opens in Start-new mode
             showNewSession = true
