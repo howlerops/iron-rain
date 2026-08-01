@@ -482,12 +482,16 @@ public final class Model: ObservableObject {
         guard reconnectWanted, hasSavedPairing, !reconnecting, !connected else { return }
         reconnecting = true
         Task { // inherits @MainActor from Model
-            var delay: UInt64 = 2
+            // Try IMMEDIATELY, then back off. Sleeping first meant every reconnect — including the
+            // common case where the drop was a two-second blip, or where the user just brought the
+            // phone out of their pocket — cost a guaranteed two seconds of "Reconnecting…" before
+            // anything was even attempted.
+            var delay: UInt64 = 0
             while reconnectWanted && !connected {
                 status = "Reconnecting…"
-                try? await Task.sleep(nanoseconds: delay * 1_000_000_000)
+                if delay > 0 { try? await Task.sleep(nanoseconds: delay * 1_000_000_000) }
                 if reconnectWanted && !connected { await attemptConnect() }
-                delay = min(delay * 2, 15)
+                delay = delay == 0 ? 2 : min(delay * 2, 15)
             }
             reconnecting = false
         }

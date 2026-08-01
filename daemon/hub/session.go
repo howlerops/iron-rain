@@ -262,6 +262,11 @@ type sessionMeta struct {
 	issueKey      string // human ticket id (ENG-42)
 	issueProvider string // "linear" | "jira"
 
+	// providerURL is the server this session was ATTACHED to (opencode's HTTP base, say). Without it
+	// a taken-over session cannot be reconstructed after a daemon restart: the restore knows the
+	// session id but not where it lives, so it reopens empty or against the wrong server.
+	providerURL string
+
 	// Cross-repo workspace: one worktree per member repo, all under cwd (the layout dir). Empty
 	// for single-repo/shared sessions. Drives the fs guard, session file tree, and workspace.diff.
 	members []worktree.Member
@@ -533,8 +538,27 @@ func joinHistory(durable, ring [][]byte) [][]byte {
 // the tail. Split out of subscribe so the durable-vs-ring decision — the part that has now twice
 // silently lost a conversation — is directly testable.
 func (m *managedSession) replayFrames() [][]byte {
-	replay := m.fullHistory()
+	replay := stripNonReplayable(m.fullHistory())
 	return boundTail(replay, replayTailLimit)
+}
+
+// stripNonReplayable drops frames that are wrong to REPLAY even though they were right to broadcast.
+//
+// session.usage is the whole list today: its client handler ACCUMULATES into a running total, so
+// replaying a session's usage frames on every open inflates the cost meter without bound. The
+// authoritative totals ride on the OK reply to session.info instead.
+func stripNonReplayable(frames [][]byte) [][]byte {
+	out := make([][]byte, 0, len(frames))
+	for _, f := range frames {
+		var head struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(f, &head) == nil && head.Type == protocol.TypeSessionUsage {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 // boundTail caps a replay to its most recent frames WITHOUT letting the cap consume everything that

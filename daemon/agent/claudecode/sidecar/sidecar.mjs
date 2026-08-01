@@ -157,6 +157,10 @@ const options = {
   permissionMode,
   includePartialMessages: true,
   canUseTool,
+  // Without this the SDK runs a BARE model: no Claude Code system prompt, so no tool-use discipline,
+  // no file-editing conventions, none of the behaviour the product name promises. Sessions we start
+  // were literally not Claude Code.
+  systemPrompt: { type: "preset", preset: "claude_code" },
 };
 if (process.env.OCULUS_MODEL) options.model = process.env.OCULUS_MODEL; // create-time model
 // MCP servers registered once with the daemon and injected here, so the user configures a server in

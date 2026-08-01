@@ -3633,7 +3633,18 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		}
 		h.sendOK(conn, env.ID, nil)
 		// Tell every client this approval was answered, so its card clears everywhere.
-		h.broadcast(protocol.TypeApprovalResolved, protocol.ApprovalResolved{ApprovalID: req.ApprovalID, Decision: req.Decision})
+		resolved := protocol.ApprovalResolved{ApprovalID: req.ApprovalID, Decision: req.Decision}
+		h.broadcast(protocol.TypeApprovalResolved, resolved)
+		// AND put it in the session's own history. A hub-wide announcement reaches only clients
+		// connected at that moment: the approval.request is in the transcript, so a device that opens
+		// the session later replayed the question without its answer and resurrected a dead modal.
+		if sid := pend.req.SessionID; sid != "" {
+			if m := h.managed(sid); m != nil {
+				if raw, err := (agent.Event{Type: protocol.TypeApprovalResolved, Payload: resolved}).Encode(); err == nil {
+					m.broadcast(raw)
+				}
+			}
+		}
 
 	case protocol.TypeSessionAttach:
 		var req protocol.SessionAttach
@@ -3668,7 +3679,16 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, err.Error())
 			return
 		}
-		m := h.addSession(sess, sessionMeta{})
+		// Record the directory and the server we attached to. This used to persist an EMPTY meta, so a
+		// taken-over session survived a daemon restart in name only: the restore knew the id but not
+		// where the session lived, and reopened it empty or against the wrong project.
+		attachCwd := req.Cwd
+		if dr, ok := sess.(agent.DirReporter); ok {
+			if real := dr.Dir(); real != "" {
+				attachCwd = real
+			}
+		}
+		m := h.addSession(sess, sessionMeta{cwd: attachCwd, providerURL: req.URL})
 		m.seedStatus(protocol.StatusIdle) // an attached session is idle until a real event says otherwise
 		h.sendOK(conn, env.ID, m.info())
 		m.subscribe(conn)

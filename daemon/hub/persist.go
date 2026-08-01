@@ -29,6 +29,7 @@ type persistedMeta struct {
 	IssueID       string            `json:"issue_id,omitempty"`
 	IssueKey      string            `json:"issue_key,omitempty"`
 	IssueProvider string            `json:"issue_provider,omitempty"`
+	ProviderURL   string            `json:"provider_url,omitempty"`
 	Members       []worktree.Member `json:"members,omitempty"`
 	ParentID      string            `json:"parent_id,omitempty"`
 	Subtask       string            `json:"subtask,omitempty"`
@@ -43,7 +44,7 @@ func metaToPersisted(m sessionMeta) persistedMeta {
 		ProjectID: m.projectID, Cwd: m.cwd, WorkspaceName: m.workspaceName, Branch: m.branch,
 		WorktreePath: m.worktreePath, BaseCommit: m.baseCommit, RepoRoot: m.repoRoot, Port: m.port,
 		IssueID: m.issueID, IssueKey: m.issueKey, IssueProvider: m.issueProvider, Members: m.members,
-		ParentID: m.parentID, Subtask: m.subtask,
+		ParentID: m.parentID, Subtask: m.subtask, ProviderURL: m.providerURL,
 	}
 }
 
@@ -52,7 +53,7 @@ func (pm persistedMeta) toMeta() sessionMeta {
 		projectID: pm.ProjectID, cwd: pm.Cwd, workspaceName: pm.WorkspaceName, branch: pm.Branch,
 		worktreePath: pm.WorktreePath, baseCommit: pm.BaseCommit, repoRoot: pm.RepoRoot, port: pm.Port,
 		issueID: pm.IssueID, issueKey: pm.IssueKey, issueProvider: pm.IssueProvider, members: pm.Members,
-		parentID: pm.ParentID, subtask: pm.Subtask,
+		parentID: pm.ParentID, subtask: pm.Subtask, providerURL: pm.ProviderURL,
 	}
 }
 
