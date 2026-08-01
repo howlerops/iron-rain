@@ -235,41 +235,34 @@ struct SessionSidebar: View {
             // Session flow instead — the sidebar is your RECENT sessions, and an offer to adopt
             // something you haven't started yet is a creation step, not a recent. See
             // NewSessionView, which already owns take-over, and AllSessionsView for the full list.
+            #if os(iOS)
+            // On a phone the tab root IS the whole screen, so it has to be both the archive and the
+            // fast way back. One list sorted by last-active does both: the top of it IS your recents,
+            // so nothing is duplicated and nothing has to be scrolled past. Filter chips and search
+            // narrow it; the list grows rather than changing shape as sessions accumulate.
+            Section {
+                ForEach(allSessionsByRecency) { item in sessionRow(item) }
+            } header: {
+                HStack(spacing: 6) {
+                    Text("SESSIONS").font(.system(size: 11, weight: .bold)).tracking(0.4)
+                        .foregroundStyle(palette.mutedForeground)
+                    Text("\(allSessionsByRecency.count)")
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(palette.mutedForeground)
+                    Spacer()
+                }
+            }
+            #else
             ForEach(filteredGroups) { group in
                 Section {
                     ForEach(group.items) { item in
-                        let selected = model.sessionID == item.id
-                        // Signifier is the action: a broken (errored/no-response) session RECONNECTS
-                        // on tap — routing the visible ✖ chip straight to Recover — then opens. A
-                        // healthy row just opens. This unifies Recover / Restart / reattach behind
-                        // the one affordance the user already sees.
-                        Button {
-                            if item.hasError {
-                                Task { await model.recoverSession(item.id) }
-                            } else if item.stopped {
-                                Task { await model.restartSession(item.id) }
-                            } else {
-                                selection = item.id
-                            }
-                        } label: {
-                            SessionRow(item: item, active: selected,
-                                       showProvider: group.showProvider, showProject: group.showProject,
-                                       palette: palette)
-                                .padding(.horizontal, 8).padding(.vertical, 5)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(rowSelectionBackground(selected))
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
-                        .listRowSeparator(.hidden)
-                        .listRowBackground(Color.clear)
-                        .contextMenu { rowMenu(item) }
+                        sessionRow(item, showProvider: group.showProvider, showProject: group.showProject)
                     }
                 } header: {
                     sectionHeader(group.name, running: group.runningCount, needsYou: group.needsYouCount)
                 }
             }
+            #endif
         }
         .listStyle(.sidebar)
         // The open conversation, pinned. The recents list scrolls, and on a long list the session you
@@ -588,6 +581,44 @@ struct SessionSidebar: View {
 
     /// `groups`, narrowed by the search field and the active filter. Empty sections are
     /// dropped so the list collapses to just the hits.
+    /// Every session, newest first — the iOS tab root. Deliberately NOT a separate "recent" section
+    /// above the full list: recency order already puts your recents at the top, and duplicating them
+    /// means the same row appears twice with an arbitrary boundary between.
+    private var allSessionsByRecency: [SidebarSession] {
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return groups.flatMap(\.items)
+            .filter { (q.isEmpty || $0.title.localizedCaseInsensitiveContains(q)) && filter.matches($0) }
+            .sorted { ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast) }
+    }
+
+    /// One session row. Shared by the grouped desktop list and the flat phone list so they cannot
+    /// drift — the tap behaviour in particular, where a broken session RECOVERS and a stopped one
+    /// RESTARTS rather than opening a dead conversation.
+    @ViewBuilder private func sessionRow(_ item: SidebarSession, showProvider: Bool = true, showProject: Bool = true) -> some View {
+        let selected = model.sessionID == item.id
+        Button {
+            if item.hasError {
+                Task { await model.recoverSession(item.id) }
+            } else if item.stopped {
+                Task { await model.restartSession(item.id) }
+            } else {
+                selection = item.id
+            }
+        } label: {
+            SessionRow(item: item, active: selected,
+                       showProvider: showProvider, showProject: showProject, palette: palette)
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(rowSelectionBackground(selected))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+        .contextMenu { rowMenu(item) }
+    }
+
     private var filteredGroups: [SessionGroup] {
         let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty || filter != .all else { return groups }

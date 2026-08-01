@@ -137,11 +137,11 @@ struct DestinationRail: View {
     @ViewBuilder private func railRow(_ d: Destination) -> some View {
         let active = destination == d
         Button {
-            // Tapping Sessions while already there closes the open conversation, which is what
-            // reveals the full table. The nav item should take you to the DESTINATION, and the
-            // destination for Sessions is every session you have — the sidebar below already lists
-            // recents, so nothing is lost and one tap brings any of them back.
-            if d == .sessions && active { onShowAllSessions?() }
+            // Sessions ALWAYS lands on the table, whether or not you were already there. The nav item
+            // names a destination, and the destination for Sessions is every session you have — not
+            // whichever conversation happened to be open. The recents list and the pinned
+            // active-session bar below make the conversation one click away, so nothing is stranded.
+            if d == .sessions { onShowAllSessions?() }
             destination = d
         } label: {
             HStack(spacing: 9) {
