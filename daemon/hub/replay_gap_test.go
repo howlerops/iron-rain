@@ -80,3 +80,45 @@ func TestFreshSessionDoesNotDoubleReplay(t *testing.T) {
 		t.Fatalf("replay = %d frames, want just the ring (no durable duplicate)", len(replay))
 	}
 }
+
+// TestReplayNeverSendsAFrameTwice: the durable transcript and the ring overlap by construction —
+// every event broadcast after an attach is also persisted. Concatenating them delivered many frames
+// twice, which the client used to paper over with a text-equality de-duplicator. The daemon owes the
+// client a clean transcript.
+func TestReplayNeverSendsAFrameTwice(t *testing.T) {
+	a := []byte(`{"type":"session.message","payload":{"text":"one"}}`)
+	b := []byte(`{"type":"session.message","payload":{"text":"two"}}`)
+	c := []byte(`{"type":"output.delta","payload":{"text":"live"}}`)
+
+	// Durable holds the finalized history; the ring holds the same two events plus a delta that was
+	// never persisted.
+	out := mergeDurableAndRing([][]byte{a, b}, [][]byte{a, b, c})
+	if len(out) != 3 {
+		t.Fatalf("replay = %d frames, want 3 (a, b, c) with no repeats", len(out))
+	}
+	if string(out[0]) != string(a) || string(out[1]) != string(b) || string(out[2]) != string(c) {
+		t.Errorf("order must stay oldest-first, got %s | %s | %s", out[0], out[1], out[2])
+	}
+}
+
+// A genuinely repeated event — the same prompt sent twice, with no message id to tell them apart —
+// appears twice in BOTH sources and must survive as two. Naive set-based de-duplication would eat
+// the second one and silently rewrite the conversation.
+func TestReplayKeepsGenuineRepeats(t *testing.T) {
+	dup := []byte(`{"type":"session.message","payload":{"role":"user","text":"again"}}`)
+	out := mergeDurableAndRing([][]byte{dup, dup}, [][]byte{dup, dup})
+	if len(out) != 2 {
+		t.Fatalf("replay = %d frames, want both occurrences of a legitimately repeated message", len(out))
+	}
+}
+
+// A ring event with no durable counterpart (deltas, UI components, sub-agent rows and user echoes are
+// never persisted) must always survive the merge.
+func TestReplayKeepsUnpersistedRingEvents(t *testing.T) {
+	msg := []byte(`{"type":"session.message","payload":{"text":"persisted"}}`)
+	ui := []byte(`{"type":"ui.component","payload":{"id":"c1"}}`)
+	out := mergeDurableAndRing([][]byte{msg}, [][]byte{msg, ui})
+	if len(out) != 2 || string(out[1]) != string(ui) {
+		t.Fatalf("an unpersisted ring event must survive, got %d frames", len(out))
+	}
+}

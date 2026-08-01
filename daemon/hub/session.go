@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -374,6 +375,43 @@ func (m *managedSession) info() protocol.Session {
 // so no live event can slip between the snapshot and registration (each event lands in
 // exactly one of replay or the live queue). A dedicated writer goroutine then delivers
 // the replay followed by live events, so no client's socket blocks the event pump.
+// mergeDurableAndRing joins the durable transcript with the in-memory ring WITHOUT sending anything
+// twice.
+//
+// The two sources overlap by construction: every event the ring holds after an attach was also
+// persisted, so a naive concatenation delivered many frames twice. That used to be hidden by the
+// client's replay de-duplicator, which compares message TEXT — fragile, time-bounded, and unavailable
+// on the path that paints from an on-device cache. A client should not have to repair a transcript
+// the daemon assembled wrongly, so the guarantee moves here: one replay never contains the same frame
+// twice.
+//
+// Matching is by exact bytes, because both sides ARE the same bytes — broadcast hands one slice to
+// the ring and the store keeps it verbatim. The count-aware map matters: a genuinely repeated event
+// (the same prompt sent twice, with no message id to distinguish it) appears twice in BOTH sources,
+// and must survive as two.
+func mergeDurableAndRing(durable, ring [][]byte) [][]byte {
+	if len(ring) == 0 {
+		return durable
+	}
+	remaining := make(map[string]int, len(durable))
+	for _, d := range durable {
+		h := sha256.Sum256(d)
+		remaining[string(h[:])]++
+	}
+	out := make([][]byte, 0, len(durable)+len(ring))
+	out = append(out, durable...)
+	for _, r := range ring {
+		h := sha256.Sum256(r)
+		k := string(h[:])
+		if remaining[k] > 0 {
+			remaining[k]-- // already delivered as part of the durable history
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
 // replayFrames assembles what a new subscriber is sent: the session's history oldest-first, capped to
 // the tail. Split out of subscribe so the durable-vs-ring decision — the part that has now twice
 // silently lost a conversation — is directly testable.
@@ -381,58 +419,36 @@ func (m *managedSession) replayFrames() [][]byte {
 	m.mu.Lock()
 	replay := append([][]byte(nil), m.transcript...)
 	m.mu.Unlock()
-	// When the in-memory ring buffer is empty — a session RESTORED after a daemon restart (memory
-	// wiped) before it has streamed anything new — replay the DURABLE transcript from SQLite so the
-	// full history comes back for EVERY provider (not just opencode/claude, which also re-stream on
-	// attach).
-	// A ring that has been TRIMMED is a recent window, not the session. Big tool outputs blow the 8MB
-	// byte cap quickly, so a long session could keep only its last few events — and re-opening it
-	// showed a handful of messages where there had been hours of work, while the full history sat
-	// safely in SQLite the whole time. Put the durable history in front of the window; the client
-	// de-duplicates the overlap (it arms its replay de-duplicator on every open).
+	// WHICH SOURCE IS THIS SESSION'S HISTORY?
+	//
+	// There are three, and picking wrongly has now produced three separate user-visible bugs, so the
+	// rule is stated once, here, instead of being spread across special cases:
+	//
+	//  1. The in-memory ring holds everything broadcast BY THIS PROCESS. It is the whole conversation
+	//     only for a session this process created and never trimmed — `ringFromStart && !trimmed`.
+	//  2. Otherwise the ring is a recent window and the DURABLE transcript (SQLite) is the history, so
+	//     it leads and the ring follows. This covers both a restored session (ring starts empty after
+	//     a restart) and a long one whose ring blew its byte cap. The client de-duplicates the
+	//     overlap between the two.
+	//  3. Self-replaying providers (opencode, claude-code) push their own history into the ring on
+	//     attach. That USED to mean withholding the durable transcript for a grace period, to avoid
+	//     showing everything twice — but a measured re-stream carries no tool cards, so the grace
+	//     period served an INCOMPLETE conversation, and a client opening in that window lost every
+	//     tool. mergeDurableAndRing now guarantees no frame is sent twice, which makes the special
+	//     case unnecessary: merge always, and let the merge handle the overlap.
 	m.mu.Lock()
 	trimmed := m.transcriptTrimmed
 	fromStart := m.ringFromStart
 	m.mu.Unlock()
-	// The ring is the whole conversation ONLY for a session this process created and never trimmed.
-	//
-	// This used to test "trimmed" and, separately, "ring completely EMPTY" — which left a gap that
-	// silently ate history. After a daemon restart a restored session's ring starts empty and the
-	// first status event to arrive puts ONE frame in it. From that moment neither test passed, the
-	// durable transcript was never sent, and every client opening the session saw "This conversation
-	// is empty" while hours of work sat safely in SQLite.
-	if trimmed || !fromStart {
+	ringIsWholeStory := fromStart && !trimmed
+	if !ringIsWholeStory {
 		if db := m.hub.db; db != nil {
 			if durable, err := db.Transcript(m.sess.ID()); err == nil && len(durable) > 0 {
-				replay = append(append([][]byte(nil), durable...), replay...)
+				replay = mergeDurableAndRing(durable, replay)
 			}
 		}
 	}
-	if len(replay) == 0 {
-		// Providers that RE-STREAM their own history (opencode/claude-code) are the single source of
-		// replay truth WHILE that re-stream is in flight — layering the durable transcript on top of
-		// it duplicated every message after a daemon restart.
-		//
-		// But that re-stream happens ONCE, at attach. It is not repeated for a client that subscribes
-		// later, so treating self-replay as a permanent reason to withhold the durable transcript
-		// meant a SECOND device opening a live session saw an empty conversation while the first
-		// device — still holding the history in its own memory — showed it fine. Scope the exclusion
-		// to the attach window it was actually about.
-		m.mu.Lock()
-		withinAttachWindow := time.Since(m.createdAt) < replayGrace
-		m.mu.Unlock()
-		selfReplaying := false
-		if r, ok := m.sess.(agent.Replayer); ok {
-			selfReplaying = r.SelfReplaying()
-		}
-		if !selfReplaying || !withinAttachWindow {
-			if db := m.hub.db; db != nil {
-				if durable, err := db.Transcript(m.sess.ID()); err == nil && len(durable) > 0 {
-					replay = durable
-				}
-			}
-		}
-	}
+
 	// Only the TAIL. A long conversation used to replay in full on every open — thousands of frames
 	// decoded on the main thread before anything could render, which is the "clunky" pause. The rest
 	// is fetched on demand (transcript.page), so opening a session costs the same whether it holds
@@ -628,9 +644,17 @@ func (m *managedSession) persistDurable(ev agent.Event, raw []byte) {
 	default:
 		return
 	}
-	m.txSeq++
-	if _, err := db.AppendTranscript(sid, m.txSeq, msgID, raw); err != nil {
+	// Advance only on a real insert. INSERT OR IGNORE drops a duplicate message id, and incrementing
+	// regardless burned sequence numbers on every re-attach re-stream — leaving gaps that make the
+	// sequence unusable as a cursor and misreport how much history exists.
+	next := m.txSeq + 1
+	inserted, err := db.AppendTranscript(sid, next, msgID, raw)
+	if err != nil {
 		log.Printf("transcript: append %s failed: %v", sid, err)
+		return
+	}
+	if inserted {
+		m.txSeq = next
 	}
 }
 
