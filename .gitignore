@@ -44,3 +44,7 @@ build/
 # built relay binaries (use go run / fly build)
 /daemon/oculus-relay
 /daemon/oculus-relay-e2e
+
+# probe binaries built during investigation
+/daemon/replay-probe
+/daemon/turn-smoke
