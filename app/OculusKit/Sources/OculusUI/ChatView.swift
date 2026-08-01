@@ -1747,10 +1747,17 @@ struct ChatMarkdownView: View {
         var out = AttributedString()
         let blocks = MarkdownParser.parse(text)
         for (i, b) in blocks.enumerated() {
-            if i > 0 { out += AttributedString("\n") } // blank line between blocks
+            if i > 0 {
+                // Rhythm, not a uniform gap. A heading belongs to what FOLLOWS it, so it wants more
+                // air above than below; a run of list items wants less between them than between
+                // paragraphs. Giving every boundary the same blank line is most of why a long answer
+                // reads as an undifferentiated slab.
+                out += gap(before: b, after: blocks[i - 1])
+            }
             switch b {
             case .heading(let level, let t):
                 var a = inline(t); a.font = scaled(headingSize(level)).bold()
+                a.kern = level <= 2 ? -0.3 : -0.15 // large type sets loose by default; pull it in
                 out += a + AttributedString("\n")
             case .paragraph(let t):
                 // Preserve single newlines within a paragraph as HARD line breaks. Agent/LLM output
@@ -1771,21 +1778,66 @@ struct ChatMarkdownView: View {
                 // renumbering each block from 1 rendered every item as "1.".
                 for it in items { var a = inline(it.text); a.font = bodyFont; out += AttributedString("\(it.num).  ") + a + AttributedString("\n") }
             case .code(let c):
-                var a = AttributedString(c); a.font = .system(size: 13.5 * factor, design: .monospaced) // code is always mono
+                // A tinted block, not bare monospace on the page. Without a ground of its own, code
+                // sat at the same visual level as prose and the eye had nothing to skip.
+                var a = AttributedString(c)
+                a.font = .system(size: 13.5 * factor, design: .monospaced)
+                a.backgroundColor = palette.muted.opacity(0.55)
+                a.foregroundColor = palette.foreground
                 out += a + AttributedString("\n")
             case .image(let alt, let url):
                 var a = AttributedString(alt.isEmpty ? url : alt); a.font = bodyFont
                 if let u = URL(string: url) { a.link = u; a.foregroundColor = palette.primary }
                 out += a + AttributedString("\n")
             case .rule:
-                out += AttributedString("──────────\n")
+                // A quiet hairline. Ten heavy dashes read as content — as if the agent had typed them.
+                var a = AttributedString(String(repeating: "─", count: 24))
+                a.foregroundColor = palette.border
+                a.font = .system(size: 11 * factor)
+                out += a + AttributedString("\n")
             }
         }
         return out
     }
 
     private func inline(_ s: String) -> AttributedString {
-        (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(s)
+        var a = (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(s)
+        // `backtick code` arrived completely unstyled — identical to the prose around it, which
+        // defeats the only reason anyone writes it. Style it where the parser marked it.
+        for run in a.runs where run.inlinePresentationIntent?.contains(.code) == true {
+            a[run.range].font = .system(size: 13 * factor, design: .monospaced)
+            a[run.range].backgroundColor = palette.muted.opacity(0.6)
+        }
+        // Links should look like links.
+        for run in a.runs where run.link != nil {
+            a[run.range].foregroundColor = palette.primary
+            a[run.range].underlineStyle = .single
+        }
+        return a
+    }
+
+    /// Vertical rhythm between two adjacent blocks, expressed as a sized blank line.
+    ///
+    /// SwiftUI's Text does not honour NSParagraphStyle inside an AttributedString, and the whole
+    /// message is deliberately ONE Text so a selection can span it — so spacing has to be carried by
+    /// the height of a blank line. Sizing that line is what turns a uniform gap into a hierarchy.
+    private func gap(before current: MarkdownBlock, after previous: MarkdownBlock) -> AttributedString {
+        var size: CGFloat = 9 // default paragraph separation
+        switch (previous, current) {
+        case (_, .heading):
+            size = 16 // a heading needs air ABOVE it: it introduces what follows
+        case (.heading, _):
+            size = 3  // …and almost none below, so it reads as attached to its section
+        case (.bullet, .bullet), (.ordered, .ordered):
+            size = 4  // consecutive list blocks are one list, not two
+        case (_, .code), (.code, _):
+            size = 11 // a code block is a figure; give it room to separate from the prose
+        default:
+            size = 9
+        }
+        var a = AttributedString("\n")
+        a.font = .system(size: size * factor)
+        return a
     }
     /// A body-sized font in the user's chosen design + scale.
     private var bodyFont: Font { scaled(chosen.responseSize(15)) }

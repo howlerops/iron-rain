@@ -13,9 +13,14 @@ public struct AllSessionsView: View {
     /// Open a session as the active one (closes this sheet). Supplied by the host so it can also
     /// switch the deck to the Sessions destination.
     var onOpen: ((String) -> Void)? = nil
+    /// Rendered INSIDE the detail column rather than as a sheet: no Done button, no fixed size.
+    /// This is what the Sessions destination shows when no conversation is open — every session you
+    /// have ever had, not just the recent handful the sidebar lists.
+    var embedded: Bool = false
 
-    public init(model: Model, palette: OculusPalette, onClose: @escaping () -> Void, onOpen: ((String) -> Void)? = nil) {
+    public init(model: Model, palette: OculusPalette, onClose: @escaping () -> Void, onOpen: ((String) -> Void)? = nil, embedded: Bool = false) {
         self.model = model; self.palette = palette; self.onClose = onClose; self.onOpen = onOpen
+        self.embedded = embedded
     }
 
     enum SortKey: String, CaseIterable, Identifiable {
@@ -151,7 +156,7 @@ public struct AllSessionsView: View {
                 }
             }
         }
-        .frame(minWidth: 640, minHeight: 440)
+        .modifier(SheetSizing(embedded: embedded))
         .background(palette.background)
         .foregroundStyle(palette.foreground)
         // Worktree delete: offer to remove the on-disk checkout too, not just the session record.
@@ -265,8 +270,13 @@ public struct AllSessionsView: View {
                     ForEach(Scope.allCases) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented).labelsHidden().frame(maxWidth: 240)
-                Button { onClose() } label: { Image(systemName: "xmark.circle.fill").font(.title3).foregroundStyle(palette.mutedForeground) }
+                if !embedded {
+                    Button { onClose() } label: {
+                        Image(systemName: "xmark.circle.fill").font(.title3)
+                            .foregroundStyle(palette.mutedForeground)
+                    }
                     .buttonStyle(.plain)
+                }
             }
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").font(.caption).foregroundStyle(palette.mutedForeground)
@@ -433,6 +443,19 @@ public struct AllSessionsView: View {
         case 60..<3600: return "\(secs / 60)m"
         case 3600..<86400: return "\(secs / 3600)h"
         default: return "\(secs / 86400)d"
+        }
+    }
+}
+
+
+/// A sheet needs a minimum size; a pane embedded in the detail column must take whatever it is given.
+private struct SheetSizing: ViewModifier {
+    let embedded: Bool
+    func body(content: Content) -> some View {
+        if embedded {
+            content.frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            content.frame(minWidth: 640, minHeight: 440)
         }
     }
 }

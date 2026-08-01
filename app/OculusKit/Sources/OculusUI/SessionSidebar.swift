@@ -272,11 +272,48 @@ struct SessionSidebar: View {
             }
         }
         .listStyle(.sidebar)
+        // The open conversation, pinned. The recents list scrolls, and on a long list the session you
+        // are actually in scrolls out of sight — so the one row that answers "where am I?" was the
+        // one row you could lose. Always visible, always the way back.
+        .safeAreaInset(edge: .bottom) { activeSessionBar }
         #if os(macOS)
         // Show the system's translucent sidebar material (the "floating glass") instead of an opaque
         // fill — the list body was painting over it, making the sidebar a solid block.
         .scrollContentBackground(.hidden)
+        // …and supply that material ourselves on systems that don't provide one. Without this the
+        // same build looked glassy on macOS 26 and flat grey on anything older.
+        .sidebarMaterial()
         #endif
+    }
+
+    /// The conversation currently open, pinned to the bottom of the sidebar.
+    @ViewBuilder private var activeSessionBar: some View {
+        if let s = model.currentSession {
+            Button { selection = s.id } label: {
+                HStack(spacing: 8) {
+                    RunningPulseDot(color: model.busy ? Color(hex: 0x3FB950) : palette.mutedForeground,
+                                    active: model.busy)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(s.name ?? s.title ?? s.id)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(palette.foreground).lineLimit(1)
+                        Text(model.busy ? "working…" : "open")
+                            .font(.system(size: 10)).foregroundStyle(palette.mutedForeground)
+                    }
+                    Spacer(minLength: 4)
+                    if let cost = s.costUSD, cost > 0 {
+                        Text(String(format: "$%.2f", cost))
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(palette.mutedForeground)
+                    }
+                }
+                .padding(.horizontal, 10).padding(.vertical, 8)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .background(palette.card.opacity(0.6))
+            .overlay(Rectangle().frame(height: 1).foregroundStyle(palette.border), alignment: .top)
+        }
     }
 
     private func attach(_ c: TakeoverCandidate) {

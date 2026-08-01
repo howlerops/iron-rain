@@ -1,0 +1,62 @@
+name: CI
+
+# Nothing ran tests on push before this. Three defects shipped in one cycle with a fully green local
+# suite — an inert transcript cache, a relay that tore down healthy connections, and cards that
+# multiplied on every restart — and each was caught by hand, late. A suite nobody runs automatically
+# is a suite that only catches what someone remembered to check.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  daemon:
+    name: daemon (go, race)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: daemon/go.mod
+          cache-dependency-path: daemon/go.sum
+      - name: build
+        working-directory: daemon
+        run: go build ./...
+      - name: vet
+        working-directory: daemon
+        run: go vet ./...
+      # -race is not optional here: the Turn Engine's timings and the durable sequence are both
+      # written from more than one goroutine, and a race in either corrupts a user's transcript
+      # rather than merely crashing.
+      - name: test (race)
+        working-directory: daemon
+        run: go test -race -count=1 ./...
+
+  relay:
+    name: relay worker (vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - working-directory: relay-cf
+        run: npm ci
+      - working-directory: relay-cf
+        run: npm test
+
+  app:
+    name: app (swift)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: build
+        working-directory: app/OculusKit
+        run: swift build
+      - name: test
+        working-directory: app/OculusKit
+        run: swift test

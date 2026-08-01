@@ -436,7 +436,9 @@ public struct RootView: View {
                 // destination below it — so every capability is a first-glance destination, nothing
                 // is a modal sheet or a "⋯" menu item.
                 VStack(spacing: 0) {
-                    DestinationRail(destination: $destination, model: model, palette: palette)
+                    DestinationRail(destination: $destination,
+                                    onShowAllSessions: { model.newSession() },
+                                    model: model, palette: palette)
                         .padding(.top, 4)
                     Divider().overlay(palette.border)
                     // Sticky search above the session/fleet list (padded after the rail).
@@ -705,6 +707,13 @@ public struct RootView: View {
                 if let codeSession = codeTarget(model) {
                     CodeSurface(model: model, sessionID: codeSession, reviewSessionID: model.codeReviewTarget)
                         .id((codeSession) + (model.codeReviewTarget != nil ? ":review" : ""))
+                } else if model.sessionID == nil {
+                    // No conversation open → show every session, not an empty chat pane. The sidebar
+                    // lists only RECENTS; this is the whole history, with restart and inspection on
+                    // each row. Selecting the Sessions destination is the way back to it.
+                    AllSessionsView(model: model, palette: palette, onClose: {},
+                                    onOpen: { sid in Task { await model.openSession(sid) }; showSessionDetail = true },
+                                    embedded: true)
                 } else {
                     ChatView(model: model)
                 }

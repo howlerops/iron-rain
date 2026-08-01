@@ -97,6 +97,9 @@ public enum AgentState {
 /// menu or a modal sheet.
 struct DestinationRail: View {
     @Binding var destination: Destination
+    /// Called when the Sessions destination is re-selected — the host clears the open session so the
+    /// full sessions table appears.
+    var onShowAllSessions: (() -> Void)? = nil
     @ObservedObject var model: Model
     let palette: OculusPalette
 
@@ -133,7 +136,14 @@ struct DestinationRail: View {
 
     @ViewBuilder private func railRow(_ d: Destination) -> some View {
         let active = destination == d
-        Button { destination = d } label: {
+        Button {
+            // Tapping Sessions while already there closes the open conversation, which is what
+            // reveals the full table. The nav item should take you to the DESTINATION, and the
+            // destination for Sessions is every session you have — the sidebar below already lists
+            // recents, so nothing is lost and one tap brings any of them back.
+            if d == .sessions && active { onShowAllSessions?() }
+            destination = d
+        } label: {
             HStack(spacing: 9) {
                 Image(systemName: d.symbol).font(.system(size: 14)).frame(width: 18)
                 Text(d.title).font(.system(size: 13, weight: active ? .semibold : .medium))
