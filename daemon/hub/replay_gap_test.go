@@ -2,8 +2,11 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/store"
@@ -81,44 +84,152 @@ func TestFreshSessionDoesNotDoubleReplay(t *testing.T) {
 	}
 }
 
-// TestReplayNeverSendsAFrameTwice: the durable transcript and the ring overlap by construction —
-// every event broadcast after an attach is also persisted. Concatenating them delivered many frames
-// twice, which the client used to paper over with a text-equality de-duplicator. The daemon owes the
-// client a clean transcript.
-func TestReplayNeverSendsAFrameTwice(t *testing.T) {
-	a := []byte(`{"type":"session.message","payload":{"text":"one"}}`)
-	b := []byte(`{"type":"session.message","payload":{"text":"two"}}`)
-	c := []byte(`{"type":"output.delta","payload":{"text":"live"}}`)
+// The tests below all put the ring-only frame LAST — the one arrangement that cannot expose a
+// reordering bug. That is exactly how an order-destroying merge shipped, so these now assert
+// POSITION, not just count.
 
-	// Durable holds the finalized history; the ring holds the same two events plus a delta that was
-	// never persisted.
-	out := mergeDurableAndRing([][]byte{a, b}, [][]byte{a, b, c})
-	if len(out) != 3 {
-		t.Fatalf("replay = %d frames, want 3 (a, b, c) with no repeats", len(out))
+func ids(frames [][]byte) string {
+	out := ""
+	for _, f := range frames {
+		var h struct {
+			Payload struct {
+				ID string `json:"id"`
+			} `json:"payload"`
+		}
+		_ = json.Unmarshal(f, &h)
+		out += h.Payload.ID + " "
 	}
-	if string(out[0]) != string(a) || string(out[1]) != string(b) || string(out[2]) != string(c) {
-		t.Errorf("order must stay oldest-first, got %s | %s | %s", out[0], out[1], out[2])
+	return strings.TrimSpace(out)
+}
+
+func fr(id string) []byte {
+	return []byte(`{"type":"session.message","payload":{"id":"` + id + `"}}`)
+}
+
+// TestJoinPreservesBroadcastOrder is the regression for the reordering merge.
+//
+// A restored session replays its durable history, then runs a new turn. The ring holds that turn:
+// the user's echo, the tool card, and the assistant's reply — and only the reply and the tool are
+// persisted. Concatenating "all durable, then the ring leftovers" put the echo AFTER the reply it
+// prompted.
+func TestJoinPreservesBroadcastOrder(t *testing.T) {
+	durable := [][]byte{fr("old1"), fr("old2"), fr("tool"), fr("reply")}
+	ring := [][]byte{fr("echo"), fr("tool"), fr("reply")}
+
+	got := ids(joinHistory(durable, ring))
+	want := "old1 old2 echo tool reply"
+	if got != want {
+		t.Errorf("join order = %q, want %q — the ring's position is the truth", got, want)
 	}
 }
 
-// A genuinely repeated event — the same prompt sent twice, with no message id to tell them apart —
-// appears twice in BOTH sources and must survive as two. Naive set-based de-duplication would eat
-// the second one and silently rewrite the conversation.
-func TestReplayKeepsGenuineRepeats(t *testing.T) {
+// A ring frame with no durable counterpart, sitting in the MIDDLE of the turn, must stay in the
+// middle. Deltas and running tool cards are only meaningful in position.
+func TestJoinKeepsUnpersistedFramesInPlace(t *testing.T) {
+	durable := [][]byte{fr("msg1"), fr("msg2")}
+	ring := [][]byte{fr("msg1"), fr("delta"), fr("msg2")}
+	got := ids(joinHistory(durable, ring))
+	if got != "msg1 delta msg2" {
+		t.Errorf("join = %q, want msg1 delta msg2", got)
+	}
+}
+
+// Nothing may be sent twice: the sources overlap by construction.
+func TestJoinNeverSendsAFrameTwice(t *testing.T) {
+	durable := [][]byte{fr("a"), fr("b")}
+	ring := [][]byte{fr("a"), fr("b"), fr("c")}
+	got := ids(joinHistory(durable, ring))
+	if got != "a b c" {
+		t.Errorf("join = %q, want a b c with no repeats", got)
+	}
+}
+
+// A genuinely repeated event — the same prompt sent twice, no id to distinguish them — appears twice
+// in both sources and must survive as two.
+func TestJoinKeepsGenuineRepeats(t *testing.T) {
 	dup := []byte(`{"type":"session.message","payload":{"role":"user","text":"again"}}`)
-	out := mergeDurableAndRing([][]byte{dup, dup}, [][]byte{dup, dup})
+	out := joinHistory([][]byte{dup, dup}, [][]byte{dup, dup})
 	if len(out) != 2 {
-		t.Fatalf("replay = %d frames, want both occurrences of a legitimately repeated message", len(out))
+		t.Fatalf("join = %d frames, want both occurrences", len(out))
 	}
 }
 
-// A ring event with no durable counterpart (deltas, UI components, sub-agent rows and user echoes are
-// never persisted) must always survive the merge.
-func TestReplayKeepsUnpersistedRingEvents(t *testing.T) {
-	msg := []byte(`{"type":"session.message","payload":{"text":"persisted"}}`)
-	ui := []byte(`{"type":"ui.component","payload":{"id":"c1"}}`)
-	out := mergeDurableAndRing([][]byte{msg}, [][]byte{msg, ui})
-	if len(out) != 2 || string(out[1]) != string(ui) {
-		t.Fatalf("an unpersisted ring event must survive, got %d frames", len(out))
+// Durable history older than the ring window leads.
+func TestJoinPutsOlderDurableFirst(t *testing.T) {
+	durable := [][]byte{fr("ancient"), fr("recent")}
+	ring := [][]byte{fr("recent"), fr("live")}
+	got := ids(joinHistory(durable, ring))
+	if got != "ancient recent live" {
+		t.Errorf("join = %q, want ancient recent live", got)
+	}
+}
+
+// TestTailCapKeepsMeaningfulHistory: one streamed reply contributes hundreds of output.delta frames.
+// A naive replay[len-limit:] lands entirely inside that run, slices off every message, and renders an
+// empty conversation — the exact symptom this work exists to fix.
+func TestTailCapKeepsMeaningfulHistory(t *testing.T) {
+	var replay [][]byte
+	for i := 0; i < 5; i++ {
+		replay = append(replay, fr("msg"))
+	}
+	for i := 0; i < 400; i++ {
+		replay = append(replay, []byte(`{"type":"output.delta","payload":{"text":"x"}}`))
+	}
+	out := boundTail(replay, 3)
+	msgs := 0
+	for _, f := range out {
+		var h struct {
+			Type string `json:"type"`
+		}
+		_ = json.Unmarshal(f, &h)
+		if h.Type == "session.message" {
+			msgs++
+		}
+	}
+	if msgs < 3 {
+		t.Errorf("tail kept %d messages, want at least the 3 it was capped to — a cap that keeps only deltas renders empty", msgs)
+	}
+}
+
+func TestTailCapPassesShortReplaysThrough(t *testing.T) {
+	replay := [][]byte{fr("a"), fr("b")}
+	if len(boundTail(replay, 200)) != 2 {
+		t.Error("a replay under the cap must pass through untouched")
+	}
+}
+
+// TestReStreamAfterSubscribeIsSuppressed: the replay is assembled from a SNAPSHOT of the ring, but a
+// self-replaying provider pushes its history through broadcast AFTER that snapshot — on recover, and
+// on an attach for a session the daemon could not re-attach at startup. De-duplicating the snapshot
+// alone left the client showing its conversation twice.
+func TestReStreamAfterSubscribeIsSuppressed(t *testing.T) {
+	s := &subscriber{ch: make(chan []byte, 8), done: make(chan struct{})}
+	a, b := fr("one"), fr("two")
+	s.rememberReplay([][]byte{a, b}, time.Minute)
+
+	if !s.seen(a) || !s.seen(b) {
+		t.Fatal("frames already delivered in the replay must be suppressed")
+	}
+	// Each replay frame suppresses exactly ONE copy: a genuinely repeated message later in the
+	// conversation must still get through.
+	if s.seen(a) {
+		t.Error("a second occurrence is real content, not a re-stream — it must be delivered")
+	}
+	if s.seen(fr("new")) {
+		t.Error("a frame that was never in the replay must always be delivered")
+	}
+}
+
+// Once the window closes the tracking is dropped, so the map cannot grow for the life of a
+// long-running connection and a genuine repeat is never mistaken for a re-stream.
+func TestReStreamWindowExpires(t *testing.T) {
+	s := &subscriber{ch: make(chan []byte, 8), done: make(chan struct{})}
+	a := fr("one")
+	s.rememberReplay([][]byte{a}, -time.Second) // already expired
+	if s.seen(a) {
+		t.Error("past the window, a repeat is genuine content and must be delivered")
+	}
+	if s.delivered != nil {
+		t.Error("the tracking map must be released when the window closes")
 	}
 }

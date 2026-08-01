@@ -89,9 +89,11 @@ extension Model {
         for raw in frames {
             if let env = try? Protocol.envelope(raw) { applyEvent(env, raw: raw) }
         }
-        // A frame cached mid-stream leaves a row marked `streaming`, which would animate a caret for
-        // text that finished long ago. The replay will restate it if it's genuinely still running.
-        finalizeStreamingForCache()
+        // Fold any buffered delta text into the row BEFORE sealing it. Sealing first drops the
+        // buffer on the floor: flushStream only appends when the last row is still `streaming`, so a
+        // cached reply built entirely from deltas painted as an empty bubble. claude-code, pi and the
+        // CLI providers never broadcast a finalized message, so for them EVERY cached reply is deltas.
+        flushCachedStream()
         transcriptReconciling = true
         transcriptReplayBuffer = []
         transcriptAnchorGuardUntil = Date().addingTimeInterval(20)
@@ -109,7 +111,9 @@ extension Model {
         // live while the transcript reconciles.
         if Model.nonRingFrameTypes.contains(env.type) { return false }
         guard let fs = try? env.payload(as: FrameSessionID.self), fs.sessionID == sid else { return false }
+        let first = transcriptReplayBuffer.isEmpty
         transcriptReplayBuffer.append(raw)
+        if first { armReconcileCap() } // the cap bounds the REPLAY, so it starts with the replay
         bumpReconcile()
         return true
     }
@@ -142,19 +146,39 @@ extension Model {
     /// (throw the cache away and rebuild — never splice across a hole).
     func finishReconcile() {
         guard transcriptReconciling, let sid = sessionID else { return }
+        // An empty buffer means the replay has not started yet — the cap fires 1.5s after PAINT, and
+        // on a slow link the subscribe response can still be in flight. Clearing the flag here let the
+        // whole replay render underneath the painted copy with de-duplication deliberately disarmed.
+        // Stay armed and wait for frames instead.
+        guard !transcriptReplayBuffer.isEmpty else { return }
         transcriptReconciling = false
         transcriptReconcileTask?.cancel(); transcriptReconcileCap?.cancel()
         let buffer = transcriptReplayBuffer
         transcriptReplayBuffer = []
-        guard !buffer.isEmpty else { return }
 
         let arrived = buffer.filter { Model.cacheable($0, session: sid) }
+        // Find the LONGEST suffix of what we painted that the replay reproduces.
+        //
+        // The obvious version — locate the replay's first frame in the painted array — is wrong here:
+        // byte-identical `output.delta` frames (a newline, a single token) repeat constantly, so it
+        // latches onto a short accidental match, concludes the replay is new content, and re-applies
+        // the whole conversation. That then gets written back to disk and compounds on every open.
         var spliceFrom: Int? = arrived.isEmpty ? 0 : nil
-        if let first = arrived.first, let i = transcriptPainted.lastIndex(of: first) {
-            let overlap = Array(transcriptPainted[i...])
-            if overlap.count <= arrived.count, Array(arrived[0..<overlap.count]) == overlap {
-                spliceFrom = overlap.count
+        if !arrived.isEmpty, !transcriptPainted.isEmpty {
+            let earliest = max(0, transcriptPainted.count - arrived.count)
+            // Note the exclusive upper bound: an overlap of ZERO always "matches" (two empty slices
+            // are equal) and would read as "the replay is entirely new content, append it". But the
+            // replay is the daemon's TAIL — sharing nothing with what we painted means we cannot prove
+            // the two are continuous, and splicing across an unprovable join is how a transcript ends
+            // up with a hole. Demand a real overlap, or rebuild.
+            for i in earliest..<transcriptPainted.count where spliceFrom == nil {
+                let overlap = transcriptPainted.count - i
+                if Array(transcriptPainted[i...]) == Array(arrived[0..<overlap]) {
+                    spliceFrom = overlap
+                }
             }
+        } else if !transcriptPainted.isEmpty, arrived.isEmpty {
+            spliceFrom = 0 // a replay with no transcript frames must not wipe a good painted view
         }
 
         if let from = spliceFrom {
@@ -189,6 +213,7 @@ extension Model {
     /// the same actor that drives the UI, at streaming rates.
     func captureFrame(_ raw: Data, env: Envelope) {
         guard let sid = sessionID, !daemonPubHex.isEmpty,
+              !ephemeralSessionIDs.contains(sid),
               Model.cacheable(raw, env: env, session: sid) else { return }
         // Inside the guard window, a frame byte-identical to one already on screen is the provider
         // re-streaming its history after an attach. Byte identity makes this strictly more precise
@@ -199,7 +224,8 @@ extension Model {
     }
 
     func captureFrames(_ frames: [Data], session: String) {
-        guard !frames.isEmpty, !daemonPubHex.isEmpty else { return }
+        guard !frames.isEmpty, !daemonPubHex.isEmpty,
+              !ephemeralSessionIDs.contains(session) else { return }
         transcriptWriteBuffer[session, default: []].append(contentsOf: frames)
         transcriptWriteTask?.cancel()
         transcriptWriteTask = Task { @MainActor [weak self] in
@@ -234,4 +260,27 @@ extension Model {
 struct FrameSessionID: Decodable {
     let sessionID: String?
     enum CodingKeys: String, CodingKey { case sessionID = "session_id" }
+}
+
+
+extension Model {
+    /// Clears everything the cache path holds for the open session. Every path that causes the daemon
+    /// to replay the transcript from the top must call this, or the replay is appended to what is
+    /// already painted instead of reconciled against it.
+    func resetTranscriptCacheState() {
+        transcriptPainted = []
+        transcriptReconciling = false
+        transcriptReplayBuffer = []
+        transcriptReconcileTask?.cancel()
+        transcriptReconcileCap?.cancel()
+        transcriptAnchorGuardUntil = .distantPast
+    }
+
+    /// Folds buffered streamed text into the last row, then seals it.
+    func flushCachedStream() {
+        flushStreamForCache()
+        if let last = messages.last, last.role == .assistant, last.streaming {
+            messages[messages.count - 1].streaming = false
+        }
+    }
 }

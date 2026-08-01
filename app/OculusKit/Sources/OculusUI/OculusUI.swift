@@ -434,6 +434,9 @@ public final class Model: ObservableObject {
         await loadNotifyPrefs()     // per-type push-notification toggles
         // If a session was open when the socket dropped (e.g. the daemon restarted and forgot its
         // in-memory sessions), re-attach it so its transcript + prompts resume.
+        // Read the likely-next sessions off disk BEFORE reopening, so the reopen can paint from
+        // cache. Previously this had no call site at all — the cache was written and never read.
+        await hydrateLikelySessions()
         await reopenCurrentSession()
         // Fresh launch: nothing open in memory, but reopen the session we last had open on this
         // desktop so you land back where you left off. Best-effort — no-ops if it no longer exists.
@@ -641,6 +644,10 @@ public final class Model: ObservableObject {
     private func reopenCurrentSession() async {
         guard let client, let s = currentSession else { return }
         messages.removeAll()
+        // The re-attach replays the transcript from the top. Leaving the painted set and the
+        // reconcile flags in place meant every reconnect appended the whole replay again — to the
+        // in-memory copy AND to disk — and the next reconcile anchored on the second copy.
+        resetTranscriptCacheState()
         busy = false
         pendingApproval = nil
         stopStallLoop()
@@ -1450,10 +1457,7 @@ public final class Model: ObservableObject {
         pendingApproval = nil
         busy = false
         lastDiff = nil
-        transcriptPainted = []
-        transcriptReconciling = false
-        transcriptReplayBuffer = []
-        transcriptReconcileTask?.cancel(); transcriptReconcileCap?.cancel()
+        resetTranscriptCacheState()
         // Paging state belongs to the session being LEFT. It's assigned only when a page.end arrives,
         // so without this the previous session's "there is more history" leaked into a session that
         // has none — and offered a Load-earlier button that could never load anything.
@@ -1616,6 +1620,9 @@ public final class Model: ObservableObject {
             let env = try await request(MessageType.sessionCreate,
                                         payload: SessionCreate(provider: newSessionProvider, ephemeral: true))
             let s = try env.payload(as: Session.self)
+            // Record it before anything can stream: an ephemeral chat is never persisted daemon-side,
+            // so it must never reach the on-device cache either.
+            ephemeralSessionIDs.insert(s.id)
             await loadSessions()
             await openSession(s.id)
         } catch { setError("Couldn’t start chat", error.localizedDescription) }
@@ -1770,6 +1777,9 @@ public final class Model: ObservableObject {
     var transcriptWriteTask: Task<Void, Never>?
     /// Until this moment, a frame byte-identical to one on screen is treated as a provider re-stream.
     var transcriptAnchorGuardUntil: Date = .distantPast
+    /// Sessions the user started as "just chat". They are never persisted daemon-side, so writing
+    /// them to the on-device cache would make "not saved" untrue on the one device that matters.
+    var ephemeralSessionIDs: Set<String> = []
 
     func resetDaemonEventCount() { daemonEventsRendered = 0 }
 
@@ -2659,6 +2669,9 @@ public final class Model: ObservableObject {
 
     /// Folds any buffered token text into the current streaming message (one array
     /// mutation). Safe to call at any time — a no-op when nothing is buffered.
+    /// Cache-path entry to the same buffered-text fold the live path uses.
+    func flushStreamForCache() { flushStream() }
+
     private func flushStream() {
         guard !streamBuffer.isEmpty else { return }
         if let last = messages.last, last.streaming {
@@ -3171,7 +3184,9 @@ public final class Model: ObservableObject {
             }
         case MessageType.transcriptPageEnd:
             if let e = try? env.payload(as: TranscriptPageEnd.self), e.sessionID == sessionID {
-                daemonEventsRendered += e.count // the page's frames are now part of what we hold
+                // NOT `+= e.count`: every frame in the page already incremented the counter as it
+                // arrived through applyEvent. Adding the page size again double-counted, so the next
+                // "Show earlier" asked the daemon to skip twice as far and silently jumped history.
                 // Lift the page above the messages that were already there. It arrived in
                 // chronological order and appended, so one rotation puts it in place.
                 if let anchor = pageAnchor, messages.count > anchor {

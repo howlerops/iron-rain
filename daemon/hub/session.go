@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -198,6 +199,50 @@ type subscriber struct {
 	ch        chan []byte
 	done      chan struct{}
 	closeOnce sync.Once
+
+	// delivered holds a hash of every frame this subscriber already received in its replay, for a
+	// short window after it subscribed.
+	//
+	// The replay is assembled from a SNAPSHOT of the ring. A self-replaying provider (opencode,
+	// claude-code) pushes its own history through broadcast AFTER that snapshot is taken — on
+	// session.recover, and on an attach for a session the daemon could not re-attach at startup — so
+	// de-duplicating the snapshot alone is not enough and the client sees its conversation twice. The
+	// daemon owes the client a transcript with no repeats however the frames reach it.
+	mu        sync.Mutex
+	delivered map[string]struct{}
+	dedupTill time.Time
+}
+
+// seen reports whether this exact frame was already delivered in the replay, and stops tracking once
+// the re-stream window has passed so the map cannot grow for the life of the connection.
+func (s *subscriber) seen(raw []byte) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.delivered == nil {
+		return false
+	}
+	if time.Now().After(s.dedupTill) {
+		s.delivered = nil // window over: a repeat now is genuinely a repeat
+		return false
+	}
+	h := sha256.Sum256(raw)
+	k := string(h[:])
+	if _, dup := s.delivered[k]; dup {
+		delete(s.delivered, k) // one replay frame suppresses exactly one re-stream copy
+		return true
+	}
+	return false
+}
+
+func (s *subscriber) rememberReplay(frames [][]byte, window time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.delivered = make(map[string]struct{}, len(frames))
+	for _, f := range frames {
+		h := sha256.Sum256(f)
+		s.delivered[string(h[:])] = struct{}{}
+	}
+	s.dedupTill = time.Now().Add(window)
 }
 
 func (s *subscriber) close() { s.closeOnce.Do(func() { close(s.done) }) }
@@ -375,40 +420,60 @@ func (m *managedSession) info() protocol.Session {
 // so no live event can slip between the snapshot and registration (each event lands in
 // exactly one of replay or the live queue). A dedicated writer goroutine then delivers
 // the replay followed by live events, so no client's socket blocks the event pump.
-// mergeDurableAndRing joins the durable transcript with the in-memory ring WITHOUT sending anything
-// twice.
+// joinHistory merges the durable transcript into the in-memory ring IN BROADCAST ORDER, without
+// emitting any frame twice.
 //
-// The two sources overlap by construction: every event the ring holds after an attach was also
-// persisted, so a naive concatenation delivered many frames twice. That used to be hidden by the
-// client's replay de-duplicator, which compares message TEXT — fragile, time-bounded, and unavailable
-// on the path that paints from an on-device cache. A client should not have to repair a transcript
-// the daemon assembled wrongly, so the guarantee moves here: one replay never contains the same frame
-// twice.
+// Order is part of the history, not a detail. The ring carries frames the durable store never sees —
+// the user-prompt echo, output/thinking deltas, ui.component, session.subagent, and tool cards in
+// their `running` state — and those are only meaningful in position. A `running` card emitted after
+// its `completed` twin reverts a finished tool to a spinner; deltas emitted after their finalized
+// message render the reply a second time. An earlier version concatenated the two sources (all
+// durable, then whatever the ring had left over) and did exactly that to every restored session that
+// had since run a turn.
 //
-// Matching is by exact bytes, because both sides ARE the same bytes — broadcast hands one slice to
-// the ring and the store keeps it verbatim. The count-aware map matters: a genuinely repeated event
-// (the same prompt sent twice, with no message id to distinguish it) appears twice in BOTH sources,
-// and must survive as two.
-func mergeDurableAndRing(durable, ring [][]byte) [][]byte {
+// So the join walks the RING and emits each durable frame at its ring position. Durable frames with
+// no ring counterpart are older than the ring window and form the prefix.
+//
+// Matching is by exact bytes, because both sides ARE the same bytes: broadcast hands one slice to the
+// ring and the store keeps it verbatim. The walk is position-aware rather than set-based so a
+// genuinely repeated event (the same prompt twice, with no id to tell them apart) survives as two.
+func joinHistory(durable, ring [][]byte) [][]byte {
 	if len(ring) == 0 {
 		return durable
 	}
-	remaining := make(map[string]int, len(durable))
-	for _, d := range durable {
-		h := sha256.Sum256(d)
-		remaining[string(h[:])]++
+	if len(durable) == 0 {
+		return ring
 	}
-	out := make([][]byte, 0, len(durable)+len(ring))
-	out = append(out, durable...)
-	for _, r := range ring {
+	// Where each durable frame sits in the ring, if at all. Duplicate byte sequences consume ring
+	// positions in order, so repeats line up one-for-one instead of all matching the first.
+	ringAt := make(map[string][]int, len(ring))
+	for i, r := range ring {
 		h := sha256.Sum256(r)
 		k := string(h[:])
-		if remaining[k] > 0 {
-			remaining[k]-- // already delivered as part of the durable history
-			continue
-		}
-		out = append(out, r)
+		ringAt[k] = append(ringAt[k], i)
 	}
+	type placed struct{ pos, seq int }
+	// pos = ring index this durable frame maps to; -1 means "older than the ring".
+	mapped := make([]placed, len(durable))
+	for i, d := range durable {
+		h := sha256.Sum256(d)
+		k := string(h[:])
+		if idxs := ringAt[k]; len(idxs) > 0 {
+			mapped[i] = placed{pos: idxs[0], seq: i}
+			ringAt[k] = idxs[1:]
+		} else {
+			mapped[i] = placed{pos: -1, seq: i}
+		}
+	}
+	out := make([][]byte, 0, len(durable)+len(ring))
+	// Durable history older than the ring leads, in its own order.
+	for i, mp := range mapped {
+		if mp.pos < 0 {
+			out = append(out, durable[i])
+		}
+	}
+	// Then the ring, in ring order — which already contains the durable frames that overlap it.
+	out = append(out, ring...)
 	return out
 }
 
@@ -416,61 +481,37 @@ func mergeDurableAndRing(durable, ring [][]byte) [][]byte {
 // the tail. Split out of subscribe so the durable-vs-ring decision — the part that has now twice
 // silently lost a conversation — is directly testable.
 func (m *managedSession) replayFrames() [][]byte {
-	m.mu.Lock()
-	replay := append([][]byte(nil), m.transcript...)
-	m.mu.Unlock()
-	// WHICH SOURCE IS THIS SESSION'S HISTORY?
-	//
-	// There are three, and picking wrongly has now produced three separate user-visible bugs, so the
-	// rule is stated once, here, instead of being spread across special cases:
-	//
-	//  1. The in-memory ring holds everything broadcast BY THIS PROCESS. It is the whole conversation
-	//     only for a session this process created and never trimmed — `ringFromStart && !trimmed`.
-	//  2. Otherwise the ring is a recent window and the DURABLE transcript (SQLite) is the history, so
-	//     it leads and the ring follows. This covers both a restored session (ring starts empty after
-	//     a restart) and a long one whose ring blew its byte cap. The client de-duplicates the
-	//     overlap between the two.
-	//  3. Self-replaying providers (opencode, claude-code) push their own history into the ring on
-	//     attach. That USED to mean withholding the durable transcript for a grace period, to avoid
-	//     showing everything twice — but a measured re-stream carries no tool cards, so the grace
-	//     period served an INCOMPLETE conversation, and a client opening in that window lost every
-	//     tool. mergeDurableAndRing now guarantees no frame is sent twice, which makes the special
-	//     case unnecessary: merge always, and let the merge handle the overlap.
-	m.mu.Lock()
-	trimmed := m.transcriptTrimmed
-	fromStart := m.ringFromStart
-	m.mu.Unlock()
-	ringIsWholeStory := fromStart && !trimmed
-	if !ringIsWholeStory {
-		if db := m.hub.db; db != nil {
-			if durable, err := db.Transcript(m.sess.ID()); err == nil && len(durable) > 0 {
-				replay = mergeDurableAndRing(durable, replay)
+	replay := m.fullHistory()
+	return boundTail(replay, replayTailLimit)
+}
+
+// boundTail caps a replay to its most recent frames WITHOUT letting the cap consume everything that
+// carries standalone meaning.
+//
+// A naive `replay[len-limit:]` looks right until a single streamed reply contributes hundreds of
+// output.delta frames: the tail then lands entirely inside that delta run, every session.message is
+// sliced off, and the client renders an empty conversation — the exact symptom this whole line of
+// work set out to fix. So the cap counts frames that stand on their own (messages, tool cards, UI
+// components) and keeps everything from the limit-th most recent of those onward.
+func boundTail(replay [][]byte, limit int) [][]byte {
+	if len(replay) <= limit {
+		return replay
+	}
+	var head struct {
+		Type string `json:"type"`
+	}
+	standalone := 0
+	for i := len(replay) - 1; i >= 0; i-- {
+		if json.Unmarshal(replay[i], &head) == nil {
+			switch head.Type {
+			case protocol.TypeSessionMessage, protocol.TypeSessionTool, protocol.TypeUIComponent:
+				standalone++
 			}
 		}
-	}
-
-	// Only the TAIL. A long conversation used to replay in full on every open — thousands of frames
-	// decoded on the main thread before anything could render, which is the "clunky" pause. The rest
-	// is fetched on demand (transcript.page), so opening a session costs the same whether it holds
-	// twenty messages or two thousand.
-	m.mu.Lock()
-	m.replayTotal = len(replay)
-	m.mu.Unlock()
-	truncated := false
-	if len(replay) > replayTailLimit {
-		replay = replay[len(replay)-replayTailLimit:]
-		truncated = true
-	}
-	// A page.end with hasMore tells the client older history exists. Sending it up front means the
-	// "Show earlier messages" affordance is correct the moment the transcript appears, rather than
-	// only after the first page request.
-	if truncated {
-		if raw, err := (agent.Event{Type: protocol.TypeTranscriptPageEnd, Payload: protocol.TranscriptPageEnd{
-			SessionID: m.sess.ID(), Count: 0, HasMore: true}}).Encode(); err == nil {
-			replay = append(replay, raw)
+		if standalone >= limit {
+			return replay[i:]
 		}
 	}
-
 	return replay
 }
 
@@ -484,6 +525,9 @@ func (m *managedSession) subscribe(conn *transport.Conn) {
 	}
 	m.mu.Unlock()
 	replay := m.replayFrames()
+	// Remember what this subscriber is about to receive, so a provider re-stream arriving as LIVE
+	// traffic in the next few seconds is suppressed instead of doubling the conversation on screen.
+	s.rememberReplay(replay, replayGrace)
 
 	// Deliver the CURRENT turn snapshot to this subscriber: turn.state is transient (never replayed
 	// from the transcript), so without this a client that subscribes mid-turn — including the CREATOR
@@ -691,6 +735,9 @@ func (m *managedSession) broadcast(raw []byte) {
 	}
 	m.mu.Unlock()
 	for _, s := range subs {
+		if s.seen(raw) {
+			continue // already delivered in this subscriber's replay — a provider re-stream
+		}
 		select {
 		case s.ch <- raw:
 		default:
@@ -703,38 +750,31 @@ func (m *managedSession) broadcast(raw []byte) {
 // of the live ring when the ring has been trimmed to a window, otherwise just the ring (or the
 // durable transcript when the ring is empty). Subscribe and transcript.page both go through here so
 // a page can never disagree with what the initial replay showed.
+// fullHistory is this session's complete history in broadcast order — the SAME array replayFrames
+// bounds to a tail, and the coordinate space transcript.page indexes.
+//
+// It used to implement its own, older version of the source rule (durable only when the ring was
+// empty or trimmed, plus a self-replay grace window). Paging therefore indexed a different array than
+// the one the replay came from, so after a restart the "Show earlier messages" affordance the replay
+// had just advertised could return nothing. One rule, one array, both callers.
 func (m *managedSession) fullHistory() [][]byte {
 	m.mu.Lock()
-	out := append([][]byte(nil), m.transcript...)
+	ring := append([][]byte(nil), m.transcript...)
 	trimmed := m.transcriptTrimmed
+	fromStart := m.ringFromStart
 	m.mu.Unlock()
-
-	selfReplaying := false
-	if r, ok := m.sess.(agent.Replayer); ok {
-		selfReplaying = r.SelfReplaying()
+	if fromStart && !trimmed {
+		return ring // this process saw the session from its first event: the ring is the whole story
 	}
-	m.mu.Lock()
-	withinAttachWindow := time.Since(m.createdAt) < replayGrace
-	m.mu.Unlock()
-
 	db := m.hub.db
 	if db == nil {
-		return out
+		return ring
 	}
-	if len(out) == 0 {
-		if !selfReplaying || !withinAttachWindow {
-			if durable, err := db.Transcript(m.sess.ID()); err == nil && len(durable) > 0 {
-				return durable
-			}
-		}
-		return out
+	durable, err := db.Transcript(m.sess.ID())
+	if err != nil || len(durable) == 0 {
+		return ring
 	}
-	if trimmed {
-		if durable, err := db.Transcript(m.sess.ID()); err == nil && len(durable) > 0 {
-			return append(append([][]byte(nil), durable...), out...)
-		}
-	}
-	return out
+	return joinHistory(durable, ring)
 }
 
 // historyPage returns the events immediately BEFORE the newest `loaded` ones, oldest-first, plus

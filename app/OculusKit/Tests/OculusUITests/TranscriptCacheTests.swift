@@ -165,18 +165,76 @@ final class TranscriptCacheTests: XCTestCase {
         XCTAssertEqual(m.messages.count, 0)
     }
 
-    /// A frame captured mid-stream leaves a row marked streaming; painting it later must not leave a
-    /// caret blinking on text that finished hours ago.
-    func testPaintSealsStreamingRows() {
+    /// A reply cached as deltas must paint with its TEXT, not just as a sealed empty bubble.
+    ///
+    /// The first version of this test asserted only `streaming == false` — the property the code
+    /// happened to implement — and passed while every cached reply rendered blank, because sealing the
+    /// row dropped the buffered text on the floor. claude-code, pi and the CLI providers never
+    /// broadcast a finalized message, so for them EVERY cached reply is deltas: this is the whole
+    /// conversation, not an edge case.
+    func testPaintKeepsStreamedText() {
         let m = Model()
         m.daemonPubHex = "pub"
         m.transcriptHydrated["s1"] = [
-            Data(#"{"type":"output.delta","payload":{"session_id":"s1","text":"partial"}}"#.utf8)
+            Data(#"{"type":"output.delta","payload":{"session_id":"s1","text":"hello "}}"#.utf8),
+            Data(#"{"type":"output.delta","payload":{"session_id":"s1","text":"world"}}"#.utf8),
         ]
         m.sessionID = "s1"
         _ = m.paintFromCache("s1")
+        XCTAssertEqual(m.messages.last?.text, "hello world",
+                       "cached deltas must fold into the row — a sealed EMPTY bubble is the bug")
         XCTAssertEqual(m.messages.last?.streaming, false,
-                       "a cached partial must paint as finished text, not as a live stream")
+                       "and it must not blink a caret on text that finished hours ago")
+    }
+
+    /// An ephemeral "just chat" is never persisted by the daemon. Writing it to the device cache
+    /// would make "not saved" untrue on the one machine the user actually holds.
+    func testEphemeralSessionsAreNeverCached() async {
+        let m = Model()
+        m.daemonPubHex = "unit-eph"
+        m.sessionID = "eph1"
+        m.ephemeralSessionIDs.insert("eph1")
+        let raw = frame(MessageType.sessionMessage, session: "eph1", text: "secret")
+        m.captureFrames([raw], session: "eph1")
+        await m.flushCaptured()
+        let stored = await TranscriptCache.shared.frames(daemon: "unit-eph", session: "eph1")
+        XCTAssertTrue(stored.isEmpty, "an ephemeral chat must leave nothing on disk")
+    }
+
+    /// Repeated byte-identical delta frames are normal (a newline, a single token). An anchor that
+    /// latches onto the FIRST match of one frame concludes the replay is new content and re-applies
+    /// the whole conversation — which then gets written back and compounds on every open.
+    func testReconcileAnchorsOnTheLongestOverlap() {
+        let m = Model()
+        m.daemonPubHex = "pub"
+        let nl = Data(#"{"type":"output.delta","payload":{"session_id":"s1","text":"\n"}}"#.utf8)
+        let a = frame(MessageType.sessionMessage, session: "s1", text: "one")
+        let b = frame(MessageType.sessionMessage, session: "s1", text: "two")
+        m.transcriptHydrated["s1"] = [nl, a, nl, b]
+        m.sessionID = "s1"
+        _ = m.paintFromCache("s1")
+        let painted = m.messages.count
+
+        // The daemon replays the same tail. Nothing new should be applied.
+        m.transcriptReplayBuffer = [nl, a, nl, b]
+        m.finishReconcile()
+        XCTAssertEqual(m.messages.count, painted,
+                       "a replay identical to the painted tail must add nothing, despite repeated deltas")
+    }
+
+    /// The barrier must not fire before the replay has even begun: on a slow link the subscribe
+    /// response is still in flight when the cap expires, and clearing the flag would let the whole
+    /// replay render underneath the painted copy with de-duplication disarmed.
+    func testReconcileStaysArmedUntilFramesArrive() {
+        let m = Model()
+        m.daemonPubHex = "pub"
+        m.transcriptHydrated["s1"] = [frame(MessageType.sessionMessage, session: "s1", text: "hi")]
+        m.sessionID = "s1"
+        _ = m.paintFromCache("s1")
+        XCTAssertTrue(m.transcriptReconciling)
+        m.finishReconcile() // cap fires with an empty buffer
+        XCTAssertTrue(m.transcriptReconciling,
+                      "an empty buffer means the replay has not started — stay armed rather than fail open")
     }
 
     // MARK: - Store
