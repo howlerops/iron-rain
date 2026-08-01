@@ -125,6 +125,11 @@ type managedSession struct {
 	asstAccum     strings.Builder
 	asstPersisted bool
 
+	// ringFromStart reports whether m.transcript holds the session's history from its FIRST event.
+	// False for any session this process ATTACHED to rather than created — a restored session's ring
+	// starts empty and then fills with only what happens from now on, which is not the conversation.
+	ringFromStart bool
+
 	// createdAt is when this binding was made (create or attach). It bounds the window in which a
 	// self-replaying provider might still be re-streaming its history — see subscribe().
 	createdAt time.Time
@@ -369,15 +374,12 @@ func (m *managedSession) info() protocol.Session {
 // so no live event can slip between the snapshot and registration (each event lands in
 // exactly one of replay or the live queue). A dedicated writer goroutine then delivers
 // the replay followed by live events, so no client's socket blocks the event pump.
-func (m *managedSession) subscribe(conn *transport.Conn) {
+// replayFrames assembles what a new subscriber is sent: the session's history oldest-first, capped to
+// the tail. Split out of subscribe so the durable-vs-ring decision — the part that has now twice
+// silently lost a conversation — is directly testable.
+func (m *managedSession) replayFrames() [][]byte {
 	m.mu.Lock()
 	replay := append([][]byte(nil), m.transcript...)
-	existing, already := m.subs[conn]
-	s := existing
-	if !already {
-		s = &subscriber{conn: conn, ch: make(chan []byte, outboundBuffer), done: make(chan struct{})}
-		m.subs[conn] = s
-	}
 	m.mu.Unlock()
 	// When the in-memory ring buffer is empty — a session RESTORED after a daemon restart (memory
 	// wiped) before it has streamed anything new — replay the DURABLE transcript from SQLite so the
@@ -390,8 +392,16 @@ func (m *managedSession) subscribe(conn *transport.Conn) {
 	// de-duplicates the overlap (it arms its replay de-duplicator on every open).
 	m.mu.Lock()
 	trimmed := m.transcriptTrimmed
+	fromStart := m.ringFromStart
 	m.mu.Unlock()
-	if trimmed && len(replay) > 0 {
+	// The ring is the whole conversation ONLY for a session this process created and never trimmed.
+	//
+	// This used to test "trimmed" and, separately, "ring completely EMPTY" — which left a gap that
+	// silently ate history. After a daemon restart a restored session's ring starts empty and the
+	// first status event to arrive puts ONE frame in it. From that moment neither test passed, the
+	// durable transcript was never sent, and every client opening the session saw "This conversation
+	// is empty" while hours of work sat safely in SQLite.
+	if trimmed || !fromStart {
 		if db := m.hub.db; db != nil {
 			if durable, err := db.Transcript(m.sess.ID()); err == nil && len(durable) > 0 {
 				replay = append(append([][]byte(nil), durable...), replay...)
@@ -444,6 +454,20 @@ func (m *managedSession) subscribe(conn *transport.Conn) {
 			replay = append(replay, raw)
 		}
 	}
+
+	return replay
+}
+
+func (m *managedSession) subscribe(conn *transport.Conn) {
+	m.mu.Lock()
+	existing, already := m.subs[conn]
+	s := existing
+	if !already {
+		s = &subscriber{conn: conn, ch: make(chan []byte, outboundBuffer), done: make(chan struct{})}
+		m.subs[conn] = s
+	}
+	m.mu.Unlock()
+	replay := m.replayFrames()
 
 	// Deliver the CURRENT turn snapshot to this subscriber: turn.state is transient (never replayed
 	// from the transcript), so without this a client that subscribes mid-turn — including the CREATOR
@@ -723,7 +747,16 @@ func (m *managedSession) run() {
 	if db := m.hub.db; db != nil {
 		if seq, err := db.MaxTranscriptSeq(m.sess.ID()); err == nil {
 			m.txSeq = seq
+			// Durable rows already exist → this process is joining a conversation in progress, so its
+			// ring can never be the whole story and subscribe must lead with the durable transcript.
+			m.mu.Lock()
+			m.ringFromStart = seq == 0
+			m.mu.Unlock()
 		}
+	} else {
+		m.mu.Lock()
+		m.ringFromStart = true // no durable store: the ring is all there has ever been
+		m.mu.Unlock()
 	}
 	for ev := range m.sess.Events() {
 		m.noteTurnEvent() // every provider event = liveness for the Turn Engine
