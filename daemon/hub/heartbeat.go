@@ -10,6 +10,7 @@ import (
 
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/store"
+	"github.com/howlerops/oculus/daemon/transport"
 )
 
 // Heartbeat supervision keeps long-running autonomous sessions on track. Every tick it derives
@@ -164,6 +165,56 @@ func (h *Hub) heartbeatTick() {
 	}
 }
 
+// SendHeartbeatSnapshot pushes the CURRENT supervision state of every live session to ONE client.
+// heartbeatTick broadcasts only on CHANGE, which is right for steady-state fan-out and wrong for a
+// device that just arrived: pick up the phone while the Mac is mid-turn and it has missed every
+// edge, so its chips stay blank (or worse, stay whatever the last session.list snapshot implied)
+// until the state happens to flip — up to a full 25s tick. Call this when a client connects.
+// Best-effort per frame: a client whose queue is full is skipped, never blocked on, exactly as
+// broadcast does.
+func (h *Hub) SendHeartbeatSnapshot(conn *transport.Conn) {
+	h.mu.Lock()
+	c := h.clients[conn]
+	sessions := make([]*managedSession, 0, len(h.sessions))
+	for _, m := range h.sessions {
+		sessions = append(sessions, m)
+	}
+	h.mu.Unlock()
+	if c == nil {
+		return
+	}
+	now := time.Now()
+	for _, m := range sessions {
+		m.mu.Lock()
+		st := m.hbState
+		if st == "" {
+			// No tick has run for this session yet (it was created since the last one) — derive it now
+			// rather than sending an empty state the client would have to guess about.
+			st = deriveState(m, now)
+			m.hbState = st
+		}
+		nudge, cost := m.nudgeCount, m.costUSD
+		budget := m.budgetUSD
+		if budget == 0 {
+			budget = defaultBudgetUSD
+		}
+		todos := append([]protocol.Todo(nil), m.latestTodos...)
+		m.mu.Unlock()
+		done, total := todoProgress(todos)
+		raw, err := protocol.Encode("", protocol.TypeSessionHeartbeat, protocol.SessionHeartbeat{
+			SessionID: m.sess.ID(), State: st, NudgeCount: nudge,
+			TodosDone: done, TodosTotal: total, CostUSD: cost, BudgetUSD: budget,
+		})
+		if err != nil {
+			continue
+		}
+		select {
+		case c.ch <- raw:
+		default:
+		}
+	}
+}
+
 func (h *Hub) broadcastHeartbeat(m *managedSession, state string, nudge, done, total int, cost, budget float64) {
 	h.broadcast(protocol.TypeSessionHeartbeat, protocol.SessionHeartbeat{
 		SessionID: m.sess.ID(), State: state, NudgeCount: nudge,
@@ -257,7 +308,6 @@ func deriveState(m *managedSession, now time.Time) string {
 	if now.Sub(m.lastActivity) < activeWindow {
 		return hbWorking
 	}
-	_, total := todoProgress(m.latestTodos)
 	incomplete := false
 	for _, t := range m.latestTodos {
 		if t.Status != "completed" {
@@ -265,7 +315,12 @@ func deriveState(m *managedSession, now time.Time) string {
 			break
 		}
 	}
-	if total > 0 && !incomplete && m.turnEnded {
+	// Nothing outstanding AND the turn is over → done. This deliberately does NOT require a to-do
+	// list: most sessions (plain chat, one-shot asks) never write one, and demanding total > 0 sent
+	// every one of them through to the "give it room" fallback below, where they reported "working"
+	// for the rest of their life. An idle session is the single most common state there is; calling
+	// it working is the heartbeat's own version of the immortal Live pill.
+	if !incomplete && (m.turnEnded || m.lastStatus == protocol.StatusIdle || m.lastStatus == protocol.StatusDone) {
 		return hbDone
 	}
 	maxN := m.maxNudges

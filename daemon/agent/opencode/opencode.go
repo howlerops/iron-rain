@@ -203,6 +203,24 @@ func (p *Provider) create(ctx context.Context, cwd, prompt, agentName string) (a
 // live events and replays the session's message history so the app shows the
 // conversation and can continue it.
 func (p *Provider) Attach(ctx context.Context, sessionID, cwd string) (agent.Session, error) {
+	return p.attach(ctx, sessionID, cwd, false)
+}
+
+// AttachVerified is Attach for callers that cannot afford a blind attach: it fails unless this
+// server actually HOLDS the session (proved by resolving its directory).
+//
+// The distinction exists because opencode's /event stream accepts any subscriber — it is a
+// server-wide bus, not a session handle. So attaching to a server that has never heard of the
+// session still "succeeds": the app gets a live-looking row with no history, and every send goes to
+// a session id the server can't find and is silently dropped. That is exactly the state a daemon
+// restart produces when the persisted URL is missing/stale or the terminal's opencode was restarted.
+// The restore path (hub.RestoreSessions) uses this so such a record stays stopped + RESTARTABLE —
+// visibly recoverable — instead of pretending to be attached.
+func (p *Provider) AttachVerified(ctx context.Context, sessionID, cwd string) (agent.Session, error) {
+	return p.attach(ctx, sessionID, cwd, true)
+}
+
+func (p *Provider) attach(ctx context.Context, sessionID, cwd string, requireDir bool) (agent.Session, error) {
 	// cwd scopes the /event subscription + message writes to the session's directory
 	// (opencode partitions both by ?directory=). A WRONG/stale cwd is worse than none: the
 	// session opens (history may replay) but every message write goes to a directory where
@@ -215,6 +233,8 @@ func (p *Provider) Attach(ctx context.Context, sessionID, cwd string) (agent.Ses
 			log.Printf("opencode: attach %s — resolved real directory %q (stored cwd was %q)", sessionID, real, cwd)
 		}
 		dir = real
+	} else if requireDir {
+		return nil, fmt.Errorf("opencode at %s doesn't hold session %s (no directory) — not attaching blind", p.baseURL, sessionID)
 	} else if cwd != "" {
 		// Couldn't verify the directory (opencode unreachable/slow, or the session is unknown to it).
 		// We fall back to the stored cwd — but if that cwd is stale, sends will silently fail, so make
@@ -272,8 +292,10 @@ func (s *session) replayHistory(ctx context.Context) {
 	defer resp.Body.Close()
 	var msgs []struct {
 		Info struct {
-			ID   string `json:"id"`
-			Role string `json:"role"`
+			ID         string `json:"id"`
+			Role       string `json:"role"`
+			ModelID    string `json:"modelID"`
+			ProviderID string `json:"providerID"`
 		} `json:"info"`
 		Parts []struct {
 			Type string `json:"type"`
@@ -283,6 +305,16 @@ func (s *session) replayHistory(ctx context.Context) {
 	}
 	if json.NewDecoder(resp.Body).Decode(&msgs) != nil {
 		return
+	}
+	// TAKEOVER MUST NOT CHANGE THE MODEL. opencode takes the model per MESSAGE, so an attached
+	// session starts with none — and sendParts then omits it, running the user's next turn on
+	// whatever the server defaults to. Mid-task, silently. Adopt the model of the last assistant
+	// message instead: that is provably what this conversation was being run with.
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Info.Role == "assistant" && msgs[i].Info.ModelID != "" {
+			s.adoptModel(msgs[i].Info.ProviderID, msgs[i].Info.ModelID)
+			break
+		}
 	}
 	for _, m := range msgs {
 		var text string
@@ -963,6 +995,30 @@ func (s *session) SetModel(provider, model string) error {
 	s.modelProvider, s.modelID = provider, model
 	s.modelMu.Unlock()
 	return nil
+}
+
+// adoptModel takes the model a session was ALREADY running with (from its own history), without
+// overriding a model the user picked explicitly — SetModel wins, because it's a stated intent while
+// this is an inference.
+func (s *session) adoptModel(provider, model string) {
+	if model == "" {
+		return
+	}
+	s.modelMu.Lock()
+	defer s.modelMu.Unlock()
+	if s.modelID != "" {
+		return
+	}
+	s.modelProvider, s.modelID = provider, model
+	log.Printf("opencode: attach %s — continuing with the session's own model %s/%s", s.id, provider, model)
+}
+
+// Model reports the model this session runs turns with ("" when opencode's default is in force), so
+// the hub can persist it and the app can show "continuing with model X" after a takeover.
+func (s *session) Model() (provider, model string) {
+	s.modelMu.Lock()
+	defer s.modelMu.Unlock()
+	return s.modelProvider, s.modelID
 }
 
 func (s *session) sendParts(parts []map[string]any) error {

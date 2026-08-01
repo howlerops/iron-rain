@@ -3,6 +3,7 @@ package worktree
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -327,4 +328,64 @@ func Overlaps(target string, changed map[string][]string) map[string][]string {
 		}
 	}
 	return result
+}
+
+// MergeIntoDefault lands a worktree branch into the default branch of the MAIN checkout.
+//
+// Finishing a worktree used to offer exactly one destination — open a GitHub PR — so a repo with no
+// remote hit a dead end: the agent's work sat on a branch with no way to land it from the phone.
+//
+// The merge runs with --no-ff so the branch stays legible in history, and it ABORTS on conflict
+// rather than leaving a half-merged working tree for the user to discover later on their laptop.
+// Conflicts are the user's call to make at a keyboard, not something to resolve blind from a phone.
+func MergeIntoDefault(ctx context.Context, repoRoot, branch string) error {
+	if branch == "" {
+		return fmt.Errorf("no branch to merge")
+	}
+	base := DefaultBranch(repoRoot)
+	// Refuse to touch a dirty main checkout: merging over uncommitted human work is not ours to do.
+	if out, err := exec.Command("git", "-C", repoRoot, "status", "--porcelain").Output(); err == nil {
+		if strings.TrimSpace(string(out)) != "" {
+			return fmt.Errorf("the main checkout has uncommitted changes — commit or stash them first")
+		}
+	}
+	if out, err := exec.Command("git", "-C", repoRoot, "checkout", base).CombinedOutput(); err != nil {
+		return fmt.Errorf("checkout %s: %v: %s", base, err, strings.TrimSpace(string(out)))
+	}
+	ctx, cancel := context.WithTimeout(ctx, gitNetworkTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", repoRoot, "merge", "--no-ff", "-m",
+		"Merge "+branch, branch)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		// Leave nothing behind. A merge left in progress is worse than a failed one: it turns up as a
+		// broken repo the next time the user sits down.
+		_ = exec.Command("git", "-C", repoRoot, "merge", "--abort").Run()
+		return fmt.Errorf("merge %s into %s: %s", branch, base, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// PRState reports a branch's pull-request state ("OPEN", "MERGED", "CLOSED") and its URL, so the app
+// can tell the user their work actually landed instead of leaving the worktree around forever. An
+// empty state means there is no PR (or gh cannot answer), which is not an error.
+func PRState(ctx context.Context, worktreePath, branch string) (state, url string, err error) {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return "", "", nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, gitNetworkTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gh", "pr", "view", branch, "--json", "state,url")
+	cmd.Dir = worktreePath
+	out, err := cmd.Output()
+	if err != nil {
+		return "", "", nil // no PR for this branch is the common case, not a failure
+	}
+	var res struct {
+		State string `json:"state"`
+		URL   string `json:"url"`
+	}
+	if err := json.Unmarshal(out, &res); err != nil {
+		return "", "", err
+	}
+	return res.State, res.URL, nil
 }

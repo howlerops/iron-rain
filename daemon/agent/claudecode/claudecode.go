@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,10 +45,29 @@ import (
 
 // Provider spawns claude-code sessions via the sidecar.
 type Provider struct {
-	sidecar    []string // command to run the sidecar, e.g. ["node", "/path/sidecar.mjs"]
-	mu         sync.Mutex
-	resume     map[string]string // our stable session id (cc_…) -> claude's real session UUID
-	resumePath string            // where the map persists (survives restart), 0600
+	sidecar     []string // command to run the sidecar, e.g. ["node", "/path/sidecar.mjs"]
+	mu          sync.Mutex
+	resume      map[string]string // our stable session id (cc_…) -> claude's real session UUID
+	resumePath  string            // where the map persists (survives restart), 0600
+	projectsDir string            // override for ~/.claude/projects (tests)
+}
+
+// SetProjectsDir overrides where claude's on-disk transcripts are looked up (tests).
+func (p *Provider) SetProjectsDir(dir string) { p.projectsDir = dir }
+
+// projects is the session-side accessor for the provider's transcript directory.
+func (s *session) projects() string {
+	if s.p != nil {
+		return s.p.projects()
+	}
+	return discovery.DefaultClaudeProjectsDir()
+}
+
+func (p *Provider) projects() string {
+	if p.projectsDir != "" {
+		return p.projectsDir
+	}
+	return discovery.DefaultClaudeProjectsDir()
 }
 
 // New returns a Provider that runs the given sidecar command (argv). For tests,
@@ -128,6 +148,15 @@ func (p *Provider) Models(ctx context.Context) ([]protocol.ModelInfo, error) {
 // resumed session's tool calls (edits, bash) target the right project (the SDK's resume runs
 // as a fresh process in the given directory, not the session's recorded one).
 func (p *Provider) Attach(ctx context.Context, sessionID, cwd string) (agent.Session, error) {
+	if cwd == "" {
+		// No recorded directory (a pre-Phase-0 record, or a take-over discovered by transcript). The
+		// sidecar would then inherit the DAEMON's directory and start editing an unrelated repository.
+		// claude stamps the project on every transcript entry, so the conversation itself knows.
+		if real := p.transcriptCwd(sessionID); real != "" {
+			log.Printf("claude-code: attach %s — no stored cwd; resuming in the project its transcript records (%s)", sessionID, real)
+			cwd = real
+		}
+	}
 	sess, err := p.start(ctx, cwd, sessionID, "attach", "", false)
 	if err != nil {
 		return nil, err
@@ -174,11 +203,50 @@ const (
 	replayTranscriptMsgSize = 20000
 )
 
+// transcriptCwd reads the working directory claude recorded for a session, by scanning the head of
+// its JSONL transcript for the first entry carrying a cwd. Empty when the transcript is unknown.
+func (p *Provider) transcriptCwd(sessionID string) string {
+	uuid := p.resumeID(sessionID)
+	if uuid == "" && looksLikeUUID(sessionID) {
+		uuid = sessionID
+	}
+	if uuid == "" {
+		return ""
+	}
+	matches, _ := filepath.Glob(filepath.Join(p.projects(), "*", uuid+".jsonl"))
+	if len(matches) == 0 {
+		return ""
+	}
+	f, err := os.Open(matches[0])
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	r := bufio.NewReaderSize(f, 1<<20)
+	// Bounded scan: the header lines (summary/mode/permission-mode) carry no cwd, the first real
+	// entry does. Reading the whole file to find it would be pointless work on a huge transcript.
+	for i := 0; i < 50; i++ {
+		line, err := r.ReadBytes('\n')
+		if len(line) > 1 {
+			var entry struct {
+				Cwd string `json:"cwd"`
+			}
+			if json.Unmarshal(line, &entry) == nil && entry.Cwd != "" {
+				return entry.Cwd
+			}
+		}
+		if err != nil {
+			break
+		}
+	}
+	return ""
+}
+
 // replayTranscript reads the session's on-disk JSONL transcript and emits its trailing user/assistant
 // messages as SessionMessage events (MsgID = the line's uuid, so the durable transcript dedups a
 // re-attach). Best-effort: any parse hiccup just ends the replay.
 func (s *session) replayTranscript(uuid string) {
-	matches, _ := filepath.Glob(filepath.Join(discovery.DefaultClaudeProjectsDir(), "*", uuid+".jsonl"))
+	matches, _ := filepath.Glob(filepath.Join(s.projects(), "*", uuid+".jsonl"))
 	if len(matches) == 0 {
 		return
 	}

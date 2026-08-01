@@ -51,6 +51,7 @@ type Hub struct {
 	mu        sync.Mutex
 	providers map[string]agent.Provider
 	sessions  map[string]*managedSession // sessionID -> hub-owned shared session
+	devices   *deviceRegistry            // enrolled client keys (per-device revocation)
 	approvals map[string]*managedSession // approvalID -> owning session
 	discover  DiscoverFunc
 
@@ -1811,7 +1812,7 @@ func (h *Hub) pushAgentFinished(sessionID, label string, dur time.Duration, todo
 		body = strings.Join(parts, " · ") + " — tap to review"
 	}
 	h.pushNotify(push.Notification{
-		Title: title, Body: body, Category: "AGENT_FINISHED",
+		Title: title, Body: body, Category: "AGENT_FINISHED", Wake: true,
 		ThreadID: sessionID, Custom: map[string]any{"session_id": sessionID},
 	})
 }
@@ -3051,6 +3052,73 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		}
 		h.pushPRFinished(req.SessionID, m.activityTitle(), url) // notify: end-of-task milestone reached
 		h.sendOK(conn, env.ID, protocol.WorktreePRResult{SessionID: req.SessionID, Branch: branch, Pushed: true, URL: url})
+
+	case protocol.TypeDeviceList:
+		h.sendOK(conn, env.ID, h.deviceList(conn))
+
+	case protocol.TypeDeviceRevoke:
+		var req protocol.DeviceRef
+		if err := env.Unmarshal(&req); err != nil || req.Pub == "" {
+			h.sendErr(conn, env.ID, "bad device.revoke")
+			return
+		}
+		if err := h.RevokeDevice(req.Pub); err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, h.deviceList(conn))
+		h.broadcast(protocol.TypeDeviceList, h.deviceList(nil))
+
+	case protocol.TypeDeviceLabel:
+		var req protocol.DeviceRef
+		if err := env.Unmarshal(&req); err != nil || req.Pub == "" {
+			h.sendErr(conn, env.ID, "bad device.label")
+			return
+		}
+		if err := h.LabelDevice(req.Pub, req.Label); err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, h.deviceList(conn))
+
+	case protocol.TypeWorktreeMerge:
+		var req protocol.WorktreeMerge
+		_ = env.Unmarshal(&req)
+		m := h.managed(req.SessionID)
+		if m == nil || m.meta.worktreePath == "" {
+			h.sendErr(conn, env.ID, "not a worktree session")
+			return
+		}
+		wtPath, branch, root := m.meta.worktreePath, m.meta.branch, m.meta.repoRoot
+		msg := req.Message
+		if msg == "" {
+			msg = branch
+		}
+		// Commit whatever the agent left uncommitted first — otherwise "finish" silently drops the
+		// last edits, which is the worst possible failure for a button called Finish.
+		if _, err := worktree.CommitAll(ctx, wtPath, msg); err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		if err := worktree.MergeIntoDefault(ctx, root, branch); err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, protocol.WorktreePRResult{SessionID: req.SessionID, Branch: branch, Pushed: false})
+
+	case protocol.TypeWorktreeStatus:
+		var req protocol.WorktreeStatus
+		_ = env.Unmarshal(&req)
+		m := h.managed(req.SessionID)
+		if m == nil || m.meta.worktreePath == "" {
+			h.sendErr(conn, env.ID, "not a worktree session")
+			return
+		}
+		state, url, _ := worktree.PRState(ctx, m.meta.worktreePath, m.meta.branch)
+		h.sendOK(conn, env.ID, protocol.WorktreeStatusResult{
+			SessionID: req.SessionID, Branch: m.meta.branch, State: state, URL: url,
+			HasRemote: worktree.HasRemote(m.meta.worktreePath),
+		})
 
 	case protocol.TypeWorktreeConflicts:
 		var req protocol.WorktreeConflicts

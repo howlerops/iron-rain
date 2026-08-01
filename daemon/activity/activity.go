@@ -188,6 +188,35 @@ func (s *Store) MarkRead(ids []string) {
 	}
 }
 
+// ClearNeedsYou marks every UNREAD needs-you event for one session as read and returns the events it
+// flipped (empty when there was nothing live). The needs-you badge means "this session is waiting on
+// YOU": once the ask is answered or the condition is gone — the approval was resolved on any device,
+// the errored session started running again — the badge has to clear ITSELF. Otherwise the inbox
+// keeps pointing at a session that wants nothing, which is exactly the "UI lies" failure the feed
+// exists to prevent, and the user has to hand-dismiss the same item on every device.
+//
+// Same semantics as the supersede path in Record: read, never deleted, so the feed keeps the
+// history; and the flip is rewritten to disk, or a restart resurrects the phantom.
+func (s *Store) ClearNeedsYou(sessionID string) []Event {
+	if s == nil || sessionID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	var flipped []Event
+	for i := range s.ring {
+		if s.ring[i].NeedsYou && !s.ring[i].Read && s.ring[i].SessionID == sessionID {
+			s.ring[i].Read = true
+			flipped = append(flipped, s.ring[i])
+		}
+	}
+	snapshot := append([]Event(nil), s.ring...)
+	s.mu.Unlock()
+	if len(flipped) > 0 {
+		s.rewrite(snapshot)
+	}
+	return flipped
+}
+
 // rewrite atomically replaces the log with the current ring (used after MarkRead so read-state is durable).
 func (s *Store) rewrite(events []Event) {
 	tmp := s.path + ".tmp"

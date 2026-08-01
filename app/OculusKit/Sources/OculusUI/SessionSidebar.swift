@@ -113,6 +113,10 @@ struct SessionSidebar: View {
     @State private var renamingSessionID: String?
     @State private var renameText = ""
     @State private var showFleet = false
+    /// A live terminal row from the strip awaiting confirmation before we take it over.
+    @State private var pendingTakeover: TakeoverCandidate?
+    /// The row whose `claude --resume` command was just copied — a one-shot "Copied" acknowledgement.
+    @State private var copiedResumeFor: String?
 
     static let newSessionTag = "__new__"
 
@@ -127,6 +131,27 @@ struct SessionSidebar: View {
             .safeAreaInset(edge: .bottom) { updateCard }
             #endif
             .tint(palette.primary)
+        // Takeover is only "proactive" if the list is already there when you look. Rescan whenever the
+        // link comes up (a fresh connect, or a reconnect after the Mac woke) rather than waiting for
+        // someone to find the manual Scan button.
+        .task(id: model.connected) {
+            guard model.connected else { return }
+            await model.discover()
+        }
+        .confirmationDialog(takeoverWarning?.title ?? "",
+                            isPresented: Binding(get: { pendingTakeover != nil },
+                                                 set: { if !$0 { pendingTakeover = nil } }),
+                            titleVisibility: .visible) {
+            if let c = pendingTakeover, let w = TerminalTakeover.warning(provider: c.provider, live: c.live) {
+                Button(w.confirm, role: .destructive) {
+                    pendingTakeover = nil
+                    attach(c)
+                }
+            }
+            Button("Cancel", role: .cancel) { pendingTakeover = nil }
+        } message: {
+            if let w = takeoverWarning { Text(w.message) }
+        }
         // macOS: the window title + desktop switcher live on the DECK (RootView), showing the current
         // PAGE consistently across destinations; search is the sticky DeckSearchBar. iOS keeps a
         // per-tab title + native search (applied at the END of this chain — see below).
@@ -221,6 +246,41 @@ struct SessionSidebar: View {
                 .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
             }
+            // "Continue from terminal" — the sessions already running outside the app, offered where
+            // you'd look for a session rather than four taps deep behind a manual scan. Only appears
+            // when there is actually something to continue, and stands down while you're searching:
+            // a search should return YOUR sessions, not an offer sitting on top of them.
+            if searchText.isEmpty, !takeoverCandidates.isEmpty {
+                Section {
+                    ForEach(takeoverCandidates) { c in takeoverStripRow(c) }
+                    if terminalCandidateTotal > takeoverCandidates.count {
+                        Button { onTakeOver?() } label: {
+                            Text("\(terminalCandidateTotal - takeoverCandidates.count) more…")
+                                .font(.system(size: 11, weight: .medium)).foregroundStyle(palette.primary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 8).padding(.vertical, 4)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 2, trailing: 6))
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                    }
+                } header: {
+                    HStack(spacing: 6) {
+                        Text("CONTINUE FROM TERMINAL")
+                            .font(.system(size: 11, weight: .bold)).tracking(0.4)
+                            .foregroundStyle(palette.mutedForeground)
+                        Spacer()
+                        Button { Task { await model.discover() } } label: {
+                            Image(systemName: "arrow.clockwise").font(.system(size: 10))
+                                .foregroundStyle(palette.mutedForeground)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Rescan for terminal sessions")
+                    }
+                }
+            }
             ForEach(filteredGroups) { group in
                 Section {
                     ForEach(group.items) { item in
@@ -263,6 +323,105 @@ struct SessionSidebar: View {
         // fill — the list body was painting over it, making the sidebar a solid block.
         .scrollContentBackground(.hidden)
         #endif
+    }
+
+    // MARK: - "Continue from terminal" strip
+
+    /// How many rows the strip shows before it defers to the full Take-over sheet. The strip sits
+    /// above your actual sessions; it must not become the session list.
+    private static let stripLimit = 3
+
+    private var takeoverWarning: TakeoverWarning? {
+        guard let c = pendingTakeover else { return nil }
+        return TerminalTakeover.warning(provider: c.provider, live: c.live)
+    }
+
+    private var terminalCandidateTotal: Int {
+        TerminalTakeover.candidates(discovered: model.discovered, managed: model.sessions).count
+    }
+
+    private var takeoverCandidates: [TakeoverCandidate] {
+        TerminalTakeover.candidates(discovered: model.discovered, managed: model.sessions,
+                                    limit: Self.stripLimit)
+    }
+
+    private func takeoverStripRow(_ c: TakeoverCandidate) -> some View {
+        Button { requestTakeover(c) } label: {
+            HStack(spacing: 9) {
+                Image(systemName: c.provider == "claude-code" ? "terminal" : "bolt.horizontal.circle")
+                    .font(.system(size: 13)).foregroundStyle(palette.primary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(c.title).font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(palette.foreground).lineLimit(1)
+                    Text(c.subtitle).font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+                Spacer(minLength: 6)
+                if c.live {
+                    HStack(spacing: 3) {
+                        Circle().fill(palette.primary).frame(width: 5, height: 5)
+                        Text("Live").font(.system(size: 10, weight: .semibold))
+                    }
+                    .foregroundStyle(palette.primary)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Capsule().fill(palette.primary.opacity(0.16)))
+                }
+            }
+            .padding(.horizontal, 8).padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 8).fill(palette.muted.opacity(0.22)))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(palette.primary.opacity(0.18)))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
+        .listRowSeparator(.hidden)
+        .listRowBackground(Color.clear)
+        .contextMenu {
+            if let cmd = TerminalTakeover.resumeCommand(provider: c.provider, sessionID: c.sessionID) {
+                Button { copy(cmd, for: c.id) } label: {
+                    Label("Copy “\(cmd)”", systemImage: "doc.on.doc")
+                }
+            }
+        }
+    }
+
+    /// Attaches immediately when nothing is at stake; otherwise stages the confirmation. Taking over
+    /// a LIVE row can cost an in-flight turn and puts a second writer on the session, so it asks.
+    private func requestTakeover(_ c: TakeoverCandidate) {
+        if TerminalTakeover.warning(provider: c.provider, live: c.live) != nil {
+            pendingTakeover = c
+        } else {
+            attach(c)
+        }
+    }
+
+    private func attach(_ c: TakeoverCandidate) {
+        guard let d = model.discovered.first(where: { $0.discoveryID == c.id }) else { return }
+        Task {
+            await model.attach(d)
+            selection = c.sessionID
+        }
+    }
+
+    /// Copies a command and flashes an acknowledgement — a menu item that silently succeeds is
+    /// indistinguishable from one that silently failed.
+    private func copy(_ text: String, for id: String) {
+        copyToPasteboard(text)
+        copiedResumeFor = id
+        Task {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            if copiedResumeFor == id { copiedResumeFor = nil }
+        }
+    }
+
+    /// The `claude --resume <uuid>` handback for a managed session, when we can name it honestly.
+    ///
+    /// LIMITATION: `Session` carries no claude UUID, so this only fires for a session whose id IS
+    /// the UUID (a claude row taken over straight from discovery). Once the daemon rewrites it to a
+    /// `cc_…` id, only the daemon's resume map knows the UUID — see the report note on exposing it
+    /// in `session.info` (roadmap Phase 3 item 2, daemon half).
+    private func resumeCommand(_ item: SidebarSession) -> String? {
+        TerminalTakeover.resumeCommand(provider: item.provider, sessionID: item.id)
     }
 
     /// First-run empty state: no in-app sessions yet, so guide the two ways to get one —
@@ -528,6 +687,15 @@ struct SessionSidebar: View {
     /// ends the agent and removes them. Terminal-owned sessions are view-only — surfaced as a
     /// disabled hint so it's clear why there's nothing to manage.
     @ViewBuilder private func rowMenu(_ item: SidebarSession) -> some View {
+        // The way BACK. A takeover is only reversible if the terminal can pick the conversation up
+        // again, and the command to do that has never been surfaced anywhere in the app.
+        if let cmd = resumeCommand(item) {
+            Button { copy(cmd, for: item.id) } label: {
+                Label(copiedResumeFor == item.id ? "Copied" : "Continue in terminal",
+                      systemImage: copiedResumeFor == item.id ? "checkmark" : "terminal")
+            }
+            Divider()
+        }
         if item.managed {
             Button { renameText = item.title; renamingSessionID = item.id } label: {
                 Label("Rename…", systemImage: "pencil")

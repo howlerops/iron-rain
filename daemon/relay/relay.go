@@ -196,10 +196,39 @@ func copyWS(ctx context.Context, src, dst *websocket.Conn, errc chan<- error) {
 // bridged client via serveConn (typically server.Server.ServeConn). Serves one
 // client connection; call in a loop to accept clients sequentially.
 func ServeHost(ctx context.Context, relayURL, serverID string, serveConn func(context.Context, transport.MsgConn) error) error {
+	return ServeHostKeepalive(ctx, relayURL, serverID, DefaultKeepalive, serveConn)
+}
+
+// KeepaliveConfig tunes the liveness probe on a registered host socket. It is a parameter
+// rather than a package global so tests can drive it in milliseconds without mutating
+// shared state (the relay package's tests run concurrently with each other).
+type KeepaliveConfig struct {
+	Interval time.Duration // how often to ping
+	Timeout  time.Duration // how long to wait for the pong before declaring the socket dead
+}
+
+// DefaultKeepalive is what the daemon ships with. 25s is comfortably under the idle
+// timeouts of the middleboxes a relay connection crosses (Cloudflare's ~100s, most NATs'
+// 60-120s) while still being cheap; 10s for the pong is generous for a round trip to an
+// edge PoP and still bounds detection to ~35s worst case.
+var DefaultKeepalive = KeepaliveConfig{Interval: 25 * time.Second, Timeout: 10 * time.Second}
+
+// ServeHostKeepalive is ServeHost with an injectable keepalive.
+//
+// The keepalive is what makes the re-dial loop in main.go's relayHost actually run: before
+// this, a half-open relay socket left serveConn parked in an unbounded read, so the daemon
+// stayed registered-but-unreachable until the OS noticed the dead TCP connection — minutes
+// at best. With a pong deadline, the read unblocks within Interval+Timeout, ServeHost
+// returns, and the caller re-registers within seconds.
+func ServeHostKeepalive(ctx context.Context, relayURL, serverID string, ka KeepaliveConfig, serveConn func(context.Context, transport.MsgConn) error) error {
 	mc, err := dialRegister(ctx, relayURL, roleHost, serverID)
 	if err != nil {
 		return err
 	}
+	// Stop the prober when serveConn returns for any reason, so a serve loop that ends on
+	// its own doesn't leave a goroutine pinging a dead socket.
+	stop := mc.Keepalive(ka.Interval, ka.Timeout)
+	defer stop()
 	return serveConn(ctx, mc)
 }
 

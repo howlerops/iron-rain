@@ -117,6 +117,19 @@ type managedSession struct {
 	// sequence for ordering persisted events (seeded past any restored rows), the accumulated assistant
 	// delta text for the current turn, and whether a real assistant message was already persisted this
 	// turn (so the synthetic delta-accumulated one isn't a duplicate).
+	// txSeq orders a session's durable rows. It is written from the provider pump AND from the hub
+	// goroutine (the user-prompt echo), so it has its own lock — the "run()-goroutine only" comment
+	// that used to justify going unguarded stopped being true the moment user messages were persisted.
+	// Turn Engine timings, copied from the package defaults at construction. They live HERE rather
+	// than being read from package variables because tests shrink them, and a package variable written
+	// by one test while another test's turn loop is still reading it is a data race — one that fails
+	// `go test -race` and therefore blocks every release.
+	hbEvery        time.Duration
+	quietAfter     time.Duration
+	reconcileTick  time.Duration
+	probeFailLimit int
+
+	txMu  sync.Mutex
 	txSeq int64
 	// transcriptTrimmed records that the in-memory ring has DROPPED events. Once true, the ring is no
 	// longer a complete record of the session and must not be replayed as if it were.
@@ -297,7 +310,9 @@ type sessionMeta struct {
 func newManagedSession(h *Hub, sess agent.Session, meta sessionMeta) *managedSession {
 	now := time.Now()
 	return &managedSession{hub: h, sess: sess, meta: meta, subs: map[*transport.Conn]*subscriber{},
-		lastActivity: now, createdAt: now}
+		lastActivity: now, createdAt: now,
+		hbEvery: turnHeartbeatEvery, quietAfter: turnQuietAfter,
+		reconcileTick: turnReconcileTick, probeFailLimit: turnProbeFailLimit}
 }
 
 // onStatus fires "walk away" push notifications on turn boundaries: an agent that produced
@@ -510,13 +525,11 @@ func joinHistory(durable, ring [][]byte) [][]byte {
 			mapped[i] = placed{pos: -1, seq: i}
 		}
 	}
-	// The synthetic end-of-turn message is the one frame that can never match by bytes: it is written
-	// to SQLite and NEVER broadcast (see finalizeTurnTranscript), so it has no ring twin — while the
-	// deltas that produced its text ARE in the ring. Emitting both renders the same reply twice, which
-	// is exactly what merging durable with the ring started doing to every restored session.
-	//
-	// It is identifiable: an assistant message with NO message id. Providers that send real messages
-	// always carry one, so this cannot swallow a genuine reply.
+	// LEGACY DATA ONLY. The synthetic end-of-turn message is now broadcast like every other frame, so
+	// it has a ring twin and is matched by bytes above — this branch is unreachable for anything
+	// written since. Transcripts recorded BEFORE that change still hold synthetic rows with no ring
+	// counterpart, and without this they would render the reply twice. Identifiable as an assistant
+	// message with no message id; a provider's real message always carries one.
 	streamed := ringStreamedText(ring)
 	out := make([][]byte, 0, len(durable)+len(ring))
 	// Durable history older than the ring leads, in its own order.
@@ -693,6 +706,7 @@ func (m *managedSession) emitUIComponents(sessionID string, comps []protocol.UIC
 	for _, c := range comps {
 		c.SessionID = sessionID
 		if raw, err := (agent.Event{Type: protocol.TypeUIComponent, Payload: c}).Encode(); err == nil {
+			m.persistRenderable(protocol.TypeUIComponent, raw)
 			m.broadcast(raw)
 		}
 	}
@@ -775,10 +789,7 @@ func (m *managedSession) persistDurable(ev agent.Event, raw []byte) {
 	//
 	// Gaps in the sequence are harmless slack: nothing reads seq except ORDER BY. De-duplication is the
 	// msg_id unique index's job, and it does it whether or not the number moved.
-	m.txSeq++
-	if _, err := db.AppendTranscript(sid, m.txSeq, msgID, raw); err != nil {
-		log.Printf("transcript: append %s failed: %v", sid, err)
-	}
+	m.appendDurable(sid, msgID, raw)
 }
 
 // finalizeTurnTranscript runs on idle: if the turn streamed assistant text but no finalized assistant
@@ -791,8 +802,12 @@ func (m *managedSession) finalizeTurnTranscript() {
 	if db != nil && !m.asstPersisted && strings.TrimSpace(text) != "" {
 		ev := agent.Event{Type: protocol.TypeSessionMessage, Payload: protocol.SessionMessage{SessionID: m.sess.ID(), Role: "assistant", Text: text}}
 		if raw, err := ev.Encode(); err == nil {
-			m.txSeq++
-			_, _ = db.AppendTranscript(m.sess.ID(), m.txSeq, "", raw)
+			// BROADCAST it, don't just write it. Writing to SQLite without broadcasting created a
+			// frame that existed in one source and not the other, and merging the two rendered every
+			// reply twice. Every frame now takes the same path: broadcast (which rings it) and
+			// persist. m.broadcast is the ring; appendDurable is the store.
+			m.appendDurable(m.sess.ID(), "", raw)
+			m.broadcast(raw)
 		}
 	}
 	m.asstAccum.Reset()
@@ -889,7 +904,9 @@ func (m *managedSession) run() {
 	// events sort after the restored history instead of colliding with it.
 	if db := m.hub.db; db != nil {
 		if seq, err := db.MaxTranscriptSeq(m.sess.ID()); err == nil {
+			m.txMu.Lock()
 			m.txSeq = seq
+			m.txMu.Unlock()
 			// Durable rows already exist → this process is joining a conversation in progress, so its
 			// ring can never be the whole story and subscribe must lead with the durable transcript.
 			m.mu.Lock()
@@ -1091,7 +1108,8 @@ func (m *managedSession) run() {
 		if err != nil {
 			continue
 		}
-		m.persistDurable(ev, raw) // durable transcript (finalized events only; deltas accumulated)
+		m.persistDurable(ev, raw)         // finalized messages / completed tools / error markers
+		m.persistRenderable(ev.Type, raw) // sub-agent rows render as conversation and must survive too
 		m.broadcast(raw)
 		if len(extractedComps) > 0 {
 			m.emitUIComponents(m.sess.ID(), extractedComps) // right after the cleaned message
@@ -1122,7 +1140,35 @@ func (m *managedSession) broadcastUserEcho(text, author string) {
 		SessionID: m.sess.ID(), Role: "user", Text: text, Author: author,
 	}}
 	if raw, err := ev.Encode(); err == nil {
+		// Persist the user's half. The durable transcript used to hold only what the AGENT said, so a
+		// restarted pi or CLI session came back showing answers to questions that had vanished.
+		m.appendDurable(m.sess.ID(), "", raw)
 		m.broadcast(raw)
+	}
+}
+
+// appendDurable writes one frame to the durable transcript under the sequence lock.
+func (m *managedSession) appendDurable(sid, msgID string, raw []byte) {
+	db := m.hub.db
+	if db == nil || m.meta.ephemeral {
+		return
+	}
+	m.txMu.Lock()
+	m.txSeq++
+	seq := m.txSeq
+	m.txMu.Unlock()
+	if _, err := db.AppendTranscript(sid, seq, msgID, raw); err != nil {
+		log.Printf("transcript: append %s failed: %v", sid, err)
+	}
+}
+
+// persistRenderable stores a frame that RENDERS as conversation content but that the provider never
+// finalizes into a message — generative-UI cards and sub-agent rows. Without these a restart leaves
+// visible holes where the cards used to be.
+func (m *managedSession) persistRenderable(typ string, raw []byte) {
+	switch typ {
+	case protocol.TypeUIComponent, protocol.TypeSessionSubAgent:
+		m.appendDurable(m.sess.ID(), "", raw)
 	}
 }
 

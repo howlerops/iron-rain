@@ -1,0 +1,306 @@
+package hub
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/howlerops/oculus/daemon/agent"
+	"github.com/howlerops/oculus/daemon/agent/opencode"
+	"github.com/howlerops/oculus/daemon/protocol"
+	"github.com/howlerops/oculus/daemon/store"
+)
+
+// ocStub is a minimal `opencode serve` good enough for an attach: an open (silent) /event stream,
+// a session lookup that reports the session's real directory, and an empty message history.
+// knownSession == "" makes every session lookup 404 — the shape of "this server has never heard of
+// that session", which is what a restore hits when the wrong opencode is asked.
+type ocStub struct {
+	knownSession string
+	dir          string
+	hits         atomic.Int64
+}
+
+func (s *ocStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	s.hits.Add(1)
+	switch {
+	case r.URL.Path == "/event":
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if fl, ok := w.(http.Flusher); ok {
+			fl.Flush()
+		}
+		<-r.Context().Done()
+	case r.URL.Path == "/session/"+s.knownSession && s.knownSession != "":
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": s.knownSession, "directory": s.dir})
+	case r.URL.Path == "/session/"+s.knownSession+"/message" && s.knownSession != "":
+		_, _ = w.Write([]byte(`[]`))
+	default:
+		w.WriteHeader(http.StatusNotFound)
+	}
+}
+
+// restoreHub returns a hub backed by a fresh store, wired with main.go's real attacher factory
+// (opencode + a URL), so the restore path under test is the one that ships.
+func restoreHub(t *testing.T) (*Hub, *store.Store) {
+	t.Helper()
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	h := New()
+	h.SetStore(db)
+	h.SetAttacherFactory(func(provider, url string) agent.Attacher {
+		if provider == "opencode" && url != "" {
+			return opencode.New(url)
+		}
+		return nil
+	})
+	return h, db
+}
+
+func saveRecord(t *testing.T, db *store.Store, id, provider string, pm persistedMeta) {
+	t.Helper()
+	blob, err := json.Marshal(pm)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := store.SessionRecord{ID: id, Provider: provider, Cwd: pm.Cwd, Meta: string(blob)}
+	if err := db.SaveSession(rec, time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestRestoreAttachesToPersistedProviderURL: a session taken over from a terminal lives on the
+// opencode server that terminal started — NOT necessarily the one the daemon was configured with.
+// The daemon self-updates every ~6 hours, so a restart is routine; if the restore re-attaches to
+// the daemon's default server the session opens against a server that never heard of it, and every
+// send silently goes nowhere. The persisted URL must decide which server we re-attach to.
+func TestRestoreAttachesToPersistedProviderURL(t *testing.T) {
+	const sid = "ses_takenover"
+	right := &ocStub{knownSession: sid, dir: "/Users/x/proj"}
+	rightSrv := httptest.NewServer(right)
+	t.Cleanup(rightSrv.Close) // registered FIRST so it runs LAST: the session must close before the server waits on its /event connection
+	wrong := &ocStub{knownSession: sid, dir: "/Users/x/proj"}
+	wrongSrv := httptest.NewServer(wrong)
+	t.Cleanup(wrongSrv.Close)
+
+	h, db := restoreHub(t)
+	// The daemon's OWN configured opencode is the wrong one — only the persisted URL knows better.
+	h.Register(opencode.New(wrongSrv.URL))
+	saveRecord(t, db, sid, "opencode", persistedMeta{Cwd: "/Users/x/proj", ProviderURL: rightSrv.URL})
+
+	h.RestoreSessions(context.Background(), 7*24*time.Hour)
+	t.Cleanup(func() {
+		if m := h.managed(sid); m != nil {
+			_ = m.sess.Close()
+		}
+	})
+
+	if m := h.managed(sid); m == nil {
+		t.Fatalf("session %s was not restored at all", sid)
+	}
+	if right.hits.Load() == 0 {
+		t.Errorf("the persisted opencode server saw no requests — the restore attached somewhere else")
+	}
+	if n := wrong.hits.Load(); n != 0 {
+		t.Errorf("the daemon's default opencode server saw %d request(s) — the restore ignored the persisted URL and re-attached to the wrong server", n)
+	}
+}
+
+// TestRestoreAttachFailureYieldsStoppedRestartable: the failure that must never happen quietly.
+// opencode's /event stream accepts ANY subscriber, so a restore against a server that doesn't hold
+// the session still "succeeds" — producing a live-looking row with no history whose sends vanish.
+// Directory resolution is the proof the server actually knows the session; without it the record
+// must stay stopped + restartable so the user is told, and offered a way forward.
+func TestRestoreAttachFailureYieldsStoppedRestartable(t *testing.T) {
+	const sid = "ses_gone"
+	stranger := &ocStub{} // /event answers, but no session lookup ever resolves
+	srv := httptest.NewServer(stranger)
+	t.Cleanup(srv.Close)
+
+	h, db := restoreHub(t)
+	// Register it as the daemon's opencode too, so the restore genuinely HAS an attacher for this
+	// provider — otherwise the record would fall through to "stopped" for the trivial reason that
+	// nothing could attach, and the test would prove nothing.
+	h.Register(opencode.New(srv.URL))
+	saveRecord(t, db, sid, "opencode", persistedMeta{Cwd: "/Users/x/proj", ProviderURL: srv.URL})
+
+	h.RestoreSessions(context.Background(), 7*24*time.Hour)
+	t.Cleanup(func() {
+		if m := h.managed(sid); m != nil {
+			_ = m.sess.Close()
+		}
+	})
+
+	if m := h.managed(sid); m != nil {
+		t.Fatalf("session %s came back LIVE against a server that can't resolve it — it will look attached and silently swallow every send", sid)
+	}
+	var found *protocol.Session
+	for _, s := range h.stoppedSessions() {
+		if s.ID == sid {
+			cp := s
+			found = &cp
+		}
+	}
+	if found == nil {
+		t.Fatalf("session %s vanished entirely; it must remain listed as stopped", sid)
+	}
+	if found.Status != protocol.StatusStopped || !found.Restartable {
+		t.Errorf("status=%q restartable=%v, want stopped+restartable", found.Status, found.Restartable)
+	}
+}
+
+// cwdRecorder is an Attacher that records the cwd it was handed (the claude-code shape: resume runs
+// as a fresh process in whatever directory it's given).
+type cwdRecorder struct{ got string }
+
+func (a *cwdRecorder) Attach(_ context.Context, id, cwd string) (agent.Session, error) {
+	a.got = cwd
+	return &fakeAttachedSess{id: id, provider: "claude-code", events: make(chan agent.Event)}, nil
+}
+
+type fakeAttachedSess struct {
+	id       string
+	provider string
+	events   chan agent.Event
+	model    string
+	mprov    string
+	resumed  bool
+}
+
+func (s *fakeAttachedSess) ID() string                                    { return s.id }
+func (s *fakeAttachedSess) Provider() string                              { return s.provider }
+func (s *fakeAttachedSess) Events() <-chan agent.Event                    { return s.events }
+func (s *fakeAttachedSess) Prompt(context.Context, string) error          { return nil }
+func (s *fakeAttachedSess) Respond(context.Context, string, string) error { return nil }
+func (s *fakeAttachedSess) Stop(context.Context) error                    { return nil }
+func (s *fakeAttachedSess) Close() error                                  { close(s.events); return nil }
+func (s *fakeAttachedSess) SetModel(provider, model string) error {
+	s.mprov, s.model = provider, model
+	return nil
+}
+func (s *fakeAttachedSess) MarkResumed() { s.resumed = true }
+
+// TestRestoreResumesWithPersistedCwd: claude-code's resume is a FRESH process — it edits whatever
+// directory it is started in, not the one the conversation belongs to. The persisted meta is the
+// only record of that directory, so the restore must read it BEFORE attaching. It used to be
+// unmarshalled afterwards, so nothing but the (older, coarser) record column reached the sidecar.
+func TestRestoreResumesWithPersistedCwd(t *testing.T) {
+	h, db := restoreHub(t)
+	rec := &cwdRecorder{}
+	h.SetAttacherFactory(func(provider, url string) agent.Attacher {
+		if provider == "claude-code" {
+			return rec
+		}
+		return nil
+	})
+	// The meta blob is authoritative; the record column is stale/empty (an older daemon wrote it).
+	blob, _ := json.Marshal(persistedMeta{Cwd: "/Users/x/the-right-project"})
+	if err := db.SaveSession(store.SessionRecord{
+		ID: "cc_1", Provider: "claude-code", Cwd: "", Meta: string(blob),
+	}, time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+
+	h.RestoreSessions(context.Background(), 7*24*time.Hour)
+	t.Cleanup(func() {
+		if m := h.managed("cc_1"); m != nil {
+			_ = m.sess.Close()
+		}
+	})
+
+	if rec.got != "/Users/x/the-right-project" {
+		t.Fatalf("attached with cwd %q, want the persisted project directory — the sidecar would edit the wrong repo", rec.got)
+	}
+}
+
+// TestRestoreReappliesPersistedModel: a restored session must come back on the model the user chose.
+// Nothing re-applied it, so every restart silently moved the conversation onto the provider default.
+func TestRestoreReappliesPersistedModel(t *testing.T) {
+	h, db := restoreHub(t)
+	rec := &cwdRecorder{}
+	h.SetAttacherFactory(func(provider, url string) agent.Attacher {
+		if provider == "claude-code" {
+			return rec
+		}
+		return nil
+	})
+	saveRecord(t, db, "cc_2", "claude-code", persistedMeta{Cwd: "/x", Model: "opus", ModelProvider: "anthropic"})
+
+	h.RestoreSessions(context.Background(), 7*24*time.Hour)
+	m := h.managed("cc_2")
+	if m == nil {
+		t.Fatal("session was not restored")
+	}
+	t.Cleanup(func() { _ = m.sess.Close() })
+	fs := m.sess.(*fakeAttachedSess)
+	if fs.model != "opus" || fs.mprov != "anthropic" {
+		t.Errorf("restored session runs on model %q/%q, want the persisted anthropic/opus", fs.mprov, fs.model)
+	}
+	m.mu.Lock()
+	shown := m.model
+	m.mu.Unlock()
+	if shown != "opus" {
+		t.Errorf("session reports model %q — the app would show the wrong one", shown)
+	}
+}
+
+// resumeProvider is a Provider whose Create returns a session that records whether the hub told it
+// it CONTINUES an earlier conversation (the CLI/pi restart-amnesia signal).
+type resumeProvider struct{ last *fakeAttachedSess }
+
+func (p *resumeProvider) Name() string { return "codex" }
+func (p *resumeProvider) Create(_ context.Context, cwd, prompt string) (agent.Session, error) {
+	p.last = &fakeAttachedSess{id: "codex_new", provider: "codex", events: make(chan agent.Event)}
+	return p.last, nil
+}
+func (p *resumeProvider) List(context.Context) ([]protocol.Session, error) { return nil, nil }
+
+// TestRestartMarksResumedWhenTheSessionHadTurns: a CLI agent has no server-side session, so a
+// restart re-runs the command — and with no memory of having talked before it re-runs the agent's
+// COLD invocation, dropping the whole conversation. When durable history exists the restart must
+// tell the new session it is continuing, so a configured ResumeArgs is used from the first turn.
+func TestRestartMarksResumedWhenTheSessionHadTurns(t *testing.T) {
+	h, db := restoreHub(t)
+	p := &resumeProvider{}
+	h.Register(p)
+	saveRecord(t, db, "codex_old", "codex", persistedMeta{Cwd: t.TempDir()})
+	if _, err := db.AppendTranscript("codex_old", 1, "m1", []byte(`{"type":"session.message"}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := h.restartSession(context.Background(), "codex_old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.sess.Close() })
+	if p.last == nil || !p.last.resumed {
+		t.Fatal("restarted session was not told it continues a prior conversation — a resume-capable CLI agent starts cold and the history is gone")
+	}
+}
+
+// TestRestartOfAVirginSessionIsNotMarkedResumed: the mirror image — a session that never produced a
+// turn has nothing to resume, and passing an agent's resume flags with no prior session makes it
+// fail to start at all.
+func TestRestartOfAVirginSessionIsNotMarkedResumed(t *testing.T) {
+	h, db := restoreHub(t)
+	p := &resumeProvider{}
+	h.Register(p)
+	saveRecord(t, db, "codex_virgin", "codex", persistedMeta{Cwd: t.TempDir()})
+
+	m, err := h.restartSession(context.Background(), "codex_virgin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.sess.Close() })
+	if p.last != nil && p.last.resumed {
+		t.Fatal("a session with no history was restarted in resume mode")
+	}
+}

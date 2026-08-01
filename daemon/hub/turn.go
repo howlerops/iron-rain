@@ -5,6 +5,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/howlerops/oculus/daemon/activity"
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/protocol"
 )
@@ -45,6 +46,15 @@ func (m *managedSession) openTurn(detail string) {
 	m.turnStopLoop = stop
 	m.mu.Unlock()
 	m.emitTurn("")
+	// A turn EDGE is the only moment a session's rendered state changes, so it is the only moment
+	// worth telling every client about. Clients that aren't subscribed to this session (the sidebar,
+	// the fleet grid, the phone that just connected) otherwise hold whatever session.list said when
+	// they last asked — a frozen snapshot that goes stale the instant work starts.
+	m.publishSessionState(protocol.StatusRunning, detail)
+	// A session that is working is not waiting on you: a NEW turn means the previous ask was answered
+	// or the previous error was recovered from. (openTurn is idempotent while a turn is open, so an
+	// approval raised mid-turn can't be cleared by its own turn.)
+	m.clearNeedsYou()
 	go m.turnLoops(stop)
 }
 
@@ -77,6 +87,11 @@ func (m *managedSession) turnOnStatus(ss protocol.SessionStatus) {
 			m.openTurn(ss.Detail)
 		} else if changed {
 			m.emitTurn("") // approval answered → visibly back to running
+			m.publishSessionState(protocol.StatusRunning, ss.Detail)
+			// The agent resumed, so the question it was blocked on has been answered — on THIS device
+			// or another one. Retire the inbox item now rather than making the user dismiss, on every
+			// device, a request that no longer exists.
+			m.clearNeedsYou()
 		}
 	case protocol.StatusAwaitingApproval:
 		m.mu.Lock()
@@ -87,11 +102,12 @@ func (m *managedSession) turnOnStatus(ss protocol.SessionStatus) {
 		m.mu.Unlock()
 		if open {
 			m.emitTurn("")
+			m.publishSessionState(protocol.StatusAwaitingApproval, "")
 		}
 	case protocol.StatusIdle, protocol.StatusDone:
-		m.closeTurn(protocol.StatusIdle, "")
+		m.closeTurnFrom(protocol.StatusIdle, "", true)
 	case protocol.StatusError:
-		m.closeTurn(protocol.StatusError, ss.Detail)
+		m.closeTurnFrom(protocol.StatusError, ss.Detail, true)
 	}
 }
 
@@ -127,8 +143,19 @@ func (m *managedSession) turnOnChild(sa protocol.SubAgent) {
 }
 
 // closeTurn ends the turn in a terminal state (idle | error | abandoned) and stops its loops.
-// Idempotent: only the first close wins.
+// Idempotent: only the first close wins. This is the DAEMON's own verdict path (the reconciler, a
+// dead event stream) — see closeTurnFrom for why that distinction matters.
 func (m *managedSession) closeTurn(state, reason string) {
+	m.closeTurnFrom(state, reason, false)
+}
+
+// closeTurnFrom is closeTurn with the source of the close. providerDriven means the provider itself
+// reported the terminal status, so the event pump has ALREADY written lastStatus, recorded the
+// finished/error activity item and fired its push — publishing again would double every one of them.
+// Every other close (probe-abandonment, stream death, reconciled idle) is the daemon's own
+// conclusion, and nothing else in the system knows about it: that is the path that used to end
+// silently, leaving a dead agent rendering as "running" forever with no feed entry and no push.
+func (m *managedSession) closeTurnFrom(state, reason string, providerDriven bool) {
 	m.mu.Lock()
 	if m.turnPhase == "" {
 		m.mu.Unlock()
@@ -169,8 +196,113 @@ func (m *managedSession) closeTurn(state, reason string) {
 		log.Printf("turn: session %s sealed %d sub-agent(s) as %s on %s close", m.sess.ID(), len(toSeal), sealed, state)
 	}
 	m.emitTurn2(state, reason)
+	m.publishVerdict(state, reason, providerDriven)
 	if state == protocol.StatusError || state == "abandoned" {
 		log.Printf("turn: session %s closed %s: %s", m.sess.ID(), state, reason)
+	}
+}
+
+// publishVerdict makes the end of a turn visible OUTSIDE the session's own subscribers. turn.state is
+// transient and session-scoped; without this a turn the daemon ended by itself changed nothing a
+// user can see: session.list kept serving "running" (lastStatus was never written), the Activity
+// feed had no entry, and no push went out — an agent could die on a sleeping Mac and every surface
+// still showed it working.
+func (m *managedSession) publishVerdict(state, reason string, providerDriven bool) {
+	if m.hub == nil {
+		return
+	}
+	if providerDriven {
+		// The pump owns the status for these (it distinguishes idle from done, which we'd flatten);
+		// only the cross-client state edge is missing, so publish just that.
+		m.mu.Lock()
+		status := m.lastStatus
+		m.mu.Unlock()
+		m.publishSessionState(status, "")
+		return
+	}
+	failed := state == protocol.StatusError || state == "abandoned"
+	status := protocol.StatusIdle
+	if failed {
+		status = protocol.StatusError
+	}
+	m.mu.Lock()
+	// A turn open when the user pressed Stop ends as "abandoned" through the stream-death path. That
+	// is the human's own doing: record the state, but don't page them about an error they caused.
+	if m.userStopped {
+		failed, status = false, protocol.StatusIdle
+	}
+	m.lastStatus = status
+	m.turnEnded = true
+	// ran is the pump's "a real turn was in flight" flag, and its gate for the finished activity
+	// item. Claiming it here means whichever of us closes the turn first records exactly one item.
+	ran := m.wasRunning
+	m.wasRunning = false
+	label := m.meta.label
+	if label == "" {
+		label = m.meta.workspaceName
+	}
+	project := m.meta.cwd
+	stopped := m.userStopped
+	m.mu.Unlock()
+
+	m.publishSessionState(status, reason)
+	if stopped {
+		return
+	}
+	if failed {
+		detail := reason
+		if detail == "" {
+			detail = "the agent stopped responding"
+		}
+		m.hub.recordActivity(activity.Event{
+			Kind: activity.KindError, SessionID: m.sess.ID(), Provider: m.sess.Provider(),
+			Project: project, Title: m.activityTitle() + " stopped responding", Detail: detail,
+			NeedsYou: true, // nobody else will chase this: it needs a human
+		})
+		m.hub.pushAgentError(m.sess.ID(), label, detail)
+		return
+	}
+	// A daemon-reconciled idle (we recovered a completion event the provider lost) is a normal finish
+	// from the user's point of view — it belongs in the feed like any other completed turn.
+	if !ran {
+		return // no work actually ran (or the pump already logged the finish): don't invent feed noise
+	}
+	m.hub.recordActivity(activity.Event{
+		Kind: activity.KindFinished, SessionID: m.sess.ID(), Provider: m.sess.Provider(),
+		Project: project, Title: m.activityTitle() + " finished", Detail: reason,
+	})
+}
+
+// publishSessionState broadcasts one compact per-session state to EVERY connected client on a turn
+// edge, so clients can fold live state into their session list instead of rendering the frozen
+// session.list snapshot they fetched on connect. Subscribers of this session also get session.status
+// through the pump; a repeat of the same state is idempotent on the client (it assigns, it doesn't
+// accumulate), and the cost of one small frame per turn edge is worth an honest sidebar.
+func (m *managedSession) publishSessionState(status, detail string) {
+	if m.hub == nil || status == "" {
+		return
+	}
+	m.hub.broadcast(protocol.TypeSessionStatus, protocol.SessionStatus{
+		SessionID: m.sess.ID(), Status: status, Detail: detail,
+	})
+}
+
+// clearNeedsYou retires this session's live needs-you items and tells every client, so the badge
+// dies with the reason for it. See activity.Store.ClearNeedsYou.
+func (m *managedSession) clearNeedsYou() {
+	if m.hub != nil {
+		m.hub.clearNeedsYou(m.sess.ID())
+	}
+}
+
+// clearNeedsYou (hub-level) is the shared entry point: the turn edges call it, and so should any
+// direct "the ask was answered" site (approval.respond).
+func (h *Hub) clearNeedsYou(sessionID string) {
+	h.mu.Lock()
+	a := h.activity
+	h.mu.Unlock()
+	for _, e := range a.ClearNeedsYou(sessionID) { // nil-safe; returns only what it actually flipped
+		h.broadcast(protocol.TypeActivityEvent, toProtoActivity(e))
 	}
 }
 
@@ -237,7 +369,17 @@ func (m *managedSession) broadcastTransient(raw []byte) {
 // busy → keep waiting; idle → we lost the completion event, recover the output + close; unreachable
 // N× → abandon with the reason. This replaces every client-side timeout heuristic.
 func (m *managedSession) turnLoops(stop chan struct{}) {
-	tick := time.NewTicker(turnReconcileTick)
+	// Snapshot the timings ONCE, into locals.
+	//
+	// These are package variables so tests can shrink them, and the loop used to read them on every
+	// iteration — which raced the test harness restoring them in t.Cleanup while a previous test's
+	// loop was still running. Reading them once, before the loop, means the loop's behaviour is fixed
+	// at start and a later write cannot race a read that never happens again.
+	hbEvery, quietAfter, reconcileTick, failLimit := m.hbEvery, m.quietAfter, m.reconcileTick, m.probeFailLimit
+	if reconcileTick <= 0 { // zero-valued managedSession (constructed directly in a test)
+		hbEvery, quietAfter, reconcileTick, failLimit = turnHeartbeatEvery, turnQuietAfter, turnReconcileTick, turnProbeFailLimit
+	}
+	tick := time.NewTicker(reconcileTick)
 	defer tick.Stop()
 	lastHB := time.Now()
 	for {
@@ -254,11 +396,11 @@ func (m *managedSession) turnLoops(stop chan struct{}) {
 		if !open {
 			return
 		}
-		if time.Since(lastHB) >= turnHeartbeatEvery {
+		if time.Since(lastHB) >= hbEvery {
 			m.emitTurn("")
 			lastHB = time.Now()
 		}
-		if time.Since(lastEv) <= turnQuietAfter {
+		if time.Since(lastEv) <= quietAfter {
 			continue
 		}
 		prober, ok := m.sess.(agent.Prober)
@@ -272,7 +414,7 @@ func (m *managedSession) turnLoops(stop chan struct{}) {
 		case err != nil:
 			m.mu.Lock()
 			m.turnProbeFails = fails + 1
-			exceeded := m.turnProbeFails >= turnProbeFailLimit
+			exceeded := m.turnProbeFails >= failLimit
 			m.mu.Unlock()
 			if exceeded {
 				m.closeTurn("abandoned", "agent unreachable: "+err.Error())

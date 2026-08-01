@@ -214,8 +214,17 @@ public final class Model: ObservableObject {
     /// Child sessions we've already sent a sessionSubscribe for — so expanding a card twice (or
     /// collapse+re-expand) doesn't re-subscribe. Kept across collapse; cleared on parent switch.
     private var subscribedChildIDs: Set<String> = []
-    private var reconnectWanted = false
-    private var reconnecting = false
+    var reconnectWanted = false
+    private(set) var reconnecting = false
+    /// The running backoff loop, held so foregrounding can abandon a sleep that was scheduled against
+    /// wall-clock time the suspended process never actually experienced.
+    private var reconnectTask: Task<Void, Never>?
+    /// The ~20s WebSocket ping loop. Only a ping asks the transport a question it must answer; an idle
+    /// session can otherwise sit on a socket that died an hour ago with `receive()` still waiting.
+    private var keepaliveTask: Task<Void, Never>?
+    /// When this daemon last completed a handshake — the difference between "your Mac is asleep" and
+    /// "we have no idea". Persisted, because the most common case is a cold launch hours later.
+    private var lastConnectedAt: Date?
     #if os(iOS)
     private var liveActivity: Any?
     #endif
@@ -326,6 +335,7 @@ public final class Model: ObservableObject {
 
     public func connect() async {
         reconnectWanted = true
+        loadLastReachable() // so a cold launch can still tell "asleep" from "no idea"
         await attemptConnect()
     }
 
@@ -389,11 +399,17 @@ public final class Model: ObservableObject {
         }
 
         if let c = winner {
+            // Cancelling a backoff loop mid-dial (what foregrounding does) can leave an older attempt
+            // still finishing its handshake. Whoever assigns `client` last wins, so close the loser's
+            // socket here or it lingers open, receiving frames nobody reads.
+            client?.close()
             client = c
             connected = true
             status = "Connected"
             statusDetail = nil
+            noteReachable()
             savePairing()
+            startKeepalive()
             Task { await receiveLoop() }
             await finishConnect()
             return
@@ -404,9 +420,45 @@ public final class Model: ObservableObject {
         if let rejected {
             statusDetail = rejected.isEmpty ? "Pairing rejected" : "Pairing rejected: \(rejected)"
         } else {
-            statusDetail = "Can’t reach this Mac" // daemon down / asleep / all relays unreachable
+            statusDetail = Self.unreachableDetail(lastConnected: lastConnectedAt)
         }
         scheduleReconnect()
+    }
+
+    /// How long after a successful handshake we're still willing to blame sleep rather than the
+    /// network. A Mac that answered inside this window has not changed address or moved networks —
+    /// the overwhelmingly likely explanation for total silence is that the lid closed.
+    private static let recentlyReachableWindow: TimeInterval = 6 * 60 * 60
+
+    /// The honest reason every route failed.
+    ///
+    /// "Can't reach this Mac" sends the user hunting for a network fault. When the daemon answered
+    /// recently and now nothing responds — not the LAN address, not any relay — the machine is
+    /// almost certainly asleep, and that is an actionable sentence instead of a shrug. Static and
+    /// pure so the wording is testable without a socket.
+    static func unreachableDetail(lastConnected: Date?, now: Date = Date()) -> String {
+        guard let lastConnected, now.timeIntervalSince(lastConnected) >= 0,
+              now.timeIntervalSince(lastConnected) < recentlyReachableWindow else {
+            return "Can’t reach this Mac" // daemon down / never paired / genuinely off the network
+        }
+        return "Your Mac may be asleep — wake it, or turn off sleep in System Settings › Battery."
+    }
+
+    private var lastReachableKey: String { "oculus.lastReachable.\(daemonPubHex)" }
+
+    /// Records that the daemon answered, surviving app relaunch — the phone is usually cold-launched
+    /// hours later, which is exactly when the sleep diagnosis is most useful.
+    private func noteReachable() {
+        let now = Date()
+        lastConnectedAt = now
+        guard !daemonPubHex.isEmpty else { return }
+        defaults.set(now.timeIntervalSince1970, forKey: lastReachableKey)
+    }
+
+    private func loadLastReachable() {
+        guard lastConnectedAt == nil, !daemonPubHex.isEmpty else { return }
+        let t = defaults.double(forKey: lastReachableKey)
+        if t > 0 { lastConnectedAt = Date(timeIntervalSince1970: t) }
     }
 
     /// Post-connection hydration: load projects/sessions/integrations and replay any pending
@@ -416,32 +468,49 @@ public final class Model: ObservableObject {
         // isn't rewriting `mcp`/`jira` on the very first prompt.
         TechDictionary.seedIfNeeded()
         TechDictionary.applyCustom()
-        // Identify FIRST so any prompt sent right after connecting is already attributed.
-        await identifySelf()
+        // THE CRITICAL PATH FIRST. Everything below used to be one long `await` chain — thirteen
+        // sequential request/reply round trips before the conversation was usable. Over a relay on
+        // cellular that is seconds of blank pane on every single swap, which is the moment the
+        // product is judged on. Only three of them are on the path to a usable screen:
+        //   identify   — must be first, so a prompt sent immediately after connecting is attributed;
+        //   sessions   — the sidebar, and the list `hydrateLikelySessions` reads to warm the cache;
+        //   reopen     — the transcript the user was looking at.
         // Note: discovery of terminal-owned sessions is on-demand (the Add Session search),
         // not auto-loaded — the sidebar shows only sessions started/opened in the app.
-        await loadProjects()
+        await identifySelf()
         await loadSessions()
-        await loadIntegrationStatus()
-        await loadIssues()
-        await loadIssueProjects() // board picker options
-        await loadBoardColumns()  // real workflow-status columns for the selected board
-        await listProviders() // reflect the daemon's real agent set in the picker
-        await listHandoffs()  // seed the handoff index (live updates arrive via handoff.list)
-        await loadLoops()     // recurring autonomous workflows
-        await loadActivity()  // cross-session feed + Needs-You inbox
-        await loadTelemetryStatus() // reflect the daemon's diagnostics toggle
-        await loadNotifyPrefs()     // per-type push-notification toggles
-        // If a session was open when the socket dropped (e.g. the daemon restarted and forgot its
-        // in-memory sessions), re-attach it so its transcript + prompts resume.
         // Read the likely-next sessions off disk BEFORE reopening, so the reopen can paint from
         // cache. Previously this had no call site at all — the cache was written and never read.
         await hydrateLikelySessions()
+        // If a session was open when the socket dropped (e.g. the daemon restarted and forgot its
+        // in-memory sessions), re-attach it so its transcript + prompts resume.
         await reopenCurrentSession()
         // Fresh launch: nothing open in memory, but reopen the session we last had open on this
         // desktop so you land back where you left off. Best-effort — no-ops if it no longer exists.
         if currentSession == nil, let last = UserDefaults.standard.string(forKey: lastSessionKey), !last.isEmpty {
             await openSession(last)
+        }
+        // EVERYTHING ELSE CONCURRENTLY. These populate secondary surfaces (issues board, loops,
+        // activity feed, pickers) that the user has to navigate to; none of them feeds another, so
+        // they cost one round trip together instead of ten in a row. Failures stay independent —
+        // each already swallows its own error, so a daemon too old for one message can't stall the
+        // rest, which the sequential chain allowed.
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await self.loadProjects() }
+            group.addTask { await self.loadIntegrationStatus() }
+            group.addTask { await self.loadIssues() }
+            group.addTask {
+                // Ordered pair: the board's columns are looked up for whatever project the projects
+                // load selects, so these two cannot be split apart.
+                await self.loadIssueProjects() // board picker options
+                await self.loadBoardColumns()  // real workflow-status columns for the selected board
+            }
+            group.addTask { await self.listProviders() }       // the daemon's real agent set
+            group.addTask { await self.listHandoffs() }        // handoff index (live updates via handoff.list)
+            group.addTask { await self.loadLoops() }           // recurring autonomous workflows
+            group.addTask { await self.loadActivity() }        // cross-session feed + Needs-You inbox
+            group.addTask { await self.loadTelemetryStatus() } // diagnostics toggle
+            group.addTask { await self.loadNotifyPrefs() }     // per-type push toggles
         }
         if let token = OculusStore.shared.deviceToken {
             await registerDevice(token: token)
@@ -476,29 +545,184 @@ public final class Model: ObservableObject {
         return comps.url
     }
 
+    /// The retry schedule: attempt IMMEDIATELY, then 2s, 4s, 8s, held at 15s.
+    ///
+    /// Sleeping first meant every reconnect — including the common case where the drop was a
+    /// two-second blip, or where the user just took the phone out of their pocket — cost a guaranteed
+    /// two seconds of "Reconnecting…" before anything was even attempted. The 15s ceiling matters as
+    /// much as the growth: unbounded doubling leaves a phone that was offline on a train retrying
+    /// minutes after the network came back.
+    static func nextReconnectDelay(_ current: UInt64) -> UInt64 {
+        current == 0 ? 2 : min(current * 2, 15)
+    }
+
     /// Retries the connection with exponential backoff until it succeeds or the user
     /// disconnects. One loop at a time.
-    private func scheduleReconnect() {
+    func scheduleReconnect() {
         guard reconnectWanted, hasSavedPairing, !reconnecting, !connected else { return }
         reconnecting = true
-        Task { // inherits @MainActor from Model
-            // Try IMMEDIATELY, then back off. Sleeping first meant every reconnect — including the
-            // common case where the drop was a two-second blip, or where the user just brought the
-            // phone out of their pocket — cost a guaranteed two seconds of "Reconnecting…" before
-            // anything was even attempted.
+        reconnectTask = Task { // inherits @MainActor from Model
             var delay: UInt64 = 0
-            while reconnectWanted && !connected {
+            // The cancellation check is FIRST and repeated after the sleep: `cancelReconnectBackoff`
+            // fires when the app foregrounds, and a loop that woke from a cancelled sleep and dialed
+            // anyway would race the immediate attempt the foreground path is about to make.
+            while reconnectWanted && !connected && !Task.isCancelled {
                 status = "Reconnecting…"
                 if delay > 0 { try? await Task.sleep(nanoseconds: delay * 1_000_000_000) }
+                if Task.isCancelled { break }
                 if reconnectWanted && !connected { await attemptConnect() }
-                delay = delay == 0 ? 2 : min(delay * 2, 15)
+                delay = Self.nextReconnectDelay(delay)
             }
             reconnecting = false
         }
     }
 
+    /// Abandons a pending backoff sleep so the caller can dial right now.
+    ///
+    /// iOS does not run timers for a suspended process: a loop that had just begun a 15s wait when
+    /// the phone went into a pocket still has ~15s left when it comes out, measured against
+    /// wall-clock time the app never experienced. Without this the user watches "Reconnecting…" for
+    /// the remainder of a delay that stopped being meaningful an hour ago.
+    func cancelReconnectBackoff() {
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        reconnecting = false
+    }
+
+    // MARK: - Liveness: keepalive + foreground probe
+
+    /// How often the socket is pinged while connected. Four of these fit inside the ~90s a user is
+    /// willing to stare at a frozen screen before force-quitting, which is the bar to beat.
+    private static let keepaliveInterval: UInt64 = 20
+
+    /// Pings the socket on a timer so a dead pipe surfaces in under a minute instead of never.
+    ///
+    /// `URLSession` never reports a half-open TCP connection on its own: with no traffic to send,
+    /// `receive()` waits forever on a socket whose peer vanished when the Mac slept or the NAT
+    /// dropped the mapping. An idle session generates no traffic by definition, so the ping is the
+    /// only thing that turns that silence into an error we can act on.
+    private func startKeepalive() {
+        keepaliveTask?.cancel()
+        keepaliveTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: Self.keepaliveInterval * 1_000_000_000)
+                guard !Task.isCancelled, let self, self.connected, let c = self.client else { return }
+                do {
+                    try await c.ping()
+                } catch {
+                    // Re-check identity: an awaited ping can outlive the connection it was sent on,
+                    // and tearing down a NEWER client would drop a connection that is perfectly fine.
+                    guard self.connected, self.client === c else { return }
+                    self.dropConnection("Reconnecting…")
+                    return
+                }
+            }
+        }
+    }
+
+    private func stopKeepalive() {
+        keepaliveTask?.cancel()
+        keepaliveTask = nil
+    }
+
+    /// Tears down a connection we no longer believe in and hands control to the backoff loop.
+    /// `close()` also makes the in-flight `recv()` throw, so `receiveLoop` unwinds behind us.
+    private func dropConnection(_ reason: String) {
+        guard connected || client != nil else { return }
+        client?.close()
+        client = nil
+        connected = false
+        status = reason
+        busy = false
+        stopKeepalive()
+        stopStallLoop()
+        failPendingRequests(NSError(domain: "Oculus", code: -3,
+                                    userInfo: [NSLocalizedDescriptionKey: "connection lost"]))
+        refreshLiveActivity(ended: true)
+        scheduleReconnect()
+    }
+
+    /// A hard-deadlined round trip that only the DAEMON can answer.
+    ///
+    /// Deliberately not a WebSocket ping: when we're on a relay, the relay terminates the socket and
+    /// answers pings itself, so a ping would happily succeed against a relay whose daemon died. The
+    /// probe therefore rides the application protocol. It also carries its own deadline, because
+    /// `request` has none and an un-deadlined request on a half-open socket never returns — which is
+    /// precisely the state being tested for.
+    func probeConnection(timeout: TimeInterval = 4) async -> Bool {
+        guard let client else { return false }
+        let id = UUID().uuidString
+        guard let env = try? Protocol.encode(id: id, type: MessageType.clientIdentify,
+                                             payload: ClientIdentify(name: identity)) else { return false }
+        let deadline = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            // removeValue is the handoff: whoever takes the continuation out of the map resumes it,
+            // so the deadline and the reply can never both resolve it.
+            self.takePendingRequest(id)?.resume(throwing: OculusClientError.notConnected)
+        }
+        defer { deadline.cancel() }
+        do {
+            _ = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Envelope, Error>) in
+                pendingRequests[id] = cont
+                Task { @MainActor in
+                    do { try await client.send(env) }
+                    catch { self.takePendingRequest(id)?.resume(throwing: error) }
+                }
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func takePendingRequest(_ id: String) -> CheckedContinuation<Envelope, Error>? {
+        pendingRequests.removeValue(forKey: id)
+    }
+
+    /// Re-establishes trust in the connection after the process was suspended. Returns true if the
+    /// existing connection answered; false means it has been torn down and the backoff loop owns it.
+    ///
+    /// `connected` is a claim about a socket nobody has touched since before the suspension, and a
+    /// wrong claim here is the worst thing this app can show: a "Connected" pill above a transcript
+    /// that will never move again. The user waits instead of acting.
+    @discardableResult
+    func revalidateConnection() async -> Bool {
+        guard connected else { return false }
+        if await probeConnection() { return true }
+        dropConnection("Reconnecting…")
+        return false
+    }
+
+    /// The app came to the foreground. Called from the Scene's `scenePhase` observer — before this
+    /// existed the app had NO lifecycle wiring at all, so a phone taken out of a pocket sat on a
+    /// frozen backoff and a stale status until the user tapped something.
+    public func appDidBecomeActive() async {
+        guard hasSavedPairing else { return }
+        loadLastReachable()
+        // Order matters: revalidate BEFORE cancelling the backoff, so a connection that is actually
+        // healthy is left completely alone (no backoff exists in that case anyway).
+        if connected {
+            if await revalidateConnection() { return }
+        }
+        cancelReconnectBackoff()
+        // The loop may have been mid-handshake when we cancelled it, and that handshake may have
+        // landed. Dialing again would strand a perfectly good connection behind a second one.
+        guard !connected else { return }
+        await connect()
+    }
+
+    /// The app is going away. The keepalive is stopped rather than left to fire against a suspended
+    /// runtime, where its failure would be an artifact of suspension rather than evidence about the
+    /// socket — and would leave a spurious "Reconnecting…" waiting on screen for the user's return.
+    public func appWillResignActive() {
+        stopKeepalive()
+    }
+
     public func disconnect() {
         reconnectWanted = false
+        cancelReconnectBackoff()
+        stopKeepalive()
         client?.close()
         client = nil
         connected = false
@@ -642,24 +866,61 @@ public final class Model: ObservableObject {
         }
     }
 
-    /// Re-opens the currently active session after a reconnect (the daemon may have restarted
-    /// and dropped its in-memory sessions). Clears the local transcript and lets the attach
-    /// replay rebuild it. No-op if nothing is open.
-    private func reopenCurrentSession() async {
-        guard let client, let s = currentSession else { return }
-        messages.removeAll()
-        // The re-attach replays the transcript from the top. Leaving the painted set and the
-        // reconcile flags in place meant every reconnect appended the whole replay again — to the
-        // in-memory copy AND to disk — and the next reconcile anchored on the second copy.
-        resetTranscriptCacheState()
+    /// Re-opens the currently active session after a reconnect (the daemon may have restarted and
+    /// dropped its in-memory sessions). Repaints IN PLACE. No-op if nothing is open.
+    ///
+    /// This used to `messages.removeAll()` and reset the whole cache state, so every reconnect —
+    /// including the two-second blips the keepalive now catches — blanked the conversation until a
+    /// relay round trip refilled it. That is the swap moment, and a blank pane at the swap moment
+    /// reads as data loss.
+    ///
+    /// The frames stay on screen and the attach replay is compared against them instead, by exactly
+    /// the machinery a cache-painted open already uses: `transcriptPainted` is the frame-level record
+    /// of what is rendered (the paint, plus every captured live frame), so arming
+    /// `transcriptReconciling` makes `receiveLoop` buffer the replay and hand it to `finishReconcile`,
+    /// which splices in only genuinely new frames and rebuilds wholesale if the two disagree.
+    /// Clearing the painted set here is what forced the blank; keeping it WITHOUT arming the barrier
+    /// is what used to append the whole replay a second time. Both halves are required.
+    func reopenCurrentSession() async {
+        guard let s = currentSession else { return }
+        // Buffer the replay for reconciliation rather than applying it on top of what is up.
+        transcriptReconciling = true
+        transcriptReplayBuffer = []
+        // A provider that re-streams its own history after an attach emits frames byte-identical to
+        // ones already on screen; the guard window makes `captureFrame` drop those instead of
+        // doubling the cache. Same window a cache-painted open uses.
+        transcriptAnchorGuardUntil = Date().addingTimeInterval(20)
+        armReopenReconcileCap()
+        // Turn-scoped state does NOT survive the drop: the daemon re-asserts busy/turn/approval from
+        // the replay, and a spinner left over from a turn that ended while we were away is a lie.
         busy = false
         pendingApproval = nil
         stopStallLoop()
+        guard let client else { return } // nothing to attach to; the repaint state above still stands
         do {
             let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.sessionAttach,
                                           payload: SessionAttach(provider: s.provider, sessionID: s.id, url: nil, cwd: s.cwd))
             try await client.send(env)
         } catch { /* best-effort; the user can resend to trigger a mid-send re-attach */ }
+    }
+
+    /// Bounds the reopen reconcile. `bufferForReconcile` arms its own cap on the first replay frame,
+    /// but a replay that never arrives at all (attach rejected, daemon wedged) would otherwise leave
+    /// the barrier up forever, silently swallowing every subsequent live frame into the buffer —
+    /// a session that looks frozen while the socket is fine.
+    private func armReopenReconcileCap() {
+        transcriptReconcileCap?.cancel()
+        transcriptReconcileCap = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            guard !Task.isCancelled, let self, self.transcriptReconciling else { return }
+            // finishReconcile deliberately stays armed on an empty buffer (the replay may still be in
+            // flight), so this is the one place that has to give up outright.
+            if self.transcriptReplayBuffer.isEmpty {
+                self.transcriptReconciling = false
+            } else {
+                self.finishReconcile()
+            }
+        }
     }
 
     // MARK: liveness — Turn Engine cutover

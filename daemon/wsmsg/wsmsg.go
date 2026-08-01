@@ -4,6 +4,7 @@ package wsmsg
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -53,6 +54,52 @@ func (c *Conn) WriteMsg(b []byte) error {
 func (c *Conn) ReadMsg() ([]byte, error) {
 	_, data, err := c.ws.Read(c.ctx)
 	return data, err
+}
+
+// Keepalive starts a WebSocket ping/pong liveness probe and returns a stop func.
+//
+// WHY: a half-open socket (peer's machine slept, NAT dropped the mapping, relay edge went
+// away) is indistinguishable from an idle-but-healthy one from the reading side — ReadMsg
+// simply never returns, and writes succeed into a kernel buffer nobody drains. TCP
+// keepalives eventually notice, but at minutes-to-never timescales, during which the daemon
+// is running-but-unreachable and its re-dial loop never runs because nothing returned.
+// Pinging on our own clock turns that into a bounded detection: one interval plus one
+// deadline.
+//
+// Ping must run concurrently with a reader — coder/websocket delivers the pong from inside
+// whatever read call is in flight — which holds for every caller here (the serve loop is
+// always blocked in ReadMsg).
+//
+// On a missed pong we CloseNow rather than Close: a graceful close handshake waits for the
+// peer's reply, and the peer is precisely what we have just proven unresponsive. CloseNow
+// drops the TCP connection so the blocked reader returns immediately and the caller's
+// re-dial path runs.
+func (c *Conn) Keepalive(interval, timeout time.Duration) func() {
+	done := make(chan struct{})
+	var once sync.Once
+	stop := func() { once.Do(func() { close(done) }) }
+
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-c.ctx.Done():
+				return
+			case <-t.C:
+			}
+			ctx, cancel := context.WithTimeout(c.ctx, timeout)
+			err := c.ws.Ping(ctx)
+			cancel()
+			if err != nil {
+				_ = c.ws.CloseNow()
+				return
+			}
+		}
+	}()
+	return stop
 }
 
 func (c *Conn) Close() error { return c.ws.Close(websocket.StatusNormalClosure, "") }

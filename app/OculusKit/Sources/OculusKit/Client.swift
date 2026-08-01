@@ -90,6 +90,41 @@ public actor OculusClient {
         return try opener.open(try await Self.bytes(of: task.receive()))
     }
 
+    /// Sends a WebSocket PING and waits for the PONG. Throws if the pipe is dead.
+    ///
+    /// URLSession never reports a half-open connection on its own: with nothing to send, `receive()`
+    /// waits forever on a socket whose peer vanished when the Mac slept or a NAT dropped the mapping.
+    /// An idle coding session generates no traffic by definition, so a periodic ping is the only
+    /// thing that turns that silence into an error the app can act on — otherwise "Connected" stays
+    /// on screen indefinitely above a conversation that will never move again.
+    ///
+    /// `nonisolated` on purpose: `task` is an immutable `let` and `sendPing` is thread-safe, whereas
+    /// hopping through the actor would queue the ping behind the in-flight `recv()` — which, on the
+    /// exact dead pipe this exists to detect, never returns.
+    public nonisolated func ping(timeout: TimeInterval = 6) async throws {
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask { try await self.awaitPong() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                // Close before throwing: a pong that never arrives leaves `sendPing`'s handler
+                // outstanding, and cancelling the task is what makes URLSession invoke it with an
+                // error so the sibling child (and its continuation) can finish.
+                self.close()
+                throw OculusClientError.notConnected
+            }
+            defer { group.cancelAll() }
+            _ = try await group.next()
+        }
+    }
+
+    private nonisolated func awaitPong() async throws {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            task.sendPing { err in
+                if let err { cont.resume(throwing: err) } else { cont.resume() }
+            }
+        }
+    }
+
     /// nonisolated so the UI can tear down the connection synchronously; `task` is an
     /// immutable let and URLSessionWebSocketTask.cancel is thread-safe.
     public nonisolated func close() {

@@ -33,13 +33,11 @@ func (f *turnFakeSess) Recover(context.Context)                       { f.recove
 // emitted frame, plus tiny Turn Engine timings (restored on cleanup).
 func turnHarness(t *testing.T, probe func(context.Context) (bool, error)) (*managedSession, *turnFakeSess, chan []byte) {
 	t.Helper()
-	oldHB, oldQuiet, oldTick, oldFail := turnHeartbeatEvery, turnQuietAfter, turnReconcileTick, turnProbeFailLimit
-	turnHeartbeatEvery, turnQuietAfter, turnReconcileTick, turnProbeFailLimit = 30*time.Millisecond, 50*time.Millisecond, 10*time.Millisecond, 3
-	t.Cleanup(func() {
-		turnHeartbeatEvery, turnQuietAfter, turnReconcileTick, turnProbeFailLimit = oldHB, oldQuiet, oldTick, oldFail
-	})
 	fake := &turnFakeSess{ch: make(chan agent.Event, 8), probe: probe}
 	m := newManagedSession(New(), fake, sessionMeta{})
+	// Tiny timings on THIS session. Mutating the package defaults instead raced the previous test's
+	// still-running turn loop, which reads them when it starts.
+	m.hbEvery, m.quietAfter, m.reconcileTick, m.probeFailLimit = 30*time.Millisecond, 50*time.Millisecond, 10*time.Millisecond, 3
 	frames := make(chan []byte, 256)
 	m.mu.Lock()
 	m.subs[nil] = &subscriber{conn: nil, ch: frames, done: make(chan struct{})}

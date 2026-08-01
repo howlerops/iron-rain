@@ -31,6 +31,15 @@ import (
 // Notification is a high-level push; it maps to an APNs `aps` payload plus any
 // custom top-level keys (e.g. approval_id) the app reads from the notification.
 type Notification struct {
+	// Silent sends a BACKGROUND push: no alert, content-available set, so iOS wakes the app to pull
+	// the transcript delta before the user opens it. Sent as an alert instead, this would buzz the
+	// user's pocket on every finished turn.
+	Silent bool
+	// Wake sets content-available ALONGSIDE an alert, so one push both notifies the user and wakes
+	// the app to refresh its cache. Tapping then opens an already-painted conversation instead of
+	// staring at a skeleton through a relay round trip. One push rather than two: iOS budgets
+	// background wakes, and a second delivery would race the first.
+	Wake     bool
 	Title    string
 	Body     string
 	Category string         // APNs category for actionable buttons (e.g. "APPROVAL")
@@ -52,6 +61,9 @@ type APNsConfig struct {
 	BaseURL  string            // default https://api.push.apple.com (sandbox/mock override)
 	Now      func() time.Time  // for tests; defaults to time.Now
 	Client   *http.Client      // defaults to a dedicated client with a 10s timeout (HTTP/2 via ALPN)
+	// SignJWT overrides provider-token minting. Only for tests — it lets them exercise the request
+	// shape (headers, payload) without carrying a real signing key.
+	SignJWT func() (string, error)
 }
 
 // ParseP8 parses an Apple .p8 (PKCS#8 EC) auth key.
@@ -88,7 +100,7 @@ const jwtMaxAge = 45 * time.Minute
 
 // NewAPNs returns a Notifier that sends via APNs.
 func NewAPNs(cfg APNsConfig) (Notifier, error) {
-	if cfg.Key == nil {
+	if cfg.Key == nil && cfg.SignJWT == nil {
 		return nil, errors.New("push: nil APNs key")
 	}
 	if cfg.KeyID == "" || cfg.TeamID == "" || cfg.BundleID == "" {
@@ -111,7 +123,18 @@ func NewAPNs(cfg APNsConfig) (Notifier, error) {
 }
 
 func (a *apnsNotifier) Notify(ctx context.Context, deviceToken string, n Notification) error {
-	aps := map[string]any{"alert": map[string]any{"title": n.Title, "body": n.Body}}
+	aps := map[string]any{}
+	pushType, priority := "alert", "10"
+	if n.Silent {
+		// APNs REJECTS a background push sent at priority 10, and ignores one with an alert body.
+		aps["content-available"] = 1
+		pushType, priority = "background", "5"
+	} else {
+		aps["alert"] = map[string]any{"title": n.Title, "body": n.Body}
+		if n.Wake {
+			aps["content-available"] = 1
+		}
+	}
 	if n.Category != "" {
 		aps["category"] = n.Category
 	}
@@ -138,7 +161,8 @@ func (a *apnsNotifier) Notify(ctx context.Context, deviceToken string, n Notific
 	}
 	req.Header.Set("authorization", "bearer "+jwt)
 	req.Header.Set("apns-topic", a.cfg.BundleID)
-	req.Header.Set("apns-push-type", "alert")
+	req.Header.Set("apns-push-type", pushType)
+	req.Header.Set("apns-priority", priority)
 	req.Header.Set("content-type", "application/json")
 
 	resp, err := a.cfg.Client.Do(req)
@@ -160,6 +184,9 @@ func (a *apnsNotifier) Notify(ctx context.Context, deviceToken string, n Notific
 func (a *apnsNotifier) providerToken() (string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.cfg.SignJWT != nil {
+		return a.cfg.SignJWT()
+	}
 	if a.token != "" && a.cfg.Now().Sub(a.issuedAt) <= jwtMaxAge {
 		return a.token, nil
 	}

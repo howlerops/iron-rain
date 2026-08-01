@@ -3,6 +3,119 @@ import OculusKit
 #if os(macOS)
 import AppKit
 #endif
+#if canImport(UIKit)
+import UIKit
+#endif
+
+// MARK: - Takeover derivations (shared by the sheet and the sidebar strip)
+
+/// One terminal session we could continue, flattened out of `Discovered` so the sheet row and the
+/// sidebar strip render from the same facts instead of each re-deriving titles and ranking.
+struct TakeoverCandidate: Identifiable, Equatable {
+    let id: String          // Discovered.discoveryID — stable across re-scans
+    let sessionID: String
+    let provider: String
+    let title: String
+    let subtitle: String
+    let cwd: String?
+    let live: Bool
+    let updatedAt: Int?
+}
+
+/// What the user has to agree to before we take a session away from a terminal. Nil means there's
+/// nothing at stake and we just do it.
+struct TakeoverWarning: Equatable {
+    let title: String
+    let message: String
+    let confirm: String
+}
+
+/// Pure takeover logic, kept out of the view bodies so it can actually be asserted:
+/// which discovered sessions are worth offering, what taking one over costs, and how to
+/// hand one back to the terminal.
+enum TerminalTakeover {
+    /// Discovered terminal sessions worth surfacing — live first, then most recently active.
+    ///
+    /// Already-managed rows are dropped: they're in the sidebar already, and re-attaching to one
+    /// is how you end up with two writers on a single terminal session.
+    ///
+    /// NOTE: the match is exact-id only. The daemon rewrites a taken-over claude session to its own
+    /// `cc_…` id while discovery reports claude's UUID, so that one pairing can still slip through
+    /// until the provider exposes `ManagedUUIDs()` (roadmap Phase 3 item 3, daemon-side).
+    static func candidates(discovered: [Discovered], managed: [Session], limit: Int? = nil) -> [TakeoverCandidate] {
+        let taken = Set(managed.map(\.id))
+        let rows: [TakeoverCandidate] = discovered.compactMap { d in
+            guard d.kind == DiscoveredKind.session else { return nil }
+            guard let sid = d.sessionID, !sid.isEmpty, !taken.contains(sid) else { return nil }
+            return TakeoverCandidate(id: d.discoveryID, sessionID: sid, provider: d.provider,
+                                     title: title(d, sessionID: sid), subtitle: subtitle(d),
+                                     cwd: d.cwd, live: d.live == true, updatedAt: d.updatedAt)
+        }
+        let sorted = rows.sorted { a, b in
+            if a.live != b.live { return a.live }
+            return (a.updatedAt ?? 0) > (b.updatedAt ?? 0)
+        }
+        guard let limit else { return sorted }
+        return Array(sorted.prefix(limit))
+    }
+
+    static func title(_ d: Discovered, sessionID: String) -> String {
+        if let t = d.title, !t.isEmpty { return t }
+        if let cwd = d.cwd, !cwd.isEmpty { return (cwd as NSString).lastPathComponent }
+        return sessionID
+    }
+
+    static func subtitle(_ d: Discovered) -> String {
+        var parts = [d.provider]
+        if let cwd = d.cwd, !cwd.isEmpty { parts.append((cwd as NSString).abbreviatingWithTildeInPath) }
+        return parts.joined(separator: " · ")
+    }
+
+    /// The confirmation a takeover needs, or nil when there's nothing at risk.
+    ///
+    /// Only LIVE rows warn. An idle transcript has no turn to interrupt and nobody typing into it,
+    /// so a dialog there would only train the user to dismiss dialogs — and then they'd dismiss the
+    /// one that mattered. The two providers lose different things, so they say different things.
+    static func warning(provider: String, live: Bool) -> TakeoverWarning? {
+        guard live else { return nil }
+        if provider == "claude-code" {
+            return TakeoverWarning(
+                title: "Fork this terminal session?",
+                message: "claude-code can’t be driven from two places at once, so this resumes the conversation as a fork. A reply in flight in the terminal right now won’t carry over, and from here on the two copies diverge — the terminal keeps its own.",
+                confirm: "Fork it")
+        }
+        return TakeoverWarning(
+            title: "Take over this live session?",
+            message: "This attaches to the session your terminal is still driving, so both will be writing to it. A turn in flight right now can interleave with what you send, and whichever side answers an approval first wins.",
+            confirm: "Take over")
+    }
+
+    /// The command that hands a session back to a terminal, or nil when we can't name one honestly.
+    ///
+    /// Only claude has a `--resume <uuid>` handback, and only for CLAUDE's own UUID: our `cc_…` ids
+    /// are rejected by the CLI ("not a valid session id"), so offering the command for one would be
+    /// a copyable lie. opencode needs nothing — the terminal is still attached to the live session.
+    static func resumeCommand(provider: String, sessionID: String) -> String? {
+        guard provider == "claude-code", looksLikeUUID(sessionID) else { return nil }
+        return "claude --resume \(sessionID)"
+    }
+
+    /// 8-4-4-4-12 hex, the shape claude names its session files with.
+    static func looksLikeUUID(_ s: String) -> Bool {
+        s.range(of: #"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"#,
+                options: .regularExpression) != nil
+    }
+}
+
+/// Puts a string on the system pasteboard on either platform.
+func copyToPasteboard(_ text: String) {
+    #if os(macOS)
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(text, forType: .string)
+    #elseif canImport(UIKit)
+    UIPasteboard.general.string = text
+    #endif
+}
 
 /// Start a new agent session (provider + working folder(s) + optional worktree), or take over
 /// a session already running in a terminal. A modern modal: fixed header with a Start-new /
@@ -26,9 +139,17 @@ struct NewSessionView: View {
     @State private var models: [ModelInfo] = []   // models for the chosen provider (empty = none)
     @State private var selectedModel = ""          // "" = provider default
     @State private var mode: Mode
+    /// A live row awaiting confirmation before we take it away from its terminal.
+    @State private var pendingTakeover: PendingTakeover?
     #if os(iOS)
     @State private var addPath = ""
     #endif
+
+    private struct PendingTakeover: Identifiable {
+        let discovered: Discovered
+        let warning: TakeoverWarning
+        var id: String { discovered.discoveryID }
+    }
 
     init(model: Model, palette: OculusPalette, initialTakeOver: Bool = false, onStart: @escaping () -> Void) {
         self.model = model
@@ -362,11 +483,37 @@ struct NewSessionView: View {
             Text("opencode attaches to the live session (shared control with your terminal). claude-code resumes it as a safe fork. Either way it becomes a managed session in your sidebar.")
                 .font(.caption).foregroundStyle(palette.mutedForeground)
         }
+        // Stealing a LIVE session is destructive in a way the row can't express in a chip, so it is
+        // confirmed with the specific loss named. Idle rows attach with no dialog at all.
+        .confirmationDialog(pendingTakeover?.warning.title ?? "",
+                            isPresented: Binding(get: { pendingTakeover != nil },
+                                                 set: { if !$0 { pendingTakeover = nil } }),
+                            titleVisibility: .visible) {
+            if let p = pendingTakeover {
+                Button(p.warning.confirm, role: .destructive) {
+                    let d = p.discovered
+                    pendingTakeover = nil
+                    Task { await model.attach(d); onStart() }
+                }
+            }
+            Button("Cancel", role: .cancel) { pendingTakeover = nil }
+        } message: {
+            if let p = pendingTakeover { Text(p.warning.message) }
+        }
+    }
+
+    /// Attaches straight away when nothing is at risk; otherwise stages the confirmation.
+    private func requestTakeover(_ d: Discovered) {
+        if let w = TerminalTakeover.warning(provider: d.provider, live: d.live == true) {
+            pendingTakeover = PendingTakeover(discovered: d, warning: w)
+        } else {
+            Task { await model.attach(d); onStart() }
+        }
     }
 
     private func takeOverRow(_ d: Discovered) -> some View {
         Button {
-            Task { await model.attach(d); onStart() }
+            requestTakeover(d)
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: d.provider == "claude-code" ? "terminal" : "bolt.horizontal.circle")
@@ -437,17 +584,13 @@ struct NewSessionView: View {
             }
     }
 
+    // Both the sheet and the sidebar strip label the same rows, so they share one derivation —
+    // a row that reads "oculus" here must not read "session" there.
     private func discoveredTitle(_ d: Discovered) -> String {
-        if let t = d.title, !t.isEmpty { return t }
-        if let cwd = d.cwd, !cwd.isEmpty { return (cwd as NSString).lastPathComponent }
-        return d.sessionID ?? "session"
+        TerminalTakeover.title(d, sessionID: d.sessionID ?? "session")
     }
 
-    private func discoveredSubtitle(_ d: Discovered) -> String {
-        var parts = [d.provider]
-        if let cwd = d.cwd, !cwd.isEmpty { parts.append((cwd as NSString).abbreviatingWithTildeInPath) }
-        return parts.joined(separator: " · ")
-    }
+    private func discoveredSubtitle(_ d: Discovered) -> String { TerminalTakeover.subtitle(d) }
 
     private func toggle(_ id: String) {
         if selectedProjects.contains(id) { selectedProjects.remove(id) } else { selectedProjects.insert(id) }

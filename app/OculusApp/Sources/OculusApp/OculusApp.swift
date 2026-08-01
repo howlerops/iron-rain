@@ -6,11 +6,23 @@ import OculusUI
 @main
 struct OculusApp: App {
     @StateObject private var store = DesktopStore()
+    /// Mirrors the shipping app (OculusMain): on macOS this fires on app-switch rather than
+    /// suspension, but the revalidate-then-reconnect path is the same one and must not drift.
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup("Iron Rain") {
             RootView(store: store)
                 .frame(minWidth: 520, minHeight: 420)
+                .onChange(of: scenePhase) { phase in
+                    guard phase == .active else { return }
+                    let models = store.models
+                    Task { @MainActor in
+                        await withTaskGroup(of: Void.self) { group in
+                            for m in models { group.addTask { await m.appDidBecomeActive() } }
+                        }
+                    }
+                }
         }
 
         MenuBarExtra {

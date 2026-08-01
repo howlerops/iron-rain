@@ -27,7 +27,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -39,11 +41,25 @@ import (
 // Provider spawns pi RPC sessions.
 type Provider struct {
 	cmd []string // command to run pi in rpc mode, e.g. ["pi","--mode","rpc"]
+
+	mu           sync.Mutex
+	resume       map[string]string // our session id (pi_…) -> the JSONL session file pi opened for it
+	resumeFile   string            // where the map persists across daemon restarts, 0600
+	sessionsRoot string            // override for pi's sessions directory (tests / --session-dir)
 }
 
 // New returns a Provider that runs the given pi rpc command (argv). For tests, point
 // it at a fake pi-rpc script speaking the JSONL protocol.
-func New(cmd []string) *Provider { return &Provider{cmd: cmd} }
+func New(cmd []string) *Provider {
+	p := &Provider{cmd: cmd, resume: map[string]string{}}
+	if home, err := os.UserHomeDir(); err == nil {
+		p.resumeFile = filepath.Join(home, ".oculus", "pi-resume.json")
+		if data, err := os.ReadFile(p.resumeFile); err == nil {
+			_ = json.Unmarshal(data, &p.resume)
+		}
+	}
+	return p
+}
 
 func (p *Provider) Name() string { return "pi" }
 
@@ -51,11 +67,28 @@ func (p *Provider) List(context.Context) ([]protocol.Session, error) { return ni
 
 // Create starts a pi rpc session and sends the initial prompt.
 func (p *Provider) Create(ctx context.Context, cwd, prompt string) (agent.Session, error) {
+	s, err := p.spawn(ctx, cwd, "pi_"+randID(), nil)
+	if err != nil {
+		return nil, err
+	}
+	// Ask pi which session file it opened. That path is the ONLY handle that survives this process,
+	// so it's what a later restore resumes from — pi names files by its own uuid, which our id isn't.
+	_ = s.send(map[string]any{"type": "get_state"})
+	if prompt != "" {
+		_ = s.Prompt(ctx, prompt)
+	}
+	return s, nil
+}
+
+// spawn starts one pi rpc child and wires its lifecycle. extraArgs is appended to the configured
+// command (Attach adds `--session <file>` to resume an existing conversation).
+func (p *Provider) spawn(_ context.Context, cwd, id string, extraArgs []string) (*session, error) {
 	if len(p.cmd) == 0 {
 		return nil, fmt.Errorf("pi: no command configured")
 	}
+	argv := append(append([]string{}, p.cmd[1:]...), extraArgs...)
 	runCtx, cancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(runCtx, p.cmd[0], p.cmd[1:]...)
+	cmd := exec.CommandContext(runCtx, p.cmd[0], argv...)
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
@@ -76,7 +109,8 @@ func (p *Provider) Create(ctx context.Context, cwd, prompt string) (agent.Sessio
 		return nil, err
 	}
 	s := &session{
-		id:     "pi_" + randID(),
+		id:     id,
+		p:      p,
 		events: make(chan agent.Event, 32),
 		stdin:  stdin,
 		cmd:    cmd,
@@ -107,16 +141,14 @@ func (p *Provider) Create(ctx context.Context, cwd, prompt string) (agent.Sessio
 					SessionID: s.id, Status: protocol.StatusIdle}})
 			}
 		}
-		close(s.events)
+		s.closeEvents()
 	}()
-	if prompt != "" {
-		_ = s.Prompt(ctx, prompt)
-	}
 	return s, nil
 }
 
 type session struct {
 	id     string
+	p      *Provider // for recording the session file pi opened (resume map)
 	events chan agent.Event
 	stdin  io.WriteCloser
 	cmd    *exec.Cmd
@@ -125,6 +157,27 @@ type session struct {
 	writeMu   sync.Mutex
 	closeOnce sync.Once
 	done      chan struct{}
+
+	// resumedPath is the on-disk session file this session was resumed from ("" for a fresh one);
+	// it also marks the session as self-replaying (see SelfReplaying).
+	resumedPath string
+
+	// events now has TWO senders (readLoop and the resume transcript replay), so closing it must be
+	// mutually exclusive with sends — a bare close() could panic a concurrent send and take the whole
+	// daemon down. Same guard the claude adapter needed once it gained a replay goroutine.
+	sendMu sync.Mutex
+	closed bool
+}
+
+// closeEvents ends the event stream exactly once, excluding concurrent emitters.
+func (s *session) closeEvents() {
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
+	if s.closed {
+		return
+	}
+	s.closed = true
+	close(s.events)
 }
 
 func (s *session) ID() string                 { return s.id }
@@ -179,6 +232,11 @@ func (s *session) Close() error {
 }
 
 func (s *session) emit(ev agent.Event) {
+	s.sendMu.Lock()
+	defer s.sendMu.Unlock()
+	if s.closed {
+		return
+	}
 	select {
 	case s.events <- ev:
 	case <-s.done:
@@ -187,6 +245,7 @@ func (s *session) emit(ev agent.Event) {
 
 type piEvent struct {
 	Type     string         `json:"type"`
+	Command  string         `json:"command"` // set on {"type":"response"} frames — which command answered
 	Method   string         `json:"method"`
 	ID       string         `json:"id"`
 	ToolName string         `json:"toolName"`
@@ -279,6 +338,20 @@ func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool) {
 			continue
 		}
 		switch e.Type {
+		case "response":
+			// get_state reports the session FILE pi is writing (docs/rpc.md). Record it: it's the only
+			// handle that outlives this process, and therefore the only way a restore can resume this
+			// exact conversation instead of starting a new one under the same id.
+			if e.Command == "get_state" && s.p != nil {
+				var st struct {
+					Data struct {
+						SessionFile string `json:"sessionFile"`
+					} `json:"data"`
+				}
+				if json.Unmarshal(line, &st) == nil {
+					s.p.setResume(s.id, st.Data.SessionFile)
+				}
+			}
 		case "message_end":
 			// Per-turn token/cost usage (the "message" key here is an object → decode separately).
 			var me piMessageEnd

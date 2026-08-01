@@ -69,6 +69,11 @@ const (
 	TypeWorktreePR            = "worktree.pr"            // commit + push + open a PR for a worktree session
 	TypeWorktreeCatchUp       = "worktree.catch_up"      // merge the repo's default branch into a worktree session's branch
 	TypeWorktreeConflicts     = "worktree.conflicts"     // files this worktree shares with other active worktrees
+	TypeDeviceList            = "device.list"            // enrolled clients that may reach this daemon
+	TypeDeviceRevoke          = "device.revoke"          // lock out one device by its public key
+	TypeDeviceLabel           = "device.label"           // give a device a human name
+	TypeWorktreeMerge         = "worktree.merge"         // land a worktree branch locally (repos with no remote)
+	TypeWorktreeStatus        = "worktree.status"        // has the branch's PR landed yet?
 	TypeWorkspaceDiff         = "workspace.diff"         // per-member diff for a cross-repo workspace session
 	TypeWorkspacePR           = "workspace.pr"           // commit + push + open a PR for each workspace member
 	TypeIntegrationConnect    = "integration.connect"    // connect a tracker (Linear/Jira) with a token
@@ -1952,4 +1957,45 @@ type UsageReport struct {
 	// subscription-backed agent isn't charged per token. Clients must say so rather than implying
 	// a bill.
 	Subscription bool `json:"subscription"`
+}
+
+// WorktreeMerge lands a worktree's branch into the repo's default branch, for repos with no forge.
+type WorktreeMerge struct {
+	SessionID string `json:"session_id"`
+	Message   string `json:"message,omitempty"`
+}
+
+// WorktreeStatus asks whether this worktree's work has landed — so the app can offer to clean up
+// rather than leaving finished worktrees around forever.
+type WorktreeStatus struct {
+	SessionID string `json:"session_id"`
+}
+
+// WorktreeStatusResult reports the branch's pull-request state. State is "" when there is no PR (or
+// no gh), which is normal and not an error.
+type WorktreeStatusResult struct {
+	SessionID string `json:"session_id"`
+	Branch    string `json:"branch"`
+	State     string `json:"state,omitempty"` // OPEN | MERGED | CLOSED
+	URL       string `json:"url,omitempty"`
+	HasRemote bool   `json:"has_remote"`
+}
+
+// DeviceInfo is one client enrolled to reach this daemon, identified by the static key the Noise
+// handshake already proves.
+type DeviceInfo struct {
+	Pub       string `json:"pub"`
+	Label     string `json:"label,omitempty"`
+	FirstSeen int64  `json:"first_seen"`
+	LastSeen  int64  `json:"last_seen"`
+	This      bool   `json:"this,omitempty"` // the device asking — so a UI can avoid revoking itself blind
+}
+
+type DeviceList struct {
+	Devices []DeviceInfo `json:"devices"`
+}
+
+type DeviceRef struct {
+	Pub   string `json:"pub"`
+	Label string `json:"label,omitempty"`
 }

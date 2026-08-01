@@ -134,6 +134,26 @@ func (s *session) ID() string                 { return s.id }
 func (s *session) Provider() string           { return s.cfg.Name }
 func (s *session) Events() <-chan agent.Event { return s.events }
 
+// MarkResumed tells a freshly-created session that it CONTINUES an earlier conversation, so its
+// very first turn uses ResumeArgs (e.g. `claude -c`) instead of the cold invocation.
+//
+// It exists because a CLI agent keeps its continuity in the dead process's own state, not on a
+// server: after a daemon restart the hub re-creates the session, the turn counter starts at zero,
+// and the agent is re-run cold — a brand-new conversation displayed under the old session's history.
+// The hub calls this when the session has durable turns behind it (hub/persist.go restartSession).
+// No-op when the agent declares no ResumeArgs: there is nothing to resume WITH, and passing an
+// agent resume flags with no prior session usually makes it fail to start.
+func (s *session) MarkResumed() {
+	if len(s.cfg.ResumeArgs) == 0 {
+		return
+	}
+	s.mu.Lock()
+	if s.turns == 0 {
+		s.turns = 1 // the prior conversation's turns; startTurn switches templates on turns > 0
+	}
+	s.mu.Unlock()
+}
+
 // SetModel selects the model substituted for {model} in subsequent turns (provider unused).
 func (s *session) SetModel(_, model string) error {
 	s.mu.Lock()

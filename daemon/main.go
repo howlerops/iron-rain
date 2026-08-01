@@ -151,6 +151,9 @@ func serve(args []string) error {
 
 	h := hub.New()
 	defer h.Shutdown() // stop language servers on exit
+	// Per-device enrollment: pairing records WHICH device connected, so one can be revoked without
+	// rotating the secret and re-pairing everything you own.
+	h.SetDevicesPath(filepath.Join(filepath.Dir(secretPath()), "devices.json"))
 	h.SetLogHub(lh)
 	h.SetDiscoverer(discovery.Scan)
 	if reg, err := project.Load(projectsPath()); err != nil {

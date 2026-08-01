@@ -153,7 +153,10 @@ func (r *inviteRegistry) list() []*invite {
 func (h *Hub) AcceptSecret(ownerSecret string) func(clientPub []byte, presented string) bool {
 	return func(clientPub []byte, presented string) bool {
 		if presented == ownerSecret {
-			return true
+			// Record WHICH device this is, and refuse it if that device was revoked. The check sits
+			// after the secret match on purpose: a revoked phone still knows the secret, so revocation
+			// that a valid secret could bypass would mean nothing.
+			return h.enroll(clientPub)
 		}
 		if inv, ok := h.invites.redeem(clientPub, presented); ok {
 			log.Printf("invites: %q redeemed as %s", inviteLabel(inv), inv.Role)

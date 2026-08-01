@@ -10,6 +10,73 @@ import AppKit
 import UIKit
 #endif
 
+// MARK: - Header status: two independent facts, never one string
+
+/// Whether we can reach the daemon at all. Orthogonal to what the agent is doing.
+enum ConnectionPhase: Equatable { case connected, connecting, offline }
+
+/// The chat header's two separate readings.
+///
+/// `Model.status` is a single `String` that is written by BOTH the transport ("Disconnected",
+/// "Reconnecting…", "Connect failed") and by `session.status` broadcasts ("running", "idle",
+/// "error"). Rendering it in one slot meant a dead socket appeared where a session state belongs,
+/// and "Disconnected" read as "this agent stopped" — the user waits instead of reconnecting.
+/// This splits the two apart and marks the session word as last-known whenever the socket is down,
+/// because while offline we are quoting a snapshot, not observing anything.
+struct HeaderStatus: Equatable {
+    var connection: ConnectionPhase
+    /// The connection chip's text — nil when connected, because a healthy link says nothing.
+    var connectionLabel: String?
+    /// What the AGENT is doing. Never a transport word.
+    var session: String
+    /// True when `session` is a remembered value rather than an observed one.
+    var stale: Bool
+}
+
+/// Turns the model's flat state into the two independent readings above.
+///
+/// Free function (not a method) so it can be exercised without a Model, a socket, or a view.
+func deriveHeaderStatus(connected: Bool, connecting: Bool, rawStatus: String,
+                        sessionStatus: String?, busy: Bool, awaitingApproval: Bool) -> HeaderStatus {
+    let phase: ConnectionPhase = connected ? .connected : (connecting ? .connecting : .offline)
+    let connectionLabel: String? = {
+        switch phase {
+        case .connected: return nil
+        case .connecting: return "Connecting…"
+        case .offline: return "Disconnected"
+        }
+    }()
+
+    // Precedence is live-knowledge-first: something we are watching right now beats the last
+    // broadcast snapshot, which beats a token that happens to be sitting in `rawStatus`.
+    let session: String = {
+        if awaitingApproval { return "awaiting approval" }
+        if busy { return "working…" }
+        if let s = sessionStatus, let word = sessionStatusWord(s) { return word }
+        // rawStatus is only trusted when it IS a session token — anything else in there is a
+        // transport message, and letting one through is the exact bug this function exists to kill.
+        if let word = sessionStatusWord(rawStatus) { return word }
+        return "unknown"
+    }()
+
+    return HeaderStatus(connection: phase, connectionLabel: connectionLabel,
+                        session: session, stale: phase != .connected)
+}
+
+/// Maps a wire session-status token to the word shown to a human. Returns nil for anything that
+/// is not a session status — that nil is what keeps connection strings out of the session slot.
+func sessionStatusWord(_ raw: String) -> String? {
+    switch raw {
+    case SessionStatusValue.running: return "working…"
+    case SessionStatusValue.idle: return "idle"
+    case SessionStatusValue.awaitingApproval: return "awaiting approval"
+    case SessionStatusValue.done: return "done"
+    case SessionStatusValue.error, "errored": return "Error"
+    case SessionStatusValue.stopped: return "stopped"
+    default: return nil
+    }
+}
+
 /// The session conversation surface: a streaming message list with an inline
 /// approval card and a sticky composer (attach · voice · send). Sparse, dark,
 /// session-first — matching the Oculus/HowlerOps design system.
@@ -53,6 +120,9 @@ public struct ChatView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
+            // Connection first, above everything: it explains why the rest of the pane may be
+            // frozen, and it must not be mistaken for a session state (see HeaderStatus).
+            connectionBanner
             if isWorktreeSession { worktreeBanner }
             if isStopped { stoppedBanner }
             // (Removed the top-of-chat "Fleet" awareness strip — it auto-appeared whenever any OTHER
@@ -624,11 +694,48 @@ public struct ChatView: View {
         .padding(OculusSpace.xl)
     }
 
+    /// The two header readings, derived once per body evaluation.
+    private var headerStatus: HeaderStatus {
+        deriveHeaderStatus(connected: model.connected, connecting: model.connecting,
+                           rawStatus: model.status, sessionStatus: model.currentSession?.status,
+                           busy: model.busy, awaitingApproval: model.pendingApproval != nil)
+    }
+
+    /// What the AGENT is doing — never the transport. The connection lives in `connectionBanner`.
     private var statusLabel: String {
-        if model.pendingApproval != nil { return "awaiting approval" }
-        if model.busy { return "working…" }
-        if model.status == SessionStatusValue.error || model.status == "errored" { return "Error" }
-        return model.status
+        let h = headerStatus
+        // Offline, every session word is a memory. Say so rather than presenting it as observed.
+        return h.stale && h.session != "unknown" ? "last: \(h.session)" : h.session
+    }
+
+    /// The connection's own row, separate from the session status by construction. Absent when
+    /// connected — a healthy link is signalled by having nothing to say.
+    @ViewBuilder private var connectionBanner: some View {
+        if let label = headerStatus.connectionLabel {
+            HStack(spacing: 8) {
+                if headerStatus.connection == .connecting {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Circle().fill(palette.destructive).frame(width: 6, height: 6)
+                }
+                Text(label).font(.caption.weight(.semibold)).foregroundStyle(palette.foreground)
+                if let detail = model.statusDetail, !detail.isEmpty {
+                    Text(detail).font(.caption).foregroundStyle(palette.mutedForeground)
+                        .lineLimit(1).truncationMode(.tail)
+                }
+                Spacer(minLength: 0)
+                if headerStatus.connection == .offline {
+                    Button("Reconnect") { Task { await model.connect() } }
+                        .font(.caption.weight(.semibold)).buttonStyle(.plain)
+                        .foregroundStyle(palette.primary)
+                }
+            }
+            .padding(.horizontal, 14).padding(.vertical, 7)
+            // Offline is a problem you can act on (red wash); connecting is just in progress, so it
+            // gets the same neutral chrome as the other banners rather than an alarm colour.
+            .background(headerStatus.connection == .offline
+                        ? palette.destructive.opacity(0.12) : palette.muted.opacity(0.35))
+        }
     }
 
     private func describe(_ d: Discovered) -> String {
