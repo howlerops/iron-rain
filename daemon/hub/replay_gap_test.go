@@ -233,3 +233,39 @@ func TestReStreamWindowExpires(t *testing.T) {
 		t.Error("the tracking map must be released when the window closes")
 	}
 }
+
+// TestJoinDropsTheSyntheticEcho: for claude-code, pi and the CLI the daemon SYNTHESISES an
+// end-of-turn assistant message from accumulated deltas and writes it to SQLite without ever
+// broadcasting it. It therefore has no byte twin in the ring — while the deltas that built its text
+// do. Merging durable with the ring emitted both and rendered every reply twice.
+func TestJoinDropsTheSyntheticEcho(t *testing.T) {
+	synthetic := []byte(`{"type":"session.message","payload":{"role":"assistant","text":"hello world"}}`)
+	d1 := []byte(`{"type":"output.delta","payload":{"text":"hello "}}`)
+	d2 := []byte(`{"type":"output.delta","payload":{"text":"world"}}`)
+
+	out := joinHistory([][]byte{synthetic}, [][]byte{d1, d2})
+	if len(out) != 2 {
+		t.Fatalf("join emitted %d frames, want just the two deltas — the synthetic echo duplicates them", len(out))
+	}
+}
+
+// A provider's REAL assistant message carries a message id and must always survive, even when its
+// text happens to appear in the streamed run.
+func TestJoinKeepsRealAssistantMessages(t *testing.T) {
+	real := []byte(`{"type":"session.message","payload":{"role":"assistant","text":"hello world","msg_id":"m1"}}`)
+	d1 := []byte(`{"type":"output.delta","payload":{"text":"hello world"}}`)
+	out := joinHistory([][]byte{real}, [][]byte{d1})
+	if len(out) != 2 {
+		t.Errorf("join emitted %d frames, want the real message kept alongside the delta", len(out))
+	}
+}
+
+// A user's message is never a synthetic echo, whatever it says.
+func TestJoinKeepsUserMessagesThatEchoText(t *testing.T) {
+	user := []byte(`{"type":"session.message","payload":{"role":"user","text":"hello world"}}`)
+	d1 := []byte(`{"type":"output.delta","payload":{"text":"hello world"}}`)
+	out := joinHistory([][]byte{user}, [][]byte{d1})
+	if len(out) != 2 {
+		t.Errorf("join emitted %d frames, want the user's own message kept", len(out))
+	}
+}

@@ -420,6 +420,46 @@ func (m *managedSession) info() protocol.Session {
 // so no live event can slip between the snapshot and registration (each event lands in
 // exactly one of replay or the live queue). A dedicated writer goroutine then delivers
 // the replay followed by live events, so no client's socket blocks the event pump.
+// ringStreamedText concatenates every streamed token in the ring, so a durable frame can be tested
+// for "the ring already says this".
+func ringStreamedText(ring [][]byte) string {
+	var b strings.Builder
+	for _, r := range ring {
+		var f struct {
+			Type    string `json:"type"`
+			Payload struct {
+				Text string `json:"text"`
+			} `json:"payload"`
+		}
+		if json.Unmarshal(r, &f) != nil || f.Type != protocol.TypeOutputDelta {
+			continue
+		}
+		b.WriteString(f.Payload.Text)
+	}
+	return b.String()
+}
+
+// isSyntheticAssistantEcho reports whether a durable frame is the end-of-turn message the daemon
+// synthesised from streamed text that the ring already carries.
+func isSyntheticAssistantEcho(raw []byte, streamed string) bool {
+	var f struct {
+		Type    string `json:"type"`
+		Payload struct {
+			Role  string `json:"role"`
+			Text  string `json:"text"`
+			MsgID string `json:"msg_id"`
+		} `json:"payload"`
+	}
+	if json.Unmarshal(raw, &f) != nil {
+		return false
+	}
+	if f.Type != protocol.TypeSessionMessage || f.Payload.Role != "assistant" || f.Payload.MsgID != "" {
+		return false // a provider's real message always carries an id
+	}
+	text := strings.TrimSpace(f.Payload.Text)
+	return text != "" && strings.Contains(streamed, text)
+}
+
 // joinHistory merges the durable transcript into the in-memory ring IN BROADCAST ORDER, without
 // emitting any frame twice.
 //
@@ -465,12 +505,24 @@ func joinHistory(durable, ring [][]byte) [][]byte {
 			mapped[i] = placed{pos: -1, seq: i}
 		}
 	}
+	// The synthetic end-of-turn message is the one frame that can never match by bytes: it is written
+	// to SQLite and NEVER broadcast (see finalizeTurnTranscript), so it has no ring twin — while the
+	// deltas that produced its text ARE in the ring. Emitting both renders the same reply twice, which
+	// is exactly what merging durable with the ring started doing to every restored session.
+	//
+	// It is identifiable: an assistant message with NO message id. Providers that send real messages
+	// always carry one, so this cannot swallow a genuine reply.
+	streamed := ringStreamedText(ring)
 	out := make([][]byte, 0, len(durable)+len(ring))
 	// Durable history older than the ring leads, in its own order.
 	for i, mp := range mapped {
-		if mp.pos < 0 {
-			out = append(out, durable[i])
+		if mp.pos >= 0 {
+			continue
 		}
+		if streamed != "" && isSyntheticAssistantEcho(durable[i], streamed) {
+			continue // the ring already carries this reply as the deltas it was built from
+		}
+		out = append(out, durable[i])
 	}
 	// Then the ring, in ring order — which already contains the durable frames that overlap it.
 	out = append(out, ring...)
@@ -688,17 +740,20 @@ func (m *managedSession) persistDurable(ev agent.Event, raw []byte) {
 	default:
 		return
 	}
-	// Advance only on a real insert. INSERT OR IGNORE drops a duplicate message id, and incrementing
-	// regardless burned sequence numbers on every re-attach re-stream — leaving gaps that make the
-	// sequence unusable as a cursor and misreport how much history exists.
-	next := m.txSeq + 1
-	inserted, err := db.AppendTranscript(sid, next, msgID, raw)
-	if err != nil {
+	// The sequence ALWAYS advances. It is a position counter, not an identity.
+	//
+	// A previous version advanced it only when AppendTranscript reported a real insert, to avoid
+	// "burning" numbers on rows deduplicated by message id. That was catastrophic: seq is half of
+	// PRIMARY KEY(session_id, seq), so after a single dedup the counter stalled and every subsequent
+	// event collided with an existing row and was silently dropped by INSERT OR IGNORE. One re-streamed
+	// message was enough to stop a session persisting anything ever again — the whole conversation
+	// from that point on was lost, with no error anywhere.
+	//
+	// Gaps in the sequence are harmless slack: nothing reads seq except ORDER BY. De-duplication is the
+	// msg_id unique index's job, and it does it whether or not the number moved.
+	m.txSeq++
+	if _, err := db.AppendTranscript(sid, m.txSeq, msgID, raw); err != nil {
 		log.Printf("transcript: append %s failed: %v", sid, err)
-		return
-	}
-	if inserted {
-		m.txSeq = next
 	}
 }
 
