@@ -112,3 +112,57 @@ This is the known candidate, and it belongs in Phase 4 — not earlier, delibera
 - **Draft sync beyond last-writer-wins.** No CRDTs, no operational transforms for a composer text field. Debounced LWW broadcast or nothing.
 - **A web client or any second app platform.** Every seam above is unfixed engineering on the platforms we have; a new client multiplies every one of them.
 - **Rebuilding what the audit confirmed works:** the replay join, the Turn Engine, relay racing, worktree bootstrap, fan-out, the approval hop. The roadmap above touches these only at their confirmed defect sites.
+---
+
+# Build status (updated as shipped)
+
+## Done
+
+- **Phase 0** — all six items. The claude sidecar preset, `session.attach`
+  persisting cwd + provider URL, usage stripped from replay, `approval.resolved`
+  entering session history, promptless sessions seeding idle, reconnect
+  attempting before it backs off.
+- **Phase 1** — daemon↔relay keepalive; the Cloudflare relay given the Go
+  relay's one-host/one-client role routing (it was broadcasting to every socket)
+  and immediate close when no host is registered; `scenePhase` wiring, which did
+  not exist anywhere in the app; WebSocket ping; honest offline messaging.
+- **Phase 2** — `closeTurn` publishes its verdict; per-session state on turn
+  edges; needs-you clears itself; reconnect repaints in place.
+- **Phase 3** — restore uses the persisted provider URL and cwd; failed attach
+  yields stopped/restartable instead of attached-then-empty; pi resume-attach;
+  CLI ResumeArgs; opencode model seeded from history; "Continue from terminal"
+  and the way back to the terminal.
+- **Phase 4 Stage 1** — the durable transcript now holds the whole conversation
+  (user prompts, gen-UI cards, sub-agent rows) and the synthetic end-of-turn
+  message is broadcast rather than written in secret.
+- **Phase 5 (daemon)** — `MergeIntoDefault` lands a worktree locally for repos
+  with no forge; `PRState` answers whether the work landed.
+- **Phase 6** — per-device enrolment and revocation keyed on the static key
+  Noise already proves; one push that both alerts and wakes the app; cache purge
+  wired into session delete and worktree removal; relay trust model documented
+  with an `OCULUS_RELAY` override for self-hosters.
+
+## Deliberately deferred
+
+**Phase 4 Stage 2 — ring demotion.** Not attempted, and not because of time.
+
+The stage calls for stamping frames with a turn id and reducing the ring to an
+open-turn delivery buffer, so replay becomes `durable(closed turns) ++
+ring(current turn)` and `joinHistory`'s positional matching can be deleted. The
+obstacle is the open turn itself: renderable frames are persisted the moment
+they occur — deliberately, so a daemon that dies mid-turn loses nothing — which
+means durable and ring overlap *within* the open turn, and reconstructing their
+interleaving is the same positional problem under a new name. Making the overlap
+vanish requires deferring persistence to turn close, which trades a real
+data-loss risk for an internal simplification. That is the wrong trade.
+
+Doing it properly needs turn-scoped sequence numbers so the two sources can be
+merged by sequence rather than by content. That is a genuine refactor of the
+write path, and this subsystem has already produced five history bugs when
+changed in a hurry. Stage 1 delivered the user-visible win — complete history
+across restarts, for every provider. Stage 2 is an internal cleanup and should
+be planned on its own.
+
+**Branded relay hostnames.** The addresses are personal hostnames; moving them
+to `relay1/relay2.ironrain.dev` is a DNS and deploy task, not a code change. The
+code has one place to edit and now says so.

@@ -129,6 +129,12 @@ struct NewSessionView: View {
     @State private var provider = "opencode"
     @State private var selectedProjects: Set<String> = []
     @State private var useWorktree = false
+    /// The first instruction, sent WITH the create so the agent works during bootstrap rather than
+    /// idling until you come back to it. On a phone — where you open the app to start something and
+    /// then put it away — that is the difference between one interaction and two.
+    @State private var firstPrompt = ""
+    static let lastWorktreeKey = "oculus.newSession.worktree"
+    static let lastProjectsKey = "oculus.newSession.projects"
     @State private var sessionMode = SessionMode.code
     @State private var autonomous = false
     @State private var workspaceName = ""
@@ -214,7 +220,16 @@ struct NewSessionView: View {
         .frame(width: 560, height: 640)
         #endif
         .background(palette.background)
-        .task { await model.loadProjects(); await scan() }
+        .task {
+            // Restore the previous session's shape. It re-zeroed on every open, so a user who always
+            // works in worktrees on one project re-made both decisions every single time.
+            if selectedProjects.isEmpty,
+               let saved = UserDefaults.standard.stringArray(forKey: Self.lastProjectsKey), !saved.isEmpty {
+                selectedProjects = Set(saved)
+            }
+            useWorktree = UserDefaults.standard.bool(forKey: Self.lastWorktreeKey)
+            await model.loadProjects(); await scan()
+        }
         .task(id: model.providers) {
             if !model.providers.isEmpty, !model.providers.contains(provider) { provider = model.providers.first ?? provider }
         }
@@ -276,7 +291,11 @@ struct NewSessionView: View {
                                                   mode: sessionMode,
                                                   autonomous: autonomous,
                                                   model: selectedModel.isEmpty ? nil : selectedModel,
-                                                  modelProvider: chosen?.provider)
+                                                  modelProvider: chosen?.provider,
+                                                  prompt: firstPrompt)
+                        // Remember the shape of this session so the next one opens ready to repeat it.
+                        UserDefaults.standard.set(useWorktree && canIsolate, forKey: Self.lastWorktreeKey)
+                        UserDefaults.standard.set(Array(selectedProjects), forKey: Self.lastProjectsKey)
                     }
                     onStart()
                 } label: { Text("Start").frame(minWidth: 52) }
@@ -322,6 +341,15 @@ struct NewSessionView: View {
 
     private var newContent: some View {
         VStack(alignment: .leading, spacing: 22) {
+            // FIRST, not last. The task is the thing the user came to express; the agent, model and
+            // isolation are settings that mostly keep their previous value. Putting the prompt at the
+            // top also means the agent starts working during bootstrap rather than after you notice
+            // it finished bootstrapping.
+            field("What should the agent do?") {
+                TextField("Optional — you can also just start and type", text: $firstPrompt, axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(2...5)
+            }
             field("Agent") {
                 agentPicker
                 if !models.isEmpty {

@@ -253,6 +253,25 @@ final class TranscriptCacheTests: XCTestCase {
         XCTAssertTrue(after.isEmpty)
     }
 
+    /// Deleting a session must take its cached transcript with it. The cache holds the machine's
+    /// source code and the conversation about it; leaving that on the phone after the user deleted
+    /// the session is exactly the wrong default.
+    func testDeletingASessionPurgesItsCache() async {
+        let cache = TranscriptCache.shared
+        let f = frame(MessageType.sessionMessage, session: "doomed", text: "secret")
+        await cache.append(daemon: "unit-del", session: "doomed", frames: [f])
+
+        let m = Model()
+        m.daemonPubHex = "unit-del"
+        m.transcriptHydrated["doomed"] = [f]
+        m.forgetCached("doomed")
+        try? await Task.sleep(nanoseconds: 300_000_000) // the disk purge is fire-and-forget
+
+        XCTAssertNil(m.transcriptHydrated["doomed"], "the in-memory copy must go immediately")
+        let left = await cache.frames(daemon: "unit-del", session: "doomed")
+        XCTAssertTrue(left.isEmpty, "the on-disk copy must go too")
+    }
+
     /// Unpairing a Mac must take its transcripts with it, and leave other Macs alone.
     func testForgetDaemonIsScoped() async {
         let cache = TranscriptCache.shared

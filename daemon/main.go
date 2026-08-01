@@ -64,7 +64,21 @@ var version = "0.0.0-dev"
 // order is preference: the Cloudflare Durable-Object relay is primary (edge-local, hibernates so
 // idle cost ≈ 0, no single-region SPOF); the Fly relay is a portable fallback. Override with
 // --relay (or "" for LAN-only).
+//
+// A relay only ever sees CIPHERTEXT — the Noise channel is end-to-end between the daemon and the
+// paired device — so pointing this at someone else's host leaks metadata (that a daemon exists, and
+// when it is busy) but never code or conversation. That is what makes a shared default acceptable
+// at all, and why self-hosting is a one-flag change rather than a fork.
+//
+// TODO(ops): these are personal hostnames. Move to relay1/relay2.ironrain.dev with the workers.dev
+// and fly.dev names kept as trailing fallbacks, so the addresses survive an account change. That is
+// a DNS + deploy task, not a code change: the list below is the only place to edit.
 const defaultRelayURL = "wss://oculus-relay.jacobbeck-dev.workers.dev/ws,wss://oculus-relay-howlerops.fly.dev/ws"
+
+// relayEnvOverride lets a self-hoster point every daemon at their own relay without editing flags in
+// a launchd plist or a systemd unit — the two places these processes usually start from, where
+// changing an argument is far more awkward than setting an environment variable.
+const relayEnvOverride = "OCULUS_RELAY"
 
 func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "serve" {
@@ -139,6 +153,13 @@ func serve(args []string) error {
 	// binding, so every (re)start runs the latest. No-op for dev builds / non-installs. This is why
 	// updating the app (which restarts the daemon) now also updates the daemon.
 	selfupdate.MaybeUpdateAndReexec(version)
+
+	// A self-hoster starting the daemon from a launchd plist or a systemd unit finds it far easier to
+	// set an environment variable than to edit an argument list, so honour one — but never override an
+	// EXPLICIT --relay, which is the more specific instruction.
+	if env := os.Getenv(relayEnvOverride); env != "" && *relayURL == defaultRelayURL {
+		*relayURL = env
+	}
 
 	kp, err := loadOrCreateKey(*keyPath)
 	if err != nil {

@@ -1010,6 +1010,9 @@ public final class Model: ObservableObject {
         // server broadcasts the updated session list.
         sessions.removeAll { $0.id == id }
         if sessionID == id { newSession() }
+        // Delete its cached transcript too. The cache holds this machine's source code and the
+        // conversation about it; a session the user deleted should not leave that on the device.
+        forgetCached(id)
         // Forget it as the auto-reopen target — otherwise the next reconnect re-opens (and
         // re-attaches) the just-deleted session, so it reappears.
         if defaults.string(forKey: lastSessionKey) == id { defaults.removeObject(forKey: lastSessionKey) }
@@ -1112,7 +1115,11 @@ public final class Model: ObservableObject {
         }
     }
 
-    public func createSession(provider: String, projectIDs: [String]? = nil, worktree: Bool = false, workspaceName: String? = nil, mode: String = SessionMode.code, autonomous: Bool = false, model: String? = nil, modelProvider: String? = nil) async {
+    /// - Parameter prompt: the first instruction, sent WITH the create. The agent then works during
+    ///   bootstrap instead of idling until the user re-engages — which on a phone, where you open the
+    ///   app to start something and put it away again, is the difference between one interaction and
+    ///   two. The daemon has always accepted this; only the primary sheet failed to send it.
+    public func createSession(provider: String, projectIDs: [String]? = nil, worktree: Bool = false, workspaceName: String? = nil, mode: String = SessionMode.code, autonomous: Bool = false, model: String? = nil, modelProvider: String? = nil, prompt: String? = nil) async {
         guard client != nil else { return }
         startingProvider = provider
         createSteps = [] // fresh checklist; the daemon streams session.progress as it works
@@ -1128,7 +1135,7 @@ public final class Model: ObservableObject {
                 payload: SessionCreate(provider: provider,
                                        projectID: multi ? nil : projectIDs?.first,
                                        projectIDs: multi ? projectIDs : nil,
-                                       prompt: nil,
+                                       prompt: prompt?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? prompt : nil,
                                        // Isolation applies to both single-repo (one worktree) and
                                        // multi-repo (a worktree per repo) — the daemon branches on
                                        // it. Don't drop it for the multi-repo case.
@@ -1986,6 +1993,63 @@ public final class Model: ObservableObject {
         _ = try? await request(MessageType.clientIdentify, payload: ClientIdentify(name: identity))
     }
 
+    /// Devices enrolled to reach this daemon (Trust screen).
+    @Published public var devices: [DeviceInfo] = []
+    /// Whether the open worktree session's PR has landed — drives the "clean up?" affordance.
+    @Published public var worktreeStatus: WorktreeStatusResult? = nil
+
+    public func loadDevices() async {
+        guard client != nil else { return }
+        if let env = try? await request(MessageType.deviceList, payload: Optional<Int>.none),
+           let list = try? env.payload(as: DeviceList.self) {
+            devices = list.devices
+        }
+    }
+
+    /// Locks out one device. The daemon keeps the entry marked revoked rather than deleting it —
+    /// a deleted entry would simply re-enroll on the device's next connection.
+    public func revokeDevice(_ pub: String) async {
+        guard client != nil else { return }
+        if let env = try? await request(MessageType.deviceRevoke, payload: DeviceRef(pub: pub)),
+           let list = try? env.payload(as: DeviceList.self) {
+            devices = list.devices
+        }
+    }
+
+    public func labelDevice(_ pub: String, label: String) async {
+        guard client != nil else { return }
+        if let env = try? await request(MessageType.deviceLabel, payload: DeviceRef(pub: pub, label: label)),
+           let list = try? env.payload(as: DeviceList.self) {
+            devices = list.devices
+        }
+    }
+
+    /// Asks whether this worktree's work has landed. Cheap enough to poll when the panel is open.
+    public func refreshWorktreeStatus() async {
+        guard client != nil, let sid = sessionID else { return }
+        if let env = try? await request(MessageType.worktreeStatus, payload: WorktreeRef(sessionID: sid)),
+           let st = try? env.payload(as: WorktreeStatusResult.self) {
+            worktreeStatus = st
+        }
+    }
+
+    /// Lands a worktree branch into the repo's default branch. For repos with no remote this is what
+    /// "finish" means — without it the agent's work sat on a branch with no way to land it from a phone.
+    @discardableResult
+    public func mergeWorktree(message: String? = nil) async -> Bool {
+        guard client != nil, let sid = sessionID else { return false }
+        busy = true
+        defer { busy = false }
+        do {
+            _ = try await request(MessageType.worktreeMerge, payload: WorktreeRef(sessionID: sid, message: message))
+            await loadSessions()
+            return true
+        } catch {
+            setError("Couldn't merge", error.localizedDescription)
+            return false
+        }
+    }
+
     /// Spend + tokens over time (Usage screen).
     @Published public var usage: UsageReport? = nil
     @Published public var loadingUsage = false
@@ -2517,6 +2581,7 @@ public final class Model: ObservableObject {
 
     public func removeWorktree(force: Bool = false) async {
         guard let client, let sid = sessionID else { return }
+        forgetCached(sid)
         if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.worktreeRemove, payload: WorktreeRemove(sessionID: sid, force: force)) {
             try? await client.send(env)
         }
@@ -2529,6 +2594,7 @@ public final class Model: ObservableObject {
         guard let client else { return }
         sessions.removeAll { $0.id == id }
         if sessionID == id { newSession() }
+        forgetCached(id) // the worktree is gone; its cached transcript should go with it
         if defaults.string(forKey: lastSessionKey) == id { defaults.removeObject(forKey: lastSessionKey) }
         if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.worktreeRemove, payload: WorktreeRemove(sessionID: id, force: force)) {
             try? await client.send(env)

@@ -61,6 +61,11 @@ public enum MessageType {
     public static let approvalRulesChanged = "approval.rules.changed"
     public static let sessionModeSet = "session.mode.set"
     public static let usageReport = "usage.report"
+    public static let worktreeMerge = "worktree.merge"
+    public static let worktreeStatus = "worktree.status"
+    public static let deviceList = "device.list"
+    public static let deviceRevoke = "device.revoke"
+    public static let deviceLabel = "device.label"
     public static let transcriptPage = "transcript.page"
     public static let transcriptPageBegin = "transcript.page.begin"
     public static let transcriptPageEnd = "transcript.page.end"
@@ -2272,4 +2277,52 @@ public struct UsageReport: Codable, Equatable {
     /// Dollar figures are NOTIONAL when a subscription-backed agent is in play — nothing is billed
     /// per token. The UI must say so rather than implying a bill.
     public var subscription: Bool
+}
+
+
+/// A worktree's pull-request state, so the app can tell the user their work landed and offer to clean
+/// up — rather than leaving finished worktrees on disk forever.
+public struct WorktreeStatusResult: Codable, Equatable {
+    public var sessionID: String
+    public var branch: String
+    public var state: String?      // OPEN | MERGED | CLOSED; nil when there is no PR
+    public var url: String?
+    public var hasRemote: Bool
+    public var merged: Bool { state == "MERGED" }
+    enum CodingKeys: String, CodingKey {
+        case branch, state, url
+        case sessionID = "session_id", hasRemote = "has_remote"
+    }
+}
+
+/// One device enrolled to reach this daemon, identified by the static key the Noise handshake proves.
+public struct DeviceInfo: Codable, Equatable, Identifiable {
+    public var pub: String
+    public var label: String?
+    public var firstSeen: Int
+    public var lastSeen: Int
+    /// True for the device asking — so the UI never offers to revoke the connection it is speaking over.
+    public var this: Bool?
+    public var id: String { pub }
+    enum CodingKeys: String, CodingKey {
+        case pub, label, this
+        case firstSeen = "first_seen", lastSeen = "last_seen"
+    }
+}
+
+public struct DeviceList: Codable, Equatable {
+    public var devices: [DeviceInfo]
+}
+
+public struct DeviceRef: Codable {
+    public var pub: String
+    public var label: String?
+    public init(pub: String, label: String? = nil) { self.pub = pub; self.label = label }
+}
+
+public struct WorktreeRef: Codable {
+    public var sessionID: String
+    public var message: String?
+    public init(sessionID: String, message: String? = nil) { self.sessionID = sessionID; self.message = message }
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id", message }
 }
