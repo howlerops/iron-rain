@@ -45,6 +45,13 @@ func (m *managedSession) openTurn(detail string) {
 	stop := make(chan struct{})
 	m.turnStopLoop = stop
 	m.mu.Unlock()
+	// Keep the machine awake for the life of the turn. A Mac that sleeps thirty seconds after you
+	// walk away stops the agent mid-thought and lets the relay registration go stale, so the phone
+	// finds a session that is neither running nor reachable — the exact failure "continue from
+	// anywhere" exists to prevent.
+	if m.hub != nil && m.hub.awake != nil {
+		m.hub.awake.Hold()
+	}
 	m.emitTurn("")
 	// A turn EDGE is the only moment a session's rendered state changes, so it is the only moment
 	// worth telling every client about. Clients that aren't subscribed to this session (the sidebar,
@@ -164,6 +171,9 @@ func (m *managedSession) closeTurnFrom(state, reason string, providerDriven bool
 	m.turnPhase = ""
 	stop := m.turnStopLoop
 	m.turnStopLoop = nil
+	if m.hub != nil && m.hub.awake != nil {
+		defer m.hub.awake.Release() // balanced with the Hold in openTurn
+	}
 	// Seal the children. The provider-level seal (opencode marks its kids done when ITS session.idle
 	// arrives) only covers the clean path — a turn ended by the reconciler, by abandonment, or by
 	// stream loss never got that event, and a fan-out's sub-agent cards then spun forever with no way

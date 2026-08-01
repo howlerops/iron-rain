@@ -142,6 +142,27 @@ This is the known candidate, and it belongs in Phase 4 — not earlier, delibera
   wired into session delete and worktree removal; relay trust model documented
   with an `OCULUS_RELAY` override for self-hosters.
 
+### Also fixed after the adversarial review
+
+- The relay keepalive was tearing down the healthy idle connections it existed to protect
+  (coder/websocket services control frames only inside a Read; the Go relay parked hosts with no
+  reader). Falsified both ways before and after.
+- A duplicate error bubble, from publishing the verdict with an empty detail while the pump
+  broadcast the same status with the reason through a different queue.
+- The pi resume handle had zero coverage — the only link between our ids and pi's uuid-named files.
+- Generative-UI cards multiplied on every daemon restart: persisted with a NULL message id, and then
+  differing in bytes from the ring copy because a card's state advances. Found by probing a live
+  daemon, not by unit tests, which passed throughout.
+- Phase 1 item 4's daemon half, initially missed: the machine now holds a refcounted `caffeinate -s`
+  assertion while any turn is open, so a Mac that sleeps after you walk away no longer kills the
+  agent mid-thought and strands the relay registration.
+
+### Moved after user feedback
+
+"Continue from terminal" was built into the sidebar. Wrong: the sidebar is your RECENT sessions, and
+adopting something you have never opened is a way of STARTING. It lives in the New Session flow and
+in the full sessions page instead.
+
 ## Deliberately deferred
 
 **Phase 4 Stage 2 — ring demotion.** Not attempted, and not because of time.

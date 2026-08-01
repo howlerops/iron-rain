@@ -53,6 +53,7 @@ import (
 	"github.com/howlerops/oculus/daemon/store"
 	"github.com/howlerops/oculus/daemon/telemetry"
 	"github.com/howlerops/oculus/daemon/transcript"
+	"github.com/howlerops/oculus/daemon/wake"
 )
 
 // version is stamped at build time via -ldflags "-X main.version=<tag>" (see .github/workflows/
@@ -172,6 +173,7 @@ func serve(args []string) error {
 
 	h := hub.New()
 	defer h.Shutdown() // stop language servers on exit
+	h.SetWakeGuard(wake.New())
 	// Per-device enrollment: pairing records WHICH device connected, so one can be revoked without
 	// rotating the secret and re-pairing everything you own.
 	h.SetDevicesPath(filepath.Join(filepath.Dir(secretPath()), "devices.json"))

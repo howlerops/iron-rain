@@ -52,6 +52,10 @@ type Hub struct {
 	providers map[string]agent.Provider
 	sessions  map[string]*managedSession // sessionID -> hub-owned shared session
 	devices   *deviceRegistry            // enrolled client keys (per-device revocation)
+	awake     interface {
+		Hold()
+		Release()
+	} // keeps the machine awake while a turn is open
 	approvals map[string]*managedSession // approvalID -> owning session
 	discover  DiscoverFunc
 
@@ -4481,4 +4485,15 @@ func formValuesText(raw json.RawMessage) string {
 		fmt.Fprintf(&b, "%s: %v\n", k, v)
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// SetWakeGuard installs the sleep assertion held while any turn is open. Optional: without it the
+// daemon behaves exactly as before, which is the right default for a Linux host or a test.
+func (h *Hub) SetWakeGuard(g interface {
+	Hold()
+	Release()
+}) {
+	h.mu.Lock()
+	h.awake = g
+	h.mu.Unlock()
 }
