@@ -345,6 +345,36 @@ struct NewSessionView: View {
             // isolation are settings that mostly keep their previous value. Putting the prompt at the
             // top also means the agent starts working during bootstrap rather than after you notice
             // it finished bootstrapping.
+            // The offer to adopt a terminal session belongs HERE, in the create flow — picking up
+            // something already running is a way of starting, not a "recent". It sat in the sidebar
+            // above your actual sessions, which put a thing you have never opened where your history
+            // should be. Shown only when there is genuinely something to continue.
+            if !terminalCandidates.isEmpty {
+                Button { mode = .takeOver } label: {
+                    HStack(spacing: 9) {
+                        Image(systemName: "terminal").font(.system(size: 13))
+                            .foregroundStyle(palette.primary)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(terminalCandidates.count == 1
+                                 ? "1 session is running in your terminal"
+                                 : "\(terminalCandidates.count) sessions are running in your terminal")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(palette.foreground)
+                            Text("Continue one here instead of starting fresh")
+                                .font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
+                        }
+                        Spacer(minLength: 6)
+                        Image(systemName: "chevron.right").font(.system(size: 11))
+                            .foregroundStyle(palette.mutedForeground)
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 9)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(palette.primary.opacity(0.10)))
+                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(palette.primary.opacity(0.22)))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+
             field("What should the agent do?") {
                 TextField("Optional — you can also just start and type", text: $firstPrompt, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
@@ -588,6 +618,11 @@ struct NewSessionView: View {
         .foregroundStyle(palette.primary)
         .padding(.horizontal, 6).padding(.vertical, 2)
         .background(Capsule().fill(palette.primary.opacity(0.16)))
+    }
+
+    /// Terminal sessions worth offering to adopt — the same set the Take over tab lists.
+    private var terminalCandidates: [TakeoverCandidate] {
+        TerminalTakeover.candidates(discovered: model.discovered, managed: model.sessions)
     }
 
     private func scan() async {

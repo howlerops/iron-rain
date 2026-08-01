@@ -73,11 +73,69 @@ public struct AllSessionsView: View {
 
     private var worktreeCount: Int { model.sessions.filter { $0.branch?.isEmpty == false }.count }
 
+    /// Terminal sessions available to adopt.
+    private var terminalCandidates: [TakeoverCandidate] {
+        TerminalTakeover.candidates(discovered: model.discovered, managed: model.sessions)
+    }
+
+    @ViewBuilder private var terminalSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text("RUNNING IN A TERMINAL")
+                    .font(.system(size: 10, weight: .bold)).tracking(0.5)
+                    .foregroundStyle(palette.mutedForeground)
+                Text("\(terminalCandidates.count)")
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(palette.mutedForeground)
+                Spacer()
+                Button { Task { await model.discover() } } label: {
+                    Label("Rescan", systemImage: "arrow.clockwise").font(.system(size: 11))
+                }
+                .buttonStyle(.plain).foregroundStyle(palette.primary)
+            }
+            ForEach(terminalCandidates) { c in
+                Button {
+                    guard let d = model.discovered.first(where: { $0.discoveryID == c.id }) else { return }
+                    Task { await model.attach(d); onOpen?(c.sessionID) }
+                } label: {
+                    HStack(spacing: 9) {
+                        Image(systemName: c.provider == "claude-code" ? "terminal" : "bolt.horizontal.circle")
+                            .font(.system(size: 12)).foregroundStyle(palette.primary)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(c.title).font(.system(size: 12.5, weight: .medium))
+                                .foregroundStyle(palette.foreground).lineLimit(1)
+                            Text(c.subtitle).font(.system(size: 10.5))
+                                .foregroundStyle(palette.mutedForeground)
+                                .lineLimit(1).truncationMode(.middle)
+                        }
+                        Spacer(minLength: 6)
+                        if c.live {
+                            Text("Live").font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(palette.primary)
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(Capsule().fill(palette.primary.opacity(0.16)))
+                        }
+                        Text("Continue").font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(palette.primary)
+                    }
+                    .padding(.vertical, 5).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     public var body: some View {
         VStack(spacing: 0) {
             header
             Divider().overlay(palette.border)
             if !selection.isEmpty { bulkBar; Divider().overlay(palette.border) }
+            // Sessions running in a terminal that this app does not yet manage. This is the full
+            // list — the New Session sheet offers the same thing at the moment of creating, and the
+            // sidebar deliberately shows neither, because it is your recent conversations.
+            if !terminalCandidates.isEmpty { terminalSection; Divider().overlay(palette.border) }
             columnHeader
             Divider().overlay(palette.border.opacity(0.6))
             if rows.isEmpty {

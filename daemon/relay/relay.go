@@ -139,9 +139,39 @@ func (r *Relay) serveHost(ctx context.Context, id string, hostWS *websocket.Conn
 		r.mu.Unlock()
 	}()
 
+	// ONE reader for this socket's whole life, started NOW rather than at pairing.
+	//
+	// coder/websocket services control frames only inside a Read. A host parked here with nobody
+	// reading it therefore cannot answer a ping — so the daemon's own keepalive times out against a
+	// perfectly healthy relay, tears the connection down and re-registers, forever, with a window on
+	// every cycle where a client asking for that daemon is told no host exists. Adding the keepalive
+	// without this made the relay hostile to exactly the connections it was meant to protect.
+	//
+	// The reader cannot simply be cancelled at pairing (cancelling a coder/websocket read closes the
+	// connection), so it keeps running and the bridge consumes its output instead of reading directly.
+	frames := make(chan wsFrame, 32)
+	readErr := make(chan error, 1)
+	go func() {
+		defer close(frames)
+		for {
+			typ, data, err := hostWS.Read(ctx)
+			if err != nil {
+				readErr <- err
+				return
+			}
+			select {
+			case frames <- wsFrame{typ: typ, data: data}:
+			default:
+				// Nothing is paired yet, or the client is too slow. A host has nothing useful to say
+				// before a client arrives, so dropping is right: buffering unbounded would let an
+				// unpaired daemon grow the relay's memory without limit.
+			}
+		}
+	}()
+
 	select {
 	case p := <-entry.pair:
-		bridge(ctx, hostWS, p.clientWS)
+		bridgeFromReader(ctx, frames, readErr, hostWS, p.clientWS)
 		close(p.done)
 	case <-entry.evict:
 		// Superseded by a newer registration; the evictor already closed our ws.
@@ -165,6 +195,43 @@ func (r *Relay) serveClient(ctx context.Context, id string, clientWS *websocket.
 	case <-ctx.Done():
 		clientWS.Close(websocket.StatusNormalClosure, "")
 	}
+}
+
+// wsFrame is one message read off a socket, carried between the idle reader and the bridge.
+type wsFrame struct {
+	typ  websocket.MessageType
+	data []byte
+}
+
+// bridgeFromReader wires an already-reading host socket to a freshly paired client. The host half is
+// consumed from the channel the idle reader owns; the client half is read directly.
+func bridgeFromReader(ctx context.Context, frames <-chan wsFrame, readErr <-chan error, host, client *websocket.Conn) {
+	errc := make(chan error, 2)
+	go func() {
+		for {
+			select {
+			case f, ok := <-frames:
+				if !ok {
+					errc <- <-readErr
+					return
+				}
+				if err := client.Write(ctx, f.typ, f.data); err != nil {
+					errc <- err
+					return
+				}
+			case err := <-readErr:
+				errc <- err
+				return
+			case <-ctx.Done():
+				errc <- ctx.Err()
+				return
+			}
+		}
+	}()
+	go copyWS(ctx, client, host, errc)
+	<-errc
+	host.Close(websocket.StatusNormalClosure, "")
+	client.Close(websocket.StatusNormalClosure, "")
 }
 
 func bridge(ctx context.Context, a, b *websocket.Conn) {

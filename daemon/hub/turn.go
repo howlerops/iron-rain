@@ -217,7 +217,12 @@ func (m *managedSession) publishVerdict(state, reason string, providerDriven boo
 		m.mu.Lock()
 		status := m.lastStatus
 		m.mu.Unlock()
-		m.publishSessionState(status, "")
+		// Carry the REASON. Publishing an empty detail here while the pump broadcasts the same status
+		// WITH its detail put two error frames on the wire through two different queues — a hub-wide
+		// broadcast and the session's own — and the client, which dedups only against the immediately
+		// preceding row, rendered both: a generic "the agent reported an error" followed by the real
+		// one. Same text, one bubble.
+		m.publishSessionState(status, reason)
 		return
 	}
 	failed := state == protocol.StatusError || state == "abandoned"

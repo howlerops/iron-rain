@@ -324,6 +324,28 @@ func todosFromToolArgs(toolName string, args map[string]any) ([]protocol.Todo, b
 	return out, len(out) > 0
 }
 
+// recordResumeHandle captures the session FILE pi is writing, reported in its get_state response.
+//
+// Extracted from readLoop so it can be tested at all. It is the ONLY handle that outlives this
+// process: pi names its files `<timestamp>_<uuid>.jsonl`, so nothing can find one again from our
+// `pi_…` id. If this stops matching pi's real frame shape, daemon-created pi sessions become
+// silently unresumable — a failure with no error anywhere, which is why it needs coverage rather
+// than trust.
+func (s *session) recordResumeHandle(command string, line []byte) {
+	if command != "get_state" || s.p == nil {
+		return
+	}
+	var st struct {
+		Data struct {
+			SessionFile string `json:"sessionFile"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(line, &st) != nil || st.Data.SessionFile == "" {
+		return // a payload with no file tells us nothing; recording "" would erase a good handle
+	}
+	s.p.setResume(s.id, st.Data.SessionFile)
+}
+
 // readLoop drains pi's JSONL stdout and returns whether it observed a clean turn end (agent_end).
 // It does NOT close s.events or emit a terminal backstop — the caller does that AFTER cmd.Wait(), so a
 // non-zero exit can be surfaced as an error instead of being masked as a normal idle.
@@ -342,16 +364,7 @@ func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool) {
 			// get_state reports the session FILE pi is writing (docs/rpc.md). Record it: it's the only
 			// handle that outlives this process, and therefore the only way a restore can resume this
 			// exact conversation instead of starting a new one under the same id.
-			if e.Command == "get_state" && s.p != nil {
-				var st struct {
-					Data struct {
-						SessionFile string `json:"sessionFile"`
-					} `json:"data"`
-				}
-				if json.Unmarshal(line, &st) == nil {
-					s.p.setResume(s.id, st.Data.SessionFile)
-				}
-			}
+			s.recordResumeHandle(e.Command, line)
 		case "message_end":
 			// Per-turn token/cost usage (the "message" key here is an object → decode separately).
 			var me piMessageEnd

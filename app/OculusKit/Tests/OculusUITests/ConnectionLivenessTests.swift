@@ -172,4 +172,25 @@ private extension Model {
         transcriptReplayBuffer = transcriptPainted
         finishReconcile()
     }
+
+    /// The keepalive must survive an app switch.
+    ///
+    /// `appWillResignActive` stops the ping — correctly, since a ping fired against a suspended
+    /// runtime tells you about suspension, not about the socket. But the healthy foreground path
+    /// returns EARLY, so if it does not restart the ping the loop dies on the first app switch and
+    /// never comes back. `.inactive` fires on the iOS app switcher, Control Centre and every macOS
+    /// app switch, so "a dead pipe surfaces within a minute" silently becomes "never" within minutes
+    /// of ordinary use — the exact defect this phase exists to remove.
+    func testKeepaliveRestartsAfterAnAppSwitch() async {
+        let m = Model()
+        m.connected = true
+        m.keepaliveRunningForTests = false
+
+        m.appWillResignActive()
+        XCTAssertFalse(m.keepaliveRunningForTests, "resigning active must stop the ping")
+
+        await m.appDidBecomeActive()
+        XCTAssertTrue(m.keepaliveRunningForTests,
+                      "returning to the app must restart the ping — otherwise it dies on the first app switch")
+    }
 }

@@ -601,6 +601,13 @@ public final class Model: ObservableObject {
     /// `receive()` waits forever on a socket whose peer vanished when the Mac slept or the NAT
     /// dropped the mapping. An idle session generates no traffic by definition, so the ping is the
     /// only thing that turns that silence into an error we can act on.
+    /// Whether the ping loop is live. Exposed for tests: the loop itself is a detached Task, so its
+    /// existence is the only observable thing about it.
+    var keepaliveRunningForTests: Bool {
+        get { keepaliveTask != nil }
+        set { if !newValue { keepaliveTask?.cancel(); keepaliveTask = nil } }
+    }
+
     private func startKeepalive() {
         keepaliveTask?.cancel()
         keepaliveTask = Task { [weak self] in
@@ -703,7 +710,15 @@ public final class Model: ObservableObject {
         // Order matters: revalidate BEFORE cancelling the backoff, so a connection that is actually
         // healthy is left completely alone (no backoff exists in that case anyway).
         if connected {
-            if await revalidateConnection() { return }
+            if await revalidateConnection() {
+                // Restart the ping. `appWillResignActive` stopped it, and this healthy path is the
+                // one that returns early — so without this the keepalive died on the FIRST app
+                // switch and never came back. `.inactive` fires on the iOS app switcher, Control
+                // Centre, and every macOS app switch, so "a dead pipe is detected within a minute"
+                // silently reverted to "never" within minutes of ordinary use.
+                startKeepalive()
+                return
+            }
         }
         cancelReconnectBackoff()
         // The loop may have been mid-handshake when we cancelled it, and that handshake may have
