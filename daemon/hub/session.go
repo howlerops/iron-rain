@@ -531,6 +531,23 @@ func joinHistory(durable, ring [][]byte) [][]byte {
 	// counterpart, and without this they would render the reply twice. Identifiable as an assistant
 	// message with no message id; a provider's real message always carries one.
 	streamed := ringStreamedText(ring)
+	// Frames that carry their own identity — generative-UI cards, sub-agent rows — can appear in BOTH
+	// sources with DIFFERENT bytes, because their state advances: a card is emitted `running` and
+	// updated to `ready`, so the durable copy from an earlier run and the freshly re-derived ring copy
+	// are the same card in two states. Byte matching cannot see that, and served both. Match these by
+	// identity and let the RING win, since it is the newer state.
+	ringIDs := make(map[string]struct{}, len(ring))
+	for _, r := range ring {
+		var typ struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(r, &typ) != nil {
+			continue
+		}
+		if id := renderableID(typ.Type, r); id != "" {
+			ringIDs[id] = struct{}{}
+		}
+	}
 	out := make([][]byte, 0, len(durable)+len(ring))
 	// Durable history older than the ring leads, in its own order.
 	for i, mp := range mapped {
@@ -539,6 +556,16 @@ func joinHistory(durable, ring [][]byte) [][]byte {
 		}
 		if streamed != "" && isSyntheticAssistantEcho(durable[i], streamed) {
 			continue // the ring already carries this reply as the deltas it was built from
+		}
+		var typ struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(durable[i], &typ) == nil {
+			if id := renderableID(typ.Type, durable[i]); id != "" {
+				if _, live := ringIDs[id]; live {
+					continue // the ring has a fresher copy of this exact card
+				}
+			}
 		}
 		out = append(out, durable[i])
 	}
@@ -1166,10 +1193,40 @@ func (m *managedSession) appendDurable(sid, msgID string, raw []byte) {
 // finalizes into a message — generative-UI cards and sub-agent rows. Without these a restart leaves
 // visible holes where the cards used to be.
 func (m *managedSession) persistRenderable(typ string, raw []byte) {
-	switch typ {
-	case protocol.TypeUIComponent, protocol.TypeSessionSubAgent:
-		m.appendDurable(m.sess.ID(), "", raw)
+	id := renderableID(typ, raw)
+	if id == "" {
+		return
 	}
+	m.appendDurable(m.sess.ID(), id, raw)
+}
+
+// renderableID derives a STABLE durable key for a frame that renders as conversation but that no
+// provider finalizes into a message.
+//
+// Without one these rows were written with a NULL message id, which the store's unique index treats
+// as "never a duplicate" — so every daemon restart re-derived the same generative-UI cards from the
+// provider's re-streamed text and appended them AGAIN. Two restarts, two copies on screen. The
+// payload ids are already stable (a card keeps its id as it goes running → ready), so keying on them
+// makes the write idempotent and the re-stream harmless.
+//
+// Returns "" for frame types that must not be persisted at all.
+func renderableID(typ string, raw []byte) string {
+	var f struct {
+		Payload struct {
+			ID       string `json:"id"`
+			ParentID string `json:"parent_id"`
+		} `json:"payload"`
+	}
+	if json.Unmarshal(raw, &f) != nil || f.Payload.ID == "" {
+		return ""
+	}
+	switch typ {
+	case protocol.TypeUIComponent:
+		return "ui:" + f.Payload.ID
+	case protocol.TypeSessionSubAgent:
+		return "sub:" + f.Payload.ID
+	}
+	return ""
 }
 
 // encodeApprovalRequest frames an approval for broadcast (MCP approvals originate in the hub rather

@@ -269,3 +269,30 @@ func TestJoinKeepsUserMessagesThatEchoText(t *testing.T) {
 		t.Errorf("join emitted %d frames, want the user's own message kept", len(out))
 	}
 }
+
+// TestJoinPrefersTheRingsCopyOfACard: a generative-UI card advances state — emitted `running`, then
+// updated to `ready`. The durable copy from an earlier run and the freshly re-derived ring copy are
+// therefore the SAME card with different bytes, which byte matching cannot see: it served both, and
+// the conversation grew a duplicate card on every restart.
+func TestJoinPrefersTheRingsCopyOfACard(t *testing.T) {
+	stale := []byte(`{"type":"ui.component","payload":{"id":"plan","status":"running"}}`)
+	fresh := []byte(`{"type":"ui.component","payload":{"id":"plan","status":"ready"}}`)
+
+	out := joinHistory([][]byte{stale}, [][]byte{fresh})
+	if len(out) != 1 {
+		t.Fatalf("join emitted %d frames, want 1 — the same card in two states is still one card", len(out))
+	}
+	if string(out[0]) != string(fresh) {
+		t.Errorf("kept the stale copy; the ring holds the newer state")
+	}
+}
+
+// A card the ring does NOT have must survive from the durable store — that is the whole point of
+// persisting it for providers that never re-stream.
+func TestJoinKeepsCardsTheRingLacks(t *testing.T) {
+	old := []byte(`{"type":"ui.component","payload":{"id":"older","status":"ready"}}`)
+	out := joinHistory([][]byte{old}, [][]byte{fr("live")})
+	if len(out) != 2 {
+		t.Errorf("join emitted %d frames, want the older card kept alongside the live one", len(out))
+	}
+}

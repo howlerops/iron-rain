@@ -192,6 +192,12 @@ func serve(args []string) error {
 	} else {
 		h.SetStore(db)
 		defer db.Close()
+		// One-time repair: an earlier build persisted generative-UI cards and sub-agent rows with a
+		// NULL message id, so every restart appended another copy of the same card. Idempotent and a
+		// no-op on a clean store.
+		if n, err := db.DedupeRenderables(); err == nil && n > 0 {
+			log.Printf("transcript: removed %d duplicate card/sub-agent row(s) from an earlier build", n)
+		}
 	}
 	// Anonymized diagnostics (on by default; toggle via the app). Ships lifecycle events + scrubbed
 	// error classes to the Cloudflare telemetry Worker so failures in the wild are traceable.

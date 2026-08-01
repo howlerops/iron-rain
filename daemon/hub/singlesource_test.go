@@ -118,3 +118,42 @@ func TestDurableSequenceIsRaceSafe(t *testing.T) {
 		t.Errorf("stored %d rows, want all 20 concurrent appends", len(rows))
 	}
 }
+
+// TestRenderableFramesAreIdempotent is the regression for cards multiplying on every restart.
+//
+// Generative-UI cards are re-derived from a provider's re-streamed text each time the daemon
+// re-attaches. Persisted with a NULL message id — which the store's unique index treats as never a
+// duplicate — each restart appended another copy, and the conversation grew a new set of cards every
+// time. The payload ids are stable, so keying on them makes the write idempotent.
+func TestRenderableFramesAreIdempotent(t *testing.T) {
+	h := sourceHub(t)
+	m := &managedSession{hub: h, sess: &replayFakeSess{id: "s5"}}
+	card := []byte(`{"type":"ui.component","payload":{"session_id":"s5","id":"plan","component":"checklist"}}`)
+
+	// Three "restarts", each re-deriving the same card.
+	for i := 0; i < 3; i++ {
+		m.persistRenderable(protocol.TypeUIComponent, card)
+	}
+
+	if got := durableTypes(t, h, "s5"); len(got) != 1 {
+		t.Fatalf("stored %d copies of one card, want 1 — a re-stream must not multiply the conversation", len(got))
+	}
+
+	// A DIFFERENT card must still be stored.
+	m.persistRenderable(protocol.TypeUIComponent,
+		[]byte(`{"type":"ui.component","payload":{"session_id":"s5","id":"table","component":"table"}}`))
+	if got := durableTypes(t, h, "s5"); len(got) != 2 {
+		t.Errorf("stored %d cards, want 2 — distinct cards must both survive", len(got))
+	}
+}
+
+// A frame with no payload id cannot be made idempotent, so it must not be persisted at all rather
+// than accumulate silently.
+func TestRenderableWithoutAnIDIsNotPersisted(t *testing.T) {
+	h := sourceHub(t)
+	m := &managedSession{hub: h, sess: &replayFakeSess{id: "s6"}}
+	m.persistRenderable(protocol.TypeUIComponent, []byte(`{"type":"ui.component","payload":{"session_id":"s6"}}`))
+	if got := durableTypes(t, h, "s6"); len(got) != 0 {
+		t.Errorf("stored %v, want nothing — an unkeyable frame would accumulate on every restart", got)
+	}
+}

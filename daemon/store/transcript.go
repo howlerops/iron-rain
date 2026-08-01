@@ -97,3 +97,32 @@ func (s *Store) DeleteTranscript(sessionID string) error {
 	_, err := s.db.Exec(`DELETE FROM transcript_events WHERE session_id = ?`, sessionID)
 	return err
 }
+
+// DedupeRenderables removes duplicate generative-UI and sub-agent rows left by an earlier build that
+// wrote them with a NULL message id — which the unique index treats as never-a-duplicate, so every
+// daemon restart appended another copy of the same card.
+//
+// Keeps the EARLIEST row for each (type, payload id), because that is the one whose position in the
+// sequence reflects when the card actually appeared in the conversation. Runs once at startup and is
+// a no-op on a clean store.
+func (s *Store) DedupeRenderables() (int, error) {
+	if s == nil || s.db == nil {
+		return 0, nil
+	}
+	res, err := s.db.Exec(`
+        DELETE FROM transcript_events
+        WHERE msg_id IS NULL
+          AND json_extract(raw, '$.type') IN ('ui.component', 'session.subagent')
+          AND json_extract(raw, '$.payload.id') IS NOT NULL
+          AND seq > (
+            SELECT MIN(t2.seq) FROM transcript_events t2
+            WHERE t2.session_id = transcript_events.session_id
+              AND json_extract(t2.raw, '$.type') = json_extract(transcript_events.raw, '$.type')
+              AND json_extract(t2.raw, '$.payload.id') = json_extract(transcript_events.raw, '$.payload.id')
+          )`)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
