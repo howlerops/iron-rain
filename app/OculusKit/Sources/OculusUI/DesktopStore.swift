@@ -134,6 +134,10 @@ public final class DesktopStore: ObservableObject {
         models.removeAll { $0.id == id }
         if selectedID == id { selectedID = models.first?.id }
         save()
+        // Unpairing must leave nothing of that Mac behind. The cached transcripts hold its source
+        // code and its conversations; removing the desktop without purging them would keep both on
+        // the device indefinitely.
+        Task { await TranscriptCache.shared.forgetDaemon(id) }
     }
 
     @discardableResult

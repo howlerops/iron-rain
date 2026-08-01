@@ -210,7 +210,7 @@ public final class Model: ObservableObject {
     @Published public var streamMaybeStalled = false
     /// While true, skip replayed transcript messages that duplicate ones already shown
     /// (set briefly around a live re-attach so reviving a session doesn't double the chat).
-    private var dedupReplay = false
+    var dedupReplay = false
     /// Child sessions we've already sent a sessionSubscribe for — so expanding a card twice (or
     /// collapse+re-expand) doesn't re-subscribe. Kept across collapse; cleared on parent switch.
     private var subscribedChildIDs: Set<String> = []
@@ -1424,8 +1424,6 @@ public final class Model: ObservableObject {
         // daemon's replay — and a trimmed ring now replays durable history in front of the live
         // window, which overlaps too. Arm the de-duplicator so those overlaps collapse instead of
         // doubling. Only for a real switch, where the transcript is about to be cleared anyway.
-        dedupReplay = true
-        Task { try? await Task.sleep(nanoseconds: 5_000_000_000); dedupReplay = false }
         // A stopped session (daemon restarted, provider couldn't re-attach) has nothing to subscribe
         // to — load it and let ChatView show a Restart affordance, instead of erroring on subscribe.
         if let s = sessions.first(where: { $0.id == id }), s.status == SessionStatusValue.stopped {
@@ -1441,16 +1439,42 @@ public final class Model: ObservableObject {
         }
         // Switch the active session id NOW, before clearing/subscribing — so streaming events from
         // the session we're leaving (still Live) are filtered out instead of bleeding into this one.
+        // Hand what is on screen back to the in-memory cache for the session being LEFT. Without
+        // this, A -> B -> A repaints from whatever was on disk at hydration time and loses everything
+        // that streamed in between — the replay would recover it, but only after the round trip this
+        // whole feature exists to hide.
+        if let prev = sessionID, !transcriptPainted.isEmpty { transcriptHydrated[prev] = transcriptPainted }
         sessionID = id
         messages.removeAll()
         todos = []
         pendingApproval = nil
         busy = false
         lastDiff = nil
+        transcriptPainted = []
+        transcriptReconciling = false
+        transcriptReplayBuffer = []
+        transcriptReconcileTask?.cancel(); transcriptReconcileCap?.cancel()
+        // Paging state belongs to the session being LEFT. It's assigned only when a page.end arrives,
+        // so without this the previous session's "there is more history" leaked into a session that
+        // has none — and offered a Load-earlier button that could never load anything.
+        hasEarlierHistory = false
+        loadingEarlier = false
+        pageAnchor = nil
+        daemonEventsRendered = 0
         turn = nil // the new session's turn.state will repopulate
-        sessionLoading = true
-        beginSettling() // hide the transcript until the replay burst lands, then reveal at the bottom // loader until the replayed transcript arrives (smooth swap, not a blank pane)
         clearChildState() // a new parent session starts with no expanded/subscribed children
+        // If this session's frames are already in memory, paint them in THIS tick — no loader, no
+        // settle, no de-duplicator. SwiftUI commits once and ChatView builds a scroll view that is
+        // already full and already bottom-anchored, which is the entire perceived win. The daemon's
+        // replay still arrives and is reconciled against what we painted.
+        if paintFromCache(id) {
+            sessionLoading = false
+        } else {
+            sessionLoading = true
+            beginSettling() // hide the transcript until the replay burst lands, then reveal at the bottom
+            dedupReplay = true
+            Task { try? await Task.sleep(nanoseconds: 5_000_000_000); dedupReplay = false }
+        }
         UserDefaults.standard.set(id, forKey: lastSessionKey) // remember for auto-reopen next launch
         if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.sessionSubscribe, payload: SessionRef(sessionID: id)) {
             try? await client.send(env)
@@ -1714,13 +1738,56 @@ public final class Model: ObservableObject {
     /// about insertion points.
     private var pageAnchor: Int? = nil
 
+    /// How many DAEMON FRAMES the loaded transcript represents.
+    ///
+    /// `transcript.page` asks for "the history before what I already have", and the daemon serves it
+    /// by indexing its own event ring by absolute offset (`historyPage`, daemon/hub/session.go). The
+    /// client used to send `messages.count` — RENDERED ROWS — which has never been the same unit:
+    /// hundreds of `output.delta` frames fold into one row, tool events merge in place by id, UI
+    /// components merge by id, and status frames render nothing at all. On any real conversation the
+    /// two diverge wildly and the page is cut in the wrong place.
+    private var daemonEventsRendered = 0
+
+    /// Frames the daemon SYNTHESIZES onto a replay or page rather than storing in its ring. They must
+    /// not advance the paging cursor, or every page would be short by the number of trailers.
+    static let nonRingFrameTypes: Set<String> = [
+        MessageType.turnState, MessageType.transcriptPageBegin, MessageType.transcriptPageEnd,
+    ]
+
+    // MARK: on-device transcript cache (see ModelTranscriptCache.swift)
+
+    /// Cached frames already read off disk, keyed by session — the thing that makes an open instant.
+    var transcriptHydrated: [String: [Data]] = [:]
+    /// The frames currently represented on screen for the open session.
+    var transcriptPainted: [Data] = []
+    /// True while the daemon's replay is being collected for comparison against what we painted.
+    var transcriptReconciling = false
+    var transcriptReplayBuffer: [Data] = []
+    var transcriptReconcileTask: Task<Void, Never>?
+    var transcriptReconcileCap: Task<Void, Never>?
+    /// Frames waiting to be written, so streaming doesn't put file I/O on the main actor.
+    var transcriptWriteBuffer: [String: [Data]] = [:]
+    var transcriptWriteTask: Task<Void, Never>?
+    /// Until this moment, a frame byte-identical to one on screen is treated as a provider re-stream.
+    var transcriptAnchorGuardUntil: Date = .distantPast
+
+    func resetDaemonEventCount() { daemonEventsRendered = 0 }
+
+    /// Seals streaming rows after a cache paint — a frame captured mid-stream would otherwise leave a
+    /// caret blinking on text that finished long ago.
+    func finalizeStreamingForCache() {
+        if let last = messages.last, last.role == .assistant, last.streaming {
+            messages[messages.count - 1].streaming = false
+        }
+    }
+
     /// Fetches the history immediately before what's loaded. The daemon streams it bracketed by
     /// page.begin / page.end.
     public func loadEarlierHistory() async {
         guard let client, let sid = sessionID, !loadingEarlier, hasEarlierHistory else { return }
         loadingEarlier = true
         if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.transcriptPage,
-                                          payload: TranscriptPage(sessionID: sid, loaded: messages.count)) {
+                                          payload: TranscriptPage(sessionID: sid, loaded: daemonEventsRendered)) {
             try? await client.send(env)
         } else {
             loadingEarlier = false
@@ -2805,7 +2872,7 @@ public final class Model: ObservableObject {
 
     /// Resets all inline child-transcript state — called on parent-session switch so a new session
     /// starts clean (no stale expanded cards, buffers, or lingering subscriptions).
-    private func clearChildState() {
+    func clearChildState() {
         childMessages.removeAll()
         childActivity.removeAll()
         expandedChildIDs.removeAll()
@@ -2883,305 +2950,12 @@ public final class Model: ObservableObject {
                     }
                     continue
                 }
-                switch env.type {
-                case MessageType.ok:
-                    // Route the OK frame to exactly one typed decode by its unique payload
-                    // key — no extra parse (payloadKeys reads the already-parsed envelope).
-                    let keys = env.payloadKeys
-                    if keys.contains("items"), let dl = try? env.payload(as: DiscoverList.self), !dl.items.isEmpty {
-                        discovered = dl.items
-                    } else if keys.contains("projects"), let pl = try? env.payload(as: ProjectList.self) {
-                        projects = pl.projects
-                    } else if keys.contains("sessions"), let sl = try? env.payload(as: SessionList.self) {
-                        sessions = sl.sessions
-                    } else if keys.contains("connected"), let st = try? env.payload(as: IntegrationStatus.self) {
-                        applyIntegrationStatus(st)
-                    } else if keys.contains("issues"), let il = try? env.payload(as: IssueList.self) {
-                        issues = il.issues
-                    } else if keys.contains("url"), keys.contains("provider"), let oa = try? env.payload(as: IntegrationOAuth.self), let u = oa.url, let url = URL(string: u) {
-                        oauthURL = url
-                    } else if keys.contains("diff"), let wd = try? env.payload(as: WorktreeDiff.self), wd.diff != nil {
-                        lastDiff = wd.diff
-                    } else if keys.contains("files"), let wc = try? env.payload(as: WorktreeConflicts.self), wc.files != nil {
-                        conflicts = wc.files ?? []
-                    } else if keys.contains("pushed"), let pr = try? env.payload(as: WorktreePRResult.self) {
-                        status = pr.url.map { "PR: \($0)" } ?? "Pushed \(pr.branch)"
-                    } else if keys.contains("id"), let s = try? env.payload(as: Session.self) {
-                        sessionID = s.id
-                        currentSession = s
-                        refreshLiveActivity()
-                        Task { await loadSessions() } // reflect the new session in the sidebar
-                    }
-                case MessageType.error:
-                    // An uncorrelated error (a fire-and-forget send the daemon rejected, e.g. a
-                    // session that couldn't start) — surface it instead of silently doing nothing.
-                    if let e = try? env.payload(as: [String: String].self), let m = e["message"] {
-                        let low = m.lowercased()
-                        // Benign restart artifact: a fire-and-forget subscribe/attach to a session the
-                        // daemon dropped after a restart. It's now surfaced as a "stopped" session with
-                        // a Restart action, so don't raise a scary alert for it.
-                        if low.contains("no such session") || low.contains("no session") || low.contains("cannot attach") {
-                            break
-                        }
-                        status = "Error"
-                        statusDetail = m
-                        actionError = m
-                        busy = false
-                    }
-                case MessageType.sessionMessage:
-                    if let m = try? env.payload(as: SessionMessage.self), m.sessionID == sessionID {
-                        noteActivity()
-                        let role: ChatMessage.Role = m.role == "user" ? .user : (m.role == "tool" ? .tool : .assistant)
-                        let shown = Self.stripUIGuide(m.text) // hide the injected iron:ui guide from turn 1
-                        let trimmed = shown.trimmingCharacters(in: .whitespacesAndNewlines)
-                        // Skip the daemon's echo of a user turn we already show. We append every SENT
-                        // prompt locally for instant feedback, and opencode then echoes the same user
-                        // message back (sometimes more than once, e.g. a slash-command expansion) —
-                        // arriving AFTER the assistant text + tool cards, so a `messages.last` check
-                        // missed it and the prompt duplicated. Match against ANY user message already
-                        // on screen (live path only; replayed history is handled by dedupReplay below).
-                        if role == .user, !trimmed.isEmpty, !dedupReplay,
-                           messages.contains(where: { $0.role == .user && $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed }) {
-                            break
-                        }
-                        // Just after a live re-attach, the provider replays history; skip messages
-                        // that duplicate ones already on screen so the transcript doesn't double.
-                        if dedupReplay, messages.contains(where: { $0.role == role && $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed }) {
-                            break
-                        }
-                        // A full-text assistant message that arrives while an assistant message is still
-                        // streaming is the daemon's authoritative end-of-turn RESYNC (opencode's SSE
-                        // dropped mid-turn, so it re-sends the completed text) — REPLACE the partial
-                        // streamed message with it rather than appending a duplicate.
-                        if role == .assistant, let last = messages.last, last.role == .assistant, last.streaming {
-                            streamBuffer = ""; cancelFlush() // drop the partial; the resync text is authoritative
-                            messages[messages.count - 1].text = shown
-                            messages[messages.count - 1].streaming = false
-                            break
-                        }
-                        finalizeStreaming()
-                        // Attribute a user message that came from ANOTHER device. Our own echoes are
-                        // deduped above, so anything reaching here with an author is someone else's.
-                        let author = (role == .user && m.author != identity) ? m.author : nil
-                        messages.append(ChatMessage(role: role, text: shown, author: author))
-                    } else if let m = try? env.payload(as: SessionMessage.self), childMessages[m.sessionID] != nil {
-                        // A sub-agent's message — route into its own buffer, never the main transcript.
-                        // Tool calls arrive as role=="tool" with Text=the tool name; keep them.
-                        noteActivity() // the active session's sub-agent is alive → parent isn't dead
-                        let role: ChatMessage.Role = m.role == "user" ? .user : (m.role == "tool" ? .tool : .assistant)
-                        finalizeChildStreaming(m.sessionID)
-                        childMessages[m.sessionID, default: []].append(ChatMessage(role: role, text: Self.stripUIGuide(m.text)))
-                    }
-                case MessageType.thinking:
-                    if let t = try? env.payload(as: Thinking.self), t.sessionID == sessionID {
-                        appendThinkingDelta(t.text)
-                        busy = true
-                        noteActivity() // reset AFTER busy=true so a mid-turn stall is still caught
-                    }
-                case MessageType.outputDelta:
-                    if let d = try? env.payload(as: OutputDelta.self), d.sessionID == sessionID {
-                        noteActivity()
-                        appendAssistantDelta(d.text)
-                    } else if let d = try? env.payload(as: OutputDelta.self), childMessages[d.sessionID] != nil {
-                        noteActivity() // sub-agent output = the parent is alive
-                        appendChildDelta(d.sessionID, d.text)
-                    }
-                case MessageType.sessionStatus:
-                    if let ss = try? env.payload(as: SessionStatus.self), ss.sessionID == sessionID {
-                        // Any status for the active session clears its background-error badge.
-                        sessionErrors[ss.sessionID] = nil
-                        noteActivity() // re-arms while running; no-ops once busy clears on idle/done below
-                        status = ss.status
-                        activity = ss.detail
-                        switch ss.status {
-                        case SessionStatusValue.idle, SessionStatusValue.done:
-                            pendingApproval = nil; busy = false; activity = nil; finalizeStreaming()
-                        case SessionStatusValue.awaitingApproval:
-                            busy = false
-                        case SessionStatusValue.error, "errored":
-                            // An errored session isn't "working": stop the spinner, keep the reason
-                            // (statusDetail) AND put it in the transcript so it's actually readable —
-                            // it was previously only flashed as transient `activity` next to the dots.
-                            busy = false; pendingApproval = nil; activity = nil; finalizeStreaming()
-                            let reason = (ss.detail?.isEmpty == false) ? ss.detail! : "The agent reported an error."
-                            statusDetail = reason
-                            if messages.last?.text != "⚠️ \(reason)" {
-                                messages.append(ChatMessage(role: .system, text: "⚠️ \(reason)"))
-                            }
-                        default:
-                            busy = true
-                            // NOTE: do NOT clear pendingApproval here — with parallel tool
-                            // calls a sibling tool can be "running" while another awaits
-                            // approval. Cross-client clear happens on idle / when a new
-                            // approval replaces it.
-                        }
-                        refreshLiveActivity()
-                    } else if let ss = try? env.payload(as: SessionStatus.self), childMessages[ss.sessionID] != nil {
-                        // A sub-agent's status — drives its inline card's activity chip. It ALSO keeps the
-                        // parent watchdog alive: a long sub-agent "Reading" emits status, not deltas, so
-                        // without this the parent could falsely time out while the sub-agent works.
-                        noteActivity()
-                        switch ss.status {
-                        case SessionStatusValue.idle, SessionStatusValue.done, SessionStatusValue.error, "errored":
-                            childActivity[ss.sessionID] = nil
-                            finalizeChildStreaming(ss.sessionID)
-                        default:
-                            childActivity[ss.sessionID] = ss.detail
-                        }
-                    } else if let ss = try? env.payload(as: SessionStatus.self) {
-                        // A BACKGROUND session (not active, not a child): record/clear an error so a
-                        // session whose sends stopped landing surfaces in the sidebar instead of failing
-                        // invisibly while you're looking at another session. The daemon's no-response
-                        // watchdog now emits this for ANY session, so background stalls are catchable.
-                        switch ss.status {
-                        case SessionStatusValue.error, "errored":
-                            sessionErrors[ss.sessionID] = (ss.detail?.isEmpty == false) ? ss.detail! : "The agent reported an error."
-                        case SessionStatusValue.running, SessionStatusValue.idle, SessionStatusValue.done:
-                            sessionErrors[ss.sessionID] = nil
-                        default:
-                            break
-                        }
-                    }
-                case MessageType.approvalRequest:
-                    if let ar = try? env.payload(as: ApprovalRequest.self), ar.sessionID == sessionID {
-                        stopStallLoop()
-                        pendingApproval = ar
-                        refreshLiveActivity()
-                    }
-                case MessageType.approvalResolved:
-                    // Another device answered this exact approval — clear our card and
-                    // mirror the decision so both transcripts match.
-                    if let r = try? env.payload(as: ApprovalResolved.self),
-                       let ap = pendingApproval, ap.approvalID == r.approvalID {
-                        let verb = r.decision == Decision.deny ? "✗ Denied"
-                            : (r.decision == Decision.always ? "✓ Always allow" : "✓ Allowed")
-                        let cmd = (ap.detail?.isEmpty == false) ? " · \(ap.detail!)" : ""
-                        appendTool("\(verb) \(ap.tool)\(cmd)")
-                        pendingApproval = nil
-                        refreshLiveActivity()
-                    }
-                case MessageType.transcriptPageBegin:
-                    if let b = try? env.payload(as: TranscriptPageBegin.self), b.sessionID == sessionID {
-                        pageAnchor = messages.count
-                        dedupReplay = true // the page can overlap what's on screen
-                    }
-                case MessageType.transcriptPageEnd:
-                    if let e = try? env.payload(as: TranscriptPageEnd.self), e.sessionID == sessionID {
-                        // Lift the page above the messages that were already there. It arrived in
-                        // chronological order and appended, so one rotation puts it in place.
-                        if let anchor = pageAnchor, messages.count > anchor {
-                            let page = Array(messages[anchor...])
-                            messages.removeSubrange(anchor...)
-                            messages.insert(contentsOf: page, at: 0)
-                        }
-                        pageAnchor = nil
-                        hasEarlierHistory = e.hasMore
-                        loadingEarlier = false
-                        dedupReplay = false
-                    }
-                case MessageType.turnState:
-                    if let ts = try? env.payload(as: TurnState.self) { applyTurnState(ts) }
-                case MessageType.sessionList:
-                    // PROACTIVE broadcast the daemon sends after any session create/delete/restore/
-                    // model change. Without handling it here the sidebar only refreshed on an explicit
-                    // reload — so a 2nd session (or a restored set) never appeared until a manual
-                    // refresh. Update the list live.
-                    if let sl = try? env.payload(as: SessionList.self) {
-                        sessions = sl.sessions
-                        // The daemon is authoritative on mode (another device may have switched it).
-                        if let cur = sl.sessions.first(where: { $0.id == sessionID }) {
-                            sessionMode = cur.mode ?? SessionMode.code
-                        }
-                    }
-                case MessageType.issueList: // broadcast from the 60s tracker poll
-                    if let il = try? env.payload(as: IssueList.self) {
-                        issues = il.issues
-                    }
-                case MessageType.integrationStatus: // broadcast after (re)connect/disconnect
-                    if let st = try? env.payload(as: IntegrationStatus.self) { applyIntegrationStatus(st) }
-                case MessageType.telemetryStatus: // broadcast after a toggle on any device
-                    if let t = try? env.payload(as: Telemetry.self) { telemetryEnabled = t.enabled }
-                case MessageType.sessionProgress: // live create step → prescriptive loading checklist
-                    if startingSession, let p = try? env.payload(as: SessionProgress.self) {
-                        applyCreateStep(p)
-                    }
-                case MessageType.logLine: // streamed daemon log line → Developer log panel
-                    if let l = try? env.payload(as: LogLine.self) {
-                        daemonLog.append(l.line)
-                        if daemonLog.count > 2000 { daemonLog.removeFirst(daemonLog.count - 2000) }
-                    }
-                case MessageType.activityEvent: // new cross-session activity item → prepend to the feed
-                    if let e = try? env.payload(as: ActivityEvent.self) {
-                        activityFeed.removeAll { $0.id == e.id }
-                        activityFeed.insert(e, at: 0)
-                        if activityFeed.count > 500 { activityFeed.removeLast(activityFeed.count - 500) }
-                    }
-                case MessageType.lspDiagnostics: // language server published diagnostics for a file
-                    if let d = try? env.payload(as: LSPDiagnostics.self) {
-                        diagnostics[d.path] = d.diagnostics
-                    }
-                case MessageType.sessionUsage: // per-turn token/cost usage; accumulate onto the session
-                    if let u = try? env.payload(as: SessionUsage.self), u.sessionID == sessionID {
-                        currentSession?.inputTokens = (currentSession?.inputTokens ?? 0) + u.inputTokens
-                        currentSession?.outputTokens = (currentSession?.outputTokens ?? 0) + u.outputTokens
-                        currentSession?.costUSD = (currentSession?.costUSD ?? 0) + u.costUSD
-                    }
-                case MessageType.sessionTodos: // the agent's live to-do list (replaces the prior list)
-                    if let t = try? env.payload(as: SessionTodos.self), t.sessionID == sessionID {
-                        todos = t.todos
-                    }
-                case MessageType.uiComponent: // a normalized generative-UI component (projected or fenced)
-                    if let c = try? env.payload(as: UIComponent.self), c.sessionID == sessionID {
-                        applyUIComponent(c)
-                    }
-                case MessageType.sessionSubAgent: // a sub-agent started/finished under the active session
-                    if let sa = try? env.payload(as: SubAgent.self) {
-                        applySubAgent(sa)
-                        noteActivity() // a sub-agent spinning up means the parent is alive
-                    }
-                case MessageType.sessionTool: // a rich tool call (command + output) for the session or a sub-agent
-                    if let st = try? env.payload(as: SessionTool.self) {
-                        applySessionTool(st)
-                    }
-                case MessageType.sessionHeartbeat: // supervision "on-track" state for a session
-                    if let hb = try? env.payload(as: SessionHeartbeat.self) {
-                        heartbeats[hb.sessionID] = hb
-                        // The daemon disarms autonomy when a session exhausts its budget; mirror that
-                        // so the toggle reflects reality.
-                        if hb.sessionID == sessionID, hb.state == "exhausted" { autonomous = false }
-                    }
-                case MessageType.handoffList: // the handoff index changed (agent saved progress)
-                    if let hl = try? env.payload(as: HandoffList.self) {
-                        handoffs = hl.handoffs
-                    }
-                case MessageType.loopList: // a loop config changed or a run started
-                    if let ll = try? env.payload(as: LoopList.self) { loops = ll.loops; loopRuns = ll.runs }
-                case MessageType.providerList: // pushed after a custom agent is added/removed
-                    if let pl = try? env.payload(as: ProviderList.self) { applyProviders(pl.providers); providersLoaded = true }
-                case MessageType.participants: // someone joined, left, or had their role changed
-                    if let pl = try? env.payload(as: ParticipantList.self) {
-                        participants = pl.participants
-                        sharingEnabled = pl.enabled
-                    }
-                case MessageType.mcpChanged: // a server was added/removed/toggled, or a probe finished
-                    if let list = try? env.payload(as: MCPList.self) { mcpServers = list.servers }
-                case MessageType.fanoutSummary: // every variant in a fan-out group finished
-                    if let sum = try? env.payload(as: FanoutSummary.self) { fanoutSummary = sum }
-                case MessageType.approvalRulesChanged: // an Always answer or a revoke, on ANY device
-                    if let list = try? env.payload(as: ApprovalRulesList.self) { approvalRules = list.rules }
-                case MessageType.runOutput: // streamed line from a test/build run
-                    if let o = try? env.payload(as: RunOutput.self), o.sessionID == sessionID {
-                        testOutput.append(o.line)
-                        if testOutput.count > 2000 { testOutput.removeFirst(testOutput.count - 2000) }
-                    }
-                case MessageType.runResult: // test/build run finished
-                    if let r = try? env.payload(as: RunResult.self), r.sessionID == sessionID {
-                        testResult = r
-                        testRunning = false
-                    }
-                default:
-                    break
-                }
+                // While reconciling, transcript frames are collected rather than applied — see
+                // finishReconcile: comparing the whole replay against what we painted is exact,
+                // whereas applying frame by frame would need a guess per frame.
+                if bufferForReconcile(data, env: env) { continue }
+                applyEvent(env, raw: data)
+                captureFrame(data, env: env)
             } catch {
                 connected = false
                 status = "Disconnected"
@@ -3194,6 +2968,325 @@ public final class Model: ObservableObject {
         // user disconnected).
         failPendingRequests(NSError(domain: "Oculus", code: -3, userInfo: [NSLocalizedDescriptionKey: "disconnected"]))
         scheduleReconnect()
+    }
+
+    /// Applies ONE daemon frame to the model.
+    ///
+    /// Extracted from receiveLoop so a cached frame can replay through exactly the same code as a
+    /// live one. A separate "restore from cache" rendering path would drift from this one the moment
+    /// either changed, and the divergence would surface as a transcript that looks subtly different
+    /// depending on whether you happened to have opened the session before.
+    @MainActor func applyEvent(_ env: Envelope, raw: Data) {
+        if !Self.nonRingFrameTypes.contains(env.type),
+           let fs = try? env.payload(as: FrameSessionID.self), let fsid = fs.sessionID, fsid == sessionID {
+            daemonEventsRendered += 1
+        }
+        switch env.type {
+        case MessageType.ok:
+            // Route the OK frame to exactly one typed decode by its unique payload
+            // key — no extra parse (payloadKeys reads the already-parsed envelope).
+            let keys = env.payloadKeys
+            if keys.contains("items"), let dl = try? env.payload(as: DiscoverList.self), !dl.items.isEmpty {
+                discovered = dl.items
+            } else if keys.contains("projects"), let pl = try? env.payload(as: ProjectList.self) {
+                projects = pl.projects
+            } else if keys.contains("sessions"), let sl = try? env.payload(as: SessionList.self) {
+                sessions = sl.sessions
+            } else if keys.contains("connected"), let st = try? env.payload(as: IntegrationStatus.self) {
+                applyIntegrationStatus(st)
+            } else if keys.contains("issues"), let il = try? env.payload(as: IssueList.self) {
+                issues = il.issues
+            } else if keys.contains("url"), keys.contains("provider"), let oa = try? env.payload(as: IntegrationOAuth.self), let u = oa.url, let url = URL(string: u) {
+                oauthURL = url
+            } else if keys.contains("diff"), let wd = try? env.payload(as: WorktreeDiff.self), wd.diff != nil {
+                lastDiff = wd.diff
+            } else if keys.contains("files"), let wc = try? env.payload(as: WorktreeConflicts.self), wc.files != nil {
+                conflicts = wc.files ?? []
+            } else if keys.contains("pushed"), let pr = try? env.payload(as: WorktreePRResult.self) {
+                status = pr.url.map { "PR: \($0)" } ?? "Pushed \(pr.branch)"
+            } else if keys.contains("id"), let s = try? env.payload(as: Session.self) {
+                sessionID = s.id
+                currentSession = s
+                refreshLiveActivity()
+                Task { await loadSessions() } // reflect the new session in the sidebar
+            }
+        case MessageType.error:
+            // An uncorrelated error (a fire-and-forget send the daemon rejected, e.g. a
+            // session that couldn't start) — surface it instead of silently doing nothing.
+            if let e = try? env.payload(as: [String: String].self), let m = e["message"] {
+                let low = m.lowercased()
+                // Benign restart artifact: a fire-and-forget subscribe/attach to a session the
+                // daemon dropped after a restart. It's now surfaced as a "stopped" session with
+                // a Restart action, so don't raise a scary alert for it.
+                if low.contains("no such session") || low.contains("no session") || low.contains("cannot attach") {
+                    break
+                }
+                status = "Error"
+                statusDetail = m
+                actionError = m
+                busy = false
+            }
+        case MessageType.sessionMessage:
+            if let m = try? env.payload(as: SessionMessage.self), m.sessionID == sessionID {
+                noteActivity()
+                let role: ChatMessage.Role = m.role == "user" ? .user : (m.role == "tool" ? .tool : .assistant)
+                let shown = Self.stripUIGuide(m.text) // hide the injected iron:ui guide from turn 1
+                let trimmed = shown.trimmingCharacters(in: .whitespacesAndNewlines)
+                // Skip the daemon's echo of a user turn we already show. We append every SENT
+                // prompt locally for instant feedback, and opencode then echoes the same user
+                // message back (sometimes more than once, e.g. a slash-command expansion) —
+                // arriving AFTER the assistant text + tool cards, so a `messages.last` check
+                // missed it and the prompt duplicated. Match against ANY user message already
+                // on screen (live path only; replayed history is handled by dedupReplay below).
+                if role == .user, !trimmed.isEmpty, !dedupReplay,
+                   messages.contains(where: { $0.role == .user && $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed }) {
+                    break
+                }
+                // Just after a live re-attach, the provider replays history; skip messages
+                // that duplicate ones already on screen so the transcript doesn't double.
+                // Scope the scan: during a page load, only rows at or after the page anchor can be
+                // duplicates of what the page carries. Scanning the whole transcript grows without
+                // bound and can silently collapse a legitimately repeated line from earlier on.
+                if dedupReplay {
+                    let window = pageAnchor.map { messages[min($0, messages.count)...] } ?? messages[messages.startIndex...]
+                    if window.contains(where: { $0.role == role && $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed }) {
+                        break
+                    }
+                }
+                // A full-text assistant message that arrives while an assistant message is still
+                // streaming is the daemon's authoritative end-of-turn RESYNC (opencode's SSE
+                // dropped mid-turn, so it re-sends the completed text) — REPLACE the partial
+                // streamed message with it rather than appending a duplicate.
+                if role == .assistant, let last = messages.last, last.role == .assistant, last.streaming {
+                    streamBuffer = ""; cancelFlush() // drop the partial; the resync text is authoritative
+                    messages[messages.count - 1].text = shown
+                    messages[messages.count - 1].streaming = false
+                    break
+                }
+                finalizeStreaming()
+                // Attribute a user message that came from ANOTHER device. Our own echoes are
+                // deduped above, so anything reaching here with an author is someone else's.
+                let author = (role == .user && m.author != identity) ? m.author : nil
+                messages.append(ChatMessage(role: role, text: shown, author: author))
+            } else if let m = try? env.payload(as: SessionMessage.self), childMessages[m.sessionID] != nil {
+                // A sub-agent's message — route into its own buffer, never the main transcript.
+                // Tool calls arrive as role=="tool" with Text=the tool name; keep them.
+                noteActivity() // the active session's sub-agent is alive → parent isn't dead
+                let role: ChatMessage.Role = m.role == "user" ? .user : (m.role == "tool" ? .tool : .assistant)
+                finalizeChildStreaming(m.sessionID)
+                childMessages[m.sessionID, default: []].append(ChatMessage(role: role, text: Self.stripUIGuide(m.text)))
+            }
+        case MessageType.thinking:
+            if let t = try? env.payload(as: Thinking.self), t.sessionID == sessionID {
+                appendThinkingDelta(t.text)
+                busy = true
+                noteActivity() // reset AFTER busy=true so a mid-turn stall is still caught
+            }
+        case MessageType.outputDelta:
+            if let d = try? env.payload(as: OutputDelta.self), d.sessionID == sessionID {
+                noteActivity()
+                appendAssistantDelta(d.text)
+            } else if let d = try? env.payload(as: OutputDelta.self), childMessages[d.sessionID] != nil {
+                noteActivity() // sub-agent output = the parent is alive
+                appendChildDelta(d.sessionID, d.text)
+            }
+        case MessageType.sessionStatus:
+            if let ss = try? env.payload(as: SessionStatus.self), ss.sessionID == sessionID {
+                // Any status for the active session clears its background-error badge.
+                sessionErrors[ss.sessionID] = nil
+                noteActivity() // re-arms while running; no-ops once busy clears on idle/done below
+                status = ss.status
+                activity = ss.detail
+                switch ss.status {
+                case SessionStatusValue.idle, SessionStatusValue.done:
+                    pendingApproval = nil; busy = false; activity = nil; finalizeStreaming()
+                case SessionStatusValue.awaitingApproval:
+                    busy = false
+                case SessionStatusValue.error, "errored":
+                    // An errored session isn't "working": stop the spinner, keep the reason
+                    // (statusDetail) AND put it in the transcript so it's actually readable —
+                    // it was previously only flashed as transient `activity` next to the dots.
+                    busy = false; pendingApproval = nil; activity = nil; finalizeStreaming()
+                    let reason = (ss.detail?.isEmpty == false) ? ss.detail! : "The agent reported an error."
+                    statusDetail = reason
+                    if messages.last?.text != "⚠️ \(reason)" {
+                        messages.append(ChatMessage(role: .system, text: "⚠️ \(reason)"))
+                    }
+                default:
+                    busy = true
+                    // NOTE: do NOT clear pendingApproval here — with parallel tool
+                    // calls a sibling tool can be "running" while another awaits
+                    // approval. Cross-client clear happens on idle / when a new
+                    // approval replaces it.
+                }
+                refreshLiveActivity()
+            } else if let ss = try? env.payload(as: SessionStatus.self), childMessages[ss.sessionID] != nil {
+                // A sub-agent's status — drives its inline card's activity chip. It ALSO keeps the
+                // parent watchdog alive: a long sub-agent "Reading" emits status, not deltas, so
+                // without this the parent could falsely time out while the sub-agent works.
+                noteActivity()
+                switch ss.status {
+                case SessionStatusValue.idle, SessionStatusValue.done, SessionStatusValue.error, "errored":
+                    childActivity[ss.sessionID] = nil
+                    finalizeChildStreaming(ss.sessionID)
+                default:
+                    childActivity[ss.sessionID] = ss.detail
+                }
+            } else if let ss = try? env.payload(as: SessionStatus.self) {
+                // A BACKGROUND session (not active, not a child): record/clear an error so a
+                // session whose sends stopped landing surfaces in the sidebar instead of failing
+                // invisibly while you're looking at another session. The daemon's no-response
+                // watchdog now emits this for ANY session, so background stalls are catchable.
+                switch ss.status {
+                case SessionStatusValue.error, "errored":
+                    sessionErrors[ss.sessionID] = (ss.detail?.isEmpty == false) ? ss.detail! : "The agent reported an error."
+                case SessionStatusValue.running, SessionStatusValue.idle, SessionStatusValue.done:
+                    sessionErrors[ss.sessionID] = nil
+                default:
+                    break
+                }
+            }
+        case MessageType.approvalRequest:
+            if let ar = try? env.payload(as: ApprovalRequest.self), ar.sessionID == sessionID {
+                stopStallLoop()
+                pendingApproval = ar
+                refreshLiveActivity()
+            }
+        case MessageType.approvalResolved:
+            // Another device answered this exact approval — clear our card and
+            // mirror the decision so both transcripts match.
+            if let r = try? env.payload(as: ApprovalResolved.self),
+               let ap = pendingApproval, ap.approvalID == r.approvalID {
+                let verb = r.decision == Decision.deny ? "✗ Denied"
+                    : (r.decision == Decision.always ? "✓ Always allow" : "✓ Allowed")
+                let cmd = (ap.detail?.isEmpty == false) ? " · \(ap.detail!)" : ""
+                appendTool("\(verb) \(ap.tool)\(cmd)")
+                pendingApproval = nil
+                refreshLiveActivity()
+            }
+        case MessageType.transcriptPageBegin:
+            if let b = try? env.payload(as: TranscriptPageBegin.self), b.sessionID == sessionID {
+                pageAnchor = messages.count
+                dedupReplay = true // the page can overlap what's on screen
+            }
+        case MessageType.transcriptPageEnd:
+            if let e = try? env.payload(as: TranscriptPageEnd.self), e.sessionID == sessionID {
+                daemonEventsRendered += e.count // the page's frames are now part of what we hold
+                // Lift the page above the messages that were already there. It arrived in
+                // chronological order and appended, so one rotation puts it in place.
+                if let anchor = pageAnchor, messages.count > anchor {
+                    let page = Array(messages[anchor...])
+                    messages.removeSubrange(anchor...)
+                    messages.insert(contentsOf: page, at: 0)
+                }
+                pageAnchor = nil
+                hasEarlierHistory = e.hasMore
+                loadingEarlier = false
+                dedupReplay = false
+            }
+        case MessageType.turnState:
+            if let ts = try? env.payload(as: TurnState.self) { applyTurnState(ts) }
+        case MessageType.sessionList:
+            // PROACTIVE broadcast the daemon sends after any session create/delete/restore/
+            // model change. Without handling it here the sidebar only refreshed on an explicit
+            // reload — so a 2nd session (or a restored set) never appeared until a manual
+            // refresh. Update the list live.
+            if let sl = try? env.payload(as: SessionList.self) {
+                sessions = sl.sessions
+                // The daemon is authoritative on mode (another device may have switched it).
+                if let cur = sl.sessions.first(where: { $0.id == sessionID }) {
+                    sessionMode = cur.mode ?? SessionMode.code
+                }
+            }
+        case MessageType.issueList: // broadcast from the 60s tracker poll
+            if let il = try? env.payload(as: IssueList.self) {
+                issues = il.issues
+            }
+        case MessageType.integrationStatus: // broadcast after (re)connect/disconnect
+            if let st = try? env.payload(as: IntegrationStatus.self) { applyIntegrationStatus(st) }
+        case MessageType.telemetryStatus: // broadcast after a toggle on any device
+            if let t = try? env.payload(as: Telemetry.self) { telemetryEnabled = t.enabled }
+        case MessageType.sessionProgress: // live create step → prescriptive loading checklist
+            if startingSession, let p = try? env.payload(as: SessionProgress.self) {
+                applyCreateStep(p)
+            }
+        case MessageType.logLine: // streamed daemon log line → Developer log panel
+            if let l = try? env.payload(as: LogLine.self) {
+                daemonLog.append(l.line)
+                if daemonLog.count > 2000 { daemonLog.removeFirst(daemonLog.count - 2000) }
+            }
+        case MessageType.activityEvent: // new cross-session activity item → prepend to the feed
+            if let e = try? env.payload(as: ActivityEvent.self) {
+                activityFeed.removeAll { $0.id == e.id }
+                activityFeed.insert(e, at: 0)
+                if activityFeed.count > 500 { activityFeed.removeLast(activityFeed.count - 500) }
+            }
+        case MessageType.lspDiagnostics: // language server published diagnostics for a file
+            if let d = try? env.payload(as: LSPDiagnostics.self) {
+                diagnostics[d.path] = d.diagnostics
+            }
+        case MessageType.sessionUsage: // per-turn token/cost usage; accumulate onto the session
+            if let u = try? env.payload(as: SessionUsage.self), u.sessionID == sessionID {
+                currentSession?.inputTokens = (currentSession?.inputTokens ?? 0) + u.inputTokens
+                currentSession?.outputTokens = (currentSession?.outputTokens ?? 0) + u.outputTokens
+                currentSession?.costUSD = (currentSession?.costUSD ?? 0) + u.costUSD
+            }
+        case MessageType.sessionTodos: // the agent's live to-do list (replaces the prior list)
+            if let t = try? env.payload(as: SessionTodos.self), t.sessionID == sessionID {
+                todos = t.todos
+            }
+        case MessageType.uiComponent: // a normalized generative-UI component (projected or fenced)
+            if let c = try? env.payload(as: UIComponent.self), c.sessionID == sessionID {
+                applyUIComponent(c)
+            }
+        case MessageType.sessionSubAgent: // a sub-agent started/finished under the active session
+            if let sa = try? env.payload(as: SubAgent.self) {
+                applySubAgent(sa)
+                noteActivity() // a sub-agent spinning up means the parent is alive
+            }
+        case MessageType.sessionTool: // a rich tool call (command + output) for the session or a sub-agent
+            if let st = try? env.payload(as: SessionTool.self) {
+                applySessionTool(st)
+            }
+        case MessageType.sessionHeartbeat: // supervision "on-track" state for a session
+            if let hb = try? env.payload(as: SessionHeartbeat.self) {
+                heartbeats[hb.sessionID] = hb
+                // The daemon disarms autonomy when a session exhausts its budget; mirror that
+                // so the toggle reflects reality.
+                if hb.sessionID == sessionID, hb.state == "exhausted" { autonomous = false }
+            }
+        case MessageType.handoffList: // the handoff index changed (agent saved progress)
+            if let hl = try? env.payload(as: HandoffList.self) {
+                handoffs = hl.handoffs
+            }
+        case MessageType.loopList: // a loop config changed or a run started
+            if let ll = try? env.payload(as: LoopList.self) { loops = ll.loops; loopRuns = ll.runs }
+        case MessageType.providerList: // pushed after a custom agent is added/removed
+            if let pl = try? env.payload(as: ProviderList.self) { applyProviders(pl.providers); providersLoaded = true }
+        case MessageType.participants: // someone joined, left, or had their role changed
+            if let pl = try? env.payload(as: ParticipantList.self) {
+                participants = pl.participants
+                sharingEnabled = pl.enabled
+            }
+        case MessageType.mcpChanged: // a server was added/removed/toggled, or a probe finished
+            if let list = try? env.payload(as: MCPList.self) { mcpServers = list.servers }
+        case MessageType.fanoutSummary: // every variant in a fan-out group finished
+            if let sum = try? env.payload(as: FanoutSummary.self) { fanoutSummary = sum }
+        case MessageType.approvalRulesChanged: // an Always answer or a revoke, on ANY device
+            if let list = try? env.payload(as: ApprovalRulesList.self) { approvalRules = list.rules }
+        case MessageType.runOutput: // streamed line from a test/build run
+            if let o = try? env.payload(as: RunOutput.self), o.sessionID == sessionID {
+                testOutput.append(o.line)
+                if testOutput.count > 2000 { testOutput.removeFirst(testOutput.count - 2000) }
+            }
+        case MessageType.runResult: // test/build run finished
+            if let r = try? env.payload(as: RunResult.self), r.sessionID == sessionID {
+                testResult = r
+                testRunning = false
+            }
+        default:
+            break
+        }
     }
 
     // MARK: live activity
