@@ -138,24 +138,25 @@ public struct AllSessionsView: View {
             header
             Divider().overlay(palette.border)
             if !selection.isEmpty { bulkBar; Divider().overlay(palette.border) }
-            columnHeader
-            Divider().overlay(palette.border.opacity(0.6))
             if rows.isEmpty && terminalCandidates.isEmpty {
                 emptyState
             } else {
-                // Everything below the sticky header scrolls, including the terminal section — it is
-                // content, not chrome, and pinning it stole height from the list on short windows.
+                // Everything below the filters scrolls. The session column header belongs to the
+                // rows, not terminal-only results, or it creates an empty table band above terminals.
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         if !terminalCandidates.isEmpty {
                             terminalSection
                             Divider().overlay(palette.border)
                         }
-                        ForEach(rows) { s in
-                            row(s)
-                            Divider().overlay(palette.border.opacity(0.4))
+                        if !rows.isEmpty {
+                            columnHeader
+                            Divider().overlay(palette.border.opacity(0.6))
+                            ForEach(rows) { s in
+                                row(s)
+                                Divider().overlay(palette.border.opacity(0.4))
+                            }
                         }
-                        if rows.isEmpty { emptyState.frame(height: 160) }
                     }
                 }
                 .scrollIndicators(.automatic)
