@@ -3609,7 +3609,12 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			m.broadcastUserEcho(text, author)
 		}
 		log.Printf("session %s (%s): prompt received (%d chars) from %s", req.SessionID, m.sess.Provider(), len(text), authorOrLocal(author))
+		// Arm before dispatching the prompt. Some providers (notably opencode when a bash approval is
+		// raised immediately) can emit their first event before Prompt returns; arming afterwards races
+		// that event and can later surface a false "No response" while the session is awaiting approval.
+		m.armResponseWatchdog()
 		if err := promptSession(ctx, m.sess, text, req.Images); err != nil {
+			m.disarmResponseWatchdog()
 			log.Printf("session %s: prompt send FAILED: %v", req.SessionID, err)
 			if t := h.tel(); t != nil {
 				t.Record("session.prompt", m.sess.Provider(), 0, err)
@@ -3617,10 +3622,6 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, err.Error())
 			return
 		}
-		// Arm the no-response watchdog: opencode's async POST returns nil before delivery, so a
-		// wrong-directory send is accepted (2xx) yet produces ZERO events. If nothing comes back
-		// soon, surface it in ~20s instead of the user staring at a spinner for 30 minutes.
-		m.armResponseWatchdog()
 		h.sendOK(conn, env.ID, nil)
 
 	case protocol.TypeUIAction:
@@ -3657,11 +3658,12 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			_ = h.tr().Append(req.SessionID, transcript.Entry{Kind: "user", Text: text})
 			m.openTurn("")
 			log.Printf("session %s (%s): ui.action %q -> prompt (%d chars)", req.SessionID, m.sess.Provider(), req.ActionID, len(text))
+			m.armResponseWatchdog()
 			if err := promptSession(ctx, m.sess, text, nil); err != nil {
+				m.disarmResponseWatchdog()
 				h.sendErr(conn, env.ID, err.Error())
 				return
 			}
-			m.armResponseWatchdog()
 		}
 		h.sendOK(conn, env.ID, nil)
 

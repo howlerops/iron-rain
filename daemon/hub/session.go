@@ -71,6 +71,13 @@ func (m *managedSession) armResponseWatchdog() {
 	}()
 }
 
+func (m *managedSession) disarmResponseWatchdog() {
+	m.mu.Lock()
+	m.awaitingResponse = false
+	m.respWatchdogGen++
+	m.mu.Unlock()
+}
+
 // Fan-out and transcript limits. broadcast() runs on the single run() goroutine that
 // drains the provider event stream, so it must never block on a slow socket: each
 // subscriber owns a bounded outbound queue drained by its own writer goroutine, and a

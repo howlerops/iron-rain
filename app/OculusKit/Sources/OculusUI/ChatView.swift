@@ -10,6 +10,13 @@ import AppKit
 import UIKit
 #endif
 
+private struct TranscriptBottomOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = .infinity
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 // MARK: - Header status: two independent facts, never one string
 
 /// Whether we can reach the daemon at all. Orthogonal to what the agent is doing.
@@ -94,6 +101,8 @@ public struct ChatView: View {
     /// Explicit bottom re-pins only fire before this time (a short window after a session opens), so
     /// they can't fight defaultScrollAnchor during streaming and bounce the view.
     @State private var initialAnchorDeadline: Date = .distantPast
+    @State private var isTranscriptBottomVisible = true
+    @State private var transcriptViewportHeight: CGFloat = 0
     @State private var showWorktreePanel = false
     @State private var showHandoff = false
     @State private var showWorkspace = false
@@ -499,7 +508,14 @@ public struct ChatView: View {
                                 .equatable() // skip rebuilding rows whose message did not change
                         }
                     }
-                    Color.clear.frame(height: 1).id("bottom")
+                    GeometryReader { geo in
+                        Color.clear.preference(
+                            key: TranscriptBottomOffsetKey.self,
+                            value: geo.frame(in: .named("transcriptScroll")).maxY
+                        )
+                    }
+                    .frame(height: 1)
+                    .id("bottom")
                 }
                 .padding(16)
             }
@@ -519,6 +535,28 @@ public struct ChatView: View {
                     content.id(model.sessionID ?? "none")
                 }
             }
+            .coordinateSpace(name: "transcriptScroll")
+            .background {
+                GeometryReader { geo in
+                    Color.clear
+                        .onAppear { transcriptViewportHeight = geo.size.height }
+                        .onChange(of: geo.size.height) { transcriptViewportHeight = $0 }
+                }
+            }
+            .onPreferenceChange(TranscriptBottomOffsetKey.self) { bottomY in
+                guard bottomY.isFinite, transcriptViewportHeight > 0 else { return }
+                let visible = bottomY <= transcriptViewportHeight + 18
+                if visible != isTranscriptBottomVisible {
+                    isTranscriptBottomVisible = visible
+                }
+            }
+            .overlay(alignment: .bottom) {
+                if !isTranscriptBottomVisible {
+                    jumpToBottomButton(proxy)
+                        .padding(.bottom, 10)
+                        .transition(.scale(scale: 0.9).combined(with: .opacity))
+                }
+            }
             // Re-pin to the bottom, but ONLY during a short window right after a session opens — that's
             // when the async history burst arrives and defaultScrollAnchor (which anchored the empty
             // ScrollView) hasn't caught it. Firing on EVERY message-count change forever made the
@@ -526,11 +564,37 @@ public struct ChatView: View {
             // which oscillated the view up/down during heavy multi-agent runs. After the window, native
             // bottom-anchoring alone follows streaming smoothly.
             .onAppear { armInitialAnchor(); anchorBottom(proxy) }
-            .onChange(of: model.sessionID) { _ in visibleWindow = Self.initialWindow; armInitialAnchor(); anchorBottom(proxy) }
+            .onChange(of: model.sessionID) { _ in
+                visibleWindow = Self.initialWindow
+                isTranscriptBottomVisible = true
+                armInitialAnchor()
+                anchorBottom(proxy)
+            }
             .onChange(of: model.messages.count) { _ in
                 if Date() < initialAnchorDeadline { anchorBottom(proxy) }
             }
         }
+    }
+
+    private func jumpToBottomButton(_ proxy: ScrollViewProxy) -> some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.18)) {
+                proxy.scrollTo("bottom", anchor: .bottom)
+            }
+            isTranscriptBottomVisible = true
+        } label: {
+            Image(systemName: "chevron.down")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(palette.foreground)
+                .frame(width: 34, height: 34)
+                .background(.regularMaterial, in: Circle())
+                .overlay(Circle().strokeBorder(palette.border.opacity(0.8)))
+                .shadow(color: .black.opacity(scheme == .dark ? 0.28 : 0.14), radius: 10, y: 4)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Scroll to latest message")
+        .help("Scroll to latest message")
     }
 
     /// How many trailing messages the transcript LAYS OUT (see the window note above). Reset on
