@@ -68,4 +68,64 @@ final class MarkdownJamTests: XCTestCase {
                       "the second title must be broken from its prose, got: \(paragraphText)")
         XCTAssertFalse(paragraphText.contains("****"), "no empty bold may survive")
     }
+
+    func testFencedCodeIsParsedAsOwnBlockWithLanguage() {
+        let raw = """
+        Use `inline` in prose.
+
+        ```swift
+        let answer = 42
+        ```
+        """
+        let blocks = MarkdownParser.parse(raw)
+        XCTAssertEqual(blocks.count, 2)
+        guard case .paragraph(let paragraph) = blocks[0] else {
+            return XCTFail("expected inline code to stay in a paragraph")
+        }
+        XCTAssertTrue(paragraph.contains("`inline`"))
+        guard case .code(let language, let code) = blocks[1] else {
+            return XCTFail("expected fenced code to become a block")
+        }
+        XCTAssertEqual(language, "swift")
+        XCTAssertEqual(code, "let answer = 42")
+    }
+
+    func testStandaloneFormJSONRendersAsComponentSegment() {
+        let raw = """
+        What integration work should I implement?
+
+        {"component":"form","id":"integration-work-brief","props":{"title":"Integration work","submit_label":"Start","fields":[{"id":"repository","type":"select","label":"Repository","options":[{"value":"totango-agentic","label":"totango-agentic"}]},{"id":"goal","type":"textarea","label":"Goal or issue","placeholder":"Describe the feature"}]},"actions":[{"id":"start-work","kind":"answer","label":"Start","prompt":"Implement this integration work using the following details:"}],"fallback_text":"Provide the target repository, goal or issue, and acceptance criteria."}
+        """
+        let segments = AssistantContentParser.parse(raw, sessionID: "session-1", messageID: "message-1")
+        XCTAssertEqual(segments.count, 2)
+        guard case .markdown(let heading) = segments[0].kind else {
+            return XCTFail("expected leading prose to stay markdown")
+        }
+        XCTAssertTrue(heading.contains("What integration work"))
+        guard case .component(let component) = segments[1].kind else {
+            return XCTFail("expected raw form JSON to become a UI component")
+        }
+        XCTAssertEqual(component.sessionID, "session-1")
+        XCTAssertEqual(component.messageID, "message-1")
+        XCTAssertEqual(component.component, "form")
+        XCTAssertEqual(component.status, "ready")
+        XCTAssertEqual(component.actions?.first?.id, "start-work")
+        let form = component.props?.decoded(FormProps.self)
+        XCTAssertEqual(form?.submitLabel, "Start")
+        XCTAssertEqual(form?.fields.first?.options?.first?.value, "totango-agentic")
+    }
+
+    func testComponentLikeJSONInsideCodeFenceStaysMarkdown() {
+        let raw = """
+        ```json
+        {"component":"form","id":"example","props":{"title":"Example","fields":[]}}
+        ```
+        """
+        let segments = AssistantContentParser.parse(raw, sessionID: "session-1", messageID: "message-1")
+        XCTAssertEqual(segments.count, 1)
+        guard case .markdown(let text) = segments[0].kind else {
+            return XCTFail("fenced JSON examples must not be converted to UI")
+        }
+        XCTAssertTrue(text.contains("\"component\":\"form\""))
+    }
 }

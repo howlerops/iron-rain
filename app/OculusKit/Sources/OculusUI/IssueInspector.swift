@@ -613,7 +613,7 @@ struct IssueMarkdownView: View {
                     }
                 }
             }
-        case .code(let c):
+        case .code(_, let c):
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(c).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                     .padding(10).frame(maxWidth: .infinity, alignment: .leading)
@@ -686,7 +686,7 @@ enum MarkdownBlock {
     case paragraph(String)
     case bullet([String])
     case ordered([(num: Int, text: String)])
-    case code(String)
+    case code(language: String?, text: String)
     case image(alt: String, url: String)
     case rule
 }
@@ -706,9 +706,10 @@ enum MarkdownParser {
             let t = line.trimmingCharacters(in: .whitespaces)
             if t.hasPrefix("```") {
                 flush()
+                let language = fenceLanguage(t)
                 var code: [String] = []; i += 1
                 while i < lines.count, !lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("```") { code.append(lines[i]); i += 1 }
-                blocks.append(.code(code.joined(separator: "\n"))); i += 1; continue
+                blocks.append(.code(language: language, text: code.joined(separator: "\n"))); i += 1; continue
             }
             if t.isEmpty { flush(); i += 1; continue }
             if let h = heading(t) { flush(); blocks.append(.heading(level: h.0, text: h.1)); i += 1; continue }
@@ -784,6 +785,12 @@ enum MarkdownParser {
         let after = s.index(s.startIndex, offsetBy: n)
         guard s[after] == " " else { return nil }
         return (n, String(s[after...]).trimmingCharacters(in: .whitespaces))
+    }
+
+    private static func fenceLanguage(_ s: String) -> String? {
+        let raw = String(s.dropFirst(3)).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return nil }
+        return raw.components(separatedBy: .whitespaces).first
     }
 
     private static func bullet(_ s: String) -> String? {

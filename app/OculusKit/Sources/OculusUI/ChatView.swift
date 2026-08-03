@@ -499,6 +499,7 @@ public struct ChatView: View {
                             InlineSubAgentCard(model: model, subAgentID: sid, title: msg.text, palette: palette)
                         } else {
                             MessageRow(message: msg, palette: palette,
+                                       sessionID: model.sessionID,
                                        onRetry: msg.delivery == .failed ? { Task { await model.retryFailedMessage() } } : nil,
                                        onUIAction: { c, a, values in Task { await model.invokeUIAction(c, a, values: values) } },
                                        imageLoader: { path in
@@ -875,12 +876,13 @@ struct InlineImagesView: View {
 /// model, so a row whose message is unchanged behaves identically with either copy.
 struct MessageRow: View, Equatable {
     static func == (a: MessageRow, b: MessageRow) -> Bool {
-        a.message == b.message && a.palette == b.palette
+        a.message == b.message && a.palette == b.palette && a.sessionID == b.sessionID
             && (a.onRetry == nil) == (b.onRetry == nil)
     }
 
     let message: ChatMessage
     let palette: OculusPalette
+    var sessionID: String? = nil
     var onRetry: (() -> Void)? = nil
     /// Fired when the user activates a generative-UI component's action (choice/confirm). The
     /// transcript wires this to Model.invokeUIAction.
@@ -972,10 +974,19 @@ struct MessageRow: View, Equatable {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
             } else {
+                let segments = AssistantContentParser.parse(message.text, sessionID: sessionID ?? "", messageID: message.id.uuidString)
                 VStack(alignment: .leading, spacing: 8) {
-                    ChatMarkdownView(text: message.text, palette: palette)
-                        .lineSpacing(chatLineSpacing)
-                        .textSelection(.enabled)
+                    ForEach(segments) { segment in
+                        switch segment.kind {
+                        case .markdown(let text):
+                            ChatMarkdownView(text: text, palette: palette)
+                                .lineSpacing(chatLineSpacing)
+                                .textSelection(.enabled)
+                        case .component(let component):
+                            UIComponentView(component: component, palette: palette,
+                                            onAction: { action, values in onUIAction?(component, action, values) })
+                        }
+                    }
                     if let load = imageLoader {
                         let paths = InlineImagesView.imagePaths(in: message.text)
                         if !paths.isEmpty { InlineImagesView(paths: paths, palette: palette, load: load) }
@@ -1020,6 +1031,109 @@ struct MessageRow: View, Equatable {
                 UIComponentView(component: c, palette: palette, onAction: { a, values in onUIAction?(c, a, values) })
             }
         }
+    }
+}
+
+struct AssistantContentSegment: Identifiable {
+    enum Kind {
+        case markdown(String)
+        case component(UIComponent)
+    }
+
+    let id = UUID()
+    let kind: Kind
+}
+
+enum AssistantContentParser {
+    static func parse(_ text: String, sessionID: String, messageID: String) -> [AssistantContentSegment] {
+        var segments: [AssistantContentSegment] = []
+        var cursor = text.startIndex
+        var scan = text.startIndex
+
+        while let open = text[scan...].firstIndex(of: "{") {
+            guard let close = matchingBrace(in: text, from: open) else { break }
+            let candidate = String(text[open...close])
+            if isStandaloneObject(in: text, open: open, close: close),
+               !isInsideFence(text, at: open),
+               let component = decodeComponent(candidate, sessionID: sessionID, messageID: messageID) {
+                appendMarkdown(String(text[cursor..<open]), to: &segments)
+                segments.append(AssistantContentSegment(kind: .component(component)))
+                cursor = text.index(after: close)
+                scan = cursor
+            } else {
+                scan = text.index(after: open)
+            }
+        }
+
+        appendMarkdown(String(text[cursor...]), to: &segments)
+        return segments.isEmpty ? [AssistantContentSegment(kind: .markdown(text))] : segments
+    }
+
+    private static func appendMarkdown(_ text: String, to segments: inout [AssistantContentSegment]) {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        segments.append(AssistantContentSegment(kind: .markdown(text)))
+    }
+
+    private static func matchingBrace(in text: String, from open: String.Index) -> String.Index? {
+        var depth = 0
+        var inString = false
+        var escaped = false
+        var i = open
+        while i < text.endIndex {
+            let ch = text[i]
+            if inString {
+                if escaped {
+                    escaped = false
+                } else if ch == "\\" {
+                    escaped = true
+                } else if ch == "\"" {
+                    inString = false
+                }
+            } else if ch == "\"" {
+                inString = true
+            } else if ch == "{" {
+                depth += 1
+            } else if ch == "}" {
+                depth -= 1
+                if depth == 0 { return i }
+            }
+            i = text.index(after: i)
+        }
+        return nil
+    }
+
+    private static func isStandaloneObject(in text: String, open: String.Index, close: String.Index) -> Bool {
+        let lineStart = text[..<open].lastIndex(of: "\n").map { text.index(after: $0) } ?? text.startIndex
+        let afterClose = text.index(after: close)
+        let lineEnd = text[afterClose...].firstIndex(of: "\n") ?? text.endIndex
+        return String(text[lineStart..<open]).trimmingCharacters(in: .whitespaces).isEmpty
+            && String(text[afterClose..<lineEnd]).trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    private static func isInsideFence(_ text: String, at index: String.Index) -> Bool {
+        var inside = false
+        for line in text[..<index].components(separatedBy: "\n") {
+            if line.trimmingCharacters(in: .whitespaces).hasPrefix("```") {
+                inside.toggle()
+            }
+        }
+        return inside
+    }
+
+    private static func decodeComponent(_ json: String, sessionID: String, messageID: String) -> UIComponent? {
+        guard let data = json.data(using: .utf8),
+              var object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              object["component"] is String,
+              object["id"] is String,
+              object["props"] != nil else { return nil }
+        object["session_id"] = object["session_id"] ?? sessionID
+        object["message_id"] = object["message_id"] ?? messageID
+        object["schema_v"] = object["schema_v"] ?? 1
+        object["status"] = object["status"] ?? "ready"
+        object["fallback_text"] = object["fallback_text"] ?? ""
+        guard JSONSerialization.isValidJSONObject(object),
+              let normalized = try? JSONSerialization.data(withJSONObject: object) else { return nil }
+        return try? ProtocolCoding.decoder().decode(UIComponent.self, from: normalized)
     }
 }
 
@@ -1759,113 +1873,79 @@ struct ChatMarkdownView: View {
     private var design: Font.Design { chosen.responseDesign }
     private var factor: CGFloat { ChatFontScale(rawValue: fontScaleRaw)?.factor ?? 1.0 }
 
-    // ONE Text built from a single AttributedString — so a selection can span the whole message
-    // (across paragraphs, lists, and code), not just one line. `.textSelection` then copies any
-    // chunk. Formatting is carried by per-run fonts (headings, monospace code, bold/italic/links).
     var body: some View {
-        Text(attributed())
-            .foregroundStyle(palette.foreground)
-            // Assistant markdown is the bulk of what anyone actually READS here, and it was the one
-            // text path with no added leading — rendered at the system default while every other
-            // path added 4pt, so long answers came out as a dense slab. Matching the rest (and then
-            // some: ~1.5 line-height is the range long-form reading wants) is most of the
-            // "hard to read" complaint.
-            .lineSpacing(6 * factor)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .textSelection(.enabled)
-            .contextMenu {
-                Button { copyAll() } label: { Label("Copy message", systemImage: "doc.on.doc") }
-            }
-    }
-
-    // Parsing markdown is not cheap, and `body` re-runs whenever LazyVStack re-lays a row —
-    // which happens constantly while scrolling a long transcript. Without memoization, every
-    // scroll frame re-parses every visible message, producing the "chunky" scroll. Cache the
-    // built AttributedString by message text so an unchanged (finished) message is O(1) on
-    // re-layout; a streaming message still re-parses each flush (its text actually changed).
-    private static var cache: [String: AttributedString] = [:]
-    /// Insertion order, for eviction. A plain dictionary has no oldest entry.
-    private static var cacheOrder: [String] = []
-    private static let cacheLimit = 512
-
-    private func attributed() -> AttributedString {
-        // Font design + scale change the built runs, so they're part of the key.
-        let key = "\(fontDesignRaw)|\(fontScaleRaw)|\(text)"
-        if let hit = Self.cache[key] { return hit }
-        let out = build()
-        // Evict the OLDEST quarter rather than dumping the whole cache. The full dump was a cliff:
-        // one insert past the limit invalidated every visible row at once, so the next scroll frame
-        // re-parsed the entire viewport — the stutter that read as a freeze. Partial eviction keeps
-        // the rows you're actually looking at warm.
-        if Self.cache.count >= Self.cacheLimit {
-            let drop = Self.cacheLimit / 4
-            for k in Self.cacheOrder.prefix(drop) { Self.cache.removeValue(forKey: k) }
-            Self.cacheOrder.removeFirst(min(drop, Self.cacheOrder.count))
-        }
-        Self.cache[key] = out
-        Self.cacheOrder.append(key)
-        return out
-    }
-
-    private func build() -> AttributedString {
-        var out = AttributedString()
         let blocks = MarkdownParser.parse(text)
-        for (i, b) in blocks.enumerated() {
-            if i > 0 {
-                // Rhythm, not a uniform gap. A heading belongs to what FOLLOWS it, so it wants more
-                // air above than below; a run of list items wants less between them than between
-                // paragraphs. Giving every boundary the same blank line is most of why a long answer
-                // reads as an undifferentiated slab.
-                out += gap(before: b, after: blocks[i - 1])
-            }
-            switch b {
-            case .heading(let level, let t):
-                var a = inline(t); a.font = scaled(headingSize(level)).bold()
-                a.kern = level <= 2 ? -0.3 : -0.15 // large type sets loose by default; pull it in
-                out += a + AttributedString("\n")
-            case .paragraph(let t):
-                // Preserve single newlines within a paragraph as HARD line breaks. Agent/LLM output
-                // uses them for structure (a bold label on its own line above its text); markdown's
-                // default soft-break would jam them together ("**Label**text"). This also makes the
-                // finalized render match what streamed as plain text, killing the end-of-turn "jump".
-                let plines = t.components(separatedBy: "\n")
-                for (li, ln) in plines.enumerated() {
-                    if li > 0 { out += AttributedString("\n") }
-                    var a = inline(ln); a.font = bodyFont
-                    out += a
-                }
-                out += AttributedString("\n")
-            case .bullet(let items):
-                for it in items { var a = inline(it); a.font = bodyFont; out += AttributedString("•  ") + a + AttributedString("\n") }
-            case .ordered(let items):
-                // Use the SOURCE numbers — interleaved bullets split lists into blocks, and
-                // renumbering each block from 1 rendered every item as "1.".
-                for it in items { var a = inline(it.text); a.font = bodyFont; out += AttributedString("\(it.num).  ") + a + AttributedString("\n") }
-            case .code(let c):
-                // A tinted block, not bare monospace on the page. Without a ground of its own, code
-                // sat at the same visual level as prose and the eye had nothing to skip.
-                var a = AttributedString(c)
-                a.font = .system(size: 13.5 * factor, design: .monospaced)
-                a.backgroundColor = palette.muted.opacity(0.55)
-                a.foregroundColor = palette.foreground
-                out += a + AttributedString("\n")
-            case .image(let alt, let url):
-                var a = AttributedString(alt.isEmpty ? url : alt); a.font = bodyFont
-                if let u = URL(string: url) { a.link = u; a.foregroundColor = palette.primary }
-                out += a + AttributedString("\n")
-            case .rule:
-                // A quiet hairline. Ten heavy dashes read as content — as if the agent had typed them.
-                var a = AttributedString(String(repeating: "─", count: 24))
-                a.foregroundColor = palette.border
-                a.font = .system(size: 11 * factor)
-                out += a + AttributedString("\n")
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
+                blockView(block)
+                    .padding(.top, index == 0 ? 0 : gapHeight(before: block, after: blocks[index - 1]))
             }
         }
-        return out
+        .foregroundStyle(palette.foreground)
+        .lineSpacing(6 * factor)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .textSelection(.enabled)
+        .contextMenu {
+            Button { copyAll() } label: { Label("Copy message", systemImage: "doc.on.doc") }
+        }
+    }
+
+    @ViewBuilder private func blockView(_ block: MarkdownBlock) -> some View {
+        switch block {
+        case .heading(let level, let t):
+            Text(heading(t, level: level))
+                .frame(maxWidth: .infinity, alignment: .leading)
+        case .paragraph(let t):
+            Text(inline(t))
+                .frame(maxWidth: .infinity, alignment: .leading)
+        case .bullet(let items):
+            VStack(alignment: .leading, spacing: 4 * factor) {
+                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        Text("•").font(bodyFont).foregroundStyle(palette.mutedForeground)
+                        Text(inline(item)).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+        case .ordered(let items):
+            VStack(alignment: .leading, spacing: 4 * factor) {
+                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        Text("\(item.num).").font(bodyFont).monospacedDigit().foregroundStyle(palette.mutedForeground)
+                        Text(inline(item.text)).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+        case .code(let language, let code):
+            ChatCodeBlockView(code: code, language: language, palette: palette, factor: factor)
+        case .image(let alt, let url):
+            Text(linkText(alt: alt, url: url)).frame(maxWidth: .infinity, alignment: .leading)
+        case .rule:
+            Rectangle().fill(palette.border).frame(height: 1).padding(.vertical, 2)
+        }
+    }
+
+    private func heading(_ text: String, level: Int) -> AttributedString {
+        var a = inline(text)
+        a.font = scaled(headingSize(level)).bold()
+        a.kern = level <= 2 ? -0.3 : -0.15
+        return a
+    }
+
+    private func linkText(alt: String, url: String) -> AttributedString {
+        var a = AttributedString(alt.isEmpty ? url : alt)
+        a.font = bodyFont
+        if let u = URL(string: url) {
+            a.link = u
+            a.foregroundColor = palette.primary
+            a.underlineStyle = .single
+        }
+        return a
     }
 
     private func inline(_ s: String) -> AttributedString {
         var a = (try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(s)
+        a.font = bodyFont
         // `backtick code` arrived completely unstyled — identical to the prose around it, which
         // defeats the only reason anyone writes it. Style it where the parser marked it.
         for run in a.runs where run.inlinePresentationIntent?.contains(.code) == true {
@@ -1880,28 +1960,14 @@ struct ChatMarkdownView: View {
         return a
     }
 
-    /// Vertical rhythm between two adjacent blocks, expressed as a sized blank line.
-    ///
-    /// SwiftUI's Text does not honour NSParagraphStyle inside an AttributedString, and the whole
-    /// message is deliberately ONE Text so a selection can span it — so spacing has to be carried by
-    /// the height of a blank line. Sizing that line is what turns a uniform gap into a hierarchy.
-    private func gap(before current: MarkdownBlock, after previous: MarkdownBlock) -> AttributedString {
-        var size: CGFloat = 9 // default paragraph separation
+    private func gapHeight(before current: MarkdownBlock, after previous: MarkdownBlock) -> CGFloat {
         switch (previous, current) {
-        case (_, .heading):
-            size = 16 // a heading needs air ABOVE it: it introduces what follows
-        case (.heading, _):
-            size = 3  // …and almost none below, so it reads as attached to its section
-        case (.bullet, .bullet), (.ordered, .ordered):
-            size = 4  // consecutive list blocks are one list, not two
-        case (_, .code), (.code, _):
-            size = 11 // a code block is a figure; give it room to separate from the prose
-        default:
-            size = 9
+        case (_, .heading): return 16 * factor
+        case (.heading, _): return 3 * factor
+        case (.bullet, .bullet), (.ordered, .ordered): return 4 * factor
+        case (_, .code), (.code, _): return 11 * factor
+        default: return 9 * factor
         }
-        var a = AttributedString("\n")
-        a.font = .system(size: size * factor)
-        return a
     }
     /// A body-sized font in the user's chosen design + scale.
     private var bodyFont: Font { scaled(chosen.responseSize(15)) }
@@ -1915,6 +1981,42 @@ struct ChatMarkdownView: View {
         #elseif canImport(UIKit)
         UIPasteboard.general.string = text
         #endif
+    }
+}
+
+private struct ChatCodeBlockView: View {
+    let code: String
+    let language: String?
+    let palette: OculusPalette
+    let factor: CGFloat
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        let theme = CodeTheme.current(colorScheme)
+        let attributed = SyntaxHighlighter.attributedString(code, language: codeLanguage, theme: theme)
+        ScrollView(.horizontal, showsIndicators: true) {
+            Text(attributed)
+                .font(.system(size: 13 * factor, design: .monospaced))
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+        }
+        .background(theme.background, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(palette.border))
+    }
+
+    private var codeLanguage: CodeLanguage {
+        switch language?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "swift": return .swift
+        case "go", "golang": return .go
+        case "js", "javascript", "ts", "typescript", "jsx", "tsx": return .jsTs
+        case "py", "python": return .python
+        case "rs", "rust", "c", "cpp", "c++", "objc", "objective-c", "java", "kt", "kotlin": return .rustC
+        case "json": return .json
+        case "md", "markdown": return .markdown
+        case "sh", "shell", "bash", "zsh": return .shell
+        default: return .plain
+        }
     }
 }
 

@@ -67,3 +67,6 @@ work on long-term.
 - The **protocol is the contract**: change `protocol/` + its golden vectors, and update both the Go and
   Swift sides in the same PR.
 - Keep the daemon platform-agnostic (it must build for Linux too — no macOS-only assumptions in core logic).
+- App chat rendering must keep generative UI native: `ui.component` rows render through `UIComponentView`,
+  and narrow fallback parsing may turn standalone component JSON into native UI so users do not see raw
+  form/table objects. Inline code and fenced code blocks should remain visually distinct.

@@ -48,6 +48,14 @@ Connect form (ws URL · daemon pubkey hex · pairing secret) → prompt an agent
 → streamed output. On connect it fires `discover.list` and shows **autodetected** host sessions
 (see [[oculus-discovery]]). Keep new protocol wiring in `Model`, not the views.
 
+## Chat rendering
+- Finished assistant turns render through `ChatMarkdownView`: inline backtick code stays inside prose,
+  while fenced code blocks become their own scrollable highlighted code surface.
+- Generative UI normally arrives as `ui.component`, but assistant text may still contain a standalone
+  component JSON object while providers roll out native projection. `MessageRow` treats objects with
+  `component` + `id` + `props` as inert `UIComponent`s and renders them with `UIComponentView`
+  instead of showing raw JSON. Keep this fallback narrow so ordinary JSON examples stay visible.
+
 ## Adding UI / platform features
 Shared behavior → `OculusUI` (guard platform-specifics with `#if os(...)`). A new app target (widget,
 notification service, menu-bar) → add it to `project.yml` and regenerate. Keep parity with the Go
