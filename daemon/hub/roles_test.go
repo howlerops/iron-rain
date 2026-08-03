@@ -10,7 +10,7 @@ func TestSoloUserIsNeverGated(t *testing.T) {
 	if got := r.role(nil); got != RoleOwner {
 		t.Fatalf("with enforcement off a client must be the owner, got %q", got)
 	}
-	for _, c := range []capability{capWatch, capSteer, capApprove} {
+	for _, c := range []capability{capWatch, capSteer, capApprove, capOwner} {
 		if !roleAllows(r.role(nil), c) {
 			t.Errorf("solo user must retain capability %v", c)
 		}
@@ -28,12 +28,12 @@ func TestEnforcementDefaultsToObserver(t *testing.T) {
 
 func TestRoleCapabilities(t *testing.T) {
 	cases := []struct {
-		role                  string
-		watch, steer, approve bool
+		role                         string
+		watch, steer, approve, owner bool
 	}{
-		{RoleOwner, true, true, true},
-		{RoleSteerer, true, true, false}, // may ask the agent to act, may NOT authorize it
-		{RoleObserver, true, false, false},
+		{RoleOwner, true, true, true, true},
+		{RoleSteerer, true, true, false, false}, // may ask the agent to act, may NOT authorize it
+		{RoleObserver, true, false, false, false},
 	}
 	for _, c := range cases {
 		if roleAllows(c.role, capWatch) != c.watch {
@@ -45,9 +45,12 @@ func TestRoleCapabilities(t *testing.T) {
 		if roleAllows(c.role, capApprove) != c.approve {
 			t.Errorf("%s approve = %v, want %v", c.role, !c.approve, c.approve)
 		}
+		if roleAllows(c.role, capOwner) != c.owner {
+			t.Errorf("%s owner = %v, want %v", c.role, !c.owner, c.owner)
+		}
 	}
 	// An unknown role string must never be treated as privileged.
-	if roleAllows("admin", capSteer) || roleAllows("", capApprove) {
+	if roleAllows("admin", capSteer) || roleAllows("", capApprove) || roleAllows("admin", capOwner) {
 		t.Error("an unrecognized role must carry no steering or approval capability")
 	}
 }

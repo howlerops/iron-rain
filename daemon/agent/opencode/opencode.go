@@ -51,6 +51,11 @@ type Provider struct {
 // New returns a Provider for the given opencode base URL (e.g. http://127.0.0.1:4096).
 func New(baseURL string) *Provider { return newProvider(baseURL, sseIdleTimeout) }
 
+// BaseURL reports the exact opencode server this provider talks to. The hub persists it per session
+// so a daemon restart/self-update re-attaches to the server that owns that conversation, not whichever
+// opencode happens to be registered next.
+func (p *Provider) BaseURL() string { return p.baseURL }
+
 // newProvider is New with an injectable SSE idle timeout (tests use a short one to exercise the
 // half-open reconnect without waiting the full production window).
 func newProvider(baseURL string, sseIdle time.Duration) *Provider {
@@ -105,9 +110,10 @@ func (p *Provider) List(ctx context.Context) ([]protocol.Session, error) {
 	}
 	defer resp.Body.Close()
 	var raw []struct {
-		ID    string `json:"id"`
-		Title string `json:"title"`
-		Time  struct {
+		ID       string `json:"id"`
+		Title    string `json:"title"`
+		ParentID string `json:"parentID"`
+		Time     struct {
 			Updated int64 `json:"updated"` // opencode reports millis
 		} `json:"time"`
 	}
@@ -116,6 +122,9 @@ func (p *Provider) List(ctx context.Context) ([]protocol.Session, error) {
 	}
 	out := make([]protocol.Session, 0, len(raw))
 	for _, s := range raw {
+		if s.ParentID != "" {
+			continue
+		}
 		out = append(out, protocol.Session{
 			ID: s.ID, Provider: "opencode", Status: protocol.StatusIdle, Title: s.Title,
 			UpdatedAt: s.Time.Updated / 1000, // millis -> seconds

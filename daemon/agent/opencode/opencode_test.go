@@ -185,6 +185,31 @@ func TestOpenCodeProvider_E2E(t *testing.T) {
 	}
 }
 
+func TestListHidesChildSessions(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/session" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`[
+			{"id":"parent","title":"main","time":{"updated":1000}},
+			{"id":"child","title":"task","parentID":"parent","time":{"updated":2000}}
+		]`))
+	}))
+	defer srv.Close()
+
+	got, err := New(srv.URL).List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("sessions = %+v, want only the primary session", got)
+	}
+	if got[0].ID != "parent" {
+		t.Fatalf("listed session = %q, want parent", got[0].ID)
+	}
+}
+
 // TestOpenCode_SendsDirectory pins the Track-1.1 fix: the cwd passed to Create/Prompt
 // must be forwarded to opencode as the ?directory= query param on both POST /session
 // and POST /session/{id}/message, so sessions are scoped to the right folder/worktree.

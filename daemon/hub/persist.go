@@ -31,6 +31,7 @@ type persistedMeta struct {
 	IssueProvider string            `json:"issue_provider,omitempty"`
 	ProviderURL   string            `json:"provider_url,omitempty"`
 	Members       []worktree.Member `json:"members,omitempty"`
+	Roots         []string          `json:"roots,omitempty"`
 	ParentID      string            `json:"parent_id,omitempty"`
 	Subtask       string            `json:"subtask,omitempty"`
 	// Model is stored so a restarted session (session.restart) comes back on the same model.
@@ -44,7 +45,7 @@ func metaToPersisted(m sessionMeta) persistedMeta {
 		ProjectID: m.projectID, Cwd: m.cwd, WorkspaceName: m.workspaceName, Branch: m.branch,
 		WorktreePath: m.worktreePath, BaseCommit: m.baseCommit, RepoRoot: m.repoRoot, Port: m.port,
 		IssueID: m.issueID, IssueKey: m.issueKey, IssueProvider: m.issueProvider, Members: m.members,
-		ParentID: m.parentID, Subtask: m.subtask, ProviderURL: m.providerURL,
+		Roots: m.roots, ParentID: m.parentID, Subtask: m.subtask, ProviderURL: m.providerURL,
 	}
 }
 
@@ -53,7 +54,7 @@ func (pm persistedMeta) toMeta() sessionMeta {
 		projectID: pm.ProjectID, cwd: pm.Cwd, workspaceName: pm.WorkspaceName, branch: pm.Branch,
 		worktreePath: pm.WorktreePath, baseCommit: pm.BaseCommit, repoRoot: pm.RepoRoot, port: pm.Port,
 		issueID: pm.IssueID, issueKey: pm.IssueKey, issueProvider: pm.IssueProvider, members: pm.Members,
-		parentID: pm.ParentID, subtask: pm.Subtask, providerURL: pm.ProviderURL,
+		roots: pm.Roots, parentID: pm.ParentID, subtask: pm.Subtask, providerURL: pm.ProviderURL,
 	}
 }
 
@@ -92,14 +93,24 @@ func (h *Hub) persistSessionAt(m *managedSession, updatedAt int64) {
 // broadcastSessionList pushes the current session list to every client (after restore,
 // delete, or rename) so all devices converge on the same set.
 func (h *Hub) broadcastSessionList() {
+	h.broadcast(protocol.TypeSessionList, protocol.SessionList{Sessions: h.sessionList()})
+}
+
+func (h *Hub) sessionList() []protocol.Session {
 	h.mu.Lock()
 	list := make([]protocol.Session, 0, len(h.sessions))
 	for _, m := range h.sessions {
-		list = append(list, m.info())
+		if s := m.info(); isPrimarySession(s) {
+			list = append(list, s)
+		}
 	}
 	h.mu.Unlock()
 	list = append(list, h.stoppedSessions()...)
-	h.broadcast(protocol.TypeSessionList, protocol.SessionList{Sessions: list})
+	return list
+}
+
+func isPrimarySession(s protocol.Session) bool {
+	return s.ParentID == ""
 }
 
 // RestoreSessions re-attaches every persisted session on startup so a daemon restart doesn't lose
@@ -164,6 +175,9 @@ func (h *Hub) RestoreSessions(ctx context.Context, ttl time.Duration) {
 				// the next real event flips it back to running.
 				m.seedStatus(protocol.StatusIdle)
 				h.applyRestoredModel(m, pm)
+				m.mu.Lock()
+				m.mode = pm.Mode
+				m.mu.Unlock()
 				go m.run()
 				restored++
 				continue
@@ -408,7 +422,13 @@ func (h *Hub) stoppedSessions() []protocol.Session {
 			Model: pm.Model, ModelProvider: pm.ModelProvider,
 		})
 	}
-	return out
+	kept := out[:0]
+	for _, s := range out {
+		if isPrimarySession(s) {
+			kept = append(kept, s)
+		}
+	}
+	return kept
 }
 
 // attacherFor resolves an Attacher for a provider, preferring the factory bound to the session's OWN

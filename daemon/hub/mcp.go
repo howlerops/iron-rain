@@ -105,6 +105,9 @@ func (h *Hub) handleMCP(ctx context.Context, conn *transport.Conn, env protocol.
 		h.sendOK(conn, env.ID, h.mcpList())
 
 	case protocol.TypeMCPUpsert:
+		if !h.requireCapability(conn, env.ID, capOwner, "change MCP servers") {
+			return
+		}
 		var in protocol.MCPUpsert
 		if err := env.Unmarshal(&in); err != nil {
 			h.sendErr(conn, env.ID, "bad mcp.upsert")
@@ -152,6 +155,9 @@ func (h *Hub) handleMCP(ctx context.Context, conn *transport.Conn, env protocol.
 		}()
 
 	case protocol.TypeMCPDelete:
+		if !h.requireCapability(conn, env.ID, capOwner, "delete an MCP server") {
+			return
+		}
 		var ref protocol.MCPRef
 		if err := env.Unmarshal(&ref); err != nil || strings.TrimSpace(ref.Name) == "" {
 			h.sendErr(conn, env.ID, "bad mcp.delete")
@@ -166,6 +172,9 @@ func (h *Hub) handleMCP(ctx context.Context, conn *transport.Conn, env protocol.
 		h.broadcast(protocol.TypeMCPChanged, h.mcpList())
 
 	case protocol.TypeMCPEnable:
+		if !h.requireCapability(conn, env.ID, capOwner, "enable an MCP server") {
+			return
+		}
 		var in protocol.MCPEnable
 		if err := env.Unmarshal(&in); err != nil || strings.TrimSpace(in.Name) == "" {
 			h.sendErr(conn, env.ID, "bad mcp.enable")
@@ -196,6 +205,9 @@ func (h *Hub) handleMCP(ctx context.Context, conn *transport.Conn, env protocol.
 		h.sendOK(conn, env.ID, out)
 
 	case protocol.TypeMCPImport:
+		if !h.requireCapability(conn, env.ID, capOwner, "import MCP servers") {
+			return
+		}
 		var in protocol.MCPImport
 		if err := env.Unmarshal(&in); err != nil {
 			h.sendErr(conn, env.ID, "bad mcp.import")
@@ -210,6 +222,9 @@ func (h *Hub) handleMCP(ctx context.Context, conn *transport.Conn, env protocol.
 		h.broadcast(protocol.TypeMCPChanged, h.mcpList())
 
 	case protocol.TypeMCPExclusive:
+		if !h.requireCapability(conn, env.ID, capOwner, "change MCP exclusivity") {
+			return
+		}
 		var in protocol.MCPExclusiveSet
 		if err := env.Unmarshal(&in); err != nil {
 			h.sendErr(conn, env.ID, "bad mcp.exclusive")
@@ -237,6 +252,9 @@ func (h *Hub) handleMCP(ctx context.Context, conn *transport.Conn, env protocol.
 		h.sendOK(conn, env.ID, out)
 
 	case protocol.TypeMCPCheck:
+		if !h.requireCapability(conn, env.ID, capOwner, "check an MCP server") {
+			return
+		}
 		var ref protocol.MCPRef
 		if err := env.Unmarshal(&ref); err != nil || strings.TrimSpace(ref.Name) == "" {
 			h.sendErr(conn, env.ID, "bad mcp.check")

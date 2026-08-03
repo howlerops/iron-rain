@@ -114,6 +114,43 @@ func TestRestoreAttachesToPersistedProviderURL(t *testing.T) {
 	}
 }
 
+type urlProvider struct{ url string }
+
+func (p *urlProvider) Name() string { return "url-agent" }
+func (p *urlProvider) BaseURL() string {
+	return p.url
+}
+func (p *urlProvider) Create(context.Context, string, string) (agent.Session, error) {
+	return &fakeAttachedSess{id: "url_sess", provider: p.Name(), events: make(chan agent.Event)}, nil
+}
+func (p *urlProvider) List(context.Context) ([]protocol.Session, error) { return nil, nil }
+
+func TestCreatedSessionPersistsProviderURL(t *testing.T) {
+	h, db := restoreHub(t)
+	h.Register(&urlProvider{url: "http://127.0.0.1:49001"})
+
+	m, err := h.startSession(context.Background(), protocol.SessionCreate{Provider: "url-agent", Cwd: "/repo"}, sessionMeta{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.sess.Close() })
+
+	recs, err := db.Sessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("records = %+v, want one", recs)
+	}
+	var pm persistedMeta
+	if err := json.Unmarshal([]byte(recs[0].Meta), &pm); err != nil {
+		t.Fatal(err)
+	}
+	if pm.ProviderURL != "http://127.0.0.1:49001" {
+		t.Fatalf("provider_url = %q, want exact server URL for restore", pm.ProviderURL)
+	}
+}
+
 // TestRestoreAttachFailureYieldsStoppedRestartable: the failure that must never happen quietly.
 // opencode's /event stream accepts ANY subscriber, so a restore against a server that doesn't hold
 // the session still "succeeds" — producing a live-looking row with no history whose sends vanish.
@@ -249,6 +286,56 @@ func TestRestoreReappliesPersistedModel(t *testing.T) {
 	m.mu.Unlock()
 	if shown != "opus" {
 		t.Errorf("session reports model %q — the app would show the wrong one", shown)
+	}
+}
+
+func TestRestoreReappliesPersistedModeAndRoots(t *testing.T) {
+	h, db := restoreHub(t)
+	rec := &cwdRecorder{}
+	h.SetAttacherFactory(func(provider, url string) agent.Attacher {
+		if provider == "claude-code" {
+			return rec
+		}
+		return nil
+	})
+	roots := []string{"/repo/api", "/repo/web"}
+	saveRecord(t, db, "cc_roots", "claude-code", persistedMeta{
+		Cwd: "/repo", Roots: roots, Mode: protocol.ModeAsk,
+	})
+
+	h.RestoreSessions(context.Background(), 7*24*time.Hour)
+	m := h.managed("cc_roots")
+	if m == nil {
+		t.Fatal("session was not restored")
+	}
+	t.Cleanup(func() { _ = m.sess.Close() })
+	m.mu.Lock()
+	gotMode := m.mode
+	gotRoots := append([]string(nil), m.meta.roots...)
+	m.mu.Unlock()
+	if gotMode != protocol.ModeAsk {
+		t.Errorf("restored mode = %q, want %q", gotMode, protocol.ModeAsk)
+	}
+	if len(gotRoots) != len(roots) || gotRoots[0] != roots[0] || gotRoots[1] != roots[1] {
+		t.Errorf("restored roots = %+v, want %+v", gotRoots, roots)
+	}
+}
+
+func TestSessionListHidesChildSessions(t *testing.T) {
+	h := New()
+	parent := h.addSession(&fakeAttachedSess{id: "parent", provider: "fake", events: make(chan agent.Event)}, sessionMeta{cwd: "/repo"})
+	child := h.addSession(&fakeAttachedSess{id: "child", provider: "fake", events: make(chan agent.Event)}, sessionMeta{cwd: "/repo", parentID: "parent", subtask: "subtask"})
+	t.Cleanup(func() {
+		_ = parent.sess.Close()
+		_ = child.sess.Close()
+	})
+
+	list := h.sessionList()
+	if len(list) != 1 {
+		t.Fatalf("session list = %+v, want only the primary session", list)
+	}
+	if list[0].ID != "parent" {
+		t.Fatalf("listed session = %q, want parent", list[0].ID)
 	}
 }
 

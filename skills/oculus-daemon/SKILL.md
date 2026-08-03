@@ -43,15 +43,34 @@ owner — see the pressure-test verdict). `sessions`/`approvals` are `map → *m
 - `session.attach {provider,session_id,url}` → **if the daemon already owns it, just `subscribe`**
   (no duplicate provider subscription); else `Attacher.Attach` → `addSession` → subscribe → run.
 - `session.subscribe {session_id}` → `subscribe` to an already-owned session (replays transcript).
-- `session.list` → `ok` `SessionList`. `session.prompt`/`session.stop` → `managed(id).sess.*`.
+- `session.list` → `ok` `SessionList` of primary sessions only; child/sub-agent sessions (`parent_id`
+  set) stay inline under their parent transcript and must not appear as top-level rows.
+  `session.prompt`/`session.stop` → `managed(id).sess.*`.
 - `approval.respond {approval_id,decision}` → look up the owning `managedSession` (recorded in
   `run()`), `Respond`, then **broadcast `approval.resolved`** so the card clears on every client.
+
+## Role gates
+Role checks live in `hub/roles.go` and must be enforced in daemon dispatch, not the client. Observers
+are watch-only. Steerers may drive live session actions (`session.prompt`, `session.create`,
+`session.stop`, `run.test`, `fs.write`, worktree actions). Owners may do everything, including
+approval responses and persisted daemon/admin configuration (`device.*`, accounts, agents, projects,
+integrations, telemetry, MCP upsert/delete/enable/import/exclusive/check). New mutating request
+handlers must call `requireCapability` before side effects and must return a `bad <type>` error when
+`env.Unmarshal` fails; do not continue with zero-valued payload structs.
 
 ## broadcast + subscribers
 `managedSession.broadcast(raw)` records to the transcript and sends to all subs (snapshot under lock,
 send outside). `Serve` adds the conn to `clients` (global broadcasts like `approval.resolved`) and, on
 disconnect, `unsubscribe`s it from every session. **Sessions persist** across client disconnects; they
 end only when the provider's `Events()` channel closes (`run` → `removeSession`).
+
+## Restart persistence
+`hub/persist.go` stores the session's working metadata as JSON (`persistedMeta`): cwd, project,
+worktree/workspace state, selected roots, parent/subtask linkage, provider URL, model, and mode.
+Restores must read that meta before attaching so resumed agents run in the original project and keep
+their safety mode/model instead of starting cold or in the wrong directory. Server-backed providers
+whose sessions live outside the daemon should expose their exact endpoint (`BaseURL() string`, as
+opencode does) so newly created sessions persist the server that owns the conversation.
 
 ## E2E test
 `daemon/hub/hub_test.go` drives the whole spine over the real encrypted transport (in-memory MsgConn

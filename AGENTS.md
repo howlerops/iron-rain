@@ -31,6 +31,12 @@ Full design: [`docs/plan-native-ade.md`](docs/plan-native-ade.md).
 - Approvals are **first-class in v0**: opencode `POST /session/{id}/permissions/{permissionID}`
   (`once|always|reject`) and claude-code `PreToolUse` hook both normalize to one
   `ApprovalRequest`/`ApprovalResponse(allow|deny, reason?)`.
+- Role enforcement is daemon-owned: observers are watch-only, steerers may drive live sessions, and
+  owner-only surfaces include approvals plus persisted daemon/admin config such as devices, accounts,
+  agents, projects, integrations, telemetry, and MCP servers. Any new mutating protocol handler must
+  call `requireCapability` and must reject malformed payloads.
+- `session.list` is the top-level run list: hide child/sub-agent sessions there (`parent_id` set) and
+  keep restart metadata complete enough to resume in the original cwd/project/mode/model/roots.
 - Push: hosted APNs default + self-host BYO-key. License **MIT**.
 - **Session autodetection** is first-class: the daemon discovers running `opencode serve` instances
   (+ their live sessions) and recent claude-code transcripts on the host, exposed via `discover.list`.

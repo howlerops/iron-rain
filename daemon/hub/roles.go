@@ -98,6 +98,7 @@ const (
 	capWatch capability = iota
 	capSteer
 	capApprove
+	capOwner
 )
 
 // allows reports whether a role carries a capability.
@@ -108,6 +109,8 @@ func roleAllows(role string, c capability) bool {
 	case capSteer:
 		return role == RoleOwner || role == RoleSteerer
 	case capApprove:
+		return role == RoleOwner
+	case capOwner:
 		return role == RoleOwner
 	}
 	return false
@@ -128,6 +131,8 @@ func (h *Hub) requireCapability(conn *transport.Conn, envID string, c capability
 	switch c {
 	case capApprove:
 		h.sendErr(conn, envID, "Only the session owner can answer approvals.")
+	case capOwner:
+		h.sendErr(conn, envID, "Only the session owner can change daemon settings.")
 	default:
 		h.sendErr(conn, envID, "You're watching this session. Ask the owner for permission to steer.")
 	}

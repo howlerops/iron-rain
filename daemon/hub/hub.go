@@ -368,6 +368,11 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 		return nil, err
 	}
 	log.Printf("session.create: %s session %s started in %s", req.Provider, sess.ID(), time.Since(pc0).Round(time.Millisecond))
+	if meta.providerURL == "" {
+		if ur, ok := p.(interface{ BaseURL() string }); ok {
+			meta.providerURL = ur.BaseURL()
+		}
+	}
 	if len(req.Images) > 0 {
 		text := req.Prompt
 		if firstTurnPrefix != "" {
@@ -402,6 +407,9 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 // branch, prompted with the issue, linked back to the ticket, and (write-back) moves the
 // ticket to "in progress" with a comment.
 func (h *Hub) handleIssueLaunch(ctx context.Context, conn *transport.Conn, env protocol.Envelope) {
+	if !h.requireCapability(conn, env.ID, capOwner, "launch work from an issue") {
+		return
+	}
 	var req protocol.IssueLaunch
 	if err := env.Unmarshal(&req); err != nil {
 		h.sendErr(conn, env.ID, "bad issue.launch")
@@ -2202,6 +2210,9 @@ const hubOutboundBuffer = 256 // queued broadcasts per client before it is dropp
 func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.Envelope) {
 	switch env.Type {
 	case protocol.TypeSessionCreate:
+		if !h.requireCapability(conn, env.ID, capSteer, "create a session") {
+			return
+		}
 		var req protocol.SessionCreate
 		if err := env.Unmarshal(&req); err != nil {
 			h.sendErr(conn, env.ID, "bad session.create")
@@ -2240,8 +2251,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		go m.run()
 
 	case protocol.TypeSessionAutonomy:
+		if !h.requireCapability(conn, env.ID, capSteer, "change session autonomy") {
+			return
+		}
 		var req protocol.SessionAutonomy
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad session.autonomy")
+			return
+		}
 		if m := h.managed(req.SessionID); m != nil {
 			m.mu.Lock()
 			m.autonomous = req.Autonomous
@@ -2273,6 +2290,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.HandoffList{Cwd: req.Cwd, Handoffs: toHandoffEntries(list)})
 
 	case protocol.TypeSessionChild:
+		if !h.requireCapability(conn, env.ID, capSteer, "create a child session") {
+			return
+		}
 		var req protocol.SessionChild
 		if err := env.Unmarshal(&req); err != nil {
 			h.sendErr(conn, env.ID, "bad session.child")
@@ -2288,6 +2308,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		go child.run()
 
 	case protocol.TypeFanoutCreate:
+		if !h.requireCapability(conn, env.ID, capSteer, "create fanout sessions") {
+			return
+		}
 		var req protocol.FanoutCreate
 		if err := env.Unmarshal(&req); err != nil {
 			h.sendErr(conn, env.ID, "bad fanout.create")
@@ -2301,6 +2324,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, res)
 
 	case protocol.TypeFanoutResolve:
+		if !h.requireCapability(conn, env.ID, capSteer, "resolve fanout sessions") {
+			return
+		}
 		var req protocol.FanoutResolve
 		if err := env.Unmarshal(&req); err != nil || req.Group == "" {
 			h.sendErr(conn, env.ID, "bad fanout.resolve")
@@ -2339,6 +2365,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, nil)
 
 	case protocol.TypeSessionModeSet:
+		if !h.requireCapability(conn, env.ID, capSteer, "change session mode") {
+			return
+		}
 		var req protocol.SessionModeSet
 		if err := env.Unmarshal(&req); err != nil {
 			h.sendErr(conn, env.ID, "bad session.mode.set")
@@ -2362,6 +2391,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, h.approvalRulesList())
 
 	case protocol.TypeApprovalRuleDelete:
+		if !h.requireCapability(conn, env.ID, capOwner, "delete an approval rule") {
+			return
+		}
 		var req protocol.ApprovalRuleDelete
 		if err := env.Unmarshal(&req); err != nil {
 			h.sendErr(conn, env.ID, "bad approval.rules.delete")
@@ -2378,8 +2410,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.broadcast(protocol.TypeApprovalRulesChanged, list)
 
 	case protocol.TypeCheckpointCreate:
+		if !h.requireCapability(conn, env.ID, capSteer, "create a checkpoint") {
+			return
+		}
 		var req protocol.CheckpointCreate
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad checkpoint.create")
+			return
+		}
 		m := h.managed(req.SessionID)
 		if m == nil || m.meta.worktreePath == "" {
 			h.sendErr(conn, env.ID, "checkpoints need a worktree session")
@@ -2412,8 +2450,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.CheckpointList{Checkpoints: reverseCheckpoints(list)})
 
 	case protocol.TypeCheckpointRestore:
+		if !h.requireCapability(conn, env.ID, capSteer, "restore a checkpoint") {
+			return
+		}
 		var req protocol.CheckpointRestore
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad checkpoint.restore")
+			return
+		}
 		m := h.managed(req.SessionID)
 		if m == nil || m.meta.worktreePath == "" {
 			h.sendErr(conn, env.ID, "checkpoints need a worktree session")
@@ -2430,8 +2474,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, h.accountList())
 
 	case protocol.TypeAccountUpsert:
+		if !h.requireCapability(conn, env.ID, capOwner, "change accounts") {
+			return
+		}
 		var a protocol.Account
-		_ = env.Unmarshal(&a)
+		if err := env.Unmarshal(&a); err != nil {
+			h.sendErr(conn, env.ID, "bad account")
+			return
+		}
 		h.mu.Lock()
 		reg := h.accounts
 		h.mu.Unlock()
@@ -2443,8 +2493,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, h.accountList())
 
 	case protocol.TypeAccountDelete:
+		if !h.requireCapability(conn, env.ID, capOwner, "delete an account") {
+			return
+		}
 		var req protocol.AccountRef
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad account.delete")
+			return
+		}
 		h.mu.Lock()
 		reg := h.accounts
 		h.mu.Unlock()
@@ -2454,8 +2510,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, h.accountList())
 
 	case protocol.TypeAccountActivate:
+		if !h.requireCapability(conn, env.ID, capOwner, "change active account") {
+			return
+		}
 		var req protocol.AccountActivate
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad account.activate")
+			return
+		}
 		h.mu.Lock()
 		reg := h.accounts
 		h.mu.Unlock()
@@ -2502,8 +2564,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, h.remoteList(ctx))
 
 	case protocol.TypeRemoteUpsert:
+		if !h.requireCapability(conn, env.ID, capOwner, "change remote hosts") {
+			return
+		}
 		var hst protocol.RemoteHost
-		_ = env.Unmarshal(&hst)
+		if err := env.Unmarshal(&hst); err != nil {
+			h.sendErr(conn, env.ID, "bad remote")
+			return
+		}
 		h.mu.Lock()
 		reg := h.remotes
 		h.mu.Unlock()
@@ -2519,8 +2587,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, h.remoteList(ctx))
 
 	case protocol.TypeRemoteDelete:
+		if !h.requireCapability(conn, env.ID, capOwner, "delete a remote host") {
+			return
+		}
 		var req protocol.RemoteRef
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad remote.delete")
+			return
+		}
 		h.mu.Lock()
 		reg := h.remotes
 		h.mu.Unlock()
@@ -2555,8 +2629,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, res)
 
 	case protocol.TypeRemoteRun:
+		if !h.requireCapability(conn, env.ID, capSteer, "start a remote session") {
+			return
+		}
 		var req protocol.RemoteRun
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad remote.run")
+			return
+		}
 		m, err := h.spawnRemote(ctx, req)
 		if err != nil {
 			h.sendErr(conn, env.ID, err.Error())
@@ -2567,21 +2647,15 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		go m.run()
 
 	case protocol.TypeSessionList:
-		h.mu.Lock()
-		list := make([]protocol.Session, 0, len(h.sessions))
-		for _, m := range h.sessions {
-			list = append(list, m.info())
-		}
-		h.mu.Unlock()
-		// Also surface persisted sessions the daemon couldn't re-attach after a restart, as
-		// "stopped" + restartable — so they don't silently vanish from the sidebar.
-		list = append(list, h.stoppedSessions()...)
-		h.sendOK(conn, env.ID, protocol.SessionList{Sessions: list})
+		h.sendOK(conn, env.ID, protocol.SessionList{Sessions: h.sessionList()})
 
 	case protocol.TypeProviderList:
 		h.sendOK(conn, env.ID, protocol.ProviderList{Providers: h.providerNames()})
 
 	case protocol.TypeProviderRefresh:
+		if !h.requireCapability(conn, env.ID, capOwner, "refresh providers") {
+			return
+		}
 		h.mu.Lock()
 		redetect := h.redetect
 		h.mu.Unlock()
@@ -2624,6 +2698,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.ModelList{Models: models, Current: current, Editable: true})
 
 	case protocol.TypeSessionSetModel:
+		if !h.requireCapability(conn, env.ID, capSteer, "change a session model") {
+			return
+		}
 		var req protocol.SessionSetModel
 		if err := env.Unmarshal(&req); err != nil || req.SessionID == "" {
 			h.sendErr(conn, env.ID, "bad set-model")
@@ -2653,6 +2730,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, h.agentList())
 
 	case protocol.TypeAgentUpsert:
+		if !h.requireCapability(conn, env.ID, capOwner, "change agents") {
+			return
+		}
 		var in protocol.AgentUpsert
 		if err := env.Unmarshal(&in); err != nil {
 			h.sendErr(conn, env.ID, "bad agent")
@@ -2706,6 +2786,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, h.agentList())
 
 	case protocol.TypeAgentDelete:
+		if !h.requireCapability(conn, env.ID, capOwner, "delete an agent") {
+			return
+		}
 		var ref protocol.AgentRef
 		if err := env.Unmarshal(&ref); err != nil || strings.TrimSpace(ref.Name) == "" {
 			h.sendErr(conn, env.ID, "bad agent ref")
@@ -2747,6 +2830,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, h.agentList())
 
 	case protocol.TypeAgentVisible:
+		if !h.requireCapability(conn, env.ID, capOwner, "change agent visibility") {
+			return
+		}
 		var v protocol.AgentVisible
 		if err := env.Unmarshal(&v); err != nil || strings.TrimSpace(v.Name) == "" {
 			h.sendErr(conn, env.ID, "bad visibility request")
@@ -2775,6 +2861,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.ProjectList{Projects: toProtoProjects(reg.List())})
 
 	case protocol.TypeProjectAdd:
+		if !h.requireCapability(conn, env.ID, capOwner, "add a project") {
+			return
+		}
 		var req protocol.ProjectAdd
 		if err := env.Unmarshal(&req); err != nil {
 			h.sendErr(conn, env.ID, "bad project.add")
@@ -2830,6 +2919,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.LoopList{Loops: toProtoLoops(eng.List()), Runs: toProtoRuns(eng.Runs())})
 
 	case protocol.TypeLoopUpsert:
+		if !h.requireCapability(conn, env.ID, capOwner, "change loops") {
+			return
+		}
 		eng := h.loops()
 		if eng == nil {
 			h.sendErr(conn, env.ID, "loops not enabled")
@@ -2854,28 +2946,43 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, toProtoLoops([]loops.Loop{saved})[0])
 
 	case protocol.TypeLoopDelete:
+		if !h.requireCapability(conn, env.ID, capOwner, "delete a loop") {
+			return
+		}
 		eng := h.loops()
 		if eng == nil {
 			h.sendErr(conn, env.ID, "loops not enabled")
 			return
 		}
 		var req protocol.LoopRef
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad loop.delete")
+			return
+		}
 		eng.Delete(req.ID)
 		h.sendOK(conn, env.ID, protocol.LoopList{Loops: toProtoLoops(eng.List()), Runs: toProtoRuns(eng.Runs())})
 
 	case protocol.TypeLoopSetEnabled:
+		if !h.requireCapability(conn, env.ID, capOwner, "enable a loop") {
+			return
+		}
 		eng := h.loops()
 		if eng == nil {
 			h.sendErr(conn, env.ID, "loops not enabled")
 			return
 		}
 		var req protocol.LoopSetEnabled
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad loop.enable")
+			return
+		}
 		eng.SetEnabled(req.ID, req.Enabled)
 		h.sendOK(conn, env.ID, protocol.LoopList{Loops: toProtoLoops(eng.List()), Runs: toProtoRuns(eng.Runs())})
 
 	case protocol.TypeProjectRemove:
+		if !h.requireCapability(conn, env.ID, capOwner, "remove a project") {
+			return
+		}
 		var req protocol.ProjectRef
 		if err := env.Unmarshal(&req); err != nil {
 			h.sendErr(conn, env.ID, "bad project.remove")
@@ -2908,8 +3015,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.WorktreeDiff{SessionID: req.SessionID, Diff: diff})
 
 	case protocol.TypeWorktreeCatchUp:
+		if !h.requireCapability(conn, env.ID, capSteer, "catch up a worktree") {
+			return
+		}
 		var req protocol.WorktreeCatchUp
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad worktree.catchup")
+			return
+		}
 		m := h.managed(req.SessionID)
 		if m == nil {
 			h.sendErr(conn, env.ID, "no such session")
@@ -2976,8 +3089,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.WorkspaceDiff{SessionID: req.SessionID, Members: out})
 
 	case protocol.TypeWorkspacePR:
+		if !h.requireCapability(conn, env.ID, capSteer, "open workspace pull requests") {
+			return
+		}
 		var req protocol.WorkspacePR
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad workspace.pr")
+			return
+		}
 		m := h.managed(req.SessionID)
 		if m == nil || len(m.meta.members) == 0 {
 			h.sendErr(conn, env.ID, "not a workspace session")
@@ -2995,8 +3114,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.WorkspacePR{SessionID: req.SessionID, Title: title, Body: req.Body, Members: results})
 
 	case protocol.TypeWorktreeRemove:
+		if !h.requireCapability(conn, env.ID, capSteer, "remove a worktree") {
+			return
+		}
 		var req protocol.WorktreeRemove
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad worktree.remove")
+			return
+		}
 		m := h.managed(req.SessionID)
 		if m == nil || (m.meta.worktreePath == "" && len(m.meta.members) == 0) {
 			h.sendErr(conn, env.ID, "not a worktree session")
@@ -3026,8 +3151,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.SessionRef{SessionID: req.SessionID})
 
 	case protocol.TypeWorktreePR:
+		if !h.requireCapability(conn, env.ID, capSteer, "open a worktree pull request") {
+			return
+		}
 		var req protocol.WorktreePR
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad worktree.pr")
+			return
+		}
 		m := h.managed(req.SessionID)
 		if m == nil || m.meta.worktreePath == "" {
 			h.sendErr(conn, env.ID, "not a worktree session")
@@ -3061,6 +3192,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, h.deviceList(conn))
 
 	case protocol.TypeDeviceRevoke:
+		if !h.requireCapability(conn, env.ID, capOwner, "revoke a device") {
+			return
+		}
 		var req protocol.DeviceRef
 		if err := env.Unmarshal(&req); err != nil || req.Pub == "" {
 			h.sendErr(conn, env.ID, "bad device.revoke")
@@ -3074,6 +3208,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.broadcast(protocol.TypeDeviceList, h.deviceList(nil))
 
 	case protocol.TypeDeviceLabel:
+		if !h.requireCapability(conn, env.ID, capOwner, "label a device") {
+			return
+		}
 		var req protocol.DeviceRef
 		if err := env.Unmarshal(&req); err != nil || req.Pub == "" {
 			h.sendErr(conn, env.ID, "bad device.label")
@@ -3086,8 +3223,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, h.deviceList(conn))
 
 	case protocol.TypeWorktreeMerge:
+		if !h.requireCapability(conn, env.ID, capSteer, "merge a worktree") {
+			return
+		}
 		var req protocol.WorktreeMerge
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad worktree.merge")
+			return
+		}
 		m := h.managed(req.SessionID)
 		if m == nil || m.meta.worktreePath == "" {
 			h.sendErr(conn, env.ID, "not a worktree session")
@@ -3156,6 +3299,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.WorktreeConflicts{SessionID: req.SessionID, Files: files})
 
 	case protocol.TypeIntegrationConnect:
+		if !h.requireCapability(conn, env.ID, capOwner, "connect an integration") {
+			return
+		}
 		var req protocol.IntegrationConnect
 		if err := env.Unmarshal(&req); err != nil {
 			h.sendErr(conn, env.ID, "bad integration.connect")
@@ -3173,6 +3319,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: m.Connected(), OAuthApps: m.OAuthApps(), AuthErrors: m.AuthErrors(), AuthErrorDetails: m.AuthErrorDetails()})
 
 	case protocol.TypeIntegrationDisconnect:
+		if !h.requireCapability(conn, env.ID, capOwner, "disconnect an integration") {
+			return
+		}
 		var req protocol.IntegrationConnect // reuses {provider, token}; only provider is read
 		if err := env.Unmarshal(&req); err != nil {
 			h.sendErr(conn, env.ID, "bad integration.disconnect")
@@ -3203,6 +3352,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: connected, OAuthApps: oauthApps, AuthErrors: authErrors, AuthErrorDetails: details})
 
 	case protocol.TypeIntegrationOAuthApp:
+		if !h.requireCapability(conn, env.ID, capOwner, "change integration OAuth settings") {
+			return
+		}
 		var req protocol.IntegrationOAuthApp
 		if err := env.Unmarshal(&req); err != nil {
 			h.sendErr(conn, env.ID, "bad integration.oauthapp")
@@ -3227,8 +3379,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.Telemetry{Enabled: on})
 
 	case protocol.TypeTelemetrySet:
+		if !h.requireCapability(conn, env.ID, capOwner, "change telemetry settings") {
+			return
+		}
 		var req protocol.Telemetry
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad telemetry.set")
+			return
+		}
 		if t := h.tel(); t != nil {
 			t.SetEnabled(req.Enabled)
 		}
@@ -3254,8 +3412,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.JiraSites{Sites: out, Current: current})
 
 	case protocol.TypeJiraSetSite:
+		if !h.requireCapability(conn, env.ID, capOwner, "change Jira site") {
+			return
+		}
 		var req protocol.JiraSetSite
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad jira.setSite")
+			return
+		}
 		m := h.issuesMgr()
 		if m == nil {
 			h.sendErr(conn, env.ID, "integrations not enabled")
@@ -3268,8 +3432,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: m.Connected(), OAuthApps: m.OAuthApps(), AuthErrors: m.AuthErrors(), AuthErrorDetails: m.AuthErrorDetails()})
 
 	case protocol.TypeIntegrationOAuth:
+		if !h.requireCapability(conn, env.ID, capOwner, "start integration OAuth") {
+			return
+		}
 		var req protocol.IntegrationOAuth
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad integration.oauth")
+			return
+		}
 		m := h.issuesMgr()
 		h.mu.Lock()
 		addr := h.oauthAddr
@@ -3338,8 +3508,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.IssueStateList{States: out})
 
 	case protocol.TypeIssueMove:
+		if !h.requireCapability(conn, env.ID, capOwner, "move an issue") {
+			return
+		}
 		var req protocol.IssueMove
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad issue.move")
+			return
+		}
 		m := h.issuesMgr()
 		if m == nil {
 			h.sendErr(conn, env.ID, "integrations not enabled")
@@ -3365,8 +3541,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		go func() { _ = m.Refresh(context.Background()) }()
 
 	case protocol.TypeIssueCreate:
+		if !h.requireCapability(conn, env.ID, capOwner, "create an issue") {
+			return
+		}
 		var req protocol.IssueCreate
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad issue.create")
+			return
+		}
 		m := h.issuesMgr()
 		if m == nil {
 			h.sendErr(conn, env.ID, "integrations not enabled")
@@ -3434,8 +3616,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		})
 
 	case protocol.TypeIssueUpdate:
+		if !h.requireCapability(conn, env.ID, capOwner, "update an issue") {
+			return
+		}
 		var req protocol.IssueUpdate
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad issue.update")
+			return
+		}
 		m := h.issuesMgr()
 		if m == nil {
 			h.sendErr(conn, env.ID, "integrations not enabled")
@@ -3519,8 +3707,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.IssueCycleList{Cycles: out})
 
 	case protocol.TypeIssueComment:
+		if !h.requireCapability(conn, env.ID, capOwner, "comment on an issue") {
+			return
+		}
 		var req protocol.IssueCommentAdd
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad issue.comment")
+			return
+		}
 		m := h.issuesMgr()
 		if m == nil {
 			h.sendErr(conn, env.ID, "integrations not enabled")
@@ -3535,8 +3729,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.IssueComment{Body: req.Body})
 
 	case protocol.TypeIssueCommentEdit:
+		if !h.requireCapability(conn, env.ID, capOwner, "edit an issue comment") {
+			return
+		}
 		var req protocol.IssueCommentEdit
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad issue.comment.edit")
+			return
+		}
 		m := h.issuesMgr()
 		if m == nil {
 			h.sendErr(conn, env.ID, "integrations not enabled")
@@ -3582,7 +3782,10 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			return
 		}
 		var req protocol.SessionPrompt
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad session.prompt")
+			return
+		}
 		m := h.managed(req.SessionID)
 		if m == nil {
 			h.sendErr(conn, env.ID, "no such session")
@@ -3625,6 +3828,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, nil)
 
 	case protocol.TypeUIAction:
+		if !h.requireCapability(conn, env.ID, capSteer, "invoke a UI action") {
+			return
+		}
 		// A user activated a generative-UI component's action. Its ONLY effect is to start the next
 		// user turn (a component can never execute a tool or a destructive op directly). kind=prompt/
 		// answer deliver the templated text as a normal prompt.
@@ -3634,7 +3840,10 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		// fenced components don't carry. A client sending it gets the no-op fallthrough below, not an
 		// error — don't read that as working-but-untested.
 		var req protocol.UIActionInvoke
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad ui.action")
+			return
+		}
 		m := h.managed(req.SessionID)
 		if m == nil {
 			h.sendErr(conn, env.ID, "no such session")
@@ -3674,7 +3883,10 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			return
 		}
 		var req protocol.ApprovalRespond
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad approval.respond")
+			return
+		}
 		h.mu.Lock()
 		m := h.approvals[req.ApprovalID]
 		pend := h.approvalReqs[req.ApprovalID]
@@ -3721,6 +3933,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		}
 
 	case protocol.TypeSessionAttach:
+		if !h.requireCapability(conn, env.ID, capSteer, "attach a session") {
+			return
+		}
 		var req protocol.SessionAttach
 		if err := env.Unmarshal(&req); err != nil {
 			h.sendErr(conn, env.ID, "bad session.attach")
@@ -3769,8 +3984,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		go m.run()
 
 	case protocol.TypeSessionRestart:
+		if !h.requireCapability(conn, env.ID, capSteer, "restart a session") {
+			return
+		}
 		var req protocol.SessionRef
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad session.restart")
+			return
+		}
 		// Already live (e.g. another client restarted it first) → just subscribe.
 		if m := h.managed(req.SessionID); m != nil {
 			log.Printf("session.restart %s: already live — subscribing", req.SessionID)
@@ -3794,8 +4015,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.broadcastSessionList() // the id changed (old stopped → new live); converge every client
 
 	case protocol.TypeSessionRecover:
+		if !h.requireCapability(conn, env.ID, capSteer, "recover a session") {
+			return
+		}
 		var req protocol.SessionRef
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad session.recover")
+			return
+		}
 		m, err := h.recoverSession(ctx, req.SessionID)
 		if err != nil {
 			log.Printf("session.recover %s: FAILED: %v", req.SessionID, err)
@@ -3832,7 +4059,10 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			return
 		}
 		var req protocol.InviteCreate
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad invite.create")
+			return
+		}
 		inv := h.invites.create(req.Label, req.Role, time.Duration(req.TTLHours)*time.Hour)
 		out := protocol.InviteCreated{Invite: protocol.Invite{
 			ID: inv.ID, Label: inv.Label, Role: inv.Role,
@@ -3942,15 +4172,24 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			return
 		}
 		var req protocol.SessionRef
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad session.interrupt")
+			return
+		}
 		if m := h.managed(req.SessionID); m != nil {
 			_ = m.sess.Stop(ctx) // interrupt the current turn; the session stays open for a redirect
 		}
 		h.sendOK(conn, env.ID, nil)
 
 	case protocol.TypeSessionStop:
+		if !h.requireCapability(conn, env.ID, capSteer, "stop a session") {
+			return
+		}
 		var req protocol.SessionRef
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad session.stop")
+			return
+		}
 		if m := h.managed(req.SessionID); m != nil {
 			m.markUserStopped()  // intentional delete → run() drops the record (not a crash to preserve)
 			_ = m.sess.Stop(ctx) // interrupt any running turn
@@ -3979,8 +4218,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.broadcastSessionList()
 
 	case protocol.TypeSessionRename:
+		if !h.requireCapability(conn, env.ID, capSteer, "rename a session") {
+			return
+		}
 		var req protocol.SessionRename
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad session.rename")
+			return
+		}
 		m := h.managed(req.SessionID)
 		if m == nil {
 			h.sendErr(conn, env.ID, "unknown session")
@@ -4193,8 +4438,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.LSPSymbols{Symbols: toProtoSymbols(syms)})
 
 	case protocol.TypeLSPRename:
+		if !h.requireCapability(conn, env.ID, capSteer, "rename a symbol") {
+			return
+		}
 		var req protocol.LSPRenameReq
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad lsp.rename")
+			return
+		}
 		files, err := h.applyRename(ctx, req)
 		if err != nil {
 			h.sendErr(conn, env.ID, err.Error())
@@ -4203,8 +4454,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.LSPRenameResult{Files: files, Count: len(files)})
 
 	case protocol.TypeRunTest:
+		if !h.requireCapability(conn, env.ID, capSteer, "run tests") {
+			return
+		}
 		var req protocol.RunTest
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad run.test")
+			return
+		}
 		h.sendOK(conn, env.ID, nil) // ack; results stream as run.output / run.result events
 		go h.runTest(req.SessionID, req.Command)
 
@@ -4238,8 +4495,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		})
 
 	case protocol.TypeLSPInstall:
+		if !h.requireCapability(conn, env.ID, capOwner, "install a language server") {
+			return
+		}
 		var req protocol.LSPDocReq
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad lsp.install")
+			return
+		}
 		// Runs a package manager (go install / npm -g / rustup / brew); may take minutes.
 		// It's on the network-dispatch path, so it doesn't block the receive loop.
 		msg, err := lsp.Install(ctx, req.Path)
@@ -4254,8 +4517,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.LSPInstallResult{OK: true, Installed: installed, Message: msg})
 
 	case protocol.TypeFSWrite:
+		if !h.requireCapability(conn, env.ID, capSteer, "write a file") {
+			return
+		}
 		var req protocol.FSWriteReq
-		_ = env.Unmarshal(&req)
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad fs.write")
+			return
+		}
 		f, conflict, err := h.fsGuard().Write(req.Path, req.Content, req.BaseSha)
 		if err != nil {
 			h.sendErr(conn, env.ID, err.Error())
