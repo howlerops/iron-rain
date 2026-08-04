@@ -2280,17 +2280,36 @@ public struct UsageReport: Codable, Equatable {
 }
 
 
+/// A pull request's CI rollup, flattened to what a phone-sized review screen can act on: how many
+/// checks passed, failed or are still running, plus the names of the failing ones (capped by the
+/// daemon). Absent when the PR has no checks — a repo without CI is not a failure. The counts are
+/// optional because the daemon omits zeroes.
+public struct PRChecks: Codable, Equatable {
+    public var state: String?      // SUCCESS | FAILURE | PENDING
+    public var passed: Int?
+    public var failed: Int?
+    public var pending: Int?
+    public var failing: [String]?
+    public var passedCount: Int { passed ?? 0 }
+    public var failedCount: Int { failed ?? 0 }
+    public var pendingCount: Int { pending ?? 0 }
+    public var total: Int { passedCount + failedCount + pendingCount }
+}
+
 /// A worktree's pull-request state, so the app can tell the user their work landed and offer to clean
-/// up — rather than leaving finished worktrees on disk forever.
+/// up — rather than leaving finished worktrees on disk forever. Checks rides along because the
+/// decision made off this screen is whether to merge, and "PR open" alone doesn't say whether it's
+/// safe to.
 public struct WorktreeStatusResult: Codable, Equatable {
     public var sessionID: String
     public var branch: String
     public var state: String?      // OPEN | MERGED | CLOSED; nil when there is no PR
     public var url: String?
     public var hasRemote: Bool
+    public var checks: PRChecks?
     public var merged: Bool { state == "MERGED" }
     enum CodingKeys: String, CodingKey {
-        case branch, state, url
+        case branch, state, url, checks
         case sessionID = "session_id", hasRemote = "has_remote"
     }
 }

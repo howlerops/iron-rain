@@ -78,6 +78,25 @@ struct WorktreePanel: View {
                         .listRowBackground(Color.clear)
                 }
 
+                if let st = model.worktreeStatus, let prState = st.state, !prState.isEmpty {
+                    Section {
+                        LabeledContent("State", value: prState.capitalized)
+                        if let c = st.checks { checksRow(c) }
+                        if let u = st.url, let link = URL(string: u) {
+                            Link(destination: link) {
+                                Label("Open on GitHub", systemImage: "arrow.up.right.square")
+                            }
+                        }
+                        Button {
+                            Task { await model.refreshWorktreeStatus() }
+                        } label: {
+                            Label("Refresh checks", systemImage: "arrow.clockwise")
+                        }
+                    } header: {
+                        Text("Pull request")
+                    }
+                }
+
                 Section("Open a pull request") {
                     TextField("Title", text: $prTitle).textFieldStyle(.roundedBorder)
                     TextField("Description (optional)", text: $prBody, axis: .vertical)
@@ -105,7 +124,7 @@ struct WorktreePanel: View {
             }
             .onAppear {
                 prTitle = session?.workspaceName ?? ""
-                Task { await model.worktreeDiff(); await model.loadConflicts() }
+                Task { await model.worktreeDiff(); await model.loadConflicts(); await model.refreshWorktreeStatus() }
             }
             .confirmationDialog("Remove this worktree?", isPresented: $confirmRemove, titleVisibility: .visible) {
                 Button("Remove", role: .destructive) {
@@ -118,5 +137,52 @@ struct WorktreePanel: View {
                 Button("Cancel", role: .cancel) {}
             }
         }
+    }
+
+    /// The PR's CI verdict: one coloured badge with the counts, then the failing check names. This is
+    /// the difference between "there's a PR" and "it's safe to land" — the whole reason someone
+    /// reviewing from their phone opens this panel.
+    @ViewBuilder private func checksRow(_ c: PRChecks) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: checksIcon(c)).font(.caption).foregroundStyle(checksTint(c))
+                Text(checksSummary(c)).font(.caption)
+            }
+            // Indexed: two CI apps can report the same check name, and \.self would collapse them.
+            ForEach(Array((c.failing ?? []).enumerated()), id: \.offset) { _, name in
+                Label(name, systemImage: "xmark.octagon")
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(palette.destructive)
+            }
+            // The daemon caps the names it sends, so say so rather than implying only these failed.
+            if c.failedCount > (c.failing?.count ?? 0) {
+                Text("+\(c.failedCount - (c.failing?.count ?? 0)) more failing")
+                    .font(.caption2).foregroundStyle(palette.mutedForeground)
+            }
+        }
+    }
+
+    private func checksIcon(_ c: PRChecks) -> String {
+        switch c.state {
+        case "SUCCESS": return "checkmark.circle.fill"
+        case "FAILURE": return "xmark.circle.fill"
+        default: return "clock"
+        }
+    }
+
+    private func checksTint(_ c: PRChecks) -> Color {
+        switch c.state {
+        case "SUCCESS": return .green
+        case "FAILURE": return palette.destructive
+        default: return palette.mutedForeground
+        }
+    }
+
+    private func checksSummary(_ c: PRChecks) -> String {
+        var parts: [String] = []
+        if c.passedCount > 0 { parts.append("\(c.passedCount) passed") }
+        if c.failedCount > 0 { parts.append("\(c.failedCount) failed") }
+        if c.pendingCount > 0 { parts.append("\(c.pendingCount) running") }
+        return parts.isEmpty ? "No checks" : parts.joined(separator: " · ")
     }
 }

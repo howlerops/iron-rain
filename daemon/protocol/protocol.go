@@ -1971,14 +1971,28 @@ type WorktreeStatus struct {
 	SessionID string `json:"session_id"`
 }
 
+// PRChecks is a pull request's CI rollup flattened to what a review screen can act on: how many
+// checks passed, failed or are still running, plus the names of the failing ones (capped). Absent
+// when the PR has no checks at all — a repo without CI is not a failure.
+type PRChecks struct {
+	State   string   `json:"state,omitempty"` // SUCCESS | FAILURE | PENDING
+	Passed  int      `json:"passed,omitempty"`
+	Failed  int      `json:"failed,omitempty"`
+	Pending int      `json:"pending,omitempty"`
+	Failing []string `json:"failing,omitempty"`
+}
+
 // WorktreeStatusResult reports the branch's pull-request state. State is "" when there is no PR (or
-// no gh), which is normal and not an error.
+// no gh), which is normal and not an error. Checks rides along because someone reviewing a worktree
+// from their phone decides whether to merge off this one reply — "PR open" alone doesn't say whether
+// it's safe to land.
 type WorktreeStatusResult struct {
-	SessionID string `json:"session_id"`
-	Branch    string `json:"branch"`
-	State     string `json:"state,omitempty"` // OPEN | MERGED | CLOSED
-	URL       string `json:"url,omitempty"`
-	HasRemote bool   `json:"has_remote"`
+	SessionID string    `json:"session_id"`
+	Branch    string    `json:"branch"`
+	State     string    `json:"state,omitempty"` // OPEN | MERGED | CLOSED
+	URL       string    `json:"url,omitempty"`
+	HasRemote bool      `json:"has_remote"`
+	Checks    *PRChecks `json:"checks,omitempty"`
 }
 
 // DeviceInfo is one client enrolled to reach this daemon, identified by the static key the Noise

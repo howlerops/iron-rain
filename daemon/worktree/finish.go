@@ -365,27 +365,140 @@ func MergeIntoDefault(ctx context.Context, repoRoot, branch string) error {
 	return nil
 }
 
-// PRState reports a branch's pull-request state ("OPEN", "MERGED", "CLOSED") and its URL, so the app
-// can tell the user their work actually landed instead of leaving the worktree around forever. An
-// empty state means there is no PR (or gh cannot answer), which is not an error.
-func PRState(ctx context.Context, worktreePath, branch string) (state, url string, err error) {
+// maxFailingChecks caps how many failing check names travel to the app. The point is to say WHAT
+// broke at a glance on a phone-sized review screen, not to reproduce a whole CI matrix.
+const maxFailingChecks = 5
+
+// PRChecks summarizes a pull request's CI rollup. Counts and failing names are all a review screen
+// can act on; the raw rollup is most of a page of JSON. Passed folds in NEUTRAL/SKIPPED runs because
+// GitHub's own merge gate treats them as non-blocking.
+type PRChecks struct {
+	State   string   // SUCCESS | FAILURE | PENDING
+	Passed  int
+	Failed  int
+	Pending int
+	Failing []string // names of the failing checks, capped at maxFailingChecks
+}
+
+// PRInfo is a branch's pull-request state, URL and CI rollup. State is "" when there is no PR (or gh
+// cannot answer), which is normal and not an error; Checks is nil when the PR has no checks at all —
+// distinct from checks that exist but haven't reported yet.
+type PRInfo struct {
+	State  string // OPEN | MERGED | CLOSED
+	URL    string
+	Checks *PRChecks
+}
+
+// PRState reports a branch's pull-request state, so the app can tell the user their work actually
+// landed instead of leaving the worktree around forever — and whether CI passed, because someone
+// reviewing a worktree from their phone decides to merge off this one screen.
+func PRState(ctx context.Context, worktreePath, branch string) (PRInfo, error) {
 	if _, err := exec.LookPath("gh"); err != nil {
-		return "", "", nil
+		return PRInfo{}, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, gitNetworkTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "gh", "pr", "view", branch, "--json", "state,url")
+	cmd := exec.CommandContext(ctx, "gh", "pr", "view", branch, "--json", "state,url,statusCheckRollup")
 	cmd.Dir = worktreePath
 	out, err := cmd.Output()
 	if err != nil {
-		return "", "", nil // no PR for this branch is the common case, not a failure
+		return PRInfo{}, nil // no PR for this branch is the common case, not a failure
 	}
+	return parsePRView(out)
+}
+
+// parsePRView reads `gh pr view --json state,url,statusCheckRollup` output. The rollup is a flat
+// array of two different GraphQL node types — CheckRun (status + conclusion + name) and the older
+// StatusContext (state + context) — and GitHub keeps adding conclusions to both, so a node that
+// matches neither shape is skipped rather than failing the whole status call: a status screen that
+// errors out is worse than one missing a check.
+func parsePRView(data []byte) (PRInfo, error) {
 	var res struct {
-		State string `json:"state"`
-		URL   string `json:"url"`
+		State  string `json:"state"`
+		URL    string `json:"url"`
+		Rollup []struct {
+			Name       string `json:"name"`       // CheckRun
+			Status     string `json:"status"`     // CheckRun: QUEUED | IN_PROGRESS | COMPLETED | …
+			Conclusion string `json:"conclusion"` // CheckRun, only once COMPLETED
+			Context    string `json:"context"`    // StatusContext
+			State      string `json:"state"`      // StatusContext
+		} `json:"statusCheckRollup"`
 	}
-	if err := json.Unmarshal(out, &res); err != nil {
-		return "", "", err
+	if err := json.Unmarshal(data, &res); err != nil {
+		return PRInfo{}, err
 	}
-	return res.State, res.URL, nil
+	info := PRInfo{State: res.State, URL: res.URL}
+
+	var checks PRChecks
+	for _, n := range res.Rollup {
+		name := n.Name
+		if name == "" {
+			name = n.Context
+		}
+		var verdict string
+		switch {
+		case n.Status != "" || n.Conclusion != "": // CheckRun
+			// An unfinished run has no conclusion yet, so status decides; a run reported without a
+			// status is judged on its conclusion alone.
+			if n.Status == "" || strings.EqualFold(n.Status, "COMPLETED") {
+				verdict = classifyConclusion(n.Conclusion)
+			} else {
+				verdict = "pending"
+			}
+		case n.State != "": // StatusContext
+			verdict = classifyState(n.State)
+		}
+		switch verdict {
+		case "pass":
+			checks.Passed++
+		case "fail":
+			checks.Failed++
+			if name != "" && len(checks.Failing) < maxFailingChecks {
+				checks.Failing = append(checks.Failing, name)
+			}
+		case "pending":
+			checks.Pending++
+		}
+	}
+	if checks.Passed+checks.Failed+checks.Pending > 0 {
+		switch {
+		case checks.Failed > 0:
+			// A failure outranks work still in flight: the pending runs can't un-fail it, and a green
+			// "pending" badge over a broken build is exactly the lie this feature exists to prevent.
+			checks.State = "FAILURE"
+		case checks.Pending > 0:
+			checks.State = "PENDING"
+		default:
+			checks.State = "SUCCESS"
+		}
+		info.Checks = &checks
+	}
+	return info, nil
+}
+
+// classifyConclusion maps a CheckRun conclusion. NEUTRAL/SKIPPED count as passing (GitHub's merge
+// gate treats them as non-blocking); an unrecognised conclusion is dropped rather than guessed at.
+func classifyConclusion(c string) string {
+	switch strings.ToUpper(c) {
+	case "SUCCESS", "NEUTRAL", "SKIPPED":
+		return "pass"
+	case "FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "STALE":
+		return "fail"
+	case "PENDING":
+		return "pending"
+	}
+	return ""
+}
+
+// classifyState maps a StatusContext state (the older commit-status API).
+func classifyState(s string) string {
+	switch strings.ToUpper(s) {
+	case "SUCCESS":
+		return "pass"
+	case "FAILURE", "ERROR":
+		return "fail"
+	case "PENDING", "EXPECTED":
+		return "pending"
+	}
+	return ""
 }
