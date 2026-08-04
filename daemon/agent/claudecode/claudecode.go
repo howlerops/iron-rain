@@ -81,6 +81,16 @@ func New(sidecar []string) *Provider {
 			_ = json.Unmarshal(data, &p.resume)
 		}
 	}
+	// A daemon that was SIGKILLed ran no cleanup at all, so its sidecars are still out there holding
+	// SDK connections and `claude` children. This is the one moment we can tell "ours, abandoned"
+	// apart from "someone else's, still live" without guessing: we have not spawned any child yet, so
+	// nothing with our sidecar path can legitimately be an orphan of ours. See sweep.go for exactly
+	// how narrowly that call is made — getting it wrong would kill a second daemon's running work.
+	if len(sidecar) == 2 {
+		if pids := SweepOrphanSidecars(sidecar[1]); len(pids) > 0 {
+			log.Printf("claude-code: reaped %d sidecar(s) orphaned by a previous daemon: %v", len(pids), pids)
+		}
+	}
 	return p
 }
 
@@ -534,6 +544,12 @@ func (p *Provider) start(ctx context.Context, cwd, id, mode, prompt string, plan
 	// invisible to anyone not tailing the daemon's own output.
 	cmd.Stderr = procutil.LogWriter("claude-sidecar[" + id + "]")
 	procutil.Isolate(cmd) // sidecar spawns node children — kill the tree, not just the wrapper
+	// Isolate is what makes the sidecar a process-group LEADER (pgid == its own pid). Tell it so:
+	// on the path where it has to force-exit (see sidecar.mjs) it kills its own group to take the
+	// `claude` child with it, and a negative pid is only safe to signal when you lead that group.
+	// Node has no getpgrp(), so this flag is the sidecar's only way to know — and it is set here,
+	// on the one line that makes it true, so the two can never drift apart.
+	cmd.Env = append(cmd.Env, "OCULUS_SIDECAR_PGLEADER=1")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		cancel()
@@ -737,20 +753,38 @@ func (s *session) SetMode(_ context.Context, mode string) error {
 	return s.send(inMsg{T: "mode", Text: mode})
 }
 
+// Close ends the session and REAPS the sidecar's whole process tree. Every step below is
+// load-bearing and the order matters.
+//
+// Closing stdin first is the cooperative path: the sidecar sees EOF, interrupts its turn and lets the
+// Agent SDK shut down the `claude` child it spawned through the SDK's own cleanup, so the common case
+// tears down with no signals at all and no truncated events (see sidecar.mjs's EOF handler).
+//
+// TerminateGroup is what makes the reap UNCONDITIONAL, and it has to be here precisely BECAUSE
+// procutil.Isolate put the sidecar in its own process group. That isolation is deliberate — it is how
+// a runaway tool tree gets killed as a unit — but it also means the sidecar never receives the
+// daemon's process-group signals, so nothing ends it implicitly and explicit reaping is mandatory.
+// cancel() alone was never enough either: exec.CommandContext's cancellation kills only the DIRECT
+// child, so it would leave the `claude` process the sidecar spawned running, reparented to launchd,
+// invisible to everything. Skipping this is how 143 orphaned sidecars — 284 processes counting their
+// `claude` children, 12.7 GB resident, the oldest a week old — accumulated on one machine.
 func (s *session) Close() error {
 	s.closeOnce.Do(func() {
 		close(s.done)
-		// Close stdin first so the sidecar sees EOF and can shut down gracefully; the
-		// ctx-cancel below is the backstop that force-kills it. Either way readLoop
-		// drains stdout to EOF and the reaping goroutine then Wait()s the child.
 		if s.stdin != nil {
 			s.writeMu.Lock()
 			_ = s.stdin.Close()
 			s.writeMu.Unlock()
 		}
+		// SIGTERM the whole group, a short grace for the cooperative exit above to land, then SIGKILL.
+		// Safe on a sidecar that already exited, and safe to reach twice (closeOnce makes it once).
+		procutil.TerminateGroup(s.cmd)
+		// Release the CommandContext watcher goroutine. The process is already gone by here; this is
+		// bookkeeping, not the kill it used to be mistaken for.
 		if s.cancel != nil {
 			s.cancel()
 		}
+		// readLoop drains stdout to EOF either way and the reaping goroutine then Wait()s the child.
 	})
 	return nil
 }

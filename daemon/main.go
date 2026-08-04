@@ -172,7 +172,7 @@ func serve(args []string) error {
 	}
 
 	h := hub.New()
-	defer h.Shutdown() // stop language servers on exit
+	defer h.Shutdown() // stop language servers AND reap every agent child on exit (see hub.Shutdown)
 	h.SetWakeGuard(wake.New())
 	// Per-device enrollment: pairing records WHICH device connected, so one can be revoked without
 	// rotating the secret and re-pairing everything you own.
@@ -441,6 +441,13 @@ func serve(args []string) error {
 		defer cancel()
 		// Stop accepting first, then let the deferred Shutdown/Close chain above unwind.
 		_ = httpSrv.Shutdown(ctx)
+		// Reap the agent children HERE rather than leaving it to the deferred h.Shutdown(). Defers run
+		// LIFO, and h.Shutdown is registered FIRST, so it would run LAST — after the SQLite store and
+		// the transcript writer had already been closed underneath the session goroutines that are
+		// still draining their final events. Calling it explicitly ends every agent child (which
+		// procutil.Isolate means nothing else will) while the stores it writes through are still open.
+		// The defer stays as the backstop for the error-return path above; Shutdown is idempotent.
+		h.Shutdown()
 		return nil
 	}
 }

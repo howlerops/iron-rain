@@ -95,7 +95,8 @@ function canUseTool(toolName, input) {
 let currentQuery = null;
 
 // --- daemon -> sidecar commands ---
-createInterface({ input: process.stdin }).on("line", (line) => {
+const rl = createInterface({ input: process.stdin });
+rl.on("line", (line) => {
   line = line.trim();
   if (!line) return;
   let m;
@@ -149,6 +150,64 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     }
   }
 });
+
+// --- stdin EOF: the daemon is gone, so we must go too ---
+//
+// This is the ONE teardown path that survives every way the daemon can die, including a SIGKILL, an
+// OOM kill or a panic that runs no cleanup at all: however the parent went, the kernel closes its end
+// of our stdin pipe and we read EOF. It has to exist because the daemon deliberately starts us in our
+// OWN process group (daemon/procutil.Isolate, so a runaway tool tree can be killed as a unit) — which
+// also means we never receive the process-group signals that would otherwise take us down with the
+// daemon. NOTHING kills this process implicitly. Before this handler existed, the readline above kept
+// the event loop alive forever with no reader on the other end, and every abandoned sidecar sat here
+// holding an open Agent SDK connection and a live `claude` child of its own. Measured on one machine:
+// 143 orphaned sidecars, 284 processes counting their children, 12.7 GB resident, the oldest a week
+// old — from ordinary daemon restarts.
+//
+// EOF on a pipe is not a transient condition and cannot be retried: it means the write end is closed,
+// i.e. the daemon called Close() on us or the daemon is dead. Either way this session is over.
+const exitGraceMs = Number(process.env.OCULUS_SIDECAR_EXIT_GRACE_MS || 5000);
+let shuttingDown = false;
+
+function shutdownOnEOF() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  ended = true;
+  pushInput(null); // end the input generator so the query loop finishes instead of awaiting forever
+  // Interrupt the in-flight turn so the SDK tears down its `claude` child through its OWN cleanup —
+  // that is what lets the loop below fall through to a normal exit with nothing orphaned one level
+  // down. This does not truncate the stream: writes already handed to stdout stay queued, and the
+  // SDK's post-interrupt `result` message is still forwarded by the loop that is running right now,
+  // so a graceful daemon-side Close() gets its final usage/idle frames rather than a cut-off stream.
+  try {
+    if (currentQuery && typeof currentQuery.interrupt === "function") currentQuery.interrupt();
+  } catch {}
+  // Backstop, deliberately unref'd: if the query loop does wind down, this timer never holds the
+  // process open and we exit naturally with the SDK's cleanup done. It fires ONLY when something
+  // else is still keeping the event loop alive (a child holding a pipe, an await that never settles)
+  // — which is exactly the state that produced the week-old orphans.
+  const t = setTimeout(() => hardExit(0), exitGraceMs);
+  if (typeof t.unref === "function") t.unref();
+}
+
+// hardExit is the last resort, used only when the graceful wind-down above did not finish in time.
+// A plain process.exit() would leave the SDK's `claude` child running and simply move the leak one
+// level down, so we signal our OWN process group first: a negative pid names a whole process group,
+// and when we lead our own group that is exactly this sidecar plus everything it spawned.
+//
+// It is only ever safe to do that if we ARE the group leader — otherwise the negative pid names
+// somebody else's group, which is unthinkable. Node exposes no getpgrp(), so we do not guess: the
+// daemon sets OCULUS_SIDECAR_PGLEADER when (and only when) it called procutil.Isolate on us, which is
+// what makes pgid == pid true. Started any other way the flag is absent and we exit alone, accepting
+// a possible orphan rather than risking a signal aimed at processes we do not own.
+function hardExit(code) {
+  try {
+    if (process.env.OCULUS_SIDECAR_PGLEADER === "1") process.kill(-process.pid, "SIGKILL");
+  } catch {}
+  process.exit(code);
+}
+
+rl.on("close", shutdownOnEOF);
 
 // --- run the session ---
 const planMode = process.env.OCULUS_PLAN === "1";
@@ -284,3 +343,9 @@ try {
   send({ t: "idle" });
   process.exit(1);
 }
+
+// The query loop ended normally. If stdin already EOF'd there is no daemon left to talk to and no
+// further prompt can ever arrive, so leave — the loop having completed means the SDK's own cleanup
+// already ran and its `claude` child is gone, which is why this is a plain exit and not hardExit.
+// Without this the readline above would keep the process alive at EOF with nothing to read.
+if (shuttingDown) process.exit(0);

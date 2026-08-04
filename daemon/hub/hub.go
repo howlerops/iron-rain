@@ -1057,11 +1057,99 @@ func New() *Hub {
 	return h
 }
 
-// Shutdown stops background subsystems (language servers). Call on daemon exit.
+// shutdownCloseBudget bounds the whole session sweep in Shutdown. Closing a session is a pipe close
+// plus a short kill grace per provider (procutil's TERM→KILL window is 500ms), so the healthy case
+// finishes well inside a second. The budget exists purely so that ONE wedged provider — a Close
+// blocked writing to a process that stopped reading, say — cannot hold the daemon open until whoever
+// is stopping us loses patience and sends SIGKILL, which would orphan every child this function
+// exists to reap.
+const shutdownCloseBudget = 5 * time.Second
+
+// Shutdown stops background subsystems (language servers) and reaps every live agent child.
+// Call on daemon exit.
+//
+// The session sweep is not tidy-up bookkeeping, it is the whole point. Every native provider starts
+// its harness in its OWN process group (procutil.Isolate, so a runaway tool tree can be killed as a
+// unit), which means those children do NOT die with the daemon the way an ordinary child would:
+// nothing signals them, and simply exiting leaves each one reparented to launchd, still holding an
+// SDK connection and its own subprocess, for as long as the machine stays up. The measured cost of
+// not doing this was 143 orphaned claude-code sidecars — 284 processes counting their `claude`
+// children — 12.7 GB resident, the oldest a week old, all from ordinary daemon restarts. Explicit
+// reaping is the only thing that ends them on a graceful stop.
+//
+// Closing a session ends its provider event stream, which lands in run() → detachSession: the durable
+// record and the transcript are PRESERVED (removeSession, which drops them, runs only for a
+// user-initiated stop), so a restart restores exactly what it restores today.
 func (h *Hub) Shutdown() {
+	h.silenceNotifications()
 	if h.lsp != nil {
 		h.lsp.Shutdown()
 	}
+	h.closeSessions(shutdownCloseBudget)
+}
+
+// silenceNotifications detaches the outbound alert sinks before anything is torn down.
+//
+// A session with an OPEN turn ends as an "abandoned" turn, and that path legitimately pages the user
+// ("… stopped responding") and files a needs-you item in the activity feed — behaviour that exists so
+// an agent dying on a sleeping Mac is not silent. During a planned shutdown it is a false alarm about
+// a failure the daemon itself caused, and it would fire on every restart (including every
+// self-update) once for each busy session. The process is exiting; there is no later work these sinks
+// serve, so dropping them is both safe and the narrowest available fix.
+func (h *Hub) silenceNotifications() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.notifier = nil
+	h.slack = nil
+	h.pushTokens = nil
+	h.activity = nil
+}
+
+// closeSessions closes every live session and returns how many it closed.
+//
+// In PARALLEL because the providers are independent and a serial sweep would multiply each one's kill
+// grace by the number of live sessions — a machine with a dozen sessions would spend that long on a
+// path the user is waiting on. Bounded because shutdown has to terminate no matter what a provider
+// does. Close is idempotent on every provider (each guards with a sync.Once), so racing it against a
+// session that is already tearing itself down is safe, as is calling it on one that already exited.
+func (h *Hub) closeSessions(budget time.Duration) int {
+	h.mu.Lock()
+	live := make([]agent.Session, 0, len(h.sessions))
+	for _, m := range h.sessions {
+		if m != nil && m.sess != nil {
+			live = append(live, m.sess)
+		}
+	}
+	h.mu.Unlock()
+	if len(live) == 0 {
+		return 0
+	}
+	var wg sync.WaitGroup
+	for _, sess := range live {
+		wg.Add(1)
+		go func(sess agent.Session) {
+			defer wg.Done()
+			// A provider panicking in Close must not take the shutdown path down with it: the sessions
+			// we had not reached yet would then become exactly the orphans this exists to prevent.
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("hub: panic closing session on shutdown: %v", r)
+				}
+			}()
+			_ = sess.Close()
+		}(sess)
+	}
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+		log.Printf("hub: shutdown closed %d agent session(s)", len(live))
+	case <-time.After(budget):
+		// Report it rather than hiding it — a session that would not close is a child we may well have
+		// just leaked, and it is the only clue anyone gets after the process is gone.
+		log.Printf("hub: shutdown gave up after %s waiting on %d agent session(s) to close", budget, len(live))
+	}
+	return len(live)
 }
 
 func toProtoDiags(diags []lsp.Diagnostic) []protocol.LSPDiagnostic {
