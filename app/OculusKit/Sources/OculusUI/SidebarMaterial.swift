@@ -64,10 +64,45 @@ struct PanelMaterial: ViewModifier {
     }
 }
 
+/// True for anything rendered inside the sidebar column.
+///
+/// Several views appear in BOTH the sidebar and the detail pane — `DestinationHint` is in both, and
+/// `ActivityView` is the Activity column as well as content. Each of them painted
+/// `.background(palette.background)`, which is right in the detail (it is the window's surface) and
+/// wrong in the sidebar, where it covers the material with an opaque white slab. That is why the
+/// lower half of the column went white on Loops, Issues and Activity while the rail above stayed
+/// translucent — two different backgrounds meeting mid-column.
+///
+/// A flag threaded through initialisers would work but would have to be plumbed through every call
+/// site; the environment carries it to whatever the column happens to contain, including views added
+/// later that nobody remembers to update.
+private struct InSidebarColumnKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var inSidebarColumn: Bool {
+        get { self[InSidebarColumnKey.self] }
+        set { self[InSidebarColumnKey.self] = newValue }
+    }
+}
+
 extension View {
-    /// Applies the sidebar material on systems that don't provide one.
-    func sidebarMaterial() -> some View { modifier(SidebarMaterial()) }
+    /// Applies the sidebar material on systems that don't provide one, and marks everything inside
+    /// as sidebar content so it knows not to paint its own opaque background.
+    func sidebarMaterial() -> some View {
+        modifier(SidebarMaterial()).environment(\.inSidebarColumn, true)
+    }
     func panelMaterial() -> some View { modifier(PanelMaterial()) }
+
+    /// An opaque surface fill that steps aside inside the sidebar column.
+    ///
+    /// Use in place of `.background(palette.background)` on any view that can be hosted in either
+    /// place. In the detail pane it behaves exactly as before.
+    @ViewBuilder
+    func surfaceBackground(_ color: Color, inSidebar: Bool) -> some View {
+        if inSidebar { self } else { self.background(color) }
+    }
 }
 
 #if os(macOS)

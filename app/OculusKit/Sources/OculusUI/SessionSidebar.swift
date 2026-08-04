@@ -141,6 +141,7 @@ struct SessionSidebar: View {
     /// Status is carried by colour in several dense chips; when the user has asked the system not to
     /// rely on colour, those chips grow their text label back.
     @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
+    @Environment(\.inSidebarColumn) private var inSidebarColumn
     /// A live terminal row from the strip awaiting confirmation before we take it over.
     /// The row whose `claude --resume` command was just copied — a one-shot "Copied" acknowledgement.
     @State private var copiedResumeFor: String?
@@ -466,7 +467,7 @@ struct SessionSidebar: View {
         }
         .padding(.horizontal, 22)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(palette.background)
+        .surfaceBackground(palette.background, inSidebar: inSidebarColumn)
     }
 
     /// The brand read on the selected row.

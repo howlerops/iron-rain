@@ -216,6 +216,7 @@ struct DestinationHint: View {
     let symbol: String
     let title: String
     let message: String
+    @Environment(\.inSidebarColumn) private var inSidebarColumn
     var body: some View {
         VStack(spacing: 12) {
             Image(systemName: symbol).font(.largeTitle).foregroundStyle(palette.mutedForeground.opacity(0.5))
@@ -225,7 +226,7 @@ struct DestinationHint: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(24)
-        .background(palette.background)
+        .surfaceBackground(palette.background, inSidebar: inSidebarColumn)
     }
 }
 
@@ -237,6 +238,7 @@ struct LoopsListColumn: View {
     @Binding var selected: String?
     var onOpen: (String) -> Void
     var onNew: () -> Void
+    @Environment(\.inSidebarColumn) private var inSidebarColumn
 
     var body: some View {
         VStack(spacing: 0) {
@@ -269,7 +271,7 @@ struct LoopsListColumn: View {
                 .padding(.vertical, 6).padding(.horizontal, 8)
             }
         }
-        .background(palette.background)
+        .surfaceBackground(palette.background, inSidebar: inSidebarColumn)
     }
 
     private func row(_ loop: Loop) -> some View {

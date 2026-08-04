@@ -19,6 +19,7 @@ struct ActivityView: View {
     /// The status chip is a dot/glyph with no text in this dense feed. When the user has asked the
     /// system not to rely on colour, spell the state out beside it.
     @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
+    @Environment(\.inSidebarColumn) private var inSidebarColumn
     /// Whether this destination is actually on screen — see the announcement below.
     @State private var onScreen = false
 
@@ -60,7 +61,7 @@ struct ActivityView: View {
             }
             .padding(.vertical, 8)
         }
-        .background(palette.background)
+        .surfaceBackground(palette.background, inSidebar: inSidebarColumn)
         // Approvals arrive (and are answered on other clients) with no focus change to carry them, so
         // a VoiceOver user's inbox silently gains and loses the rows that can actually be acted on.
         // Guarded on visibility because an unselected iOS tab stays alive and still gets onChange —
