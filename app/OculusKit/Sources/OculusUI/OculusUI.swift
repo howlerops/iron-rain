@@ -214,8 +214,20 @@ public final class Model: ObservableObject {
     public var pendingPlan = false
 
     private var client: OculusClient?
-    private let clientPrivate = OculusCrypto.generatePrivateKey()
     private let defaults = UserDefaults.standard
+    /// This device's X25519 private key, cached for the life of the model once resolved.
+    ///
+    /// It used to be `let clientPrivate = OculusCrypto.generatePrivateKey()` — a brand-new keypair on
+    /// every launch. That single line broke device revocation completely: the daemon identifies
+    /// devices by this public key, so a revoked phone that was force-quit and reopened arrived as a
+    /// key nobody had ever seen, took the first-sight branch, and was authorized. The registry was a
+    /// list of app launches. Persisting the key (Keychain, ThisDeviceOnly) is what gives "revoke this
+    /// device" something to bind to.
+    private var cachedClientPrivate: Data?
+    /// macOS only: the bootstrap code from ~/.oculus/pairing.json, kept as a recovery credential for
+    /// when the daemon refuses our stored one (it was reinstalled and no longer knows this device).
+    /// Never used ahead of the stored credential — see attemptConnect.
+    var localBootstrapSecret = ""
     /// In-flight request/reply calls (fs.*), keyed by envelope id, resolved in receiveLoop.
     private var pendingRequests: [String: CheckedContinuation<Envelope, Error>] = [:]
     /// Decoded tracker images keyed by URL (fetched through the daemon; auth-gated).
@@ -254,8 +266,10 @@ public final class Model: ObservableObject {
         // Restore the last pairing so the app auto-reconnects without re-pairing.
         wsURL = defaults.string(forKey: Keys.ws) ?? wsURL
         daemonPubHex = defaults.string(forKey: Keys.pub) ?? ""
-        secret = defaults.string(forKey: Keys.secret) ?? ""
         relayURL = defaults.string(forKey: Keys.relay) ?? ""
+        // Keychain first, with a one-time migration of any plaintext copy an earlier build left in
+        // UserDefaults — an upgrade must not present the user with an unpaired app.
+        secret = loadCredential()
         loadIssuePrefs()
         selectedProjectID = defaults.string(forKey: BoardKeys.project)
         if let p = selectedProjectID { loadBoardPrefs(for: p) }
@@ -302,8 +316,76 @@ public final class Model: ObservableObject {
         guard !managed else { return } // a DesktopStore persists managed connections
         defaults.set(wsURL, forKey: Keys.ws)
         defaults.set(daemonPubHex, forKey: Keys.pub)
-        defaults.set(secret, forKey: Keys.secret) // TODO: move the secret to the Keychain
         defaults.set(relayURL, forKey: Keys.relay)
+        // The credential goes to the Keychain, never to UserDefaults. A plist is plaintext, it is in
+        // unencrypted backups, and this string reaches a shell on the paired Mac.
+        saveCredential()
+    }
+
+    /// Writes the current credential to the Keychain and scrubs any copy an older build left in
+    /// UserDefaults. The scrub matters as much as the write: migrating forward while leaving the
+    /// plaintext copy behind would fix nothing for every user who already has one.
+    private func saveCredential() {
+        guard !daemonPubHex.isEmpty else { return }
+        if secret.isEmpty {
+            Keychain.remove(Keychain.credentialAccount(daemonPub: daemonPubHex))
+        } else {
+            Keychain.set(secret, for: Keychain.credentialAccount(daemonPub: daemonPubHex))
+        }
+        if !managed { defaults.removeObject(forKey: Keys.secret) }
+    }
+
+    /// Loads the stored credential for this daemon, migrating a legacy UserDefaults copy on the way.
+    private func loadCredential() -> String {
+        guard !daemonPubHex.isEmpty else { return "" }
+        if let c = Keychain.get(Keychain.credentialAccount(daemonPub: daemonPubHex)) { return c }
+        // Pre-Keychain build: adopt the plaintext value once, then delete it.
+        if let legacy = defaults.string(forKey: Keys.secret), !legacy.isEmpty {
+            Keychain.set(legacy, for: Keychain.credentialAccount(daemonPub: daemonPubHex))
+            defaults.removeObject(forKey: Keys.secret)
+            return legacy
+        }
+        return ""
+    }
+
+    /// This device's stable X25519 private key for the paired daemon, created on first use.
+    ///
+    /// Falls back to an ephemeral key only when there is no daemon to key it against (nothing is
+    /// paired yet, so there is no identity to be stable about).
+    private func clientKey() -> Data {
+        if let k = cachedClientPrivate { return k }
+        guard !daemonPubHex.isEmpty else { return OculusCrypto.generatePrivateKey() }
+        let account = Keychain.deviceKeyAccount(daemonPub: daemonPubHex)
+        if let hex = Keychain.get(account), let data = Data(hexString: hex), !data.isEmpty {
+            cachedClientPrivate = data
+            return data
+        }
+        let fresh = OculusCrypto.generatePrivateKey()
+        Keychain.set(fresh.map { String(format: "%02x", $0) }.joined(), for: account)
+        cachedClientPrivate = fresh
+        return fresh
+    }
+
+    /// Stores a credential the daemon just minted for this device and tells it the handover landed.
+    ///
+    /// The daemon waits for this acknowledgement before it starts the clock on the old permanent
+    /// pairing secret. A credential that was minted but never stored — the app was killed mid-frame,
+    /// or this is an older build that ignores the frame — must not cost the user the only credential
+    /// they still have.
+    func applyDeviceCredential(_ credential: String) {
+        guard !credential.isEmpty, !daemonPubHex.isEmpty else { return }
+        secret = credential
+        saveCredential()
+        onCredentialStored?(daemonPubHex, credential)
+        Task { await ackDeviceCredential() }
+    }
+
+    /// Called after a new credential is stored, so a DesktopStore can persist it for this desktop.
+    var onCredentialStored: (@MainActor (String, String) -> Void)?
+
+    private func ackDeviceCredential() async {
+        guard let client, let raw = try? Protocol.encode(id: "", type: MessageType.deviceCredentialAck) else { return }
+        try? await client.send(raw)
     }
 
     // MARK: connection
@@ -331,22 +413,67 @@ public final class Model: ObservableObject {
         // Always refresh the relay URL (the daemon may have been upgraded to a build that connects
         // to the shared relay), even once paired — so an existing local pairing gains remote access.
         if let relay = obj["relay"], !relay.isEmpty { relayURL = relay }
-        if !hasSavedPairing { applyPairing(url: ws, pub: pub, secret: sec, relay: obj["relay"] ?? "") }
+        // Keep the file's bootstrap code as a recovery credential even once paired: it is what heals a
+        // daemon reinstall that left this device unknown. It is never presented ahead of the
+        // per-device credential — see attemptConnect.
+        localBootstrapSecret = sec
+        // Trusted path: this came off a 0600 file in our own home directory, not off the network, so a
+        // changed key here is a daemon reinstall and must heal silently. See applyLocalPairing.
+        if !hasSavedPairing || (!pub.isEmpty && pub != daemonPubHex) {
+            applyLocalPairing(url: ws, pub: pub, secret: sec, relay: obj["relay"] ?? "")
+        }
         #endif
     }
 
-    /// The `oculus://pair?…` payload to encode in a QR for pairing a phone, using the
-    /// daemon's reachable public URL. Nil until we know a reachable URL + creds.
-    public var pairingURL: String? {
+    /// A freshly minted, single-use pairing URL and when it expires. Nil until one is minted.
+    ///
+    /// This used to be a computed property that rendered `secret` — the permanent, owner-equivalent
+    /// credential — into a URL and a QR. Anything that saw that QR held a key to the Mac forever:
+    /// a screenshot, the photo library it syncs to, a screen recording, someone across the table.
+    /// Now the QR carries a code the daemon mints on request, which is spent by the first device that
+    /// scans it and expires within minutes either way.
+    @Published public var pairingCode: PairCode?
+
+    /// Whether a pairing code is being minted (the QR sheet shows a spinner rather than a stale code).
+    @Published public var mintingPairCode = false
+
+    /// True once we can offer to pair another device — i.e. we're connected to a daemon as its owner.
+    public var canMintPairingCode: Bool { connected && !daemonPubHex.isEmpty }
+
+    /// Asks the daemon for a fresh single-use pairing code. This is the owner's re-pair path: a new
+    /// phone, a reinstall, a device that was revoked and is coming back.
+    public func mintPairingCode() async {
+        guard client != nil, !mintingPairCode else { return }
+        mintingPairCode = true
+        defer { mintingPairCode = false }
+        do {
+            let env = try await request(MessageType.pairCode, payload: Optional<Int>.none)
+            var code = try env.payload(as: PairCode.self)
+            // The daemon builds the URL from the address IT knows it is reachable at. Fall back to the
+            // address this app is actually connected on, so a code is never un-scannable just because
+            // the daemon couldn't name its own public URL.
+            if (code.url ?? "").isEmpty { code.url = localPairURL(for: code.code) }
+            pairingCode = code
+        } catch {
+            actionErrorTitle = "Couldn't create a pairing code"
+            actionError = error.localizedDescription
+        }
+    }
+
+    /// Discards the displayed code. Called when the pairing sheet closes: a code left on screen is a
+    /// live credential, and the sheet is exactly where someone screenshots one.
+    public func clearPairingCode() { pairingCode = nil }
+
+    private func localPairURL(for code: String) -> String? {
         let base = pairingPublicURL ?? (wsURL.isEmpty ? nil : wsURL)
-        guard let base, !daemonPubHex.isEmpty, !secret.isEmpty else { return nil }
+        guard let base, !daemonPubHex.isEmpty else { return nil }
         var c = URLComponents()
         c.scheme = "oculus"
         c.host = "pair"
         c.queryItems = [
             .init(name: "ws", value: base),
             .init(name: "pub", value: daemonPubHex),
-            .init(name: "secret", value: secret),
+            .init(name: "secret", value: code),
         ]
         if !relayURL.isEmpty {
             c.queryItems?.append(.init(name: "relay", value: relayURL))
@@ -381,7 +508,7 @@ public final class Model: ObservableObject {
         }
         guard !routes.isEmpty else { status = "No address to connect to"; return }
 
-        let priv = clientPrivate, sec = secret
+        let priv = clientKey(), sec = secret
         var winner: OculusClient?
         var winnerURL: URL?        // the route that won — displayed so "on relay" is never a guess
         var rejected: String?      // a route reached the daemon and it refused (wrong secret / key)
@@ -432,6 +559,7 @@ public final class Model: ObservableObject {
             connectionRouteHost = winnerURL?.host ?? ""
             status = connectionRoute.isEmpty ? "Connected" : "Connected · \(connectionRoute)"
             statusDetail = nil
+            consecutiveFailures = 0
             noteReachable()
             savePairing()
             startKeepalive()
@@ -441,11 +569,25 @@ public final class Model: ObservableObject {
         }
 
         // Every route failed.
+        if rejected != nil, !localBootstrapSecret.isEmpty, localBootstrapSecret != sec {
+            // The daemon reached us and refused our credential. On this Mac that has one likely cause:
+            // the daemon was reinstalled (or its device registry was cleared) and no longer knows this
+            // device. ~/.oculus/pairing.json is same-user-only and holds a bootstrap code for exactly
+            // this, so re-enroll with it once rather than presenting the user with a dead pairing.
+            secret = localBootstrapSecret
+            saveCredential()
+            await attemptConnect()
+            return
+        }
+        consecutiveFailures += 1
         status = "Connect failed"
         if let rejected {
             statusDetail = rejected.isEmpty ? "Pairing rejected" : "Pairing rejected: \(rejected)"
         } else {
-            statusDetail = Self.unreachableDetail(lastConnected: lastConnectedAt)
+            statusDetail = Self.unreachableDetail(
+                lastConnected: lastConnectedAt,
+                sustained: consecutiveFailures >= Self.sustainedFailureThreshold
+            )
         }
         scheduleReconnect()
     }
@@ -461,13 +603,38 @@ public final class Model: ObservableObject {
     /// recently and now nothing responds — not the LAN address, not any relay — the machine is
     /// almost certainly asleep, and that is an actionable sentence instead of a shrug. Static and
     /// pure so the wording is testable without a socket.
-    static func unreachableDetail(lastConnected: Date?, now: Date = Date()) -> String {
-        guard let lastConnected, now.timeIntervalSince(lastConnected) >= 0,
-              now.timeIntervalSince(lastConnected) < recentlyReachableWindow else {
-            return "Can’t reach this Mac" // daemon down / never paired / genuinely off the network
+    ///
+    /// `sustained` adds one defensive sentence, and it is here for a specific attack rather than for
+    /// completeness. A substituted daemon key fails closed but is INDISTINGUISHABLE from an
+    /// unreachable Mac from up here: the handshake dies inside the client and every non-rejection
+    /// error arrives as `.unreachable`. We deliberately do not guess which one it was — inventing a
+    /// "your Mac's identity changed" alarm out of a generic socket error would fire on every flaky
+    /// coffee-shop network and train people to ignore it.
+    ///
+    /// What we can do without guessing is refuse to leave the user with only one confident
+    /// explanation, because the attack's next step is offering them a fresh QR to "fix" it. Naming
+    /// where a pairing code must come from costs nothing when the Mac really is asleep, and removes
+    /// the attacker's leverage when it isn't.
+    static func unreachableDetail(lastConnected: Date?, now: Date = Date(), sustained: Bool = false) -> String {
+        var detail: String
+        if let lastConnected, now.timeIntervalSince(lastConnected) >= 0,
+           now.timeIntervalSince(lastConnected) < recentlyReachableWindow {
+            detail = "Your Mac may be asleep — wake it, or turn off sleep in System Settings › Battery."
+        } else {
+            detail = "Can’t reach this Mac" // daemon down / never paired / genuinely off the network
         }
-        return "Your Mac may be asleep — wake it, or turn off sleep in System Settings › Battery."
+        if sustained {
+            detail += " If this keeps happening, get a new pairing code from the Mac itself — don’t scan one someone sent you."
+        }
+        return detail
     }
+
+    /// How many connect attempts have failed back to back. Reset on every success.
+    private var consecutiveFailures = 0
+
+    /// Failures before the status text stops offering a single confident cause. Three is past a
+    /// transient blip and short of the point where someone goes looking for a QR code to scan.
+    private static let sustainedFailureThreshold = 3
 
     static let relayRouteLabel = "relay"
 
@@ -788,11 +955,117 @@ public final class Model: ObservableObject {
     }
 
     /// Fills the connect fields from a scanned pairing payload (oculus://pair?...).
-    public func applyPairing(url: String, pub: String, secret: String, relay: String = "") {
+    ///
+    /// Returns true when the pairing was applied, false when it would REPLACE the daemon identity key
+    /// we already pinned — in which case it is staged on `pendingKeyChange` and the caller must get an
+    /// explicit confirmation before calling `confirmKeyChange()`.
+    ///
+    /// Why this can't just assign, which is what it used to do:
+    ///
+    /// Pinning `daemonPubHex` is the ONLY thing standing between the user and a relay-side attacker.
+    /// The channel is derived from the pinned key, so a substituted daemon key fails closed — an
+    /// attacker cannot open the sealed proof or forge the verdict. That guarantee is worth exactly as
+    /// much as the pin's stability, and the pin was being overwritten by any scanned QR with no
+    /// comparison and no prompt.
+    ///
+    /// That turns a hard cryptographic barrier into a one-step social engineering problem, and the
+    /// step is easy because a real attack LOOKS like the thing that prompts a re-pair: substitution
+    /// presents as a connection that stopped working (see attemptConnect — the app cannot tell a
+    /// changed key from an unreachable Mac). Break the connection, offer a fresh QR, and the user
+    /// re-pairs to the attacker's key while the app says nothing at all. One accepted substitution is
+    /// permanent, because from then on the attacker's key IS the pin.
+    ///
+    /// So: first pairing is frictionless (trust on first use — there is nothing to compare against),
+    /// re-pairing to the same key is silent (the overwhelmingly common case), and a CHANGED key stops
+    /// and asks. See `applyLocalPairing` for the one case where a changed key is trustworthy evidence.
+    @discardableResult
+    public func applyPairing(url: String, pub: String, secret: String, relay: String = "") -> Bool {
+        // A payload with no key is malformed, not a key change. Refuse it outright: falling through
+        // would blank the pin, which is a silent downgrade to "trust whatever answers next".
+        guard !pub.isEmpty else { return false }
+        if !daemonPubHex.isEmpty, pub != daemonPubHex {
+            pendingKeyChange = PairingKeyChange(
+                name: name.isEmpty ? "this Mac" : name,
+                currentPub: daemonPubHex, newPub: pub,
+                wsURL: url, secret: secret, relay: relay
+            )
+            return false
+        }
+        applyPairingUnchecked(url: url, pub: pub, secret: secret, relay: relay)
+        return true
+    }
+
+    /// Applies a pairing whose evidence did NOT arrive over the network.
+    ///
+    /// The only caller is the macOS local-daemon path, which reads ~/.oculus/pairing.json — a 0600
+    /// file in the user's own home directory. Writing it requires already being that user on that
+    /// machine, at which point ~/.oculus/key is readable too and the whole model is void by
+    /// construction. So a key change learned from that file is a daemon reinstall, not an attacker,
+    /// and prompting for it would be teaching the user to click through a warning that is always
+    /// benign — which is exactly how a warning stops working on the day it matters.
+    func applyLocalPairing(url: String, pub: String, secret: String, relay: String = "") {
+        applyPairingUnchecked(url: url, pub: pub, secret: secret, relay: relay)
+    }
+
+    private func applyPairingUnchecked(url: String, pub: String, secret: String, relay: String) {
+        // A different Mac means a different device identity: drop the cached key so clientKey()
+        // resolves the one filed under THIS daemon rather than presenting another Mac's key.
+        if pub != self.daemonPubHex { cachedClientPrivate = nil }
         self.wsURL = url
         self.daemonPubHex = pub
         self.secret = secret
         self.relayURL = relay
+        // The pairing code we just consumed is worth storing only until the daemon replaces it with a
+        // real per-device credential (which it does on the first frame after the handshake). Persist
+        // it anyway: a connection that drops before that frame arrives has to be able to retry.
+        saveCredential()
+    }
+
+    /// A pairing that would replace the pinned daemon identity key, held until the user confirms.
+    public struct PairingKeyChange: Identifiable, Equatable {
+        public var id: String { newPub }
+        public var name: String
+        public var currentPub: String
+        public var newPub: String
+        public var wsURL: String
+        public var secret: String
+        public var relay: String
+
+        /// The first 64 bits of each key, grouped — enough to compare against the `daemon pubkey:`
+        /// line the daemon prints, without asking anyone to read 64 hex characters aloud. 64 bits is
+        /// far past what an attacker could grind a matching prefix for.
+        public var currentFingerprint: String { Model.keyFingerprint(currentPub) }
+        public var newFingerprint: String { Model.keyFingerprint(newPub) }
+    }
+
+    /// Set when a scanned pairing would repin this connection to a different daemon key.
+    @Published public var pendingKeyChange: PairingKeyChange?
+
+    /// Accepts the staged identity change. Only call this from a control the user had to press after
+    /// reading what changed.
+    public func confirmKeyChange() {
+        guard let c = pendingKeyChange else { return }
+        pendingKeyChange = nil
+        applyPairingUnchecked(url: c.wsURL, pub: c.newPub, secret: c.secret, relay: c.relay)
+    }
+
+    /// Discards the staged change and keeps the existing pin.
+    public func cancelKeyChange() { pendingKeyChange = nil }
+
+    /// Renders a public key as four groups of four hex characters.
+    ///
+    /// `nonisolated` because it reads nothing: it is a pure transform of the string it is handed.
+    /// Model is @MainActor, so a static member inherits that isolation and the fingerprint could
+    /// then only be computed from the main actor — which is wrong for the two callers that matter,
+    /// both of which run in synchronous non-isolated context while DECIDING whether to prompt about
+    /// a changed key. Hopping to the main actor to format a string there would mean the comparison
+    /// and the decision could no longer be made in one step.
+    nonisolated static func keyFingerprint(_ hex: String) -> String {
+        let head = Array(hex.prefix(16))
+        guard head.count == 16 else { return hex }
+        return stride(from: 0, to: 16, by: 4)
+            .map { String(head[$0 ..< $0 + 4]) }
+            .joined(separator: " ")
     }
 
     // MARK: conversation
@@ -3575,6 +3848,15 @@ public final class Model: ObservableObject {
                 currentSession = s
                 refreshLiveActivity()
                 Task { await loadSessions() } // reflect the new session in the sidebar
+            }
+        case MessageType.deviceCredential:
+            // The daemon just enrolled this device and handed it the credential it keeps from now on.
+            // It arrives as a frame rather than in the handshake because the handshake's pairing proof
+            // is a bare string with no room for a reply — and widening that wire format would break
+            // every client already in the wild. The channel is already encrypted and authenticated by
+            // this point, so a normal frame is the right carrier.
+            if let dc = try? env.payload(as: DeviceCredential.self), !dc.credential.isEmpty {
+                applyDeviceCredential(dc.credential)
             }
         case MessageType.error:
             // An uncorrelated error (a fire-and-forget send the daemon rejected, e.g. a

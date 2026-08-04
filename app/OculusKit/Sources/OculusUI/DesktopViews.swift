@@ -884,7 +884,9 @@ struct AddDesktopView: View {
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                     #endif
                 Button("Add desktop") {
-                    if let p = PairingPayload(pasteURL) { store.add(p); onClose() }
+                    // Stay open when the pairing is staged for confirmation — dismissing here would
+                    // tear down the alert's host before the user ever sees the question.
+                    if let p = PairingPayload(pasteURL), store.add(p) != nil { onClose() }
                 }
                 .buttonStyle(.borderedProminent).tint(palette.primary)
                 .disabled(PairingPayload(pasteURL) == nil)
@@ -897,11 +899,22 @@ struct AddDesktopView: View {
             .sheet(isPresented: $showScanner) {
                 QRScannerView { payload in
                     showScanner = false
-                    if let p = PairingPayload(payload) { store.add(p); onClose() }
+                    if let p = PairingPayload(payload), store.add(p) != nil { onClose() }
                 }
                 .ignoresSafeArea()
             }
             #endif
+            // A scanned code claiming to be a Mac we already know, under a different key, stops here.
+            .keyChangeAlert(
+                store.pendingKeyChange.map {
+                    KeyChangeAlertContent(machine: $0.existingName,
+                                          currentFingerprint: $0.existingFingerprint,
+                                          newFingerprint: $0.newFingerprint,
+                                          matchedOn: $0.matchedOn)
+                },
+                onReplace: { store.confirmKeyChange(); onClose() },
+                onKeep: { store.cancelKeyChange() }
+            )
         }
     }
 }

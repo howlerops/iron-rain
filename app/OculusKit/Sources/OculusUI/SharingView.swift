@@ -143,7 +143,7 @@ public struct SharingView: View {
                     }
                     .buttonStyle(.bordered).disabled(creating)
                 }
-                Text("Links expire after 24 hours. An invite can never grant ownership.")
+                Text("Links admit one device, expire after 24 hours, and can never grant ownership.")
                     .font(.caption).foregroundStyle(palette.mutedForeground)
             }
 

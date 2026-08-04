@@ -66,6 +66,11 @@ public enum MessageType {
     public static let deviceList = "device.list"
     public static let deviceRevoke = "device.revoke"
     public static let deviceLabel = "device.label"
+    public static let deviceCredential = "device.credential"
+    public static let deviceCredentialAck = "device.credential.ack"
+    public static let pairCode = "pair.code"
+    public static let pairStatus = "pair.status"
+    public static let pairRetireLegacy = "pair.retire_legacy"
     public static let transcriptPage = "transcript.page"
     public static let transcriptPageBegin = "transcript.page.begin"
     public static let transcriptPageEnd = "transcript.page.end"
@@ -2322,7 +2327,8 @@ public struct WorktreeStatusResult: Codable, Equatable {
     }
 }
 
-/// One device enrolled to reach this daemon, identified by the static key the Noise handshake proves.
+/// One device enrolled to reach this daemon, identified by the static public key it presents in the
+/// handshake.
 public struct DeviceInfo: Codable, Equatable, Identifiable {
     public var pub: String
     public var label: String?
@@ -2330,10 +2336,49 @@ public struct DeviceInfo: Codable, Equatable, Identifiable {
     public var lastSeen: Int
     /// True for the device asking — so the UI never offers to revoke the connection it is speaking over.
     public var this: Bool?
+    /// True for a device that came in through an invite. It holds no credential of its own: its
+    /// access ends with the invite.
+    public var guest: Bool?
     public var id: String { pub }
     enum CodingKeys: String, CodingKey {
-        case pub, label, this
+        case pub, label, this, guest
         case firstSeen = "first_seen", lastSeen = "last_seen"
+    }
+}
+
+/// The per-device credential the daemon mints at enrollment. The app stores it in the Keychain
+/// (ThisDeviceOnly) and presents it instead of the pairing code from the next connection on.
+public struct DeviceCredential: Codable, Equatable {
+    public var pub: String
+    public var credential: String
+    public var issuedAt: Int?
+    enum CodingKeys: String, CodingKey {
+        case pub, credential
+        case issuedAt = "issued_at"
+    }
+}
+
+/// A freshly minted single-use pairing code and the URL that carries it.
+public struct PairCode: Codable, Equatable {
+    public var code: String
+    public var url: String?
+    /// Unix seconds. Shown to the owner, because a credential with an invisible lifetime is one
+    /// people assume is permanent — and then screenshot.
+    public var expiresAt: Int
+    public var expiry: Date { Date(timeIntervalSince1970: TimeInterval(expiresAt)) }
+    enum CodingKeys: String, CodingKey {
+        case code, url
+        case expiresAt = "expires_at"
+    }
+}
+
+/// Whether the pre-upgrade permanent pairing secret is still accepted, and until when.
+public struct PairStatus: Codable, Equatable {
+    public var legacyLive: Bool
+    public var legacyRetireAt: Int?
+    enum CodingKeys: String, CodingKey {
+        case legacyLive = "legacy_live"
+        case legacyRetireAt = "legacy_retire_at"
     }
 }
 

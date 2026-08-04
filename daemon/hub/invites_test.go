@@ -64,7 +64,7 @@ func TestInviteExpiryAndRevocation(t *testing.T) {
 	if !accept(guest, live.Secret) {
 		t.Fatal("a live invite should authenticate")
 	}
-	if !h.invites.revoke(live.ID) {
+	if _, ok := h.invites.revoke(live.ID); !ok {
 		t.Fatal("revoke should find the invite")
 	}
 	if accept([]byte{11}, live.Secret) {

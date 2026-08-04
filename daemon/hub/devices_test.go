@@ -7,10 +7,11 @@ import (
 
 // TestDeviceEnrollmentAndRevocation closes the one-permanent-shared-secret hole.
 //
-// Every paired device presents the SAME secret, so there is no way to answer "which devices can reach
-// my machine?" and no way to revoke one — a lost phone means rotating the secret and re-pairing
-// everything. Noise already proves each client's static key during the handshake, so enrolling that
-// key costs nothing and makes both questions answerable.
+// Every paired device presenting the SAME secret means there is no way to answer "which devices can
+// reach my machine?" and no way to revoke one — a lost phone means rotating the secret and re-pairing
+// everything. Enrolling the static public key each client presents in the handshake makes both
+// questions answerable; minting that device its own credential (credentials_test.go) is what makes
+// the answer enforceable.
 func TestDeviceEnrollmentAndRevocation(t *testing.T) {
 	h := New()
 	h.SetDevicesPath(filepath.Join(t.TempDir(), "devices.json"))

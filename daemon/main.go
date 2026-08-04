@@ -124,6 +124,7 @@ func serve(args []string) error {
 	claudeSetup := fs.String("claude-setup", "ask", "claude-code sidecar one-time install when missing: ask|auto|off")
 	autoProjects := fs.Bool("auto-projects", true, "auto-register projects from the folders active agents run in")
 	secret := fs.String("secret", "", "pairing secret clients must present (default: generated)")
+	printSecret := fs.Bool("print-pairing-secret", false, "print the permanent pairing secret to stdout (it otherwise never appears in terminal scrollback)")
 	keyPath := fs.String("key", defaultKeyPath(), "path to the daemon private key")
 	apnsKey := fs.String("apns-key", "", "path to an APNs auth key (.p8) to enable push")
 	apnsKeyID := fs.String("apns-key-id", "", "APNs Key ID (with --apns-key)")
@@ -168,15 +169,25 @@ func serve(args []string) error {
 	}
 	sec := *secret
 	if sec == "" {
-		sec = loadOrCreateSecret(secretPath()) // stable across restarts so paired clients stay authorized
+		// Load the pre-upgrade permanent secret if this machine has one, and do NOT create one if it
+		// doesn't. A fresh install has no permanent pairing secret at all: devices enroll with a
+		// single-use pairing code and then hold their own credential (daemon/hub/credentials.go).
+		// Writing a permanent owner-equivalent credential to disk on first run — which is what
+		// loadOrCreateSecret used to do here — would recreate the exact problem the code lifecycle
+		// exists to remove, on every new machine.
+		sec = loadLegacySecret(secretPath())
 	}
 
 	h := hub.New()
 	defer h.Shutdown() // stop language servers AND reap every agent child on exit (see hub.Shutdown)
 	h.SetWakeGuard(wake.New())
-	// Per-device enrollment: pairing records WHICH device connected, so one can be revoked without
-	// rotating the secret and re-pairing everything you own.
+	// Per-device enrollment: pairing records WHICH device connected and mints it a credential of its
+	// own, so one device can be revoked without rotating anything or re-pairing everything you own.
 	h.SetDevicesPath(filepath.Join(filepath.Dir(secretPath()), "devices.json"))
+	// Where the migration clock lives: how long the pre-upgrade permanent secret keeps working. It has
+	// to survive a restart, or restarting the daemon would silently hand that secret back its full
+	// lifetime every time.
+	h.SetCredentialsPath(filepath.Join(filepath.Dir(secretPath()), "credentials.json"))
 	h.SetLogHub(lh)
 	h.SetDiscoverer(discovery.Scan)
 	if reg, err := project.Load(projectsPath()); err != nil {
@@ -293,6 +304,7 @@ func serve(args []string) error {
 	h.StartSessionPruning(context.Background(), 6*time.Hour, sessionTTL)
 	h.StartConflictSweep(context.Background(), 45*time.Second) // passive merge-conflict badge for worktree sessions
 	h.StartHeartbeat(context.Background())                     // supervise autonomous sessions (nudge/checkpoint/escalate)
+	h.StartCredentialSweep(context.Background())               // expire pairing codes + lapsed invites on time, not on next use
 
 	// A long-running daemon (e.g. a launchd agent on a server) would otherwise never pick up a new
 	// release until it happened to restart. Re-check periodically so it stays current on its own;
@@ -324,9 +336,25 @@ func serve(args []string) error {
 		pushEnabled = true
 	}
 
-	// The daemon accepts the owner's secret OR a live invite credential. An invited guest is
-	// authenticated exactly like any other client; what differs is the ROLE their connection gets.
-	srv := server.New(h, kp, h.AcceptSecret(sec))
+	// The daemon accepts a device's own credential, a single-use pairing code, a live invite, or —
+	// during migration — the old permanent secret. An invited guest is authenticated exactly like any
+	// other client; what differs is the ROLE their connection gets. See daemon/hub/credentials.go.
+	//
+	// An explicit --secret is treated differently from the one we generated ourselves: the operator
+	// configured it on purpose (a script, a container), so it is never auto-retired.
+	accept := h.AcceptSecret(sec)
+	if *secret != "" {
+		accept = h.AcceptConfiguredSecret(sec)
+	}
+	srv := server.New(h, kp, accept)
+	// Once the migration window has closed, take the dead credential off disk. Leaving a retired
+	// permanent secret sitting in ~/.oculus/secret is leaving a string that LOOKS like a key to this
+	// machine in a file people copy into backups and support threads.
+	if sec != "" && *secret == "" {
+		if live, _ := h.LegacySecretStatus(); !live {
+			_ = os.Remove(secretPath())
+		}
+	}
 
 	// Remote access: keep a host registration on the shared relay so the app can reach this daemon
 	// from anywhere (off-LAN) with zero port-forwarding. The relay only forwards ciphertext — the
@@ -377,7 +405,14 @@ func serve(args []string) error {
 	fmt.Printf("oculusd %s\n", version)
 	fmt.Printf("  listening:      ws://%s/ws\n", *addr)
 	fmt.Printf("  daemon pubkey:  %s\n", hex.EncodeToString(kp.Public()))
-	fmt.Printf("  pairing secret: %s\n", sec)
+	// The pairing secret is NOT printed. It used to land in terminal scrollback, in tmux buffers, in
+	// screen recordings, and in the logs of anything that ever ran `oculusd` in CI — and it granted
+	// permanent owner access to this Mac. The QR below carries a single-use code that expires instead.
+	// --print-pairing-secret exists for the one case that genuinely needs it: recovering a device you
+	// can't re-pair by scanning, at a terminal you already trust.
+	if *printSecret {
+		fmt.Printf("  pairing secret: %s  (permanent — treat it like a password)\n", sec)
+	}
 	fmt.Printf("  oauth redirect: %s  (register /oauth/linear/callback + /oauth/jira/callback on your OAuth apps)\n", oauthAddr)
 	for _, pv := range providers {
 		fmt.Printf("  provider:       %s\n", pv)
@@ -399,16 +434,24 @@ func serve(args []string) error {
 	if *relayURL != "" {
 		fmt.Printf("  relay:          %s  (remote access from anywhere)\n", *relayURL)
 	}
-	// Let the hub render invite links using the same reachable URL the pairing QR uses, so an invite
-	// works from wherever a normal pairing would.
+	// Let the hub render pairing codes and invite links using the same reachable URL the startup QR
+	// uses, so a code minted from the app works from wherever a normal pairing would.
 	h.SetPairURLBuilder(func(secret string) string {
 		return buildPairURL(pubURL, hex.EncodeToString(kp.Public()), secret, desktopName, *relayURL)
 	})
-	printPairing(pubURL, hex.EncodeToString(kp.Public()), sec, desktopName, *relayURL)
-	// Drop a local pairing file so an app on THIS machine (the macOS app) can
-	// auto-discover + connect with zero config, and show a QR (using the reachable
-	// public URL) to pair a phone. 0600, same-user only.
-	writeLocalPairing(localWSURL(*addr), pubURL, hex.EncodeToString(kp.Public()), sec, desktopName, *relayURL)
+	// Drop a local pairing file so an app on THIS machine (the macOS app) can auto-discover + connect
+	// with zero config. 0600, same-user only. It carries the LOCAL bootstrap code, which is rotated
+	// on every daemon start — so the file is never the permanent secret, and a copy of it taken from a
+	// backup stops working the next time the daemon restarts.
+	h.SetLocalPairingRotator(func(code string) {
+		writeLocalPairing(localWSURL(*addr), pubURL, hex.EncodeToString(kp.Public()), code, desktopName, *relayURL)
+	})
+	// The startup QR carries a single-use code that expires in minutes, not the permanent secret.
+	// Scrollback, a screen recording, or a photo of the terminal is then a dead credential rather than
+	// a shell on this Mac. Pair from the Mac app (Pair a phone…) to mint a fresh one any time.
+	if code, expires := h.MintPairCode(0); code != "" {
+		printPairing(pubURL, hex.EncodeToString(kp.Public()), code, desktopName, *relayURL, expires)
+	}
 	// ReadHeaderTimeout bounds header-slowloris on the plain HTTP routes
 	// (/healthz, /oauth/linear/callback) when exposed via --public-url. Leave
 	// Write/Idle timeouts unset so long-lived /ws WebSocket upgrades aren't cut off.
@@ -586,15 +629,22 @@ func buildPairURL(wsURL, pubHex, secret, name, relay string) string {
 }
 
 // printPairing prints the oculus:// pairing URL and a scannable QR to the terminal.
-func printPairing(wsURL, pubHex, secret, name, relay string) {
-	pairURL := buildPairURL(wsURL, pubHex, secret, name, relay)
-	fmt.Printf("\n  pair from your phone — scan this QR (Oculus app → Scan QR):\n\n")
+//
+// The URL carries a SINGLE-USE code with an expiry, not the permanent secret, so the QR that ends up
+// in scrollback (or in a photo of someone's screen) is worthless minutes later. The expiry is printed
+// because a credential whose lifetime is invisible is one people assume is permanent — and then
+// screenshot.
+func printPairing(wsURL, pubHex, code, name, relay string, expires time.Time) {
+	pairURL := buildPairURL(wsURL, pubHex, code, name, relay)
+	fmt.Printf("\n  pair from your phone — scan this QR (Iron Rain app → Scan QR):\n\n")
 	qrterminal.GenerateWithConfig(pairURL, qrterminal.Config{
 		Level: qrterminal.L, Writer: os.Stdout, HalfBlocks: true,
 		BlackChar: qrterminal.BLACK_BLACK, WhiteChar: qrterminal.WHITE_WHITE,
 		QuietZone: 1,
 	})
-	fmt.Printf("\n  or paste: %s\n\n", pairURL)
+	fmt.Printf("\n  or paste: %s\n", pairURL)
+	fmt.Printf("  this code pairs ONE device and expires at %s — mint another from the Mac app (Pair a phone…)\n\n",
+		expires.Format("15:04:05"))
 }
 
 // enablePush parses the .p8 auth key and installs an APNs notifier on the hub.
@@ -877,10 +927,24 @@ func secretPath() string {
 	return filepath.Join(home, ".oculus", "secret")
 }
 
-// loadOrCreateSecret returns a stable pairing secret persisted at path, generating + writing one
-// on first run. This keeps the secret constant across daemon restarts/reinstalls so an already
-// paired phone (and the local app) stay authorized — a regenerated secret every start would make
-// every restart reject existing pairings with "unauthorized".
+// loadLegacySecret returns the pre-upgrade permanent pairing secret if this machine has one, and ""
+// otherwise. It never creates the file.
+//
+// The distinction matters on upgrade: a machine WITH this file has devices in the wild that know
+// nothing else, so the daemon must keep accepting it long enough for them to migrate to per-device
+// credentials. A machine without one has nothing to migrate, and should never acquire a permanent
+// owner-equivalent credential in the first place.
+func loadLegacySecret(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// loadOrCreateSecret returns a stable secret persisted at path, generating + writing one on first
+// run. Still used for the MCP gateway's machine-wide bearer token, which is a local-loopback
+// credential with no pairing lifecycle of its own.
 func loadOrCreateSecret(path string) string {
 	if b, err := os.ReadFile(path); err == nil {
 		if s := strings.TrimSpace(string(b)); s != "" {

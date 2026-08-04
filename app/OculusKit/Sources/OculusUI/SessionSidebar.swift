@@ -145,7 +145,10 @@ struct SessionSidebar: View {
         // per-tab title + native search (applied at the END of this chain — see below).
         .toolbar { sidebarToolbar }
         .sheet(isPresented: $showPairingQR) {
-            PairingQRView(url: model.pairingURL ?? "", palette: palette) { showPairingQR = false }
+            PairingQRView(model: model, palette: palette) {
+                showPairingQR = false
+                model.clearPairingCode() // a code left on screen is a live credential
+            }
         }
         .sheet(isPresented: $showAddDesktop) {
             AddDesktopView(store: store, palette: palette) { showAddDesktop = false }
@@ -439,7 +442,7 @@ struct SessionSidebar: View {
             }
             .help("Filter sessions")
             Menu {
-                if model.pairingURL != nil {
+                if model.canMintPairingCode {
                     Button { showPairingQR = true } label: { Label("Pair a phone…", systemImage: "qrcode") }
                 }
                 Button { Task { await model.discover() } } label: { Label("Refresh sessions", systemImage: "arrow.clockwise") }

@@ -100,6 +100,10 @@ type Hub struct {
 	mcp     *mcp.Registry   // daemon-owned MCP server registry (nil = MCP not enabled)
 	roles   *roleRegistry   // who may steer vs. watch (see roles.go); disabled = everyone is the owner
 	invites *inviteRegistry // outstanding share credentials (see invites.go)
+	// credentials owns pairing codes, per-device credentials, and the retirement of the old permanent
+	// secret (see credentials.go). Lazily created, so a Hub built without SetCredentialsPath still
+	// authenticates — it just doesn't persist the migration clock.
+	credentials *credentials
 	// pairURL builds a redeemable pairing URL for an invite secret. Set by main once the reachable
 	// address is known; nil = invites can be created but not rendered as a link.
 	pairURL func(secret string) string
@@ -1076,6 +1080,7 @@ func New() *Hub {
 		approvals:       map[string]*managedSession{},
 		roles:           newRoleRegistry(),
 		invites:         newInviteRegistry(),
+		credentials:     newCredentials(),
 		mcpTokens:       newMCPSessionTokens(),
 		mcpApprovals:    map[string]chan string{},
 		fanoutNotified:  map[string]bool{},
@@ -2119,14 +2124,32 @@ func safePrefix(s string) string {
 // Serve handles one client connection until it closes or errors.
 func (h *Hub) Serve(ctx context.Context, conn *transport.Conn) error {
 	c := &hubClient{conn: conn, ch: make(chan []byte, hubOutboundBuffer), done: make(chan struct{})}
-	h.mu.Lock()
-	h.clients[conn] = c
 	// A guest who came in through an invite starts in that invite's role; the owner's own devices
 	// start as owner. Resolved from the handshake public key, so it can't be spoofed by a client
 	// simply asserting a role.
-	h.roles.setRole(conn, h.roleForConn(conn.PeerPublicKey()))
+	//
+	// Resolved BEFORE taking h.mu, and deliberately so: roleForConn falls through to isGuestDevice
+	// for any key an invite doesn't claim — which is every one of the owner's OWN devices — and
+	// isGuestDevice reaches the device registry through deviceRegistry(), which takes h.mu itself.
+	// sync.Mutex is not reentrant, so doing this inside the critical section deadlocked Serve while
+	// holding the hub lock, and every other goroutine then piled up behind it: one ordinary
+	// connection wedged the whole daemon. Nothing here needs the lock — roleForConn reads the invite
+	// and device registries, which guard themselves.
+	role := h.roleForConn(conn.PeerPublicKey())
+	h.mu.Lock()
+	h.clients[conn] = c
+	h.roles.setRole(conn, role)
 	h.mu.Unlock()
 	go h.writeClientLoop(c)
+	// Hand over a credential minted for this device during the handshake, if there was one. It has to
+	// happen here rather than in the handshake: the pairing proof is a bare string with no room for a
+	// reply, and widening that wire format would break every existing client. The channel is already
+	// encrypted and already authenticated by this point, so a normal frame is the right carrier.
+	if cred, ok := h.creds().takePending(hexKey(conn.PeerPublicKey())); ok {
+		h.sendEvent(conn, protocol.TypeDeviceCredential, protocol.DeviceCredential{
+			Pub: hexKey(conn.PeerPublicKey()), Credential: cred, IssuedAt: time.Now().Unix(),
+		})
+	}
 	defer func() {
 		h.dropClient(conn)
 		h.mu.Lock()
@@ -3368,6 +3391,48 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		}
 		h.sendOK(conn, env.ID, h.deviceList(conn))
 
+	case protocol.TypeDeviceCredentialAck:
+		// The device confirms it stored its own credential. This — not the mint — is what starts the
+		// clock on the old permanent secret: a credential that was minted but never landed (client
+		// killed mid-frame, an older build that ignores the frame) must not strand the owner with a
+		// retired secret and no replacement.
+		h.creds().noteMigrated()
+
+	case protocol.TypePairCode:
+		if !h.requireCapabilityBecause(conn, env.ID, capOwner, "pair a new device",
+			"A pairing code enrolls a device with full access to this Mac.") {
+			return
+		}
+		code, expires := h.MintPairCode(0)
+		if code == "" {
+			h.sendErr(conn, env.ID, "could not generate a pairing code")
+			return
+		}
+		out := protocol.PairCode{Code: code, ExpiresAt: expires.Unix()}
+		h.mu.Lock()
+		build := h.pairURL
+		h.mu.Unlock()
+		if build != nil {
+			out.URL = build(code)
+		}
+		log.Printf("pairing: minted a single-use code, expires %s", expires.Format(time.RFC3339))
+		h.sendOK(conn, env.ID, out)
+
+	case protocol.TypePairStatus:
+		if !h.requireCapability(conn, env.ID, capOwner, "see pairing status") {
+			return
+		}
+		live, retireAt := h.LegacySecretStatus()
+		h.sendOK(conn, env.ID, protocol.PairStatus{LegacyLive: live, LegacyRetireAt: retireAt})
+
+	case protocol.TypePairRetireLegacy:
+		if !h.requireCapability(conn, env.ID, capOwner, "retire the old pairing secret") {
+			return
+		}
+		h.RetireLegacySecret()
+		live, retireAt := h.LegacySecretStatus()
+		h.sendOK(conn, env.ID, protocol.PairStatus{LegacyLive: live, LegacyRetireAt: retireAt})
+
 	case protocol.TypeWorktreeMerge:
 		if !h.requireCapability(conn, env.ID, capSteer, "merge a worktree") {
 			return
@@ -4217,10 +4282,10 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, "bad invite.create")
 			return
 		}
-		inv := h.invites.create(req.Label, req.Role, time.Duration(req.TTLHours)*time.Hour)
+		inv := h.invites.createFor(req.Label, req.Role, time.Duration(req.TTLHours)*time.Hour, req.MaxDevices)
 		out := protocol.InviteCreated{Invite: protocol.Invite{
 			ID: inv.ID, Label: inv.Label, Role: inv.Role,
-			ExpiresAt: inv.ExpiresAt.Unix(),
+			ExpiresAt: inv.ExpiresAt.Unix(), MaxDevices: inv.MaxDevices,
 		}}
 		h.mu.Lock()
 		build := h.pairURL
@@ -4246,9 +4311,15 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, "bad invite.revoke")
 			return
 		}
-		if !h.invites.revoke(ref.ID) {
+		pubs, ok := h.invites.revoke(ref.ID)
+		if !ok {
 			h.sendErr(conn, env.ID, "no such invite")
 			return
+		}
+		// Drop the guests it let in. Revoking a link while the person it admitted stays connected,
+		// still holding the role it granted, is not revocation — it just stops NEW devices arriving.
+		for _, pub := range pubs {
+			h.closeDeviceConns(pub, "invite revoked")
 		}
 		h.sendOK(conn, env.ID, h.inviteList())
 		h.broadcastParticipants()

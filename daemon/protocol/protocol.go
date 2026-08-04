@@ -72,6 +72,11 @@ const (
 	TypeDeviceList            = "device.list"            // enrolled clients that may reach this daemon
 	TypeDeviceRevoke          = "device.revoke"          // lock out one device by its public key
 	TypeDeviceLabel           = "device.label"           // give a device a human name
+	TypeDeviceCredential      = "device.credential"      // daemon -> client: the credential this device keeps
+	TypeDeviceCredentialAck   = "device.credential.ack"  // client -> daemon: stored it; safe to retire the old secret
+	TypePairCode              = "pair.code"              // mint a fresh single-use pairing code + its URL
+	TypePairStatus            = "pair.status"            // is the old permanent secret still live, and until when
+	TypePairRetireLegacy      = "pair.retire_legacy"     // kill the old permanent secret now
 	TypeWorktreeMerge         = "worktree.merge"         // land a worktree branch locally (repos with no remote)
 	TypeWorktreeStatus        = "worktree.status"        // has the branch's PR landed yet?
 	TypeWorkspaceDiff         = "workspace.diff"         // per-member diff for a cross-repo workspace session
@@ -1838,11 +1843,12 @@ type RolesEnable struct {
 // Invite is one outstanding share credential. The SECRET is returned only once, at creation — it is
 // never listed afterwards, because a credential you can re-read is one that leaks from a screen.
 type Invite struct {
-	ID        string `json:"id"`
-	Label     string `json:"label,omitempty"`
-	Role      string `json:"role"`
-	ExpiresAt int64  `json:"expires_at"`
-	Redeemed  int    `json:"redeemed"`
+	ID         string `json:"id"`
+	Label      string `json:"label,omitempty"`
+	Role       string `json:"role"`
+	ExpiresAt  int64  `json:"expires_at"`
+	Redeemed   int    `json:"redeemed"`
+	MaxDevices int    `json:"max_devices,omitempty"`
 }
 
 // InviteList is the set of live invites.
@@ -1855,6 +1861,9 @@ type InviteCreate struct {
 	Label    string `json:"label,omitempty"`
 	Role     string `json:"role,omitempty"`
 	TTLHours int    `json:"ttl_hours,omitempty"`
+	// MaxDevices caps how many devices the link admits. Absent/0 means one — a share link is pasted
+	// into chats, and chats forward.
+	MaxDevices int `json:"max_devices,omitempty"`
 }
 
 // InviteCreated carries the one-time redeemable URL back to the creator.
@@ -2015,14 +2024,39 @@ type WorktreeStatusResult struct {
 	Checks    *PRChecks `json:"checks,omitempty"`
 }
 
-// DeviceInfo is one client enrolled to reach this daemon, identified by the static key the Noise
-// handshake already proves.
+// DeviceInfo is one client enrolled to reach this daemon, identified by the static public key it
+// presents in the handshake.
 type DeviceInfo struct {
 	Pub       string `json:"pub"`
 	Label     string `json:"label,omitempty"`
 	FirstSeen int64  `json:"first_seen"`
 	LastSeen  int64  `json:"last_seen"`
-	This      bool   `json:"this,omitempty"` // the device asking — so a UI can avoid revoking itself blind
+	This      bool   `json:"this,omitempty"`  // the device asking — so a UI can avoid revoking itself blind
+	Guest     bool   `json:"guest,omitempty"` // came in through an invite; holds no credential of its own
+}
+
+// DeviceCredential is the per-device credential the daemon mints at enrollment and the client keeps
+// (Keychain, ThisDeviceOnly). It is delivered as a normal protocol frame on the already-encrypted
+// channel rather than in the handshake, so issuing it costs no wire-format change.
+type DeviceCredential struct {
+	Pub        string `json:"pub"`
+	Credential string `json:"credential"`
+	IssuedAt   int64  `json:"issued_at"`
+}
+
+// PairCode is a freshly minted single-use pairing code and the URL that carries it. ExpiresAt is
+// shown to the owner, because a code with an invisible lifetime is one they'll screenshot.
+type PairCode struct {
+	Code      string `json:"code"`
+	URL       string `json:"url,omitempty"`
+	ExpiresAt int64  `json:"expires_at"`
+}
+
+// PairStatus reports whether the pre-upgrade permanent secret is still accepted, so the owner can
+// see the migration finish (and end it early).
+type PairStatus struct {
+	LegacyLive     bool  `json:"legacy_live"`
+	LegacyRetireAt int64 `json:"legacy_retire_at,omitempty"`
 }
 
 type DeviceList struct {

@@ -60,6 +60,18 @@ public struct ConnectView: View {
             .ignoresSafeArea()
         }
         #endif
+        // A scanned code that repins this connection to a different daemon key stops here. See
+        // Model.applyPairing for why a silent overwrite is the whole attack.
+        .keyChangeAlert(
+            model.pendingKeyChange.map {
+                KeyChangeAlertContent(machine: $0.name,
+                                      currentFingerprint: $0.currentFingerprint,
+                                      newFingerprint: $0.newFingerprint,
+                                      matchedOn: nil)
+            },
+            onReplace: { model.confirmKeyChange(); Task { await model.connect() } },
+            onKeep: { model.cancelKeyChange() }
+        )
     }
 
     private var manualForm: some View {
@@ -87,15 +99,18 @@ public struct ConnectView: View {
         #endif
     }
 
-    /// Parses `oculus://pair?ws=…&pub=…&secret=…[&relay=…]` into the model. Returns true if valid.
+    /// Parses `oculus://pair?ws=…&pub=…&secret=…[&relay=…]` into the model.
+    ///
+    /// Returns true only when the pairing was actually applied. A payload that would repin this
+    /// connection to a different daemon key returns FALSE — it is staged for confirmation, and
+    /// connecting on the strength of a key the user hasn't accepted yet would defeat the point.
     @discardableResult
     private func applyPairing(_ payload: String) -> Bool {
         guard let comps = URLComponents(string: payload), comps.scheme == "oculus" else { return false }
         let items = comps.queryItems ?? []
         func q(_ name: String) -> String? { items.first { $0.name == name }?.value }
         guard let ws = q("ws"), let pub = q("pub"), let secret = q("secret") else { return false }
-        model.applyPairing(url: ws, pub: pub, secret: secret, relay: q("relay") ?? "")
-        return true
+        return model.applyPairing(url: ws, pub: pub, secret: secret, relay: q("relay") ?? "")
     }
 }
 
