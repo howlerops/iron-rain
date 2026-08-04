@@ -736,7 +736,15 @@ struct SessionSidebar: View {
             // A remote session has no registered project, so it fell into the bucket literally headed
             // "On this Mac" — the one heading that is certainly wrong for it. Group it under the box it
             // runs on, which also answers "what else is running over there?".
-            let localKey = (s.projectID?.isEmpty ?? true) ? "On this Mac" : s.projectID!
+            // A projectID the daemon no longer lists used to become the section heading VERBATIM, so
+            // the sidebar grew headers reading "proj_ab12cd34ef56". It is reachable two ways: the
+            // project was deleted after this session was persisted, or — far more often now — the
+            // registry migration folded an auto-registered worktree into its parent repo, and every
+            // session created under the old worktree project still carries the collapsed id. The
+            // daemon resolves those ids through AbsorbedIDs, but the client only has the list, so it
+            // falls back to the one name the user will actually recognise: the session's own folder.
+            let unresolved = s.folderName ?? "On this Mac"
+            let localKey = (s.projectID?.isEmpty ?? true) ? "On this Mac" : unresolved
             let projectKey = s.projectID.flatMap { projectNames[$0] } ?? localKey
             let key = host.map { Self.remoteGroupPrefix + $0 } ?? projectKey
             add(key, SidebarSession(id: s.id, title: title, provider: s.provider, projectName: key,
