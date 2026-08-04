@@ -80,3 +80,13 @@ pair) against an opencode stub: create → output → approval → respond → i
 Run:
 `cd daemon && go test ./hub/` (compile-and-run a binary if the harness backgrounds `go test`; a
 persistent SSE means the stub server needs `CloseClientConnections()` in teardown).
+
+## Connection and tool-card diagnostics
+- A client can disconnect after WebSocket accept but before the encrypted handshake finishes (app
+  reconnects, update restarts, sleep/wake). Log closed-reader/closed-network errors as client
+  disconnects, not scary handshake failures; authorization and malformed handshakes must still log as
+  handshake failures.
+- opencode `message.part.updated` tool payloads vary by version. Preserve rich tool cards by reading
+  both nested `state.status/title/output/error` and top-level `status/title/output/error` plus
+  structured `input`/`args`/`metadata` command/path/query fields. A bash card showing only `bash`
+  usually means this projection lost the command summary.

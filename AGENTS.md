@@ -37,6 +37,9 @@ Full design: [`docs/plan-native-ade.md`](docs/plan-native-ade.md).
   call `requireCapability` and must reject malformed payloads.
 - `session.list` is the top-level run list: hide child/sub-agent sessions there (`parent_id` set) and
   keep restart metadata complete enough to resume in the original cwd/project/mode/model/roots.
+- Daemon connection logs should distinguish expected client disconnects during encrypted handshake
+  from real handshake/auth failures. Rich `session.tool` cards must keep command previews across
+  provider event-shape changes; a bare `bash` card is a parsing regression.
 - Push: hosted APNs default + self-host BYO-key. License **MIT**.
 - **Session autodetection** is first-class: the daemon discovers running `opencode serve` instances
   (+ their live sessions) and recent claude-code transcripts on the host, exposed via `discover.list`.

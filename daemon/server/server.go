@@ -4,8 +4,12 @@ package server
 
 import (
 	"context"
+	"errors"
+	"io"
 	"log"
+	"net"
 	"net/http"
+	"strings"
 
 	"github.com/coder/websocket"
 	"github.com/howlerops/oculus/daemon/crypto"
@@ -55,11 +59,29 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) ServeConn(ctx context.Context, mc transport.MsgConn) error {
 	conn, err := transport.ServerHandshake(mc, s.kp, s.authorize)
 	if err != nil {
-		log.Printf("server: handshake failed: %v", err)
+		if isBenignHandshakeClose(err) {
+			log.Printf("server: client disconnected during handshake: %v", err)
+		} else {
+			log.Printf("server: handshake failed: %v", err)
+		}
 		_ = mc.Close()
 		return err
 	}
 	log.Printf("server: client connected (handshake ok)")
 	defer conn.Close()
 	return s.hub.Serve(ctx, conn)
+}
+
+func isBenignHandshakeClose(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "use of closed network connection") ||
+		strings.Contains(msg, "websocket: close") ||
+		strings.Contains(msg, "connection reset by peer") ||
+		strings.Contains(msg, "broken pipe")
 }

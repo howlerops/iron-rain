@@ -725,12 +725,21 @@ func (s *session) handle(raw []byte) {
 	case "message.part.updated":
 		var pu struct {
 			Part struct {
-				ID        string `json:"id"`
-				Type      string `json:"type"`
-				Text      string `json:"text"`
-				Tool      string `json:"tool"`
-				MessageID string `json:"messageID"`
-				SessionID string `json:"sessionID"`
+				ID        string          `json:"id"`
+				Type      string          `json:"type"`
+				Text      string          `json:"text"`
+				Tool      string          `json:"tool"`
+				Name      string          `json:"name"`
+				ToolName  string          `json:"toolName"`
+				Title     string          `json:"title"`
+				Status    string          `json:"status"`
+				Output    string          `json:"output"`
+				Error     string          `json:"error"`
+				Input     json.RawMessage `json:"input"`
+				Args      json.RawMessage `json:"args"`
+				Metadata  json.RawMessage `json:"metadata"`
+				MessageID string          `json:"messageID"`
+				SessionID string          `json:"sessionID"`
 				State     struct {
 					Status string `json:"status"`
 					Title  string `json:"title"`
@@ -749,24 +758,32 @@ func (s *session) handle(raw []byte) {
 		target := pu.Part.SessionID // s.id for the parent turn; the child id for a sub-agent
 		switch pu.Part.Type {
 		case "tool":
-			st := pu.Part.State.Status
+			toolName := firstNonEmpty(pu.Part.Tool, pu.Part.Name, pu.Part.ToolName, "tool")
+			st := firstNonEmpty(pu.Part.State.Status, pu.Part.Status)
 			if st == "running" || st == "completed" || st == "error" {
 				// Keep the top activity chip for the parent's current tool.
 				if st != "error" {
 					s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{
-						SessionID: target, Status: protocol.StatusRunning, Detail: "running " + pu.Part.Tool,
+						SessionID: target, Status: protocol.StatusRunning, Detail: "running " + toolName,
 					}})
 				}
 				// Rich inline tool card, updated IN PLACE by part id (running → completed+output). The
 				// PARENT skips `task` — the sub-agent gets its own card (from session.created) instead.
-				if pu.Part.ID != "" && !(isParent && pu.Part.Tool == "task") {
-					output := pu.Part.State.Output
-					if st == "error" && pu.Part.State.Error != "" {
-						output = pu.Part.State.Error
+				if pu.Part.ID != "" && !(isParent && toolName == "task") {
+					title := firstNonEmpty(
+						pu.Part.State.Title,
+						pu.Part.Title,
+						toolInputSummary(pu.Part.Input),
+						toolInputSummary(pu.Part.Args),
+						toolInputSummary(pu.Part.Metadata),
+					)
+					output := firstNonEmpty(pu.Part.State.Output, pu.Part.Output)
+					if st == "error" {
+						output = firstNonEmpty(pu.Part.State.Error, pu.Part.Error, output)
 					}
 					s.emit(agent.Event{Type: protocol.TypeSessionTool, Payload: protocol.SessionTool{
-						SessionID: target, ID: pu.Part.ID, Name: pu.Part.Tool,
-						Title: pu.Part.State.Title, Output: output, Status: st,
+						SessionID: target, ID: pu.Part.ID, Name: toolName,
+						Title: title, Output: output, Status: st,
 					}})
 				}
 			}
@@ -1118,6 +1135,31 @@ func extForMime(mime string) string {
 	default:
 		return ""
 	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func toolInputSummary(raw json.RawMessage) string {
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return ""
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return ""
+	}
+	for _, key := range []string{"command", "file_path", "path", "pattern", "url", "query", "prompt"} {
+		if s, ok := obj[key].(string); ok && strings.TrimSpace(s) != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // Respond maps allow->"once", always->"always", deny->"reject".
