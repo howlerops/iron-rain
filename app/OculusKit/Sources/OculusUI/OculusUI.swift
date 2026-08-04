@@ -3594,6 +3594,15 @@ public final class Model: ObservableObject {
                     sessionMode = cur.mode ?? SessionMode.code
                 }
             }
+        case MessageType.worktreeStatus:
+            // PROACTIVE broadcast from the daemon's PR-check watcher, which re-sends the full
+            // status whenever a poll actually changes the rollup. Without this case the watcher
+            // notifies (a push, an Activity entry) about a build the open panel keeps showing as
+            // green until you hit Refresh — the notification and the screen disagreeing about the
+            // same PR. Same request type reused as an event, exactly as session.list does.
+            if let st = try? env.payload(as: WorktreeStatusResult.self), st.sessionID == sessionID {
+                worktreeStatus = st
+            }
         case MessageType.issueList: // broadcast from the 60s tracker poll
             if let il = try? env.payload(as: IssueList.self) {
                 issues = il.issues

@@ -86,21 +86,19 @@ const (
 // goroutine per session, which would have every worktree independently forking gh. The watcher is
 // started on demand rather than at daemon startup so a daemon that never opens a worktree never runs
 // the ticker at all, and it removes its own entry when it retires so the map self-empties.
-var (
-	prWatchMu  sync.Mutex
-	prWatchers = map[*Hub]bool{}
-)
-
 // ensurePRWatch starts this hub's PR-check watcher if it isn't already running. Cheap and idempotent:
 // called from managedSession.run() for every worktree session, including the ones restored after a
 // daemon restart.
+//
+// The live/not-live flag is a plain field guarded by the hub's own lock, deliberately NOT a
+// sync.Once: the loop RETIRES itself once nothing is worth watching, and the next worktree session
+// has to be able to start it again. A Once would make that first retirement permanent, so a daemon
+// that finished its worktrees in the morning would silently never watch a PR again until restarted.
 func (h *Hub) ensurePRWatch() {
-	prWatchMu.Lock()
-	already := prWatchers[h]
-	if !already {
-		prWatchers[h] = true
-	}
-	prWatchMu.Unlock()
+	h.mu.Lock()
+	already := h.prWatching
+	h.prWatching = true
+	h.mu.Unlock()
 	if already {
 		return
 	}
@@ -108,10 +106,12 @@ func (h *Hub) ensurePRWatch() {
 }
 
 func (h *Hub) prWatchLoop() {
+	// Clear the flag on the way out — including on a panic — or a retired watcher could never be
+	// restarted and PR checks would go unwatched for the life of the process with nothing to show why.
 	defer func() {
-		prWatchMu.Lock()
-		delete(prWatchers, h)
-		prWatchMu.Unlock()
+		h.mu.Lock()
+		h.prWatching = false
+		h.mu.Unlock()
 	}()
 	t := time.NewTicker(prSweepEvery)
 	defer t.Stop()

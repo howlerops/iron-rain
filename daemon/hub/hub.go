@@ -86,6 +86,7 @@ type Hub struct {
 	db                *store.Store                   // optional: durable local state (session names + records)
 	lsp               *lsp.Manager                   // language servers for the built-in editor (diagnostics/types)
 	runningTests      map[string]bool                // session ids with a test/build run in progress
+	prWatching        bool                           // the PR-check watcher goroutine is live (see prchecks.go)
 	approvalRulesPath string                         // path to ~/.oculus/approval-rules.json (persistent rules)
 	approvalRules     []ApprovalRule                 // ordered scoped rules; deny beats allow (see approval_rules.go)
 	approvalReqs      map[string]pendingApproval     // approvalID -> the request + its scope, for a scoped ALWAYS
