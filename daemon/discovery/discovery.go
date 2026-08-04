@@ -257,18 +257,29 @@ func combine(
 ) []protocol.Discovered {
 	items := []protocol.Discovered{}
 	for _, s := range servers {
+		serverCwd := procCwd(ctx, s.PID) // dir where `opencode serve` was launched → a project root
 		items = append(items, protocol.Discovered{
 			Provider: "opencode", Kind: protocol.KindServer, URL: s.URL, PID: s.PID,
-			Cwd: procCwd(ctx, s.PID), // dir where `opencode serve` was launched → a project root
+			Cwd: serverCwd,
 		})
 		sessions, err := list(ctx, s.URL)
 		if err != nil {
 			continue
 		}
 		for _, sess := range sessions {
+			// A session's OWN directory, not the server's: one `opencode serve` serves sessions from
+			// any number of folders/worktrees (it partitions every call by ?directory=), so the launch
+			// dir is right for at most one of them. Using it for all made takeover rows show the wrong
+			// (or no) path and auto-registered a project the session never ran in. Older opencode
+			// builds don't report a directory — fall back to the server's cwd so such a row is no worse
+			// off than before this field existed, rather than regressing to a pathless one.
+			cwd := sess.Cwd
+			if cwd == "" {
+				cwd = serverCwd
+			}
 			items = append(items, protocol.Discovered{
 				Provider: "opencode", Kind: protocol.KindSession,
-				URL: s.URL, SessionID: sess.ID, Title: sess.Title, UpdatedAt: sess.UpdatedAt,
+				URL: s.URL, SessionID: sess.ID, Title: sess.Title, Cwd: cwd, UpdatedAt: sess.UpdatedAt,
 				// "Live" = ACTUALLY active recently, not merely present on a running server — otherwise
 				// every stale session reads as live. Attaching works regardless; this is just the hint.
 				Live: sess.UpdatedAt > 0 && time.Now().Unix()-sess.UpdatedAt < 300,

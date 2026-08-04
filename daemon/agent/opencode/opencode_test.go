@@ -210,6 +210,40 @@ func TestListHidesChildSessions(t *testing.T) {
 	}
 }
 
+// TestListReportsSessionDirectory: GET /session reports every session the server knows, each with
+// its own `directory` — a single `opencode serve` routinely holds sessions from several unrelated
+// folders/worktrees (verified live vs 1.17.19). List must carry that per-session directory through,
+// because discovery/takeover otherwise assumes the server's launch dir and attaches with a
+// ?directory= the session doesn't live in (opencode partitions on it → silently dropped sends).
+// A session with no directory (older opencode) must decode to "" so callers can fall back, not fail.
+func TestListReportsSessionDirectory(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/session" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`[
+			{"id":"ses_a","title":"in a worktree","directory":"/repo/worktrees/feature-x","time":{"updated":1000}},
+			{"id":"ses_b","title":"no directory field","time":{"updated":2000}}
+		]`))
+	}))
+	defer srv.Close()
+
+	got, err := New(srv.URL).List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("sessions = %+v, want 2", got)
+	}
+	if got[0].Cwd != "/repo/worktrees/feature-x" {
+		t.Errorf("ses_a cwd = %q, want the session's own directory", got[0].Cwd)
+	}
+	if got[1].Cwd != "" {
+		t.Errorf("ses_b cwd = %q, want \"\" when opencode reports no directory", got[1].Cwd)
+	}
+}
+
 // TestOpenCode_SendsDirectory pins the Track-1.1 fix: the cwd passed to Create/Prompt
 // must be forwarded to opencode as the ?directory= query param on both POST /session
 // and POST /session/{id}/message, so sessions are scoped to the right folder/worktree.

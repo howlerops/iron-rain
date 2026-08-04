@@ -132,6 +132,38 @@ func TestCombine(t *testing.T) {
 	}
 }
 
+// TestCombineSessionCwd: a discovered session row carries the session's OWN directory, and only
+// borrows the server's launch dir when opencode reported none. Pins the fix for takeover rows that
+// showed no path and auto-registered the `opencode serve` cwd for sessions living in another
+// folder/worktree entirely (one server serves sessions from many directories).
+func TestCombineSessionCwd(t *testing.T) {
+	orig := procCwd
+	defer func() { procCwd = orig }()
+	procCwd = func(context.Context, int) string { return "/repo" }
+
+	servers := []OpenCodeServer{{URL: "http://127.0.0.1:4096", PID: 111}}
+	list := func(context.Context, string) ([]protocol.Session, error) {
+		return []protocol.Session{
+			{ID: "ses_worktree", Cwd: "/repo/worktrees/feature-x"},
+			{ID: "ses_nodir"}, // older opencode: no directory field → falls back to the server cwd
+		}, nil
+	}
+
+	items := combine(context.Background(), servers, nil, nil, list)
+	if len(items) != 3 {
+		t.Fatalf("want server + 2 sessions, got %d: %+v", len(items), items)
+	}
+	if items[0].Cwd != "/repo" {
+		t.Errorf("server cwd = %q, want /repo", items[0].Cwd)
+	}
+	if items[1].SessionID != "ses_worktree" || items[1].Cwd != "/repo/worktrees/feature-x" {
+		t.Errorf("session row = %+v, want its own directory, not the server's", items[1])
+	}
+	if items[2].SessionID != "ses_nodir" || items[2].Cwd != "/repo" {
+		t.Errorf("directory-less session = %+v, want the server cwd as fallback", items[2])
+	}
+}
+
 func TestCombineSkipsUnreachableServer(t *testing.T) {
 	servers := []OpenCodeServer{{URL: "http://127.0.0.1:1", PID: 1}}
 	list := func(_ context.Context, _ string) ([]protocol.Session, error) {

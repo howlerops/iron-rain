@@ -113,7 +113,15 @@ func (p *Provider) List(ctx context.Context) ([]protocol.Session, error) {
 		ID       string `json:"id"`
 		Title    string `json:"title"`
 		ParentID string `json:"parentID"`
-		Time     struct {
+		// Each session carries its OWN directory, and GET /session reports every session the
+		// server knows regardless of ?directory= — so one server routinely lists sessions from
+		// several unrelated folders/worktrees. Dropping this field made every listed session look
+		// like it lived wherever `opencode serve` was launched: discovery showed pathless rows and
+		// attaching sent the wrong ?directory= (which opencode partitions on), i.e. the silent-send
+		// failure attach() fights above. Older opencode builds omit it — absent must decode to ""
+		// (never an error) so callers fall back to the server's cwd instead of losing the session.
+		Directory string `json:"directory"`
+		Time      struct {
 			Updated int64 `json:"updated"` // opencode reports millis
 		} `json:"time"`
 	}
@@ -127,6 +135,7 @@ func (p *Provider) List(ctx context.Context) ([]protocol.Session, error) {
 		}
 		out = append(out, protocol.Session{
 			ID: s.ID, Provider: "opencode", Status: protocol.StatusIdle, Title: s.Title,
+			Cwd:       s.Directory,
 			UpdatedAt: s.Time.Updated / 1000, // millis -> seconds
 		})
 	}
