@@ -551,8 +551,14 @@ func (h *Hub) autoRegisterProjects(items []protocol.Discovered) {
 	}
 }
 
-// autoRegisterCwd resolves cwd to its git root and adds it to the registry (deduped),
+// autoRegisterCwd resolves cwd to its repo root and adds it to the registry (deduped),
 // when auto-projects is enabled and a registry is attached.
+//
+// It resolves through MainRepoRoot, not RepoRoot, so an agent running inside a linked worktree
+// registers the REPO rather than the worktree. RepoRoot returns the worktree's own path, which
+// meant a user who ran three worktree sessions on one repo ended up with four near-identical
+// projects — the repo plus one dead entry per throwaway session branch. All worktrees of a repo
+// now share the single entry the user actually recognises.
 func (h *Hub) autoRegisterCwd(cwd string) {
 	if cwd == "" {
 		return
@@ -564,7 +570,7 @@ func (h *Hub) autoRegisterCwd(cwd string) {
 		return
 	}
 	root := cwd
-	if r, err := worktree.RepoRoot(cwd); err == nil {
+	if r, err := worktree.MainRepoRoot(cwd); err == nil {
 		root = r
 	}
 	_, _ = reg.AddAuto(root)

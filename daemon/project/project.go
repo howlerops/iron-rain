@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/howlerops/oculus/daemon/worktree"
 )
 
 // Project is a registered folder.
@@ -29,6 +31,13 @@ type Project struct {
 	// Source is "manual" (added via the Projects UI) or "auto" (discovered from an
 	// active agent's working directory). Empty in legacy records; treat as "manual".
 	Source string `json:"source,omitempty"`
+	// AbsorbedIDs are the IDs of auto-registered worktree projects that collapseAutoWorktrees
+	// folded into this repo. They are kept — not just deleted along with the entries — because
+	// project IDs are persisted far outside this registry: loops, approval rules and MCP server
+	// scopes all store one. Dropping the ID outright would make an unattended loop pinned to a
+	// worktree fail with "unknown project" on the first run after the upgrade, with nothing in
+	// the UI explaining why. Get resolves these to the surviving repo instead.
+	AbsorbedIDs []string `json:"absorbed_ids,omitempty"`
 }
 
 // Registry is a persisted, concurrency-safe set of projects, deduped by path.
@@ -55,7 +64,138 @@ func Load(path string) (*Registry, error) {
 	if err := json.Unmarshal(data, &r.list); err != nil {
 		return nil, fmt.Errorf("project registry %s: %w", path, err)
 	}
+	if r.collapseAutoWorktrees() {
+		// Persist so the collapse is a one-time cost rather than something recomputed at every
+		// daemon start. A failed write is deliberately not fatal: a read-only or full disk must
+		// not stop the daemon booting, the in-memory list is already correct for this run, and
+		// the next registry mutation rewrites the file anyway.
+		_ = r.save()
+	}
 	return r, nil
+}
+
+// collapseAutoWorktrees rewrites a registry left behind by an older daemon, which auto-registered
+// each linked worktree as its own project (it resolved cwds with worktree.RepoRoot, whose answer
+// inside a worktree is that worktree). Changing the resolver only fixes projects registered from
+// now on; without this, every existing user keeps the pile of one-project-per-session-branch
+// entries forever, since nothing else ever removes them. Auto entries that resolve to the same
+// repo collapse into a single entry for that repo. It reports whether anything changed.
+//
+// MANUAL entries are left exactly as they are. If someone navigated to a worktree and added it
+// through the Projects UI, that is a stated intent to track it separately, and a migration that
+// silently deleted it would destroy the user's own configuration. A manual entry that happens to
+// sit at a repo root can still ACQUIRE AbsorbedIDs below — that adds an alias without altering the
+// entry's name, path or source, and skipping it would break exactly the loops and approval rules
+// of the users who registered their repos properly.
+func (r *Registry) collapseAutoWorktrees() bool {
+	// Resolve every fold first, mutate second. Working out the full picture up front is what lets
+	// a worktree merge into a repo entry that appears LATER in the list instead of synthesizing a
+	// duplicate of it.
+	roots := make(map[int]string) // index in r.list -> repo root, only for entries that must fold
+	for i, p := range r.list {
+		if p.Source != "auto" || !isLinkedWorktree(p.Path) {
+			continue
+		}
+		root, err := worktree.MainRepoRoot(p.Path)
+		// Keep the entry untouched when its repo can't be resolved — the checkout it borrowed from
+		// is gone, git is missing, the repo is corrupt. A failed probe is not evidence that an
+		// entry is redundant, and deleting a project on one is unrecoverable; a stale row is merely
+		// untidy and the user can remove it themselves.
+		if err != nil || root == "" || root == p.Path {
+			continue
+		}
+		roots[i] = filepath.Clean(root)
+	}
+	if len(roots) == 0 {
+		return false
+	}
+
+	// Paths that keep an entry of their own regardless: if the repo is already registered (however
+	// it got there), its worktrees fold INTO that entry rather than conjuring a second one.
+	surviving := make(map[string]bool, len(r.list))
+	for i, p := range r.list {
+		if _, folding := roots[i]; !folding {
+			surviving[p.Path] = true
+		}
+	}
+
+	kept := make([]Project, 0, len(r.list))
+	at := make(map[string]int, len(r.list)) // path -> index in kept
+	absorbed := make(map[string][]string)   // repo root -> IDs folded into it
+	for i, p := range r.list {
+		root, folding := roots[i]
+		if !folding {
+			if _, dup := at[p.Path]; dup {
+				continue // defensive: add() dedupes by path, but never emit two entries for one path
+			}
+			at[p.Path] = len(kept)
+			kept = append(kept, p)
+			continue
+		}
+		absorbed[root] = append(absorbed[root], p.ID)
+		if surviving[root] {
+			continue // the repo has its own entry elsewhere in the list
+		}
+		if _, made := at[root]; made {
+			continue // a sibling worktree of the same repo already stood one up
+		}
+		// Take the position of the first worktree that folded here, so the repo lands where the
+		// user last saw one of its entries instead of jumping to the end of the sidebar.
+		at[root] = len(kept)
+		kept = append(kept, autoRepoAt(root))
+	}
+
+	for root, ids := range absorbed {
+		i, ok := at[root]
+		if !ok {
+			continue
+		}
+		for _, id := range ids {
+			if id != kept[i].ID && !containsString(kept[i].AbsorbedIDs, id) {
+				kept[i].AbsorbedIDs = append(kept[i].AbsorbedIDs, id)
+			}
+		}
+		sort.Strings(kept[i].AbsorbedIDs) // stable on disk: map iteration order must not churn the file
+	}
+	r.list = kept
+	return true
+}
+
+// isLinkedWorktree reports whether dir is a linked worktree, by the one signal that needs no
+// subprocess: a linked worktree's .git is a FILE (a gitfile naming the main repo's admin dir),
+// while an ordinary checkout's is a directory. Gating the migration on this stat is what keeps it
+// from spawning a git process per registered project at every single daemon start — after the
+// first collapse every auto entry is a repo root and this returns false for all of them. It
+// doubles as the check for a path that no longer exists: the stat simply fails.
+func isLinkedWorktree(dir string) bool {
+	fi, err := os.Stat(filepath.Join(dir, ".git"))
+	return err == nil && fi.Mode().IsRegular()
+}
+
+// autoRepoAt builds the auto-discovered project entry for a resolved repo root. It re-reads the
+// branch from git rather than inheriting one from a collapsed worktree, whose branch is the
+// session's throwaway oculus/<name> and never the repo's default.
+func autoRepoAt(root string) Project {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	isRepo, branch := gitInfo(ctx, root)
+	return Project{
+		ID:            "proj_" + shortHash(root),
+		Name:          filepath.Base(root),
+		Path:          root,
+		IsGitRepo:     isRepo,
+		DefaultBranch: branch,
+		Source:        "auto",
+	}
+}
+
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // DirEntry is one browsable subdirectory returned by Browse (for the new-session folder picker).
@@ -207,12 +347,21 @@ func (r *Registry) List() []Project {
 	return out
 }
 
-// Get returns the project with id, if present.
+// Get returns the project with id, if present. An id belonging to a worktree project that the
+// load-time migration folded into its repo resolves to that repo, so a loop, approval rule or
+// MCP server pinned to a now-collapsed worktree keeps working instead of failing with "unknown
+// project" the first time it runs unattended after the upgrade. Exact IDs are matched in full
+// before any alias, so a live project can never be shadowed by a stale reference to a dead one.
 func (r *Registry) Get(id string) (Project, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, p := range r.list {
 		if p.ID == id {
+			return p, true
+		}
+	}
+	for _, p := range r.list {
+		if containsString(p.AbsorbedIDs, id) {
 			return p, true
 		}
 	}

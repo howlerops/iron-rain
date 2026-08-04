@@ -49,6 +49,67 @@ func RepoRoot(dir string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// MainRepoRoot resolves dir to the root of its MAIN repository — the checkout that owns the
+// shared .git admin directory — where RepoRoot stops at whichever work tree dir happens to sit in.
+// The two differ only inside a LINKED worktree, and that difference is the whole point: there
+// `git rev-parse --show-toplevel` answers with the worktree's own throwaway path (typically
+// ~/.oculus/worktrees/<repo>/<session>), so auto-registering a cwd created one brand-new "project"
+// per worktree session and buried the actual repo under a pile of near-identical siblings.
+// `--git-common-dir` instead reports the .git a worktree BORROWS — the main checkout's — so its
+// parent directory is the one repo every worktree of it belongs under.
+//
+// Every rung of the fallback chain lands back on RepoRoot rather than inventing a path, because a
+// confidently wrong root is worse than today's over-specific one: it would register a directory
+// the user never works in, and sessions spawned from it would run in the wrong tree. The shapes
+// below are deliberately rejected (each fails the "<root>/.git" check and falls through):
+//   - a bare repo, or a worktree of one: the common dir IS the bare repo (…/repo.git), whose
+//     parent is merely the folder it was cloned into and which has no work tree to run a session in
+//   - a submodule: the common dir is …/super/.git/modules/<name>, and folding a submodule into its
+//     superproject would silently retarget the user's sessions at a different repository
+//   - a --separate-git-dir / GIT_DIR checkout: the admin dir lives nowhere near the work tree, so
+//     its parent has no relationship to the repo at all
+func MainRepoRoot(dir string) (string, error) {
+	if root, ok := commonDirRoot(dir); ok {
+		return root, nil
+	}
+	return RepoRoot(dir)
+}
+
+// commonDirRoot asks git for the shared git dir and derives the main work tree root from it. It
+// reports ok=false for every answer that isn't a plain "<root>/.git" present on disk, leaving the
+// caller to fall back; see MainRepoRoot for which real-world repo layouts that rejects and why.
+func commonDirRoot(dir string) (string, bool) {
+	// One context covers both attempts so a wedged git can't spend the timeout twice over.
+	ctx, cancel := gitContext()
+	defer cancel()
+	// --path-format=absolute needs git 2.31 (2021). Older git rejects the flag outright, so retry
+	// the bare form: inside a linked worktree — the only case whose answer we act on — git reports
+	// the common dir as an absolute path anyway, and a relative answer (".git", "../.git") means
+	// we're already in the main checkout, where RepoRoot is by definition the right answer.
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir").Output()
+	if err != nil {
+		out, err = exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--git-common-dir").Output()
+		if err != nil {
+			return "", false
+		}
+	}
+	common := filepath.Clean(strings.TrimSpace(string(out)))
+	if !filepath.IsAbs(common) || filepath.Base(common) != ".git" {
+		return "", false
+	}
+	// Insist the admin dir is really there. A worktree's gitfile can outlive the main checkout it
+	// points at (someone deleted or moved the repo without pruning), and registering a project at
+	// a path that no longer exists would put a dead entry in every user's sidebar.
+	if fi, err := os.Stat(common); err != nil || !fi.IsDir() {
+		return "", false
+	}
+	root := filepath.Dir(common)
+	if fi, err := os.Stat(root); err != nil || !fi.IsDir() {
+		return "", false
+	}
+	return root, true
+}
+
 // DefaultBase is where worktrees are created (~/.oculus/worktrees, or ./oculus-worktrees
 // if the home dir is unavailable).
 func DefaultBase() string {
