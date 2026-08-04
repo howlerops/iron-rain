@@ -242,7 +242,7 @@ private struct DiffCardView: View {
             HStack(spacing: 6) {
                 Image(systemName: "plus.forwardslash.minus").font(.caption)
                 Text(props.path ?? "changes").font(.caption.bold().monospaced()).lineLimit(1)
-            }.foregroundStyle(palette.primary)
+            }.foregroundStyle(palette.primaryText)
             if let patch = props.patch, !patch.isEmpty {
                 let lines = patch.split(separator: "\n", omittingEmptySubsequences: false).prefix(Self.maxLines)
                 VStack(alignment: .leading, spacing: 0) {

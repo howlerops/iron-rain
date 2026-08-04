@@ -385,7 +385,7 @@ struct NewSessionView: View {
                     Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
                     Text("No agents found — add one").foregroundStyle(palette.foreground)
                     Spacer()
-                    Text("Add").font(.caption.weight(.semibold)).foregroundStyle(palette.primary)
+                    Text("Add").font(.caption.weight(.semibold)).foregroundStyle(palette.primaryText)
                 }.contentShape(Rectangle())
             }.buttonStyle(.plain)
         } else {
@@ -396,7 +396,7 @@ struct NewSessionView: View {
                 if model.providers.count > 4 { picker.pickerStyle(.menu) } else { picker.pickerStyle(.segmented) }
                 Button { showManageAgents = true } label: {
                     Label("Manage agents…", systemImage: "slider.horizontal.3").font(.caption)
-                }.buttonStyle(.plain).foregroundStyle(palette.primary)
+                }.buttonStyle(.plain).foregroundStyle(palette.primaryText)
             }
         }
     }
@@ -415,7 +415,7 @@ struct NewSessionView: View {
                 Button { mode = .takeOver } label: {
                     HStack(spacing: 9) {
                         Image(systemName: "terminal").font(.footnote)
-                            .foregroundStyle(palette.primary)
+                            .foregroundStyle(palette.primaryText)
                             .accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(terminalCandidates.count == 1
@@ -553,8 +553,8 @@ struct NewSessionView: View {
             // folder → check N repos, each gets its own worktree). Works on iOS + macOS.
             Button { showBrowser = true } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: "folder.badge.plus").foregroundStyle(palette.primary)
-                    Text("Browse folders…").font(.footnote.weight(.medium)).foregroundStyle(palette.primary)
+                    Image(systemName: "folder.badge.plus").foregroundStyle(palette.primaryText)
+                    Text("Browse folders…").font(.footnote.weight(.medium)).foregroundStyle(palette.primaryText)
                     Spacer()
                     Text("pick several").font(.caption2).foregroundStyle(palette.mutedForeground)
                 }
@@ -661,7 +661,7 @@ struct NewSessionView: View {
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: d.provider == "claude-code" ? "terminal" : "bolt.horizontal.circle")
-                    .font(.subheadline).foregroundStyle(palette.primary)
+                    .font(.subheadline).foregroundStyle(palette.primaryText)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(discoveredTitle(d)).font(.footnote.weight(.medium)).foregroundStyle(palette.foreground)
@@ -715,7 +715,7 @@ struct NewSessionView: View {
             }
             Text("Live").font(.caption2.weight(.semibold))
         }
-        .foregroundStyle(palette.primary)
+        .foregroundStyle(palette.primaryText)
         .padding(.horizontal, 6).padding(.vertical, 2)
         .background(Capsule().fill(palette.primary.opacity(0.16)))
         .overlay { if differentiateWithoutColor { Capsule().strokeBorder(palette.primary, lineWidth: 1) } }
@@ -880,7 +880,7 @@ struct FolderBrowser: View {
                         .font(.footnote).foregroundStyle(e.isGitRepo ? palette.primary : palette.mutedForeground)
                     Text(e.name).font(.footnote).foregroundStyle(palette.foreground).lineLimit(1)
                     if e.isGitRepo {
-                        Text("git").font(.caption2.weight(.semibold)).foregroundStyle(palette.primary)
+                        Text("git").font(.caption2.weight(.semibold)).foregroundStyle(palette.primaryText)
                             .padding(.horizontal, 5).padding(.vertical, 1)
                             .background(Capsule().fill(palette.primary.opacity(0.14)))
                     }

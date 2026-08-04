@@ -190,7 +190,7 @@ struct AccountsView: View {
             if u.costUSD > 0 {
                 Text(String(format: "$%.3f", u.costUSD))
                     .font(.footnote.weight(.semibold).monospaced())
-                    .foregroundStyle(palette.primary)
+                    .foregroundStyle(palette.primaryText)
             }
         }
     }
@@ -268,7 +268,7 @@ struct AccountsView: View {
                 #endif
                 .accessibilityLabel("Check remaining quota for \(a.name)")
                 if a.active == true {
-                    Text("Active").font(.caption2.weight(.bold)).foregroundStyle(palette.primary)
+                    Text("Active").font(.caption2.weight(.bold)).foregroundStyle(palette.primaryText)
                 } else {
                     Button("Use") { Task { await model.activateAccount(provider: provider, id: a.id) } }
                         .buttonStyle(.bordered)
@@ -309,7 +309,7 @@ struct AccountsView: View {
                         Text("resets in \(r < 60 ? "\(r)s" : "\(r/60)m")").font(.caption2.monospaced())
                     }
                 }
-                .foregroundStyle(palette.primary)
+                .foregroundStyle(palette.primaryText)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -435,7 +435,7 @@ struct AddAccountSheet: View {
                 }
             }
             Button { rows.append(EnvRow()) } label: { Label("Add variable", systemImage: "plus").font(.caption) }
-                .buttonStyle(.plain).foregroundStyle(palette.primary)
+                .buttonStyle(.plain).foregroundStyle(palette.primaryText)
 
             if let problem {
                 Text(problem).font(.footnote).foregroundStyle(palette.destructive)

@@ -231,7 +231,7 @@ struct SessionSidebar: View {
                 Button { selection = Self.newSessionTag } label: {
                     Label("New session", systemImage: "plus")
                         .font(.callout.weight(.medium))
-                        .foregroundStyle(palette.primary)
+                        .foregroundStyle(palette.primaryText)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.vertical, 6).padding(.horizontal, 8)
                         .contentShape(Rectangle())
@@ -299,7 +299,7 @@ struct SessionSidebar: View {
                     Spacer(minLength: 4)
                     if !model.connecting {
                         Button("Retry") { Task { await model.connect() } }
-                            .font(.footnote).buttonStyle(.plain).foregroundStyle(palette.primary)
+                            .font(.footnote).buttonStyle(.plain).foregroundStyle(palette.primaryText)
                     }
                 }
                 .listRowSeparator(.hidden)
@@ -691,7 +691,7 @@ struct SessionSidebar: View {
                             if updates.installing {
                                 ProgressView().controlSize(.small)
                             } else {
-                                Image(systemName: "arrow.down.circle.fill").foregroundStyle(palette.primary).font(.subheadline)
+                                Image(systemName: "arrow.down.circle.fill").foregroundStyle(palette.primaryText).font(.subheadline)
                             }
                         }
                         VStack(alignment: .leading, spacing: 1) {
@@ -828,7 +828,7 @@ struct SessionSidebar: View {
                     Image(systemName: "bolt.fill").font(.caption2)
                     Text("\(running)").font(.caption2.weight(.semibold).monospacedDigit())
                 }
-                .foregroundStyle(palette.primary)
+                .foregroundStyle(palette.primaryText)
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("\(running) running")
             }

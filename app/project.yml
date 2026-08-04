@@ -78,6 +78,28 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         CODE_SIGN_ENTITLEMENTS: Oculus/Oculus.entitlements
 
+  # Real UI tests, driving the shipped app through the accessibility tree.
+  #
+  # The design pass that landed in v0.2.135 changed almost entirely BEHAVIOUR — composer focus,
+  # tab navigation, approval handling — and the 119 unit tests cover none of it, because none of
+  # it is reachable without a running app. Everything below was previously verified by "it
+  # compiles", which is exactly how a three-NavigationStack binding survived review.
+  #
+  # These also double as the accessibility regression net: XCUITest addresses elements by their
+  # accessibility identity, so a control that loses its label fails a test rather than silently
+  # becoming a VoiceOver dead end again.
+  OculusUIAutomation:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - OculusUIAutomation
+    dependencies:
+      - target: Oculus-iOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.howlerops.oculus.uiautomation
+        TEST_TARGET_NAME: Oculus-iOS
+
   OculusWidgets:
     type: app-extension
     platform: iOS
@@ -130,8 +152,13 @@ schemes:
     build:
       targets:
         Oculus-iOS: all
+        OculusUIAutomation: [test]
     run:
       config: Debug
+    test:
+      config: Debug
+      targets:
+        - OculusUIAutomation
     archive:
       config: Release
     profile:

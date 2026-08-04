@@ -19,6 +19,14 @@ public struct OculusPalette: Equatable {
     public let border: Color
     public let input: Color
 
+    /// Gold for TYPE and thin strokes, as opposed to `primary` which is gold for FILLS.
+    ///
+    /// Identical to `primary` in dark mode (gold on black reads at 9.35:1). In light mode it darkens,
+    /// because gold type on white is 2.25:1 — genuinely unreadable — while a gold *fill* on white is
+    /// fine so long as what sits on it is dark. Keeping the two apart is what lets the brand survive
+    /// the contrast fix instead of being sacrificed to it.
+    public let primaryText: Color
+
     // Semantic status colors. These were previously hardcoded at ~37 call sites across 11 files —
     // including TWO different greens for "ok" — none of which were contrast-checked in light mode.
     // They belong here beside `primary`/`destructive` because they carry meaning, not decoration,
@@ -30,18 +38,22 @@ public struct OculusPalette: Equatable {
     public let diffAdded: Color
     public let diffRemoved: Color
 
-    /// Reserved brand gold — HowlerOps `--primary` oklch(0.7516 0.1469 84) = #D9A520
-    /// (goldenrod). Dark mode only.
+    /// Reserved brand gold — HowlerOps `--primary` oklch(0.7516 0.1469 84) = #D9A520 (goldenrod).
     ///
-    /// This gold is a DARK-MODE color. On white it measures 2.25:1 — below the 4.5:1 WCAG AA floor
-    /// for text and below 3:1 even for large text or UI shapes — and white-on-gold (filled chips)
-    /// measures the same 2.25:1. It was reused unchanged in light mode, so every gold label, chip
-    /// and selected row was effectively unreadable there. Light mode now gets a darkened gold that
-    /// preserves the hue and reaches ~5.4:1 on white.
+    /// Used unchanged in BOTH schemes, because it is a fill: near-black on this gold is 9.35:1 in
+    /// either appearance. Only gold *type* on a light ground needs a different value — that is
+    /// `brandGoldText`. Do not darken this to satisfy a contrast checker; darken the pairing instead.
     public static let brandGold = Color(hex: 0xD9A520)
 
-    /// The light-mode gold. Same hue family, darkened until it passes AA on white.
-    public static let brandGoldOnLight = Color(hex: 0x8A6510)
+    /// Gold that is legible AS TEXT on a light background.
+    ///
+    /// Use this ONLY for gold-coloured type or hairline strokes on a light ground — never as a fill.
+    /// The brand gold is a FILL colour: `brandGold` behind near-black text measures 9.35:1 and is
+    /// perfectly accessible, which is exactly how dark mode has always used it. The earlier fix
+    /// darkened `primary` itself to chase a text-contrast number, which passed the audit and turned
+    /// every gold button, pill and selected row in light mode into olive-brown — solving a real
+    /// problem by destroying the brand. The colour was never wrong; the FOREGROUND paired with it was.
+    public static let brandGoldText = Color(hex: 0x8A6510)
 
     public static let dark = OculusPalette(
         background: Color(hex: 0x000000),
@@ -58,6 +70,7 @@ public struct OculusPalette: Equatable {
         destructive: Color(hex: 0xE5484D),
         border: Color(hex: 0x2A2A2A),
         input: Color(hex: 0x171717),
+        primaryText: brandGold, // gold on black is 9.35:1 — the brand gold works as type here
         success: Color(hex: 0x3FB950),
         warning: Color(hex: 0xE0912A),
         info: Color(hex: 0x58A6FF),
@@ -71,8 +84,10 @@ public struct OculusPalette: Equatable {
         foreground: Color(hex: 0x000000),
         card: Color(hex: 0xF7F7F7),
         cardForeground: Color(hex: 0x1F1F1F),
-        primary: brandGoldOnLight, // darkened: the dark-mode gold measures 2.25:1 on white
-        primaryForeground: Color(hex: 0xFFFFFF),
+        primary: brandGold, // THE brand gold, both schemes — it is a fill, and it is not the problem
+        // Near-black on gold, exactly as dark mode does it: 9.35:1. White on gold was 2.25:1, and
+        // white-on-gold was the actual accessibility failure here, not the gold.
+        primaryForeground: Color(hex: 0x1A1A1A),
         secondary: Color(hex: 0xF0F0F0),
         muted: Color(hex: 0xE2E2E2),
         mutedForeground: Color(hex: 0x5F5F5F), // was 0x6B6B6B (4.28:1) — now 5.31:1 on white
@@ -81,6 +96,7 @@ public struct OculusPalette: Equatable {
         destructive: Color(hex: 0xC0201C), // was 0xDC2626 (4.06:1) — now 5.24:1 on white
         border: Color(hex: 0xD2D6DC), // was 0xE5E5E5 (1.26:1) — separators need 3:1 to read
         input: Color(hex: 0xF4F4F4),
+        primaryText: brandGoldText, // gold type on white is 2.25:1; this is the same hue at 5.4:1
         success: Color(hex: 0x1A7F43),
         warning: Color(hex: 0x8A5A0B),
         info: Color(hex: 0x0A5BC4),

@@ -47,7 +47,7 @@ struct DaemonLogPanel: View {
                             // app, and "running" was carried by a gold circle whose only difference
                             // from the amber needs-you state was hue.
                             Image(systemName: "bolt.fill").font(.caption2)
-                                .foregroundStyle(palette.primary)
+                                .foregroundStyle(palette.primaryText)
                             Text("\(runningCount) running").font(.caption)
                         }.foregroundStyle(palette.foreground)
                     }

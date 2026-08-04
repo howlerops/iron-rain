@@ -509,6 +509,14 @@ public struct RootView: View {
                         DeckSearchBar(text: $searchText, palette: palette)
                     }
                     deckList(model)
+                        // Every destination's column has to be transparent, not just Sessions'.
+                        // SessionSidebar hides its own list background; LoopsListColumn, ActivityView
+                        // and the Issues hint did not, so switching to those destinations painted an
+                        // opaque List background over the sidebar material and the lower half of the
+                        // column went flat white. This is environment-propagated, so it reaches
+                        // whichever scroll view the destination happens to render.
+                        .scrollContentBackground(.hidden)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 // NOT an opaque fill. On macOS 26 the system floats this column on its own glass
                 // material and SidebarMaterial deliberately leaves it alone; painting a solid colour

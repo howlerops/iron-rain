@@ -83,7 +83,7 @@ struct IssueInspectorPanel: View {
     private var header: some View {
         HStack(spacing: 8) {
             Text(current.key).font(.system(.caption, design: .monospaced).bold())
-                .foregroundStyle(palette.primary)
+                .foregroundStyle(palette.primaryText)
             if let p = current.priority, p > 0 {
                 Text(priorityLabel(p)).font(.caption2.bold())
                     .padding(.horizontal, 6).padding(.vertical, 2)
@@ -269,7 +269,7 @@ struct IssueInspectorPanel: View {
                         Label("Edit", systemImage: "pencil").font(.caption)
                             .frame(minHeight: 44).contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain).foregroundStyle(palette.primary)
+                    .buttonStyle(.plain).foregroundStyle(palette.primaryText)
                     .accessibilityLabel("Edit description")
                 }
             }
@@ -324,7 +324,7 @@ struct IssueInspectorPanel: View {
                         }
                     }
                     Spacer()
-                    Image(systemName: "arrow.up.right.square").font(.caption).foregroundStyle(palette.primary)
+                    Image(systemName: "arrow.up.right.square").font(.caption).foregroundStyle(palette.primaryText)
                 }
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -674,7 +674,7 @@ struct TrackerImage: View {
             } else if failed {
                 Button { if let u = URL(string: url) { openURL(u) } } label: {
                     Label(alt.isEmpty ? "View image" : alt, systemImage: "photo").font(.caption)
-                }.buttonStyle(.plain).foregroundStyle(palette.primary)
+                }.buttonStyle(.plain).foregroundStyle(palette.primaryText)
             } else {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.small)

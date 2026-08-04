@@ -290,7 +290,7 @@ public struct LoopsView: View {
             HStack(spacing: 8) {
                 runStatusDot(run)
                 Text(run.issueKey == "task" ? loopName(run.loopID) : run.issueKey)
-                    .font(.caption.bold()).foregroundStyle(palette.primary).frame(width: 90, alignment: .leading).lineLimit(1)
+                    .font(.caption.bold()).foregroundStyle(palette.primaryText).frame(width: 90, alignment: .leading).lineLimit(1)
                 Text(run.issueTitle).font(.caption).lineLimit(1).foregroundStyle(palette.foreground)
                 Spacer()
                 Text(liveStatus(run)).font(.caption2).foregroundStyle(palette.mutedForeground)

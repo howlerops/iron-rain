@@ -100,11 +100,11 @@ struct Composer: View {
                     micButton
                     voiceButton
                     if dictator.isRecording {
-                        Text("Listening…").font(.caption).foregroundStyle(palette.primary)
+                        Text("Listening…").font(.caption).foregroundStyle(palette.primaryText)
                             .padding(.leading, 6).lineLimit(1)
                     } else if voice.active {
                         Text(voice.speaking ? "Speaking…" : (voice.listening ? "Listening…" : "Voice mode"))
-                            .font(.caption).foregroundStyle(palette.primary)
+                            .font(.caption).foregroundStyle(palette.primaryText)
                             .padding(.leading, 6).lineLimit(1)
                     }
                     Spacer(minLength: 0)
@@ -210,7 +210,7 @@ struct Composer: View {
                             HStack(spacing: 8) {
                                 Text("\(cmd.glyph)\(cmd.name)")
                                     .font(.system(.footnote, design: .monospaced).weight(.semibold))
-                                    .foregroundStyle(palette.primary)
+                                    .foregroundStyle(palette.primaryText)
                                 if let d = cmd.description, !d.isEmpty {
                                     Text(d).font(.caption).foregroundStyle(palette.mutedForeground).lineLimit(1)
                                 }

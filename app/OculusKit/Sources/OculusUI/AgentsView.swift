@@ -37,7 +37,7 @@ public struct AgentPicker: View {
                             Text("Install opencode / claude-code / codex, or add one").font(.caption2).foregroundStyle(palette.mutedForeground)
                         }
                         Spacer()
-                        Text("Add").font(.caption.weight(.semibold)).foregroundStyle(palette.primary)
+                        Text("Add").font(.caption.weight(.semibold)).foregroundStyle(palette.primaryText)
                     }.contentShape(Rectangle())
                 }.buttonStyle(.plain)
             } else {
@@ -403,7 +403,7 @@ struct CustomAgentEditor: View {
                             }
                         }
                         Button { envRows.append(EnvRow()) } label: { Label("Add variable", systemImage: "plus").font(.caption) }
-                            .buttonStyle(.plain).foregroundStyle(palette.primary)
+                            .buttonStyle(.plain).foregroundStyle(palette.primaryText)
                     }
                     // Preview
                     VStack(alignment: .leading, spacing: 4) {

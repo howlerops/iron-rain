@@ -550,7 +550,7 @@ public struct ChatView: View {
                 Spacer()
                 Text("Finish").font(.caption.bold())
             }
-            .foregroundStyle(palette.primary)
+            .foregroundStyle(palette.primaryText)
             .padding(.horizontal, 14).padding(.vertical, 7)
             .background(palette.primary.opacity(0.10))
         }
@@ -922,7 +922,7 @@ public struct ChatView: View {
                 if headerStatus.connection == .offline {
                     Button("Reconnect") { Task { await model.connect() } }
                         .font(.caption.weight(.semibold)).buttonStyle(.plain)
-                        .foregroundStyle(palette.primary)
+                        .foregroundStyle(palette.primaryText)
                 }
             }
             .padding(.horizontal, 14).padding(.vertical, 7)
@@ -1513,7 +1513,7 @@ struct ShellRunCard: View {
                         Label("Send to agent", systemImage: "arrowshape.turn.up.right")
                             .font(.caption2)
                     }
-                    .buttonStyle(.plain).foregroundStyle(palette.primary)
+                    .buttonStyle(.plain).foregroundStyle(palette.primaryText)
                     .help("Paste this command and its output into the conversation as a message from you.")
                 }
             }
@@ -1580,7 +1580,7 @@ struct StreamStallBar: View {
             Button(action: onReconnect) {
                 Text("Reconnect").font(.caption.bold())
             }
-            .buttonStyle(.plain).foregroundStyle(palette.primary)
+            .buttonStyle(.plain).foregroundStyle(palette.primaryText)
         }
         .padding(.horizontal, 8).padding(.vertical, 3)
         .background(Capsule().fill(palette.warning.opacity(0.12)))
@@ -1606,7 +1606,7 @@ struct ToolActivityView: View {
         let t = Self.describe(activity)
         HStack(spacing: 6) {
             Image(systemName: t.icon)
-                .font(.caption).foregroundStyle(palette.primary)
+                .font(.caption).foregroundStyle(palette.primaryText)
                 .scaleEffect(pulse ? 1.0 : 0.82)
                 .opacity(pulse ? 1 : 0.65)
                 // With Reduce Motion the icon settles at full size/opacity rather than disappearing:
@@ -1900,7 +1900,7 @@ struct TodoBar: View {
         VStack(spacing: 0) {
             Button { withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() } } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: "checklist").font(.caption).foregroundStyle(palette.primary)
+                    Image(systemName: "checklist").font(.caption).foregroundStyle(palette.primaryText)
                     Text(current?.content ?? "To-dos").font(.caption).lineLimit(1)
                         .foregroundStyle(current != nil ? palette.foreground : palette.mutedForeground)
                     Spacer()
@@ -2091,7 +2091,7 @@ struct InlineSubAgentCard: View {
             HStack(spacing: 8) {
                 Image(systemName: expanded ? "chevron.down" : "chevron.right")
                     .font(.caption2).foregroundStyle(palette.mutedForeground).frame(width: 10)
-                Image(systemName: "person.2.fill").font(.caption2).foregroundStyle(palette.primary)
+                Image(systemName: "person.2.fill").font(.caption2).foregroundStyle(palette.primaryText)
                 Text(title).font(.caption.bold()).foregroundStyle(palette.foreground).lineLimit(1)
                 if running {
                     RunningPulseDot(color: .green, active: true)
@@ -2178,7 +2178,7 @@ struct SubAgentsStrip: View {
                     Text("Sub-agents").font(.caption2.bold()).foregroundStyle(palette.mutedForeground)
                     if workingCount > 0 {
                         Text("\(workingCount) working")
-                            .font(.caption2.bold()).foregroundStyle(palette.primary)
+                            .font(.caption2.bold()).foregroundStyle(palette.primaryText)
                             .padding(.horizontal, 5).padding(.vertical, 1)
                             .background(Capsule().fill(palette.primary.opacity(0.15)))
                     }
@@ -2679,7 +2679,7 @@ struct TestResultPanel: View {
                     Button {
                         Task { await model.send("The tests are failing (`\(r.command)`). Please investigate and fix them.") }
                     } label: { Label("Fix with agent", systemImage: "wand.and.stars").font(.caption) }
-                        .buttonStyle(.plain).foregroundStyle(palette.primary)
+                        .buttonStyle(.plain).foregroundStyle(palette.primaryText)
                 }
                 Button { model.showTests = false } label: { Image(systemName: "xmark").font(.caption2) }
                     .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)

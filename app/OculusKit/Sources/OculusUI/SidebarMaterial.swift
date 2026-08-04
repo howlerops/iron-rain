@@ -18,11 +18,25 @@ import AppKit
 struct SidebarMaterial: ViewModifier {
     func body(content: Content) -> some View {
         #if os(macOS)
+        // Liquid Glass is opt-in BY SDK, not by OS version. An app linked against the macOS 15 SDK
+        // gets the compatibility appearance on Tahoe 26 — the system does not float its sidebar.
+        //
+        // So `#available(macOS 26.0, *)` alone is the wrong question, and asking it alone shipped a
+        // real bug: release builds come off CI with Xcode 16.4 / MacOSX15.5.sdk, so on a Tahoe 26 Mac
+        // the runtime check said "26, the system handles it", we withheld our own material, and the
+        // system never supplied one either — leaving a flat grey panel where every native sidebar is
+        // translucent. The compile-time arm is what distinguishes "running on 26" from "built for 26".
+        #if compiler(>=6.2)
         if #available(macOS 26.0, *) {
-            content // the system already floats this sidebar; anything we add muddies it
+            content // built for 26 AND running on 26: the system floats this; anything we add muddies it
         } else {
             content.background(VisualEffectBackground(material: .sidebar).ignoresSafeArea())
         }
+        #else
+        // Built against a pre-26 SDK. No system glass is coming at any runtime version, so always
+        // supply the material ourselves.
+        content.background(VisualEffectBackground(material: .sidebar).ignoresSafeArea())
+        #endif
         #else
         content
         #endif
@@ -34,11 +48,16 @@ struct SidebarMaterial: ViewModifier {
 struct PanelMaterial: ViewModifier {
     func body(content: Content) -> some View {
         #if os(macOS)
+        // Same compile-vs-runtime distinction as SidebarMaterial above — see the note there.
+        #if compiler(>=6.2)
         if #available(macOS 26.0, *) {
             content
         } else {
             content.background(VisualEffectBackground(material: .headerView).ignoresSafeArea())
         }
+        #else
+        content.background(VisualEffectBackground(material: .headerView).ignoresSafeArea())
+        #endif
         #else
         content
         #endif

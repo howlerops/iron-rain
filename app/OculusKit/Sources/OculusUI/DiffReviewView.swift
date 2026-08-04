@@ -331,7 +331,7 @@ public struct DiffReviewView: View {
                 if refreshing { ProgressView().controlSize(.small) }
                 else { Label("Refresh", systemImage: "arrow.triangle.branch").font(.footnote.weight(.medium)) }
             }
-            .buttonStyle(.plain).foregroundStyle(palette.primary)
+            .buttonStyle(.plain).foregroundStyle(palette.primaryText)
             .accessibilityLabel("Refresh diff")
         }
         // 44pt tall so the icon-only wrap toggle can carry a full-size touch target without the
@@ -650,7 +650,7 @@ private struct CommentComposer: View {
         VStack(alignment: .leading, spacing: 6) {
             if sent {
                 Label("Sent to agent", systemImage: "checkmark.circle.fill")
-                    .font(.footnote.weight(.medium)).foregroundStyle(palette.primary)
+                    .font(.footnote.weight(.medium)).foregroundStyle(palette.primaryText)
                     .transition(.opacity)
                     .accessibilityAddTraits(.isStaticText)
             } else {

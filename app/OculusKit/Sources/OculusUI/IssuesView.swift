@@ -553,7 +553,7 @@ public struct IssuesView: View {
                 // scaling only the glyphs would slide them out of their halo.
                 Image(systemName: "checklist")
                     .font(.system(size: 38, weight: .semibold))
-                    .foregroundStyle(palette.primary)
+                    .foregroundStyle(palette.primaryText)
                 Image(systemName: "arrow.triangle.branch")
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(palette.primary.opacity(0.65))
@@ -748,7 +748,7 @@ public struct IssuesView: View {
     private func card(_ issue: Issue) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Text(issue.key).font(.caption2.bold()).foregroundStyle(palette.primary)
+                Text(issue.key).font(.caption2.bold()).foregroundStyle(palette.primaryText)
                 Spacer()
                 if let p = issue.priority, p > 0 { priorityDot(p) }
             }
@@ -767,7 +767,7 @@ public struct IssuesView: View {
                     Label("Start agent", systemImage: "play.circle.fill").font(.caption2)
                         .frame(minHeight: 32).contentShape(Rectangle())
                 }
-                .buttonStyle(.plain).foregroundStyle(palette.primary)
+                .buttonStyle(.plain).foregroundStyle(palette.primaryText)
                 .accessibilityLabel("Start an agent on \(issue.key)")
             }
         }
@@ -845,7 +845,7 @@ public struct IssuesView: View {
         let initials = name.split(separator: " ").prefix(2).compactMap { $0.first }.map(String.init).joined().uppercased()
         return Text(initials.isEmpty ? "?" : initials)
             .font(.caption2.weight(.bold))
-            .foregroundStyle(palette.primary)
+            .foregroundStyle(palette.primaryText)
             .frame(minWidth: 18, minHeight: 18)
             .padding(.horizontal, 2)
             .background(Capsule().fill(palette.primary.opacity(0.16)))
@@ -858,7 +858,7 @@ public struct IssuesView: View {
     private var table: some View {
         List(filteredIssues) { issue in
             HStack(spacing: 10) {
-                Text(issue.key).font(.caption.bold()).foregroundStyle(palette.primary).frame(width: 72, alignment: .leading)
+                Text(issue.key).font(.caption.bold()).foregroundStyle(palette.primaryText).frame(width: 72, alignment: .leading)
                 VStack(alignment: .leading, spacing: 1) {
                     // The title is how you pick the ticket; it takes a second line before truncating.
                     Text(issue.title).lineLimit(2)
@@ -874,7 +874,7 @@ public struct IssuesView: View {
                     Image(systemName: "play.circle.fill")
                         .frame(width: 44, height: 44).contentShape(Rectangle())
                 }
-                    .buttonStyle(.plain).foregroundStyle(palette.primary)
+                    .buttonStyle(.plain).foregroundStyle(palette.primaryText)
                     .help("Start an agent on this ticket")
                     .accessibilityLabel("Start an agent on \(issue.key)")
             }
@@ -999,7 +999,7 @@ struct TrackerConnectCard: View {
                         // symbol next to a fixed-size image would make the two branches disagree.
                         Image(systemName: systemImage)
                             .font(.system(size: 20, weight: .semibold))
-                            .foregroundStyle(palette.primary)
+                            .foregroundStyle(palette.primaryText)
                     }
                 }
                 VStack(alignment: .leading, spacing: 2) {
@@ -1146,7 +1146,7 @@ struct TrackerConnectCard: View {
             let steps = oauthSteps(for: provider)
             if steps.isEmpty {
                 HStack(alignment: .top, spacing: 6) {
-                    Image(systemName: "info.circle").font(.caption2).foregroundStyle(palette.primary)
+                    Image(systemName: "info.circle").font(.caption2).foregroundStyle(palette.primaryText)
                     Text(setupHelp).font(.caption2).foregroundStyle(palette.mutedForeground)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -1238,7 +1238,7 @@ struct TrackerConnectCard: View {
                         Text(step.text).font(.caption2).foregroundStyle(palette.mutedForeground)
                         Link(destination: url) {
                             HStack(spacing: 2) { Text("Open"); Image(systemName: "arrow.up.right.square") }
-                                .font(.caption2.weight(.semibold)).foregroundStyle(palette.primary)
+                                .font(.caption2.weight(.semibold)).foregroundStyle(palette.primaryText)
                         }
                     }
                 } else {

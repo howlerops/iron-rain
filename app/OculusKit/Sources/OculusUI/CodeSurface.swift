@@ -568,7 +568,7 @@ struct CodeSurface: View {
             Button { model.codeReviewTarget = nil } label: {
                 Label("Chat", systemImage: "chevron.left").font(.caption)
             }
-            .buttonStyle(.plain).foregroundStyle(palette.primary)
+            .buttonStyle(.plain).foregroundStyle(palette.primaryText)
             .accessibilityLabel("Back to chat")
             Divider().frame(height: 14)
             #endif
@@ -582,7 +582,7 @@ struct CodeSurface: View {
             }
             Spacer(minLength: 0)
             if reviewSessionID != nil {
-                Text("review").font(.caption2.bold()).foregroundStyle(palette.primary)
+                Text("review").font(.caption2.bold()).foregroundStyle(palette.primaryText)
                     .padding(.horizontal, 6).padding(.vertical, 2)
                     .background(palette.primary.opacity(0.15), in: Capsule())
             }
@@ -807,7 +807,7 @@ private struct DirNode: View {
                 Image(systemName: expanded ? "chevron.down" : "chevron.right")
                     .font(.caption2.weight(.bold)).foregroundStyle(palette.mutedForeground)
                     .frame(width: 10)
-                Image(systemName: "folder").font(.caption).foregroundStyle(palette.primary)
+                Image(systemName: "folder").font(.caption).foregroundStyle(palette.primaryText)
                 Text(node.name).font(.footnote).lineLimit(1)
                 Spacer()
             }
@@ -934,7 +934,7 @@ struct ServerInstallBanner: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "wand.and.stars").font(.footnote).foregroundStyle(palette.primary)
+            Image(systemName: "wand.and.stars").font(.footnote).foregroundStyle(palette.primaryText)
             if info.installable {
                 Text("Install **\(info.installLabel)** for \(info.language.capitalized) language support (autocomplete, diagnostics, types)?")
                     .font(.footnote).foregroundStyle(palette.foreground)
@@ -1065,7 +1065,7 @@ struct SearchPanel: View {
                         VStack(alignment: .leading, spacing: 1) {
                             HStack(spacing: 4) {
                                 Text((hit.path as NSString).lastPathComponent)
-                                    .font(.caption.weight(.medium)).foregroundStyle(palette.primary)
+                                    .font(.caption.weight(.medium)).foregroundStyle(palette.primaryText)
                                 Text(":\(hit.line)").font(.caption2).foregroundStyle(palette.mutedForeground)
                             }
                             Text(hit.text).font(.system(.caption, design: .monospaced))
@@ -1116,7 +1116,7 @@ struct SymbolRow: View {
             Task { await code.openAt(path: code.openPath ?? "", line: sym.line, character: sym.character) }
         } label: {
             HStack(spacing: 5) {
-                Image(systemName: symbolIcon(sym.kind)).font(.caption2).foregroundStyle(palette.primary).frame(width: 13)
+                Image(systemName: symbolIcon(sym.kind)).font(.caption2).foregroundStyle(palette.primaryText).frame(width: 13)
                 Text(sym.name).font(.footnote).lineLimit(1)
                 if let d = sym.detail, !d.isEmpty {
                     Text(d).font(.caption2).foregroundStyle(palette.mutedForeground).lineLimit(1)
@@ -1177,7 +1177,7 @@ struct ReferencesPanel: View {
                         } label: {
                             HStack(spacing: 6) {
                                 Text((ref.path as NSString).lastPathComponent)
-                                    .font(.caption.weight(.medium)).foregroundStyle(palette.primary)
+                                    .font(.caption.weight(.medium)).foregroundStyle(palette.primaryText)
                                 Text(":\(ref.line + 1):\(ref.character + 1)")
                                     .font(.system(.caption2, design: .monospaced)).foregroundStyle(palette.mutedForeground)
                                 Spacer()

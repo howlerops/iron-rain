@@ -244,7 +244,7 @@ struct LoopsListColumn: View {
                 Text("Loops").font(.footnote.weight(.semibold))
                 Spacer()
                 Button(action: onNew) { Label("New", systemImage: "plus") .font(.footnote.weight(.medium)) }
-                    .buttonStyle(.plain).foregroundStyle(palette.primary)
+                    .buttonStyle(.plain).foregroundStyle(palette.primaryText)
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
             Divider().overlay(palette.border)

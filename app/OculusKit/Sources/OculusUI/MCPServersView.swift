@@ -355,7 +355,7 @@ public struct MCPServersView: View {
     private var importBanner: some View {
         SheetCard(palette: palette, tint: palette.primary) {
             HStack(spacing: OculusSpace.sm) {
-                Image(systemName: "arrow.down.circle").foregroundStyle(palette.primary)
+                Image(systemName: "arrow.down.circle").foregroundStyle(palette.primaryText)
                 Text("\(model.mcpFound.count) server\(model.mcpFound.count == 1 ? "" : "s") already set up in your agents")
                     .font(.footnote.weight(.medium)).foregroundStyle(palette.foreground)
                 Spacer(minLength: OculusSpace.sm)

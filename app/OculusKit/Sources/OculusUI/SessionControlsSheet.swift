@@ -311,14 +311,14 @@ struct SessionTitleChip: View {
             HStack(spacing: 4) {
                 if model.autonomous {
                     Image(systemName: "bolt.circle.fill").font(.caption2)
-                        .foregroundStyle(palette.primary)
+                        .foregroundStyle(palette.primaryText)
                         // The ONLY indication that this session keeps going on its own — nothing
                         // else in the bar says so, so it can't be decorative.
                         .accessibilityLabel("Running autonomously")
                 }
                 if SessionMode.isRestricted(model.sessionMode) {
                     Image(systemName: "lock.shield").font(.caption2)
-                        .foregroundStyle(palette.primary)
+                        .foregroundStyle(palette.primaryText)
                         .accessibilityLabel("Restricted mode: \(SessionMode.label(model.sessionMode))")
                 }
                 Text(modelName).font(.footnote.weight(.semibold))

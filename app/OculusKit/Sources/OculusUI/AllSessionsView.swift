@@ -97,7 +97,7 @@ public struct AllSessionsView: View {
                 Button { Task { await model.discover() } } label: {
                     Label("Rescan", systemImage: "arrow.clockwise").font(.caption)
                 }
-                .buttonStyle(.plain).foregroundStyle(palette.primary)
+                .buttonStyle(.plain).foregroundStyle(palette.primaryText)
             }
             ForEach(terminalCandidates) { c in
                 Button {
@@ -106,7 +106,7 @@ public struct AllSessionsView: View {
                 } label: {
                     HStack(spacing: 9) {
                         Image(systemName: c.provider == "claude-code" ? "terminal" : "bolt.horizontal.circle")
-                            .font(.footnote).foregroundStyle(palette.primary)
+                            .font(.footnote).foregroundStyle(palette.primaryText)
                         VStack(alignment: .leading, spacing: 1) {
                             // Which terminal session this is, is the whole decision being made here —
                             // it wraps rather than truncating. The subtitle is a path, so it keeps
@@ -120,12 +120,12 @@ public struct AllSessionsView: View {
                         Spacer(minLength: 6)
                         if c.live {
                             Text("Live").font(.caption2.weight(.semibold))
-                                .foregroundStyle(palette.primary)
+                                .foregroundStyle(palette.primaryText)
                                 .padding(.horizontal, 6).padding(.vertical, 2)
                                 .background(Capsule().fill(palette.primary.opacity(0.16)))
                         }
                         Text("Continue").font(.caption.weight(.medium))
-                            .foregroundStyle(palette.primary)
+                            .foregroundStyle(palette.primaryText)
                     }
                     .padding(.vertical, 5).contentShape(Rectangle())
                 }
@@ -396,7 +396,7 @@ public struct AllSessionsView: View {
                     HStack(spacing: 6) {
                         if let b = s.branch, !b.isEmpty {
                             Label(b, systemImage: "arrow.triangle.branch").font(.caption2).lineLimit(1)
-                                .foregroundStyle(palette.primary)
+                                .foregroundStyle(palette.primaryText)
                         }
                         if let p = projectName(s) {
                             Text(p).font(.caption2).foregroundStyle(palette.mutedForeground).lineLimit(1)

@@ -241,7 +241,7 @@ struct RemotesView: View {
             if let fwds = host.forwards, !fwds.isEmpty {
                 Label(fwds.map { "localhost:\($0.localPort) → :\($0.remotePort)" }.joined(separator: ", "),
                       systemImage: "arrow.left.arrow.right")
-                    .font(.caption2.monospaced()).foregroundStyle(palette.primary)
+                    .font(.caption2.monospaced()).foregroundStyle(palette.primaryText)
             }
             HStack {
                 Button {
