@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -303,7 +304,19 @@ func legacyClientHandshakeForTest(mc MsgConn, kp crypto.KeyPair, daemonPub []byt
 }
 
 // An app already in the wild must keep working against an upgraded daemon.
+// allowLegacy opts this test into accepting v0, and restores the previous setting after. The
+// package default is STRICT, so a test about transitional behaviour has to say so out loud rather
+// than inheriting it — otherwise flipping the default silently turns these into tests of something
+// else, which is exactly what happened when it flipped.
+func allowLegacy(t *testing.T) {
+	t.Helper()
+	prev := AllowLegacyHandshake
+	t.Cleanup(func() { AllowLegacyHandshake = prev })
+	AllowLegacyHandshake = true
+}
+
 func TestCompat_LegacyClientAgainstNewDaemon(t *testing.T) {
+	allowLegacy(t)
 	clientKP, _ := crypto.GenerateKeyPair()
 	daemonKP, _ := crypto.GenerateKeyPair()
 	cConn, sConn := newPipePair()
@@ -341,6 +354,7 @@ func TestCompat_LegacyClientAgainstNewDaemon(t *testing.T) {
 // old app from an attacker imitating one. Only strict mode closes it, which is why strict
 // mode exists and why this test asserts both halves.
 func TestCompat_LegacyStreamStillReplaysUntilStrictMode(t *testing.T) {
+	allowLegacy(t) // the first half of this test is the PERMISSIVE case; it flips to strict below
 	daemonKP, _ := crypto.GenerateKeyPair()
 	clientKP, _ := crypto.GenerateKeyPair()
 
@@ -464,6 +478,7 @@ func (s *slowFirstWrite) WriteMsg(b []byte) error {
 // client. The connection succeeds WITHOUT replay protection, which is the cost of the
 // heuristic and the reason the fallback delay is generous.
 func TestCompat_DaemonRecoversFromSpuriousFallback(t *testing.T) {
+	allowLegacy(t) // recovery from a spurious fallback only exists while v0 is accepted
 	defer func(prev time.Duration) { legacyFallbackDelay = prev }(legacyFallbackDelay)
 	legacyFallbackDelay = 5 * time.Millisecond
 
@@ -580,5 +595,47 @@ func TestSequence_IsPerDirection(t *testing.T) {
 	// senders at 6.
 	if client.sendSeq != 6 || sr.conn.sendSeq != 6 {
 		t.Fatalf("send sequences = client %d, server %d; want 6 each", client.sendSeq, sr.conn.sendSeq)
+	}
+}
+
+// TestStrict_FallenBackClientGetsALegibleRefusal covers the failure the strict default made
+// reachable, and the reason it needed fixing rather than accepting.
+//
+// A v1 client that gives up waiting for the daemon's challenge commits to v0 and sends a v0 proof.
+// Under strict mode the daemon must refuse it — but it has to ANSWER first. Returning silently left
+// the client blocked on a verdict that was never coming: over a pipe it hangs outright, and over a
+// real socket it surfaces as a bare disconnect, which is indistinguishable from a flaky network at
+// precisely the moment the user needs to be told their app is too old. This asserts the refusal is
+// delivered, not merely that the connection fails.
+func TestStrict_FallenBackClientGetsALegibleRefusal(t *testing.T) {
+	prev := AllowLegacyHandshake
+	t.Cleanup(func() { AllowLegacyHandshake = prev })
+	AllowLegacyHandshake = false // the default; stated explicitly because this test is ABOUT it
+
+	clientKP, _ := crypto.GenerateKeyPair()
+	daemonKP, _ := crypto.GenerateKeyPair()
+	cConn, sConn := newPipePair()
+
+	go func() {
+		_, _ = ServerHandshake(sConn, daemonKP, func(_ []byte, secret string) bool { return secret == testSecret })
+	}()
+
+	// A v0 client is exactly what a fallen-back v1 client looks like on the wire from here.
+	done := make(chan error, 1)
+	go func() {
+		_, err := legacyClientHandshakeForTest(cConn, clientKP, daemonKP.Public(), testSecret)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("strict mode must refuse a v0 client")
+		}
+		if !strings.Contains(err.Error(), "upgrade") {
+			t.Fatalf("the refusal must tell the user to update, got %q", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("strict mode refused the client without answering — it hung waiting for a verdict")
 	}
 }

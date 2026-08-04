@@ -79,10 +79,22 @@ const (
 // exposure: while v0 is accepted, an attacker who recorded an old client's session can
 // still replay it by simply stripping the version field from the hello it replays —
 // there is no way for a daemon to distinguish "old app" from "attacker pretending to be
-// an old app", because that is what backwards compatibility means. Every client in the
-// wild must be upgraded before flipping this, so it defaults to permissive and is opted
-// into with OCULUS_STRICT_HANDSHAKE=1. Tests set it directly.
-var AllowLegacyHandshake = os.Getenv("OCULUS_STRICT_HANDSHAKE") != "1"
+// an old app", because that is what backwards compatibility means. So a permissive
+// default means the replay fix is present in the code and absent in practice.
+//
+// It now defaults to STRICT. v0 is refused unless OCULUS_ALLOW_LEGACY_HANDSHAKE=1 says
+// otherwise. The escape hatch exists rather than deleting v0 outright because the failure
+// mode of getting this wrong is total: an app that speaks only v0 cannot connect AT ALL,
+// and "my phone stopped working" is not a state to have no recovery from. Turning it back
+// on is a deliberate act with a name that says what it costs.
+//
+// The v1 client's silence-based fallback (legacyFallbackDelay) is what makes the strict
+// default safe to hold: a v1 client meeting a v1 daemon never waits, because the daemon's
+// challenge is its first frame. Only a v1 client meeting a PRE-v1 daemon pays the 3s, and
+// that pairing is unaffected by this flag — the flag governs the daemon's side.
+//
+// Tests set it directly.
+var AllowLegacyHandshake = os.Getenv("OCULUS_ALLOW_LEGACY_HANDSHAKE") == "1"
 
 // legacyFallbackDelay is how long a v1 client waits for the daemon's challenge before
 // concluding it is talking to a pre-v1 daemon.
@@ -325,9 +337,6 @@ func ServerHandshake(mc MsgConn, kp crypto.KeyPair, authorize func(clientPub []b
 		// keys. This is not a new weakness — it is reachable only while v0 is accepted at
 		// all, and it is the same downgrade an attacker gets for free by stripping the
 		// version field. Under strict mode it does not exist.
-		if !AllowLegacyHandshake {
-			return nil, err
-		}
 		lconn, lerr := newConn(mc, legacyKeys.D2C, legacyKeys.C2D, HandshakeV0)
 		if lerr != nil {
 			return nil, err
@@ -336,6 +345,18 @@ func ServerHandshake(mc MsgConn, kp crypto.KeyPair, authorize func(clientPub []b
 		lplain, lerr := lconn.openFrame(raw)
 		if lerr != nil {
 			return nil, err // report the v1 failure: that is the one that describes reality
+		}
+		// The frame opened under legacy keys, so this really is a v1 client that fell back —
+		// not a corrupt frame. Under strict mode we still refuse it, but we ANSWER first, in
+		// the dialect it has committed to. Returning silently here left the client blocked on
+		// a verdict that was never coming: over a pipe that hangs outright, and over a socket
+		// it surfaces as a bare disconnect, which is indistinguishable from a flaky network at
+		// exactly the moment the user needs to be told to update. The branch above does the
+		// same thing for a client that announced v0 up front; this is the same courtesy for
+		// one that arrived at v0 the slow way.
+		if !AllowLegacyHandshake {
+			_ = sendHello(lconn, serverHello{OK: false, Error: "client too old: upgrade required"})
+			return nil, ErrLegacyRejected
 		}
 		return finishLegacy(lconn, clientPub, string(lplain), authorize)
 	}
