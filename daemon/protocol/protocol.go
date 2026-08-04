@@ -1264,6 +1264,19 @@ type ApprovalResolved struct {
 	Decision   string `json:"decision"`
 }
 
+// Execution locations for Session.ExecKind — WHERE the agent process actually runs.
+//
+// Local is the EMPTY string rather than the word "local" on purpose. Every session a daemon built
+// before this field existed reports nothing, and every one of those sessions IS local, so
+// absent-means-local lets an app decode old and new daemons with a single rule ("host present →
+// remote") instead of a three-way local/remote/unknown it would have to render some hedge for. It
+// also keeps the field off the wire for the overwhelmingly common case, which matters on the relay
+// path where the whole session list is re-sent on every change.
+const (
+	ExecKindLocal = ""    // this Mac — the daemon's own machine
+	ExecKindSSH   = "ssh" // a remote host over ssh (hub.spawnRemote)
+)
+
 type Session struct {
 	ID            string `json:"id"`
 	Provider      string `json:"provider"`
@@ -1298,6 +1311,13 @@ type Session struct {
 	FanoutVariant int    `json:"fanout_variant,omitempty"`
 	// Ephemeral: a scratch "just chat" session (no project, not persisted) — the app can label/style it.
 	Ephemeral bool `json:"ephemeral,omitempty"`
+	// Execution location, deliberately NOT derived from Name. The remote host used to survive only
+	// inside the default label ("remote: build-box"), which session.rename overwrites — so renaming a
+	// remote session erased the only thing saying it wasn't running on this Mac, in the sidebar and in
+	// its push notifications alike. ExecKind is one of the ExecKind* constants; ExecHost names the
+	// remote host and is empty for a local session.
+	ExecKind string `json:"exec_kind,omitempty"`
+	ExecHost string `json:"exec_host,omitempty"`
 }
 
 // SessionUsage is a usage update for one session (event). InputTokens/OutputTokens/CostUSD are

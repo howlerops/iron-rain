@@ -9,8 +9,13 @@ import ActivityKit
 
 /// Outcome of one raced connection route: a live client, an explicit daemon refusal, or couldn't
 /// reach it. Sendable so it can be returned from the connection race's child tasks.
+///
+/// `connected` carries the URL that won because the race otherwise throws that away: every route
+/// yields the same working client, so nothing downstream could tell whether the app is on the local
+/// network or bouncing every keystroke through a relay — which is the first thing worth knowing when
+/// a session feels slow from the couch.
 private enum RouteOutcome: Sendable {
-    case connected(OculusClient)
+    case connected(OculusClient, URL)
     case rejected(String)
     case unreachable
 }
@@ -50,6 +55,15 @@ public final class Model: ObservableObject {
     @Published public var connecting = false // a connect/handshake attempt is in flight (not an error)
     @Published public var status = "Not connected"
     @Published public var statusDetail: String? // human reason when not connected (unreachable, wrong secret, key mismatch)
+    /// Which route the live connection won on — "this Mac", "LAN", or "relay". Empty when not
+    /// connected. Every route ends in an identical working client, so this is the only thing that
+    /// distinguishes "slow because it's going through Cloudflare" from "slow for some other reason".
+    @Published public var connectionRoute = ""
+    /// The winning route's host — names WHICH relay when several are configured. Kept apart from the
+    /// short label so the label stays glanceable and the specific address is still recoverable.
+    @Published public var connectionRouteHost = ""
+    /// True when this connection is going through a relay rather than straight to the Mac.
+    public var onRelay: Bool { connected && connectionRoute == Self.relayRouteLabel }
     /// A prominent, dismissable error for a user action that failed while connected (e.g. a session
     /// that couldn't start). Drives an alert on the main surface — status text alone is invisible
     /// once the triggering sheet has dismissed.
@@ -362,6 +376,7 @@ public final class Model: ObservableObject {
 
         let priv = clientPrivate, sec = secret
         var winner: OculusClient?
+        var winnerURL: URL?        // the route that won — displayed so "on relay" is never a guess
         var rejected: String?      // a route reached the daemon and it refused (wrong secret / key)
         await withTaskGroup(of: RouteOutcome.self) { group in
             for url in routes {
@@ -370,7 +385,7 @@ public final class Model: ObservableObject {
                     return await withTaskCancellationHandler {
                         do {
                             try await c.connect(clientPrivate: priv, daemonPublic: pub, secret: sec)
-                            return .connected(c)
+                            return .connected(c, url)
                         } catch OculusClientError.handshakeRejected(let m) {
                             c.close(); return .rejected(m)
                         } catch {
@@ -383,9 +398,10 @@ public final class Model: ObservableObject {
             }
             for await outcome in group {
                 switch outcome {
-                case .connected(let c):
+                case .connected(let c, let u):
                     if winner == nil {
                         winner = c
+                        winnerURL = u
                         group.cancelAll()  // a route won — abandon the slower ones
                     } else {
                         c.close()          // a straggler connected after we already had a winner
@@ -405,7 +421,9 @@ public final class Model: ObservableObject {
             client?.close()
             client = c
             connected = true
-            status = "Connected"
+            connectionRoute = winnerURL.map { Self.routeLabel($0, direct: wsURL) } ?? ""
+            connectionRouteHost = winnerURL?.host ?? ""
+            status = connectionRoute.isEmpty ? "Connected" : "Connected · \(connectionRoute)"
             statusDetail = nil
             noteReachable()
             savePairing()
@@ -442,6 +460,19 @@ public final class Model: ObservableObject {
             return "Can’t reach this Mac" // daemon down / never paired / genuinely off the network
         }
         return "Your Mac may be asleep — wake it, or turn off sleep in System Settings › Battery."
+    }
+
+    static let relayRouteLabel = "relay"
+
+    /// Names the route that won the connect race. Loopback means the daemon is on this very machine;
+    /// a host matching the paired address means the local network; anything else is one of the relays
+    /// the pairing carries. Static and pure so the wording is testable without a socket, like
+    /// `unreachableDetail` above.
+    static func routeLabel(_ url: URL, direct: String) -> String {
+        let host = url.host ?? ""
+        if host == "127.0.0.1" || host == "localhost" || host == "::1" { return "this Mac" }
+        if let dh = URL(string: direct)?.host, !dh.isEmpty, dh == host { return "LAN" }
+        return relayRouteLabel
     }
 
     private var lastReachableKey: String { "oculus.lastReachable.\(daemonPubHex)" }
@@ -639,6 +670,10 @@ public final class Model: ObservableObject {
         client?.close()
         client = nil
         connected = false
+        // The next attempt races from scratch and may well land somewhere else, so the old route is
+        // not a fact any more — leaving it up would keep claiming "LAN" while we dial a relay.
+        connectionRoute = ""
+        connectionRouteHost = ""
         status = reason
         busy = false
         stopKeepalive()

@@ -19,6 +19,9 @@ private struct SidebarSession: Identifiable {
     var isChild: Bool = false // delegated sub-agent (shown with a ↳ marker)
     var hasError: Bool = false // a background session whose sends stopped landing (no-response/error)
     var conflicted: Bool = false // worktree branch would conflict with the default branch
+    /// The remote host this session's agent runs on; nil/empty means this Mac. Read from the
+    /// session's own execution fields, never from its name — the name is the user's to change.
+    var execHost: String? = nil
 }
 
 private struct SessionGroup: Identifiable {
@@ -211,6 +214,22 @@ struct SessionSidebar: View {
             .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 4, trailing: 6))
             .listRowSeparator(.hidden)
             .listRowBackground(Color.clear)
+            // Connected over a relay: say so. A healthy link normally says nothing, and that's right
+            // for the LAN — but a relay round-trips every keystroke through Cloudflare, and a user who
+            // can't see the difference blames the agent for the latency (or assumes they're safely on
+            // the home network when they're reaching the Mac from outside it).
+            if model.onRelay {
+                HStack(spacing: 6) {
+                    Image(systemName: "antenna.radiowaves.left.and.right")
+                        .font(.system(size: 9)).foregroundStyle(palette.mutedForeground)
+                    Text("Connected · relay")
+                        .font(.system(size: 11)).foregroundStyle(palette.mutedForeground).lineLimit(1)
+                    Spacer()
+                }
+                .help(model.connectionRouteHost.isEmpty ? "" : "via \(model.connectionRouteHost)")
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+            }
             if !model.connected {
                 HStack(spacing: 6) {
                     if model.connecting {
@@ -713,12 +732,19 @@ struct SessionSidebar: View {
             let named = clean(s.subtask) ?? clean(s.name) ?? s.workspaceName
             let titled = named ?? clean(s.title) ?? clean(discoveredTitles[s.id])
             let title = titled ?? s.folderName ?? "ses \(s.id.prefix(6))"
-            let key = s.projectID.flatMap { projectNames[$0] } ?? ((s.projectID?.isEmpty ?? true) ? "On this Mac" : s.projectID!)
+            let host = clean(s.execHost)
+            // A remote session has no registered project, so it fell into the bucket literally headed
+            // "On this Mac" — the one heading that is certainly wrong for it. Group it under the box it
+            // runs on, which also answers "what else is running over there?".
+            let localKey = (s.projectID?.isEmpty ?? true) ? "On this Mac" : s.projectID!
+            let projectKey = s.projectID.flatMap { projectNames[$0] } ?? localKey
+            let key = host.map { Self.remoteGroupPrefix + $0 } ?? projectKey
             add(key, SidebarSession(id: s.id, title: title, provider: s.provider, projectName: key,
                                     branch: s.branch, isRunning: s.status == SessionStatusValue.running,
                                     stopped: s.status == SessionStatusValue.stopped,
                                     viewOnly: false, managed: true, updatedAt: date(s.updatedAt), isChild: isChild,
-                                    hasError: model.sessionErrors[s.id] != nil, conflicted: s.conflicted == true))
+                                    hasError: model.sessionErrors[s.id] != nil, conflicted: s.conflicted == true,
+                                    execHost: host))
         }
         // Terminal-owned sessions discovered on the host are intentionally NOT shown here —
         // the sidebar lists only sessions started/opened in the app. Discovered sessions are
@@ -757,9 +783,12 @@ struct SessionSidebar: View {
         var result: [SessionGroup] = []
         if !recent.isEmpty { result.append(group("Recent", recent, showProject: true)) }
         let special = ["On this Mac", "View-only"]
-        let projects = order.filter { !special.contains($0) }.sorted()
+        // Remote hosts sit after your projects and before the catch-all sections: they're real work
+        // locations (so not buried with "View-only"), but a machine is not a project.
+        let projects = order.filter { !special.contains($0) && !$0.hasPrefix(Self.remoteGroupPrefix) }.sorted()
+        let remotes = order.filter { $0.hasPrefix(Self.remoteGroupPrefix) }.sorted()
         let tail = special.filter { !(buckets[$0]?.isEmpty ?? true) }
-        for name in projects + tail where !(buckets[name]?.isEmpty ?? true) {
+        for name in projects + remotes + tail where !(buckets[name]?.isEmpty ?? true) {
             result.append(group(name, buckets[name] ?? [], showProject: false))
         }
         return result
@@ -767,6 +796,10 @@ struct SessionSidebar: View {
 
     /// A session counts as "Recent" if it was active within this window (or is running).
     private let recentWindow: TimeInterval = 24 * 3600
+
+    /// Section-name prefix for sessions running on an ssh host, so the ordering pass can tell a
+    /// machine from a project without carrying a second parallel structure through grouping.
+    static let remoteGroupPrefix = "Remote · "
 
     private func date(_ secs: Int?) -> Date? {
         guard let s = secs, s > 0 else { return nil }
@@ -817,6 +850,13 @@ private struct SessionRow: View {
                 }
             }
             Spacer(minLength: 6)
+            // Where this agent is EDITING FILES. Only remote sessions carry it: "on this Mac" is the
+            // assumption a user already makes, so stamping it on every row would be noise, while a
+            // remote session with nothing to mark it is a genuine trap — the row looks identical to a
+            // local one, and the difference is which machine the next commit comes from.
+            if let host = item.execHost, !host.isEmpty {
+                chip(icon: "server.rack", text: host, tint: palette.mutedForeground)
+            }
             if let b = item.branch, !b.isEmpty {
                 chip(icon: "arrow.triangle.branch", text: b, tint: palette.mutedForeground)
             }

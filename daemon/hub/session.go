@@ -312,6 +312,12 @@ type sessionMeta struct {
 
 	// ephemeral: a scratch "just chat" session — no project, NOT persisted to the store.
 	ephemeral bool
+
+	// Where the agent process runs: execKind is "" for this Mac, protocol.ExecKindSSH for a remote
+	// host, and execHost names that host. Held apart from label precisely because label is the
+	// user's to rename — a renamed remote session must not become indistinguishable from a local one.
+	execKind string
+	execHost string
 }
 
 func newManagedSession(h *Hub, sess agent.Session, meta sessionMeta) *managedSession {
@@ -320,6 +326,22 @@ func newManagedSession(h *Hub, sess agent.Session, meta sessionMeta) *managedSes
 		lastActivity: now, createdAt: now,
 		hbEvery: turnHeartbeatEvery, quietAfter: turnQuietAfter,
 		reconcileTick: turnReconcileTick, probeFailLimit: turnProbeFailLimit}
+}
+
+// pushLabel is the session's name as a LOCK SCREEN has to read it: the user's label, and — when the
+// agent isn't running on this Mac — the host it ran on. A push is the one place the session's own UI
+// isn't there to say where the work happened, and the host used to reach the notification purely by
+// accident: it was baked into the default label ("remote: build-box"), which session.rename replaces.
+// A renamed remote session then pushed "deploy finished" with nothing to say which of five boxes
+// deployed. host is empty for local sessions, so their notifications stay byte-identical.
+func pushLabel(label, host string) string {
+	if host == "" {
+		return label
+	}
+	if label == "" {
+		return host
+	}
+	return label + " on " + host
 }
 
 // onStatus fires "walk away" push notifications on turn boundaries: an agent that produced
@@ -331,6 +353,7 @@ func (m *managedSession) onStatus(ss protocol.SessionStatus) {
 	if label == "" {
 		label = m.meta.workspaceName
 	}
+	label = pushLabel(label, m.meta.execHost)
 	switch ss.Status {
 	case protocol.StatusRunning:
 		if !m.wasRunning {
@@ -439,6 +462,8 @@ func (m *managedSession) info() protocol.Session {
 		FanoutGroup:   m.meta.fanoutGroup,
 		FanoutVariant: m.meta.fanoutVariant,
 		Ephemeral:     m.meta.ephemeral,
+		ExecKind:      m.meta.execKind,
+		ExecHost:      m.meta.execHost,
 	}
 }
 

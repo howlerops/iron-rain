@@ -687,8 +687,16 @@ public struct Session: Codable, Identifiable {
     public var fanoutGroup: String?  // shared id when this is one of N agents racing the same prompt
     public var fanoutVariant: Int?   // 0-based variant index within the fan-out group
     public var ephemeral: Bool?      // scratch "just chat" session (no project, not persisted)
+    /// Where the agent process runs: nil/"" is this Mac, "ssh" a remote host named by `execHost`.
+    /// Absent means local by construction — a daemon predating the field sends nothing, and every
+    /// session such a daemon has is local, so there is no "unknown" state to render a hedge for.
+    /// Carried separately from `name` because a rename must not be able to erase where work runs.
+    public var execKind: String?
+    public var execHost: String?
     enum CodingKeys: String, CodingKey {
         case id, provider, status, title, name, cwd, branch, port, model, mode, restartable, conflicted, ephemeral
+        case execKind = "exec_kind"
+        case execHost = "exec_host"
         case fanoutGroup = "fanout_group"
         case fanoutVariant = "fanout_variant"
         case projectID = "project_id"

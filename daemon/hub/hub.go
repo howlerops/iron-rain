@@ -1448,7 +1448,11 @@ func (h *Hub) spawnRemote(ctx context.Context, req protocol.RemoteRun) (*managed
 	if err != nil {
 		return nil, fmt.Errorf("remote run: %v", err)
 	}
-	m := h.addSession(sess, sessionMeta{label: "remote: " + hst.Name, cwd: hst.RemotePath})
+	// execKind/execHost carry the host STRUCTURALLY. The label below is only a default the user is
+	// free to overwrite with session.rename, and when they did, every trace of "this is not running on
+	// your Mac" went with it — the sidebar row and the finished/error pushes both read the label.
+	m := h.addSession(sess, sessionMeta{label: "remote: " + hst.Name, cwd: hst.RemotePath,
+		execKind: protocol.ExecKindSSH, execHost: hst.Name})
 	log.Printf("remote.run: started agent %q on %s (%s)", req.AgentCommand, hst.Name, hst.SSHTarget)
 	h.recordActivity(activity.Event{Kind: activity.KindStarted, SessionID: sess.ID(),
 		Title: "Remote agent started on " + hst.Name})

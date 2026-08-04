@@ -38,6 +38,12 @@ type persistedMeta struct {
 	Model         string `json:"model,omitempty"`
 	ModelProvider string `json:"model_provider,omitempty"`
 	Mode          string `json:"mode,omitempty"` // code | ask | architect (see hub/modes.go)
+	// Where the session runs. This has to be durable or the restart path lies: a remote session is a
+	// CLI-provider session, so it can NEVER be re-attached and always comes back through
+	// stoppedSessions/restartSession — i.e. every daemon restart would resurrect an ssh session
+	// looking exactly like one running on this Mac.
+	ExecKind string `json:"exec_kind,omitempty"`
+	ExecHost string `json:"exec_host,omitempty"`
 }
 
 func metaToPersisted(m sessionMeta) persistedMeta {
@@ -46,6 +52,7 @@ func metaToPersisted(m sessionMeta) persistedMeta {
 		WorktreePath: m.worktreePath, BaseCommit: m.baseCommit, RepoRoot: m.repoRoot, Port: m.port,
 		IssueID: m.issueID, IssueKey: m.issueKey, IssueProvider: m.issueProvider, Members: m.members,
 		Roots: m.roots, ParentID: m.parentID, Subtask: m.subtask, ProviderURL: m.providerURL,
+		ExecKind: m.execKind, ExecHost: m.execHost,
 	}
 }
 
@@ -55,6 +62,7 @@ func (pm persistedMeta) toMeta() sessionMeta {
 		worktreePath: pm.WorktreePath, baseCommit: pm.BaseCommit, repoRoot: pm.RepoRoot, port: pm.Port,
 		issueID: pm.IssueID, issueKey: pm.IssueKey, issueProvider: pm.IssueProvider, members: pm.Members,
 		roots: pm.Roots, parentID: pm.ParentID, subtask: pm.Subtask, providerURL: pm.ProviderURL,
+		execKind: pm.ExecKind, execHost: pm.ExecHost,
 	}
 }
 
@@ -420,6 +428,10 @@ func (h *Hub) stoppedSessions() []protocol.Session {
 			Branch: pm.Branch, ParentID: pm.ParentID, Subtask: pm.Subtask,
 			IssueKey: pm.IssueKey, IssueID: pm.IssueID, Port: pm.Port,
 			Model: pm.Model, ModelProvider: pm.ModelProvider,
+			// A stopped remote session is the common case, not an edge one (ssh sessions run on the CLI
+			// provider, which has nothing to re-attach to), so dropping the host here would mean the
+			// host is missing from exactly the rows that outlive a restart.
+			ExecKind: pm.ExecKind, ExecHost: pm.ExecHost,
 		})
 	}
 	kept := out[:0]
