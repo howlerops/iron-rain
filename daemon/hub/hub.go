@@ -90,6 +90,7 @@ type Hub struct {
 	approvalRulesPath string                         // path to ~/.oculus/approval-rules.json (persistent rules)
 	approvalRules     []ApprovalRule                 // ordered scoped rules; deny beats allow (see approval_rules.go)
 	approvalReqs      map[string]pendingApproval     // approvalID -> the request + its scope, for a scoped ALWAYS
+	setupTrust        *setupTrustStore               // per-repo approvals for worktree setup commands (see setup_trust.go)
 	notifyPrefsPath   string                         // path to ~/.oculus/notify.json (per-category push toggles)
 	notifyOff         map[string]bool                // push categories the user turned OFF (absent = enabled)
 	fanoutNotified    map[string]bool                // fan-out groups already notified as "all done" (fire once)
@@ -183,6 +184,13 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 		return nil, fmt.Errorf("unknown provider: %s", req.Provider)
 	}
 	cwd := req.Cwd
+	// req.Cwd is the only field in a create that names a filesystem location directly, and it becomes
+	// an fs.read/fs.write root the moment the session is live (see fsGuard). Judge it before anything
+	// acts on it — see validateSessionCwd for the escalation this closes and what it leaves open.
+	if err := h.validateSessionCwd(ctx, cwd); err != nil {
+		log.Printf("session.create: REFUSED cwd %q: %v", cwd, err)
+		return nil, err
+	}
 	// isolate is the user's worktree/isolation intent, captured before the multi-repo branch
 	// clears req.Worktree (a shared multi-repo session can't use a single worktree).
 	isolate := req.Worktree
@@ -279,6 +287,14 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 	if meta.ephemeral && meta.label == "" {
 		meta.label = "Chat"
 	}
+	// Set when this repo's setup command needs the owner's approval before it may run. The card can't
+	// be asked here — it belongs to a session that doesn't exist yet — so it is raised once the
+	// session is live, a few dozen lines below. See setup_trust.go.
+	var setupAsk *worktreeSetupAsk
+	// A skipped setup command's explanation, folded into the agent's first turn: an agent that starts
+	// in a worktree where `pnpm install` never ran will otherwise spend its first minutes confused by
+	// missing dependencies and blame the code.
+	setupNote := ""
 	if req.Worktree {
 		name := req.WorkspaceName
 		if name == "" {
@@ -306,13 +322,28 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 				if len(cfg.PortRange) >= 2 {
 					port = h.reservePort(cfg.PortRange[0], cfg.PortRange[1])
 				}
-				res, berr := worktree.Bootstrap(ctx, repoRoot, wt.Path, cfg, port)
+				// cfg.Setup is a `sh -c` string out of a file a non-owner can write, so whether it may
+				// run is a trust decision, not a config read. decideWorktreeSetup makes it; Bootstrap
+				// obeys it and reports back what it skipped.
+				trust, askable := h.decideWorktreeSetup(ctx, repoRoot, cfg)
+				res, berr := worktree.Bootstrap(ctx, repoRoot, wt.Path, cfg, port, trust)
 				if berr != nil {
 					_ = worktree.Remove(repoRoot, wt.Path, true)
 					h.releasePort(port) // don't leak the reserved port on a failed bootstrap
 					return nil, fmt.Errorf("worktree setup failed: %w", berr)
 				}
 				meta.port = res.Port
+				if res.SetupSkipped {
+					// Never silent: the worktree exists but is not what the manifest promised.
+					emit("bootstrap", "Setup not run — "+res.SetupReason, 0, 0)
+					if askable {
+						setupAsk = &worktreeSetupAsk{repoRoot: repoRoot, worktreePath: wt.Path, cfg: cfg, port: port}
+					} else {
+						h.noteWorktreeSetupSkipped("", repoRoot, res.SetupCommand, res.SetupReason)
+						setupNote = "[Worktree] This worktree's setup command (" + res.SetupCommand +
+							") did NOT run: " + res.SetupReason + ". Dependencies may be missing — say so rather than working around it.\n\n"
+					}
+				}
 			}
 		}
 	}
@@ -324,7 +355,7 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 	// every harness the ```iron:ui``` grammar — see genui.Preamble; the app hides it) plus any
 	// workspace note. If the session is created WITH a first prompt (issue launch, loops, etc.) it
 	// rides that; otherwise it rides the first user send below (via pendingContext).
-	firstTurnPrefix := genui.Preamble() + multiRepoNote
+	firstTurnPrefix := genui.Preamble() + multiRepoNote + setupNote
 	if firstTurnPrefix != "" && createPrompt != "" {
 		createPrompt = firstTurnPrefix + createPrompt
 		firstTurnPrefix = ""
@@ -399,6 +430,12 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 	ms.mode = mode
 	ms.pendingContext = firstTurnPrefix
 	ms.mu.Unlock()
+	// The worktree's setup command is waiting on the owner. Ask NOW that there is a session to hang
+	// the card on, in the background: the answer may take minutes and session.create must not block on
+	// a human. See setup_trust.go for why the question is deferred rather than asked inline.
+	if setupAsk != nil {
+		go h.askWorktreeSetup(ms, *setupAsk)
+	}
 	emit("ready", "Session ready", 0, 0)
 	log.Printf("session.create: DONE — session %s ready in %s", sess.ID(), time.Since(t0).Round(time.Millisecond))
 	return ms, nil
@@ -2320,6 +2357,10 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		// Bound the whole create so a hung worktree/provider start surfaces as an error the app can
 		// show, instead of leaving it forever on the "starting session" spinner.
 		cctx, ccancel := context.WithTimeout(ctx, 3*time.Minute)
+		// Carry WHO asked into the create. A worktree's setup command is a shell command out of a file
+		// a steerer can write, so whether it may run — and whether it is even worth putting in front of
+		// the owner — depends on the requester's role, which is otherwise invisible below this line.
+		cctx = withRequesterRole(cctx, h.roles.role(conn))
 		tc0 := time.Now()
 		// Stream create steps to THIS client so its loading screen shows a prescriptive checklist.
 		prog := func(stage, detail string, step, total int) {
@@ -4359,6 +4400,43 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.broadcastSessionList()
 
 	case protocol.TypeFSTree:
+		// The whole fs.* read family — tree, read, readbytes, search, diff — is capSteer, and this is
+		// the comment for all five.
+		//
+		// They were ungated, which meant capWatch, which roleAllows grants to every connected client.
+		// An OBSERVER, the role whose entire purpose is watching one conversation read-only, could
+		// enumerate every allowed root, grep across all of them, open any file, and diff any repo:
+		// source, .env, committed credentials, an unrelated session's work.
+		//
+		// The tempting objection is that this changes nothing, because watching a session already
+		// exposes file contents — the agent prints them into the transcript. The difference is who
+		// chooses. Everything in the transcript is AGENT-mediated and owner-visible: the agent decided
+		// to open that file, and the owner watched it happen in the same feed. fs.read is
+		// CALLER-directed and invisible — the observer picks the path, and nothing about it appears in
+		// the session the owner is looking at. That gap is the whole of what an observer gains, so it
+		// is the thing to close.
+		//
+		// All five together rather than a split of "enumeration is worse than a targeted read": the
+		// filenames that matter don't need enumerating. `.env`, `config/secrets.yml`,
+		// `terraform.tfvars`, `~/.aws/credentials`-shaped paths inside a root — all guessable by name.
+		// Gating fs.tree and fs.search while leaving fs.read open would have been theatre. One rule
+		// for the family is also a rule a reader can hold in their head, which is what keeps it from
+		// eroding the next time a handler is added here.
+		//
+		// What this costs, honestly, because two of the casualties are inside the transcript rather
+		// than in the editor: an observer loses the built-in editor and diff review (both squarely
+		// steer-shaped), but also inline images in the transcript, which MessageRow fetches with
+		// fs.readbytes, and the handoff sheet, which loads its markdown with fs.read. Those two ARE
+		// watching, and they break. They stay broken here anyway, because both handlers take a
+		// caller-chosen absolute path — an observer pointing fs.readbytes at ~/.ssh/id_ed25519 gets it
+		// base64'd back, and there is nothing in the request tying the path to the transcript that
+		// referenced it. Restoring them means giving watchers a fetch that is BOUND to an asset the
+		// session actually emitted, not re-opening a general read. Until then: roles are off entirely
+		// for solo users (roles.go), so this lands only on deployments that opted into sharing, and
+		// the owner can lift it with one grant.
+		if !h.requireCapability(conn, env.ID, capSteer, "browse files") {
+			return
+		}
 		var req protocol.FSTreeReq
 		_ = env.Unmarshal(&req)
 		guard := h.fsGuard()
@@ -4390,6 +4468,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.FSTree{Path: req.Path, Entries: entries})
 
 	case protocol.TypeFSRead:
+		if !h.requireCapability(conn, env.ID, capSteer, "read a file") { // see fs.tree
+			return
+		}
 		var req protocol.FSReadReq
 		_ = env.Unmarshal(&req)
 		f, err := h.fsGuard().Read(req.Path)
@@ -4403,6 +4484,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		})
 
 	case protocol.TypeFSReadBytes:
+		if !h.requireCapability(conn, env.ID, capSteer, "read a file") { // see fs.tree
+			return
+		}
 		var req protocol.FSReadBytesReq
 		_ = env.Unmarshal(&req)
 		mime, data, err := h.fsGuard().ReadBytes(req.Path)
@@ -4599,6 +4683,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		go h.runTest(req.SessionID, req.Command)
 
 	case protocol.TypeFSSearch:
+		if !h.requireCapability(conn, env.ID, capSteer, "search files") { // see fs.tree
+			return
+		}
 		var req protocol.FSSearchReq
 		_ = env.Unmarshal(&req)
 		var roots []string
@@ -4666,6 +4753,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.FSWriteResult{Path: req.Path, Sha: f.Sha, ModTime: f.ModTime, Conflict: conflict})
 
 	case protocol.TypeFSDiff:
+		if !h.requireCapability(conn, env.ID, capSteer, "view a diff") { // see fs.tree
+			return
+		}
 		var req protocol.FSDiffReq
 		_ = env.Unmarshal(&req)
 		diff, err := h.fsDiff(ctx, req)
@@ -4794,6 +4884,18 @@ func (h *Hub) sessionRoots(sessionID string) []string {
 	return []string{m.meta.cwd}
 }
 
+// fsGuard builds the editor's sandbox: the registered projects plus every live session's working
+// directory, repo root and workspace members.
+//
+// Read that list again with an attacker in mind, because it is how this package leaked the daemon's
+// private key. A session's meta.cwd is not a trusted value — it starts life as session.create's Cwd
+// field, which is capSteer — so this function turns a caller-chosen path into an allowed root for
+// capSteer fs.read and fs.write. Two things now stand between that and ~/.oculus/daemon.key:
+// validateSessionCwd refuses the path at create time, and fsaccess refuses it per operation
+// regardless of roots (fsaccess.New drops such a root outright). Neither belongs here — the roots
+// assembled here are exactly the input that was wrong, so the check has to live somewhere that
+// cannot be undone by adding another root to this list. If you add a source of roots below, assume
+// it is attacker-influenced and do not add a path that is not project content.
 func (h *Hub) fsGuard() *fsaccess.Guard {
 	var roots []string
 	// Read h.projects and the session set under the same lock that guards them (List() has

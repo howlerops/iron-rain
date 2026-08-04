@@ -48,7 +48,7 @@ func TestBootstrap_CopyPortSetup(t *testing.T) {
 	if !reserved[port] {
 		t.Error("allocated port not marked reserved")
 	}
-	res, err := Bootstrap(context.Background(), repo, worktree, cfg, port)
+	res, err := Bootstrap(context.Background(), repo, worktree, cfg, port, SetupTrust{Allowed: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,8 +74,85 @@ func TestBootstrap_CopyPortSetup(t *testing.T) {
 	}
 }
 
+// TestBootstrap_UntrustedSetupDoesNotRun is the regression test for the escalation this gate exists
+// to stop: a steerer writes <repoRoot>/.oculus/project.json (fs.write is capSteer) and then asks for
+// a worktree (session.create is capSteer), and the daemon runs their string through `sh -c` as the
+// owner. Without an affirmative trust decision the command must not execute — and the caller must be
+// able to SAY that it didn't.
+func TestBootstrap_UntrustedSetupDoesNotRun(t *testing.T) {
+	repo, wt := t.TempDir(), t.TempDir()
+	pwned := filepath.Join(wt, "pwned")
+	cfg := Config{Setup: "touch " + pwned}
+
+	res, err := Bootstrap(context.Background(), repo, wt, cfg, 0, SetupTrust{Reason: "not approved"})
+	if err != nil {
+		t.Fatalf("an untrusted setup must be skipped, not an error: %v", err)
+	}
+	if _, err := os.Stat(pwned); err == nil {
+		t.Fatal("SECURITY: the untrusted setup command executed")
+	}
+	if res.SetupOK {
+		t.Error("SetupOK must be false when the command never ran")
+	}
+	if !res.SetupSkipped || res.SetupReason != "not approved" {
+		t.Errorf("skip must be reported with its reason, got skipped=%v reason=%q", res.SetupSkipped, res.SetupReason)
+	}
+	if res.SetupCommand != cfg.Setup {
+		t.Errorf("SetupCommand = %q, want the command that was skipped so the user can see it", res.SetupCommand)
+	}
+}
+
+// TestBootstrap_ZeroTrustFailsClosed pins the zero value: a caller that forgets to decide gets a
+// worktree with no shell command run, not the other way round.
+func TestBootstrap_ZeroTrustFailsClosed(t *testing.T) {
+	wt := t.TempDir()
+	pwned := filepath.Join(wt, "pwned")
+	res, err := Bootstrap(context.Background(), t.TempDir(), wt, Config{Setup: "touch " + pwned}, 0, SetupTrust{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(pwned); err == nil {
+		t.Fatal("SECURITY: the zero SetupTrust value allowed execution")
+	}
+	if res.SetupReason == "" {
+		t.Error("a skip with no caller-supplied reason must still carry one — a silent skip is undebuggable")
+	}
+}
+
+// TestBootstrap_TrustedSetupRuns is the other half: trust granted means the feature still works.
+func TestBootstrap_TrustedSetupRuns(t *testing.T) {
+	wt := t.TempDir()
+	marker := filepath.Join(wt, "ran")
+	res, err := Bootstrap(context.Background(), t.TempDir(), wt, Config{Setup: "touch " + marker}, 0, SetupTrust{Allowed: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("a trusted setup command must run: %v", err)
+	}
+	if !res.SetupOK || res.SetupSkipped {
+		t.Errorf("SetupOK=%v SetupSkipped=%v, want true/false", res.SetupOK, res.SetupSkipped)
+	}
+}
+
+// TestBootstrap_UntrustedSetupStillCopiesAndLinks: the trust gate covers the shell command only.
+// Copying and symlinking stay put, so a steerer's worktree is usable rather than empty.
+func TestBootstrap_UntrustedSetupStillCopiesAndLinks(t *testing.T) {
+	repo, wt := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, ".env"), []byte("SECRET=1"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{Setup: "exit 1", Copy: []string{".env"}}
+	if _, err := Bootstrap(context.Background(), repo, wt, cfg, 0, SetupTrust{Reason: "nope"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(wt, ".env")); err != nil {
+		t.Fatalf(".env should still be copied when only the setup command is withheld: %v", err)
+	}
+}
+
 func TestBootstrap_SetupFailurePropagates(t *testing.T) {
-	_, err := Bootstrap(context.Background(), t.TempDir(), t.TempDir(), Config{Setup: "exit 3"}, 0)
+	_, err := Bootstrap(context.Background(), t.TempDir(), t.TempDir(), Config{Setup: "exit 3"}, 0, SetupTrust{Allowed: true})
 	if err == nil {
 		t.Fatal("expected setup failure to propagate")
 	}
@@ -169,7 +246,7 @@ func TestBootstrap_LinksNodeModulesByDefault(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "node_modules", "left-pad", "index.js"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res, err := Bootstrap(context.Background(), repo, wt, Config{}, 0)
+	res, err := Bootstrap(context.Background(), repo, wt, Config{}, 0, SetupTrust{Allowed: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +266,7 @@ func TestBootstrap_NoAutoLinkOptOut(t *testing.T) {
 	repo := t.TempDir()
 	wt := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(repo, "node_modules"), 0o755)
-	res, err := Bootstrap(context.Background(), repo, wt, Config{NoAutoLink: true}, 0)
+	res, err := Bootstrap(context.Background(), repo, wt, Config{NoAutoLink: true}, 0, SetupTrust{Allowed: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +282,7 @@ func TestBootstrap_ExplicitLinkList(t *testing.T) {
 	repo := t.TempDir()
 	wt := t.TempDir()
 	_ = os.MkdirAll(filepath.Join(repo, ".venv", "bin"), 0o755)
-	res, err := Bootstrap(context.Background(), repo, wt, Config{Link: []string{".venv"}}, 0)
+	res, err := Bootstrap(context.Background(), repo, wt, Config{Link: []string{".venv"}}, 0, SetupTrust{Allowed: true})
 	if err != nil {
 		t.Fatal(err)
 	}

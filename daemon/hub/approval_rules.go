@@ -80,6 +80,13 @@ func parseApprovalRules(data []byte) ([]ApprovalRule, bool) {
 				log.Printf("approvals: ignoring an unscoped %q rule (it would match every request)", r.Action)
 				continue
 			}
+			// Same reason addApprovalRule refuses to write one: a hand-edited file must not be able to
+			// pre-approve every repo's worktree setup command, which is `sh -c` over a file a non-owner
+			// can write. Setup commands are approved per repo + per command in setup_trust.go.
+			if r.Tool == worktreeSetupTool {
+				log.Printf("approvals: ignoring a %q rule for %s — setup commands are approved per repo + per command", r.Action, worktreeSetupTool)
+				continue
+			}
 			out = append(out, r)
 		}
 		return out, false
@@ -125,6 +132,16 @@ func (h *Hub) addApprovalRule(r ApprovalRule) {
 	}
 	if r.isUnscoped() {
 		log.Printf("approvals: refusing to save an unscoped %q rule", r.Action)
+		return
+	}
+	// A worktree setup command is never a pattern rule. Answering its card with ALWAYS means "this
+	// exact command, in this repo, until its text changes" — recorded by setup_trust.go — and a rule
+	// like {"tool":"worktree.setup","action":"allow"} would say something much bigger: run whatever
+	// `sh -c` string happens to be in any repo's .oculus/project.json, a file a non-owner can write.
+	// That is precisely the escalation the setup-trust gate exists to close, so the rule set must not
+	// be able to express it.
+	if r.Tool == worktreeSetupTool {
+		log.Printf("approvals: worktree setup commands are approved per repo + per command (see setup_trust.go), not by rule")
 		return
 	}
 	h.mu.Lock()

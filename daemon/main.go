@@ -227,6 +227,9 @@ func serve(args []string) error {
 	h.SetAgentsPath(agentsPath(), agentPrefsPath()) // custom CLI agents + picker visibility
 	h.SetNotifyPrefsPath(notifyPrefsPath())         // per-category push-notification toggles
 	h.SetApprovalRulesPath(approvalRulesPath())     // persistent "Always allow" (asked once, ever)
+	// Per-repo approvals of worktree setup commands. Without a path these last only as long as the
+	// daemon does, which means re-approving the same install command after every restart.
+	h.SetWorktreeSetupTrustPath(worktreeSetupTrustPath())
 	// Daemon-owned MCP host: servers are registered ONCE here and injected into every harness, instead
 	// of the user configuring the same server separately for each agent.
 	mcpReg := mcp.NewRegistry(mcpRegistryPath())
@@ -694,6 +697,17 @@ func approvalRulesPath() string {
 		return "oculus-approval-rules.json"
 	}
 	return filepath.Join(home, ".oculus", "approval-rules.json")
+}
+
+// worktreeSetupTrustPath is where per-repo approvals of worktree setup commands live. It is kept
+// apart from approval-rules.json deliberately — see setup_trust.go: these records grant a shell and
+// are pinned to an exact command hash, and must not be reachable by a broad hand-written rule.
+func worktreeSetupTrustPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "oculus-worktree-setup-trust.json"
+	}
+	return filepath.Join(home, ".oculus", "worktree-setup-trust.json")
 }
 
 func notifyPrefsPath() string {
