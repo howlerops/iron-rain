@@ -181,6 +181,24 @@ type managedSession struct {
 	userStopped      bool                  // the user explicitly stopped/removed this session (vs. an unexpected provider exit)
 	conflicted       bool                  // this worktree session's branch would conflict with the default branch (passive badge)
 	checkpoints      []protocol.Checkpoint // restore points snapshotted for this worktree session (newest last)
+
+	// PR check watching (see prchecks.go), guarded by m.mu. prLastState is the last CI rollup this
+	// daemon ACCOUNTED for — the thing that makes the "CI went red" push edge-triggered instead of
+	// once per poll, so a flapping build or a re-run can't spam a phone. prNextPoll/prBackoff pace
+	// the gh calls per session rather than globally, because a PR whose checks are still running
+	// deserves a faster cadence than one that settled an hour ago.
+	prLastState   string        // SUCCESS | FAILURE | PENDING | NONE; "" = never observed (adopt, don't announce)
+	prNextPoll    time.Time     // earliest next gh call for this session
+	prBackoff     time.Duration // current retry interval after polls gh could not answer (0 = none)
+	prPolling     bool          // a poll is in flight; gh outlives a sweep tick, and two would race
+	prWatchDone   bool          // PR merged/closed or worktree gone — stop polling this session for good
+	prFingerprint string        // last broadcast rollup, so an unchanged poll wakes nobody
+
+	// prPoll fetches this session's PR state. Nil means the real gh-backed worktree.PRState; tests
+	// inject a scripted one. It lives on the session rather than in a package variable on purpose:
+	// a package variable written by one test while another session's poll is still reading it is a
+	// data race, and `go test -race` failing blocks every release.
+	prPoll func(ctx context.Context, worktreePath, branch string) (worktree.PRInfo, error)
 }
 
 // markUserStopped records that the session's close is user-intended, so run()'s cleanup DELETES the
@@ -378,6 +396,15 @@ func (m *managedSession) onStatus(ss protocol.SessionStatus) {
 		cost := m.costUSD
 		group := m.meta.fanoutGroup
 		loopName := m.meta.loopName
+		// A turn just ended, which is when a worktree session is most likely to have JUST opened its
+		// PR (by `gh pr create` in the agent's own shell, which the daemon never sees). The PR watcher
+		// backs off hard on polls gh can't answer, and "this branch has no PR yet" is one of those —
+		// so without this reset a session that spends its first half hour PR-less would sit at the
+		// half-hour ceiling and not notice the PR for that long. Re-arming it here costs at most one
+		// extra gh call per finished turn. See prchecks.go.
+		if finished && m.meta.worktreePath != "" && !m.prWatchDone {
+			m.prBackoff, m.prNextPoll = 0, time.Time{}
+		}
 		loopDone := loopName != "" && !m.loopDoneNotified && finished
 		if loopDone {
 			m.loopDoneNotified = true
@@ -959,6 +986,15 @@ func (m *managedSession) trimTranscript() {
 // run pumps the session's events until it ends: records approval ownership + pushes,
 // then broadcasts every event to all subscribers.
 func (m *managedSession) run() {
+	// A worktree session is the only kind that can have a PR, so it is the only kind whose CI is
+	// worth watching. Starting the hub's watcher from here (rather than from main) means a daemon
+	// that never opens a worktree never runs the ticker — and because ensurePRWatch is idempotent
+	// per hub, N worktree sessions still produce ONE poller, not one goroutine each. Sessions
+	// restored after a restart come through here too, so a PR opened before the restart is picked
+	// back up.
+	if m.meta.worktreePath != "" && m.meta.branch != "" {
+		m.hub.ensurePRWatch()
+	}
 	// Continue the durable-transcript sequence past any rows persisted before a daemon restart, so new
 	// events sort after the restored history instead of colliding with it.
 	if db := m.hub.db; db != nil {
