@@ -130,3 +130,112 @@ func TestChannel_NonceAdvances(t *testing.T) {
 		t.Fatal("sealing the same plaintext twice must differ (nonce must advance)")
 	}
 }
+
+// The v1 property the replay fix rests on: both ends still agree, and a different
+// challenge produces an unrelated channel.
+func TestDeriveSessionKeysV1_BothSidesAgreeAndChallengeSeparatesSessions(t *testing.T) {
+	client, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemon, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	challenge, err := GenerateChallenge()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(challenge) != ChallengeSize {
+		t.Fatalf("challenge len = %d, want %d", len(challenge), ChallengeSize)
+	}
+
+	// Client: local=client, remote=daemon. Daemon: the mirror image. Same keys.
+	ck, err := DeriveSessionKeysV1(client, daemon.Public(), client.Public(), daemon.Public(), challenge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dk, err := DeriveSessionKeysV1(daemon, client.Public(), client.Public(), daemon.Public(), challenge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(ck.C2D, dk.C2D) || !bytes.Equal(ck.D2C, dk.D2C) {
+		t.Fatal("client and daemon derived different v1 session keys")
+	}
+	if bytes.Equal(ck.C2D, ck.D2C) {
+		t.Fatal("directional keys (c2d, d2c) must differ")
+	}
+
+	// The next connection's challenge must produce a channel that cannot open the last
+	// one's frames — this is what makes a recorded stream worthless.
+	next, err := GenerateChallenge()
+	if err != nil {
+		t.Fatal(err)
+	}
+	nk, err := DeriveSessionKeysV1(client, daemon.Public(), client.Public(), daemon.Public(), next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(ck.C2D, nk.C2D) || bytes.Equal(ck.D2C, nk.D2C) {
+		t.Fatal("a fresh challenge produced the same keys — the challenge is not reaching the derivation")
+	}
+	sealer, err := NewSealer(ck.C2D)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := sealer.Seal([]byte("recorded command"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opener, err := NewOpener(nk.C2D)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := opener.Open(frame); err == nil {
+		t.Fatal("a frame from the previous session opened under the new session's key")
+	}
+
+	// And v1 must never coincide with v0 for the same pair.
+	v0, err := DeriveSessionKeys(client, daemon.Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(v0.C2D, ck.C2D) || bytes.Equal(v0.D2C, ck.D2C) {
+		t.Fatal("v1 keys equal v0 keys")
+	}
+}
+
+// Every transcript input is a fixed 32 bytes so the concatenation is unambiguous; short
+// input is rejected rather than hashed, which is what keeps two different handshakes from
+// producing the same transcript.
+func TestHandshakeTranscript_RejectsWrongLengths(t *testing.T) {
+	ok := bytes.Repeat([]byte{0xAB}, 32)
+	if _, err := HandshakeTranscript(ok[:31], ok, ok); err == nil {
+		t.Fatal("short client public key must be rejected")
+	}
+	if _, err := HandshakeTranscript(ok, ok[:16], ok); err == nil {
+		t.Fatal("short daemon public key must be rejected")
+	}
+	if _, err := HandshakeTranscript(ok, ok, ok[:8]); err == nil {
+		t.Fatal("short challenge must be rejected")
+	}
+	got, err := HandshakeTranscript(ok, ok, ok)
+	if err != nil || len(got) != 32 {
+		t.Fatalf("transcript = %d bytes, err %v; want 32", len(got), err)
+	}
+}
+
+// Two calls must not return the same challenge.
+func TestGenerateChallenge_IsFresh(t *testing.T) {
+	a, err := GenerateChallenge()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := GenerateChallenge()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(a, b) {
+		t.Fatal("GenerateChallenge returned the same bytes twice")
+	}
+}

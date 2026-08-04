@@ -1,5 +1,5 @@
 {
-  "description": "Oculus v0 E2EE KAT: X25519 static-static -\u003e HKDF-SHA256 -\u003e ChaCha20-Poly1305 (12-byte nonce, nonce-prefixed frame). Production nonces are random; open_frame is a fixed all-zero-nonce KAT both sides must OPEN. Keys are RFC 7748 6.1.",
+  "description": "Oculus E2EE KAT: X25519 -\u003e HKDF-SHA256 -\u003e ChaCha20-Poly1305 (12-byte nonce, nonce-prefixed frame). v0 = static-static keys (legacy, replayable). v1 = keys bound to SHA256('oculus/v1 transcript'||clientPub||daemonPub||challenge), payload prefixed with an 8-byte big-endian sequence number. Production nonces are random; the open_frame fields are fixed all-zero-nonce KATs both sides must OPEN. Keys are RFC 7748 6.1; challenge is SHA256('oculus/v1 vector challenge').",
   "client_priv": "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a",
   "daemon_priv": "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb",
   "client_pub": "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a",
@@ -7,5 +7,11 @@
   "c2d_key": "e88e2590359934c4e1432965add095e298ae83c0bc4e3d16438b6ffb355fc660",
   "d2c_key": "9eae563e88eef164ac2a7b3746d02bdec579bccdf62c204122e009500a2a1416",
   "seal_plaintext": "6f63756c75732068616e647368616b6520766563746f72",
-  "open_frame": "000000000000000000000000894477215e4305738ae448a5a9d3601fc79782436cd20c5a8169fbf5ad83afaea1a1e9c099fdd6"
+  "open_frame": "000000000000000000000000894477215e4305738ae448a5a9d3601fc79782436cd20c5a8169fbf5ad83afaea1a1e9c099fdd6",
+  "challenge": "9d6065b0ce1c1ce9a794dc7f8e33e9800e4227c6628da21c97a8eac9363fb7ae",
+  "transcript": "3b12524e944883d66c73022098e50658f3665a9958851a651bf322e128471f78",
+  "v1_c2d_key": "3ef239fe5ec84926a8e5f2ace39f4940b328a419d3b3d57bb1ef174b41fd024c",
+  "v1_d2c_key": "4e319d77354de99ee93e7822d1231c53a3f292af7831924cdaa00bce8363892a",
+  "v1_framed_plaintext": "00000000000000006f63756c75732068616e647368616b6520766563746f72",
+  "v1_open_frame": "0000000000000000000000008ec6e9f55b0ee5f3a3b0ee96976c9121bf0a9b932c5729d5291fee4d782a4576205c3f16f0cf9da404921679a4c6d7"
 }
