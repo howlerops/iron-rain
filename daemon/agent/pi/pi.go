@@ -167,6 +167,59 @@ type session struct {
 	// daemon down. Same guard the claude adapter needed once it gained a replay goroutine.
 	sendMu sync.Mutex
 	closed bool
+
+	// toolCards remembers a running tool card's identity until tool_execution_end arrives. pi splits
+	// one card across two frames and only tool_execution_start carries the title (and reliably the
+	// tool name); the end frame is the state the hub PERSISTS. Without re-attaching here the durable
+	// row keeps the output but loses the command summary, so a card that read "bash · npm test"
+	// while it ran comes back from history as an untitled box — the same defect the claude adapter
+	// had, and just as invisible live, because the app merges the end frame onto the card already on
+	// screen and keeps the old fields.
+	toolMu    sync.Mutex
+	toolCards map[string]toolCard
+}
+
+// toolCard is the identity half of an inline tool card, held only between tool_execution_start and
+// its matching tool_execution_end.
+type toolCard struct{ name, title string }
+
+// rememberToolCard records a running card's identity. A frame carrying neither field stores
+// nothing, so it can never overwrite a real identity with blanks.
+func (s *session) rememberToolCard(id, name, title string) {
+	if id == "" || (name == "" && title == "") {
+		return
+	}
+	s.toolMu.Lock()
+	defer s.toolMu.Unlock()
+	if s.toolCards == nil {
+		s.toolCards = map[string]toolCard{}
+	}
+	s.toolCards[id] = toolCard{name: name, title: title}
+}
+
+// takeToolCard returns and DELETES a remembered card. Delete-on-read bounds the map: the entry is
+// dead the instant the end frame is emitted, and a session that stays up for days runs thousands of
+// tools. A miss — an end frame with no prior start, as after a daemon restart mid-turn — returns
+// the zero value and the fields stay empty; we never invent a name for a tool we did not see start.
+func (s *session) takeToolCard(id string) toolCard {
+	if id == "" {
+		return toolCard{}
+	}
+	s.toolMu.Lock()
+	defer s.toolMu.Unlock()
+	c, ok := s.toolCards[id]
+	if ok {
+		delete(s.toolCards, id)
+	}
+	return c
+}
+
+// forgetToolCards drops every still-pending card at teardown. A tool interrupted by a stop or a
+// crashed child never gets its end frame, so delete-on-read alone would strand those entries.
+func (s *session) forgetToolCards() {
+	s.toolMu.Lock()
+	defer s.toolMu.Unlock()
+	s.toolCards = nil
 }
 
 // closeEvents ends the event stream exactly once, excluding concurrent emitters.
@@ -350,6 +403,9 @@ func (s *session) recordResumeHandle(command string, line []byte) {
 // It does NOT close s.events or emit a terminal backstop — the caller does that AFTER cmd.Wait(), so a
 // non-zero exit can be surfaced as an error instead of being masked as a normal idle.
 func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool) {
+	// stdout EOF means the child is gone (normal exit, stop, kill, crash), so this is the one
+	// teardown path every session takes — release any card that never got its end frame here.
+	defer s.forgetToolCards()
 	sc := bufio.NewScanner(stdout) // \n framing only — pi-rpc-compliant
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	idle := false
@@ -389,9 +445,20 @@ func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool) {
 				}
 			}
 		case "tool_execution_end":
-			// Rich tool card gets its output + completes (paired to the start by id).
+			// Rich tool card gets its output + completes (paired to the start by id). Re-attach the
+			// name/title cached at start: this is the state the hub makes durable, and the end frame
+			// carries no title at all (and not always a toolName), so emitting it as-is is what
+			// silently strips the card's command summary from history.
+			name, title := e.ToolName, e.Title
+			c := s.takeToolCard(e.ID)
+			if name == "" {
+				name = c.name
+			}
+			if title == "" {
+				title = c.title
+			}
 			s.emit(agent.Event{Type: protocol.TypeSessionTool, Payload: protocol.SessionTool{
-				SessionID: s.id, ID: e.ID, Name: e.ToolName, Output: e.Output, Status: "completed"}})
+				SessionID: s.id, ID: e.ID, Name: name, Title: title, Output: e.Output, Status: "completed"}})
 		case "tool_execution_start":
 			// pi has no native to-do tool; a valhalla-style extension can add one, and its
 			// call arrives here — surface it as the normalized session.todos.
@@ -404,6 +471,7 @@ func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool) {
 			if title == "" {
 				title = piToolSummary(e.Args)
 			}
+			s.rememberToolCard(e.ID, e.ToolName, title)
 			s.emit(agent.Event{Type: protocol.TypeSessionTool, Payload: protocol.SessionTool{
 				SessionID: s.id, ID: e.ID, Name: e.ToolName, Title: title, Status: "running"}})
 		case "extension_ui_request":

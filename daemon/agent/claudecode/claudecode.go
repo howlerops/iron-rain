@@ -450,6 +450,64 @@ type session struct {
 	// replayUUID is claude's real session uuid when this attach can replay its JSONL transcript
 	// ("" = it can't — the hub's durable transcript is then the history source, see SelfReplaying).
 	replayUUID string
+
+	// toolCards remembers a running tool card's identity (name + command summary) until its terminal
+	// frame arrives. The sidecar splits ONE card across TWO frames: the tool_use frame carries
+	// {tool, detail} and the matching tool_result frame carries only {id, output, status} — no name,
+	// no detail. The hub persists ONLY the terminal state of a tool card, so without re-attaching
+	// here the durable row is written with Name:"" and Title:"" and every bash card comes back from
+	// history as an anonymous, untitled box ("bash commands with no title/description"). It looks
+	// correct while the turn is live purely because the app merges the terminal frame onto the card
+	// already on screen and keeps the old fields — which is what hides the bug until a reload,
+	// reconnect, or history replay reads the persisted row instead of the live one.
+	toolMu    sync.Mutex
+	toolCards map[string]toolCard
+}
+
+// toolCard is the identity half of an inline tool card, held only between the sidecar's tool_use
+// frame and its matching tool_result frame.
+type toolCard struct{ name, title string }
+
+// rememberToolCard records a running card's identity. A frame carrying neither field stores
+// nothing, so it can never overwrite a real identity with blanks.
+func (s *session) rememberToolCard(id, name, title string) {
+	if id == "" || (name == "" && title == "") {
+		return
+	}
+	s.toolMu.Lock()
+	defer s.toolMu.Unlock()
+	if s.toolCards == nil {
+		s.toolCards = map[string]toolCard{}
+	}
+	s.toolCards[id] = toolCard{name: name, title: title}
+}
+
+// takeToolCard returns and DELETES a remembered card. Delete-on-read is what bounds the map: the
+// entry is dead the instant its terminal frame is emitted, and a session that stays up for days
+// runs thousands of tools, so retaining them would be a genuine unbounded leak in a long-lived
+// daemon rather than a theoretical one. A miss — a terminal frame with no prior running frame,
+// which happens when the daemon restarted mid-turn or when frames are replayed — returns the zero
+// value, leaving the fields empty. We never invent a name for a tool we did not watch start.
+func (s *session) takeToolCard(id string) toolCard {
+	if id == "" {
+		return toolCard{}
+	}
+	s.toolMu.Lock()
+	defer s.toolMu.Unlock()
+	c, ok := s.toolCards[id]
+	if ok {
+		delete(s.toolCards, id)
+	}
+	return c
+}
+
+// forgetToolCards drops every still-pending card at teardown. Tools interrupted by a stop or a
+// crashed sidecar never get a terminal frame, so delete-on-read alone would strand their entries
+// for as long as the session object is reachable.
+func (s *session) forgetToolCards() {
+	s.toolMu.Lock()
+	defer s.toolMu.Unlock()
+	s.toolCards = nil
 }
 
 func (s *session) ID() string                 { return s.id }
@@ -583,6 +641,9 @@ func (s *session) closeEvents() {
 
 func (s *session) readLoop(stdout io.ReadCloser) {
 	defer s.closeEvents()
+	// stdout EOF means the sidecar is gone (normal exit, stop, kill, crash), so this is the one
+	// teardown path every session takes — release any card that never got its terminal frame here.
+	defer s.forgetToolCards()
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	idle := false
@@ -613,11 +674,24 @@ func (s *session) readLoop(stdout io.ReadCloser) {
 		case "toolcall":
 			// Rich inline tool card: running carries the command (Detail), the later result carries
 			// Output. Same event the app renders for opencode, so claude-code gets card parity.
+			name, title := m.Tool, m.Detail
 			if m.Status != "" && m.Status != "running" {
 				s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusRunning, Detail: ""}})
+				// This is the frame the hub PERSISTS, and the sidecar sends it without tool/detail —
+				// so put the identity back before it becomes the only durable record of the card.
+				// Anything the frame did carry wins; the cache only fills genuine blanks.
+				c := s.takeToolCard(m.ID)
+				if name == "" {
+					name = c.name
+				}
+				if title == "" {
+					title = c.title
+				}
+			} else {
+				s.rememberToolCard(m.ID, name, title)
 			}
 			s.emit(agent.Event{Type: protocol.TypeSessionTool, Payload: protocol.SessionTool{
-				SessionID: s.id, ID: m.ID, Name: m.Tool, Title: m.Detail, Output: m.Output, Status: m.Status,
+				SessionID: s.id, ID: m.ID, Name: name, Title: title, Output: m.Output, Status: m.Status,
 			}})
 		case "approval":
 			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusAwaitingApproval}})
