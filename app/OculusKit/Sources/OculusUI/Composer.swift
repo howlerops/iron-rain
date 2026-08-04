@@ -30,7 +30,26 @@ struct Composer: View {
 
     @StateObject private var dictator = SpeechDictator()
     @StateObject private var voice = VoiceController()
-    @FocusState private var focused: Bool
+    /// Whether the message field holds first responder.
+    ///
+    /// A plain Bool rather than `@FocusState`: SwiftUI's focus system cannot make the text view
+    /// inside a representable first responder, so `.focused()` would light the ring while the
+    /// keyboard stayed down — and the slash button would drop a "/" into a field you then have to
+    /// tap yourself. ComposerTextView drives the responder from this and reports back, so it also
+    /// goes false when the field loses focus to something else.
+    @State private var focused = false
+    /// What was already typed when dictation started. The recognizer's transcript REPLACES the text
+    /// it's appended to, so without an anchor, tapping the mic to finish a half-typed message
+    /// silently deleted the typed half.
+    @State private var dictationPrefix = ""
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// The action buttons' drawn diameter, scaled with the glyph's text style so the circle can't
+    /// clip its own arrow at large accessibility sizes.
+    @ScaledMetric(relativeTo: .subheadline) private var actionDiameter: CGFloat = 28
+    /// The composer's growth cap, scaled so accessibility sizes get several lines instead of two
+    /// clipped ones — still bounded, or the input eats the transcript.
+    @ScaledMetric(relativeTo: .body) private var scaledEntryHeight: CGFloat = 160
+    @ScaledMetric(relativeTo: .footnote) private var scaledPaletteHeight: CGFloat = 220
     /// Decoded thumbnails, memoized by each attachment's base64 payload so the
     /// image is decoded once (not on every keystroke that re-evaluates `body`).
     @State private var thumbCache: [String: Image] = [:]
@@ -45,6 +64,11 @@ struct Composer: View {
     #if os(iOS)
     @State private var photoItem: PhotosPickerItem?
     #endif
+
+    /// HIG's 44pt minimum, grown (never shrunk) with Dynamic Type.
+    private var actionTarget: CGFloat { max(44, actionDiameter) }
+    private var fieldMaxHeight: CGFloat { min(scaledEntryHeight, 300) }
+    private var paletteMaxHeight: CGFloat { min(scaledPaletteHeight, 340) }
 
     /// The command palette is active while the entry is a single "/token" or "$token" (no space
     /// yet). It filters to commands with the matching prefix — so codex "$" skills and "/" commands
@@ -67,31 +91,39 @@ struct Composer: View {
                 bangBanner
                 messageField
 
-                HStack(spacing: 14) {
+                // Spacing is small because every control below now carries a 44pt tap target: the
+                // old 14pt gap on top of those targets would push the row past a phone's width and
+                // read as scattered. The glyphs still look spaced — each is centred in its target.
+                HStack(spacing: 2) {
                     attachButton
                     if !model.commands.isEmpty { slashButton }
                     micButton
                     voiceButton
                     if dictator.isRecording {
                         Text("Listening…").font(.caption).foregroundStyle(palette.primary)
+                            .padding(.leading, 6).lineLimit(1)
                     } else if voice.active {
                         Text(voice.speaking ? "Speaking…" : (voice.listening ? "Listening…" : "Voice mode"))
                             .font(.caption).foregroundStyle(palette.primary)
+                            .padding(.leading, 6).lineLimit(1)
                     }
-                    Spacer()
-                    if model.busy && model.sessionID != nil { interruptButton }
+                    Spacer(minLength: 0)
+                    interruptButton
                     sendButton
                 }
             }
             .padding(12)
             .background(palette.input)
-            .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(focused ? palette.primary.opacity(0.5) : palette.border))
-            .clipShape(RoundedRectangle(cornerRadius: 18))
+            .overlay(OculusShape.rounded(18).strokeBorder(focused ? palette.primary.opacity(0.5) : palette.border))
+            .clipShape(OculusShape.rounded(18))
             .padding(12)
         }
         .background(palette.background)
+        // Dictation APPENDS to what's already typed. It used to assign the transcript straight over
+        // `entry`, so typing half a message and finishing it by voice destroyed the typed half.
         .onChange(of: dictator.transcript) { newValue in
-            if dictator.isRecording { entry = newValue }
+            guard dictator.isRecording else { return }
+            entry = newValue.isEmpty ? dictationPrefix : dictationPrefix + newValue
         }
         // Design Mode (or any tool) injects context into the entry via model.draftInsert.
         .onChange(of: model.draftInsert) { text in
@@ -177,20 +209,20 @@ struct Composer: View {
                         Button { complete(cmd) } label: {
                             HStack(spacing: 8) {
                                 Text("\(cmd.glyph)\(cmd.name)")
-                                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                                    .font(.system(.footnote, design: .monospaced).weight(.semibold))
                                     .foregroundStyle(palette.primary)
                                 if let d = cmd.description, !d.isEmpty {
                                     Text(d).font(.caption).foregroundStyle(palette.mutedForeground).lineLimit(1)
                                 }
                                 Spacer(minLength: 6)
                                 if selected {
-                                    Text("tab").font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                    Text("tab").font(.system(.caption2, design: .monospaced).weight(.semibold))
                                         .foregroundStyle(palette.mutedForeground)
                                         .padding(.horizontal, 4).padding(.vertical, 1)
-                                        .background(RoundedRectangle(cornerRadius: 3).fill(palette.muted.opacity(0.5)))
+                                        .background(OculusShape.rounded(3).fill(palette.muted.opacity(0.5)))
                                 }
                                 if cmd.isCustom {
-                                    Text("custom").font(.system(size: 9, weight: .semibold)).foregroundStyle(palette.mutedForeground)
+                                    Text("custom").font(.caption2.weight(.semibold)).foregroundStyle(palette.mutedForeground)
                                         .padding(.horizontal, 5).padding(.vertical, 1)
                                         .background(Capsule().fill(palette.muted.opacity(0.45)))
                                 }
@@ -206,12 +238,16 @@ struct Composer: View {
                     }
                 }
             }
-            .frame(maxHeight: 220)
-            .onChange(of: clampedCmdIndex) { i in withAnimation(.linear(duration: 0.08)) { proxy.scrollTo(i, anchor: .center) } }
+            .frame(maxHeight: paletteMaxHeight)
+            .onChange(of: clampedCmdIndex) { i in
+                withAnimation(reduceMotion ? nil : .linear(duration: 0.08)) { proxy.scrollTo(i, anchor: .center) }
+            }
         }
         .background(palette.input)
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(palette.border))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        // 18, matching the composer below it. These are stacked SIBLING surfaces, and two adjacent
+        // panels rounded 12 and 18 read as one of them being wrong even though neither is nested.
+        .overlay(OculusShape.rounded(18).strokeBorder(palette.border))
+        .clipShape(OculusShape.rounded(18))
         .padding(.horizontal, 12)
         .padding(.bottom, 6)
     }
@@ -239,7 +275,7 @@ struct Composer: View {
                     .padding(.top, 7).padding(.leading, 2).allowsHitTesting(false)
             }
             ComposerTextView(
-                text: $entry, maxHeight: 160,
+                text: $entry, isFocused: $focused, maxHeight: fieldMaxHeight,
                 onSubmit: { submit() },
                 // Tab completes the highlighted command; ↑/↓ move the highlight. Each only consumes
                 // the key while the popup is open, so normal typing/tabbing is unaffected.
@@ -418,6 +454,7 @@ struct Composer: View {
         model.drafts[entrySession ?? model.sessionID ?? ""] = ""
         historyIndex = nil; historyStash = ""
         if dictator.isRecording { dictator.stop() }
+        dictationPrefix = "" // the sent text is gone; a later dictation must not re-add it
     }
 
     private var canSend: Bool {
@@ -444,8 +481,14 @@ struct Composer: View {
                         attachmentThumb(img)
                         Text("Image \(imageNumber(img))").font(.caption2)
                         Button { model.pendingImages.removeAll { $0 == img } } label: {
-                            Image(systemName: "xmark.circle.fill").font(.caption2)
-                        }.buttonStyle(.plain)
+                            // Drawn at .footnote in a 32pt target: an 11pt glyph was a ~11pt target.
+                            // Not the full 44 — that would make every chip 44pt tall and turn the
+                            // attachment strip into the largest thing in the composer.
+                            Image(systemName: "xmark.circle.fill").font(.footnote)
+                                .composerTarget(32, circular: true)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Remove image \(imageNumber(img))")
                     }
                     .padding(.horizontal, 8).padding(.vertical, 5)
                     .background(palette.muted.opacity(0.3)).clipShape(Capsule())
@@ -462,7 +505,7 @@ struct Composer: View {
         // Reads the memoized thumbnail; never decodes base64 / builds a UIImage
         // inside `body` (which re-evaluates on every keystroke).
         if let image = thumbCache[img.data] {
-            image.resizable().scaledToFill().frame(width: 18, height: 18).clipShape(RoundedRectangle(cornerRadius: 4))
+            image.resizable().scaledToFill().frame(width: 18, height: 18).clipShape(OculusShape.rounded(4))
         } else {
             Image(systemName: "photo").font(.caption2)
         }
@@ -506,17 +549,35 @@ struct Composer: View {
     }
 
     /// Interrupt the current turn so you can redirect the agent (mid-run steering).
+    ///
+    /// It occupies its slot at ALL times, hidden while idle. Inserting it when a run started slid
+    /// send ~42pt left, so the follow-up tap that corrects a just-sent message — the most common
+    /// rhythm on a phone — landed on STOP instead. Send is deliberately still live during a run
+    /// (queued follow-ups are the point of mid-run steering), so the two stay separate controls.
     private var interruptButton: some View {
-        Button { Task { await model.interrupt() } } label: {
+        let live = model.busy && model.sessionID != nil
+        return Button { Task { await model.interrupt() } } label: {
             Image(systemName: "stop.fill")
-                .font(.system(size: 12, weight: .bold))
+                .font(.footnote.weight(.bold))
                 .foregroundStyle(palette.primaryForeground)
-                .frame(width: 28, height: 28)
+                .frame(width: actionDiameter, height: actionDiameter)
                 .background(palette.destructive)
                 .clipShape(Circle())
+                .composerTarget(actionTarget, circular: true)
         }
         .buttonStyle(.plain)
         .help("Interrupt the agent")
+        .accessibilityLabel("Stop the agent")
+        .opacity(live ? 1 : 0)
+        .allowsHitTesting(live)
+        .accessibilityHidden(!live)
+    }
+
+    private var sendHelp: String {
+        isShellEntry
+        ? (model.knownNonOwner ? model.ownerOnlyReason
+           : (model.runBusy ? "Another run is still going." : "Run this command on the host"))
+        : "Send message"
     }
 
     private var sendButton: some View {
@@ -524,18 +585,20 @@ struct Composer: View {
             // The glyph changes with the DESTINATION. A `!` line doesn't go to the agent, and an
             // unchanged send arrow would be the only thing on screen still claiming it does.
             Image(systemName: isShellEntry ? "terminal.fill" : "arrow.up")
-                .font(.system(size: 15, weight: .bold))
+                .font(.subheadline.weight(.bold))
+                .glyphSwap(!reduceMotion)
                 .foregroundStyle(canSend ? palette.primaryForeground : palette.mutedForeground)
-                .frame(width: 28, height: 28)
+                .frame(width: actionDiameter, height: actionDiameter)
                 .background(canSend ? palette.primary : palette.muted.opacity(0.4))
                 .clipShape(Circle())
+                .composerTarget(actionTarget, circular: true)
         }
         .buttonStyle(.plain)
         .disabled(!canSend)
-        .help(isShellEntry
-              ? (model.knownNonOwner ? model.ownerOnlyReason
-                 : (model.runBusy ? "Another run is still going." : "Run this command on the host"))
-              : "Send message")
+        .help(sendHelp)
+        // The label has to carry the destination too: VoiceOver never sees the glyph swap, so
+        // without it "Send message" is announced for a line that runs on the host.
+        .accessibilityLabel(isShellEntry ? "Run command on host" : "Send message")
     }
 
     /// Opens the slash-command palette — especially handy on iPhone where "type /" isn't obvious.
@@ -549,23 +612,37 @@ struct Composer: View {
             focused = true
         } label: {
             Image(systemName: "slash.circle")
-                .font(.system(size: 17))
+                .font(.body)
                 .foregroundStyle(commandMatches.isEmpty ? palette.mutedForeground : palette.primary)
+                .composerTarget(actionTarget)
         }
         .buttonStyle(.plain)
         .help("Slash commands")
+        .accessibilityLabel("Slash commands")
     }
 
     private var micButton: some View {
         Button {
-            if dictator.isRecording { dictator.stop() } else { dictator.start() }
+            if dictator.isRecording { dictator.stop() } else { startDictation() }
         } label: {
             Image(systemName: dictator.isRecording ? "mic.fill" : "mic")
-                .font(.system(size: 17))
+                .font(.body)
                 .foregroundStyle(dictator.isRecording ? palette.primary : palette.mutedForeground)
+                .composerTarget(actionTarget)
         }
         .buttonStyle(.plain)
         .help("Dictate your message")
+        .accessibilityLabel(dictator.isRecording ? "Stop dictating" : "Dictate your message")
+    }
+
+    /// Anchors the transcript to whatever is already typed, then starts listening. Captured once per
+    /// start (not per transcript update) so repeated start/stop cycles append once each rather than
+    /// compounding the earlier dictation.
+    private func startDictation() {
+        let base = entry
+        let needsSpace = !base.isEmpty && !base.hasSuffix(" ") && !base.hasSuffix("\n")
+        dictationPrefix = needsSpace ? base + " " : base
+        dictator.start()
     }
 
     // Hands-free voice mode: speak your prompt, it auto-sends on a pause, and the agent's reply is
@@ -576,12 +653,14 @@ struct Composer: View {
             voice.toggle()
         } label: {
             Image(systemName: voice.active ? "waveform.circle.fill" : "waveform.circle")
-                .font(.system(size: 17))
+                .font(.body)
                 .foregroundStyle(voice.active ? palette.primary : palette.mutedForeground)
+                .composerTarget(actionTarget)
         }
         .buttonStyle(.plain)
         .disabled(model.sessionID == nil)
         .help("Voice mode — talk to the agent hands-free")
+        .accessibilityLabel(voice.active ? "Turn off voice mode" : "Voice mode")
     }
 
     /// Chips for attached documents (name + remove), mirroring the image thumbnails.
@@ -593,8 +672,11 @@ struct Composer: View {
                         Image(systemName: "doc.text").font(.caption2)
                         Text(f.name).font(.caption2).lineLimit(1)
                         Button { model.pendingFiles.removeAll { $0 == f } } label: {
-                            Image(systemName: "xmark.circle.fill").font(.caption2)
-                        }.buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
+                            Image(systemName: "xmark.circle.fill").font(.footnote)
+                                .composerTarget(32, circular: true)
+                        }
+                        .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
+                        .accessibilityLabel("Remove \(f.name)")
                     }
                     .padding(.horizontal, 8).padding(.vertical, 4)
                     .background(Capsule().fill(palette.muted.opacity(0.5)))
@@ -610,8 +692,10 @@ struct Composer: View {
             Button { showPhotoPicker = true } label: { Label("Photo…", systemImage: "photo") }
             Button { showFileImporter = true } label: { Label("File…", systemImage: "doc") }
         } label: {
-            Image(systemName: "paperclip").font(.system(size: 17)).foregroundStyle(palette.mutedForeground)
+            Image(systemName: "paperclip").font(.body).foregroundStyle(palette.mutedForeground)
+                .composerTarget(actionTarget)
         }
+        .accessibilityLabel("Attach a photo or file")
         .photosPicker(isPresented: $showPhotoPicker, selection: $photoItem, matching: .images)
         .onChange(of: photoItem) { item in
             guard let item else { return }
@@ -634,11 +718,13 @@ struct Composer: View {
                 Label("Capture window…", systemImage: "macwindow")
             }
         } label: {
-            Image(systemName: "paperclip").font(.system(size: 17)).foregroundStyle(palette.mutedForeground)
+            Image(systemName: "paperclip").font(.body).foregroundStyle(palette.mutedForeground)
+                .composerTarget(actionTarget)
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
         .help("Attach a file, or capture part of the screen to show the agent")
+        .accessibilityLabel("Attach a file or screen capture")
         #endif
     }
 
@@ -671,4 +757,27 @@ struct Composer: View {
         }
     }
     #endif
+}
+
+private extension View {
+    /// Gives a small glyph a real tap target without changing what's drawn.
+    ///
+    /// `.buttonStyle(.plain)` strips the system's own hit padding, so this row — the one cluster a
+    /// phone user touches every single turn, STOP included — was a set of ~20pt targets against
+    /// HIG's 44pt minimum. Circular for the filled send/stop discs so the corners of their target
+    /// don't overlap the neighbour's.
+    func composerTarget(_ size: CGFloat, circular: Bool = false) -> some View {
+        frame(width: size, height: size)
+            .contentShape(circular ? AnyShape(Circle()) : AnyShape(Rectangle()))
+    }
+
+    /// Cross-fades a symbol when its meaning changes (send → run-on-host). Availability-gated, and
+    /// off entirely under Reduce Motion.
+    @ViewBuilder func glyphSwap(_ enabled: Bool) -> some View {
+        if enabled, #available(iOS 17, macOS 14, *) {
+            self.contentTransition(.symbolEffect(.replace))
+        } else {
+            self
+        }
+    }
 }

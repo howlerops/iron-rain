@@ -91,11 +91,15 @@ struct IssueInspectorPanel: View {
                     .foregroundStyle(priorityColor(p))
             }
             Spacer()
-            Button { onClose() } label: { Image(systemName: "xmark.circle.fill") }
+            Button { onClose() } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .frame(width: 44, height: 44).contentShape(Rectangle())
+            }
                 .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
                 .help("Close")
+                .accessibilityLabel("Close inspector")
         }
-        .padding(.horizontal, 18).padding(.vertical, 14)
+        .padding(.leading, 18).padding(.trailing, 4)
     }
 
     // MARK: title
@@ -106,7 +110,7 @@ struct IssueInspectorPanel: View {
                 VStack(alignment: .leading, spacing: 8) {
                     TextField("Title", text: $titleDraft, axis: .vertical)
                         .textFieldStyle(.plain).font(.title3.bold())
-                        .padding(8).background(palette.input).clipShape(RoundedRectangle(cornerRadius: 8))
+                        .padding(8).background(palette.input).clipShape(OculusShape.rounded(OculusRadius.sm))
                     HStack {
                         Button("Save") { Task { await saveTitle() } }
                             .buttonStyle(.borderedProminent).tint(palette.primary)
@@ -263,14 +267,17 @@ struct IssueInspectorPanel: View {
                 if !editingBody {
                     Button { bodyDraft = current.body ?? ""; editingBody = true } label: {
                         Label("Edit", systemImage: "pencil").font(.caption)
-                    }.buttonStyle(.plain).foregroundStyle(palette.primary)
+                            .frame(minHeight: 44).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).foregroundStyle(palette.primary)
+                    .accessibilityLabel("Edit description")
                 }
             }
             if editingBody {
                 VStack(alignment: .leading, spacing: 8) {
                     TextEditor(text: $bodyDraft)
                         .font(.callout).frame(minHeight: 160)
-                        .padding(6).background(palette.input).clipShape(RoundedRectangle(cornerRadius: 8))
+                        .padding(6).background(palette.input).clipShape(OculusShape.rounded(OculusRadius.sm))
                         .scrollContentBackground(.hidden)
                     HStack {
                         Button { Task { await saveBody() } } label: {
@@ -322,7 +329,7 @@ struct IssueInspectorPanel: View {
                 .padding(10)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(palette.card.opacity(0.6))
-                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .clipShape(OculusShape.rounded(OculusRadius.md))
             }
             .buttonStyle(.plain)
         }
@@ -348,8 +355,9 @@ struct IssueInspectorPanel: View {
             VStack(alignment: .leading, spacing: 8) {
                 TextEditor(text: $newComment)
                     .font(.callout).frame(minHeight: 60)
-                    .padding(6).background(palette.input).clipShape(RoundedRectangle(cornerRadius: 8))
+                    .padding(6).background(palette.input).clipShape(OculusShape.rounded(OculusRadius.sm))
                     .scrollContentBackground(.hidden)
+                    .accessibilityLabel("Add a comment")
                     .overlay(alignment: .topLeading) {
                         if newComment.isEmpty {
                             Text("Add a comment…").font(.callout).foregroundStyle(palette.mutedForeground)
@@ -377,12 +385,16 @@ struct IssueInspectorPanel: View {
                 Spacer()
                 Button { commentDraft = c.body; editingCommentID = c.id } label: {
                     Image(systemName: "pencil").font(.caption2)
-                }.buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
+                .help("Edit comment")
+                .accessibilityLabel("Edit comment by \(c.author ?? "someone")")
             }
             if editingCommentID == c.id {
                 TextEditor(text: $commentDraft)
                     .font(.callout).frame(minHeight: 60)
-                    .padding(6).background(palette.input).clipShape(RoundedRectangle(cornerRadius: 8))
+                    .padding(6).background(palette.input).clipShape(OculusShape.rounded(OculusRadius.sm))
                     .scrollContentBackground(.hidden)
                 HStack {
                     Button("Save") { Task { await saveComment(c) } }
@@ -396,7 +408,7 @@ struct IssueInspectorPanel: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(palette.card.opacity(0.6))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .clipShape(OculusShape.rounded(OculusRadius.md))
     }
 
     // MARK: footer
@@ -554,7 +566,9 @@ struct IssueInspectorPanel: View {
     private func priorityLabel(_ p: Int) -> String {
         switch p { case 1: return "Urgent"; case 2: return "High"; case 3: return "Medium"; case 4: return "Low"; default: return "No priority" }
     }
-    private func priorityColor(_ p: Int) -> Color { p == 1 ? .red : (p == 2 ? .orange : palette.mutedForeground) }
+    private func priorityColor(_ p: Int) -> Color {
+        p == 1 ? palette.destructive : (p == 2 ? palette.warning : palette.mutedForeground)
+    }
 
     /// Best-effort relative date from an ISO-8601 string (Linear returns e.g. 2026-07-19T…Z).
     private func relativeDate(_ iso: String) -> String {
@@ -618,7 +632,7 @@ struct IssueMarkdownView: View {
                 Text(c).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
                     .padding(10).frame(maxWidth: .infinity, alignment: .leading)
             }
-            .background(palette.muted.opacity(0.3)).clipShape(RoundedRectangle(cornerRadius: 8))
+            .background(palette.muted.opacity(0.3)).clipShape(OculusShape.rounded(OculusRadius.sm))
         case .image(let alt, let url):
             TrackerImage(model: model, provider: provider, url: url, alt: alt, palette: palette)
         case .rule:
@@ -655,8 +669,8 @@ struct TrackerImage: View {
             if let image {
                 Image(platformImage: image).resizable().scaledToFit()
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(palette.border))
+                    .clipShape(OculusShape.rounded(OculusRadius.sm))
+                    .overlay(OculusShape.rounded(OculusRadius.sm).strokeBorder(palette.border))
             } else if failed {
                 Button { if let u = URL(string: url) { openURL(u) } } label: {
                     Label(alt.isEmpty ? "View image" : alt, systemImage: "photo").font(.caption)

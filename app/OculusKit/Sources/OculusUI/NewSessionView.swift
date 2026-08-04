@@ -150,14 +150,31 @@ struct NewSessionView: View {
     @State private var mode: Mode
     /// A live row awaiting confirmation before we take it away from its terminal.
     @State private var pendingTakeover: PendingTakeover?
+    /// Set when closing would throw away a typed prompt.
+    @State private var confirmDiscard = false
+    @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
+    @FocusState private var focus: Field?
     #if os(iOS)
     @State private var addPath = ""
     #endif
+
+    /// Keyboard focus order through the form.
+    private enum Field: Hashable { case prompt, workspace, addPath, search }
 
     private struct PendingTakeover: Identifiable {
         let discovered: Discovered
         let warning: TakeoverWarning
         var id: String { discovered.discoveryID }
+    }
+
+    /// The typed first prompt is a multi-line task description with no draft storage anywhere —
+    /// losing it to a stray swipe-down means retyping the only thing the user came here to write.
+    private var hasUnsavedInput: Bool {
+        !firstPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func requestClose() {
+        if hasUnsavedInput { confirmDiscard = true } else { onStart() }
     }
 
     init(model: Model, palette: OculusPalette, initialTakeOver: Bool = false, onStart: @escaping () -> Void) {
@@ -212,6 +229,31 @@ struct NewSessionView: View {
     }
 
     var body: some View {
+        #if os(iOS)
+        // The folder browser used to open as a THIRD stacked sheet on top of this one. Pushing it
+        // instead keeps the modal stack one deep and gives it the system back button.
+        NavigationStack {
+            form
+                .toolbar(.hidden, for: .navigationBar)
+                .navigationDestination(isPresented: $showBrowser) {
+                    FolderBrowser(model: model, palette: palette, embedded: true,
+                                  onPicked: { added in for p in added { selectedProjects.insert(p.id) } },
+                                  onClose: { showBrowser = false })
+                        .navigationTitle("Add folders")
+                        .navigationBarTitleDisplayMode(.inline)
+                }
+        }
+        #else
+        form
+            .sheet(isPresented: $showBrowser) {
+                FolderBrowser(model: model, palette: palette,
+                              onPicked: { added in for p in added { selectedProjects.insert(p.id) } },
+                              onClose: { showBrowser = false })
+            }
+        #endif
+    }
+
+    private var form: some View {
         VStack(spacing: 0) {
             header
             Divider().overlay(palette.border)
@@ -223,6 +265,15 @@ struct NewSessionView: View {
         .frame(width: 560, height: 640)
         #endif
         .background(palette.background)
+        // A half-written task description is real work; a swipe-down should not be able to delete it
+        // silently. Explicit close still works, and asks.
+        .interactiveDismissDisabled(hasUnsavedInput)
+        .confirmationDialog("Discard this session?", isPresented: $confirmDiscard, titleVisibility: .visible) {
+            Button("Discard", role: .destructive) { onStart() }
+            Button("Keep editing", role: .cancel) {}
+        } message: {
+            Text("You've written a task for the agent. Closing now throws it away.")
+        }
         .task {
             // Restore the previous session's shape. It re-zeroed on every open, so a user who always
             // works in worktrees on one project re-made both decisions every single time.
@@ -232,6 +283,14 @@ struct NewSessionView: View {
             }
             useWorktree = UserDefaults.standard.bool(forKey: Self.lastWorktreeKey)
             await model.loadProjects(); await scan()
+        }
+        // The prompt is placed first because it is the thing the user came to express — but it did
+        // not actually receive focus, so every new session still began with a tap. The delay lets
+        // the sheet finish presenting: focus set mid-transition is dropped on the floor.
+        .task {
+            guard mode == .new else { return }
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            focus = .prompt
         }
         .task(id: model.providers) {
             if !model.providers.isEmpty, !model.providers.contains(provider) { provider = model.providers.first ?? provider }
@@ -243,11 +302,6 @@ struct NewSessionView: View {
             models = r.editable ? r.models : []
         }
         .sheet(isPresented: $showManageAgents) { ManageAgentsView(model: model, palette: palette) }
-        .sheet(isPresented: $showBrowser) {
-            FolderBrowser(model: model, palette: palette,
-                          onPicked: { added in for p in added { selectedProjects.insert(p.id) } },
-                          onClose: { showBrowser = false })
-        }
     }
 
     // MARK: header / footer
@@ -256,22 +310,27 @@ struct NewSessionView: View {
         VStack(spacing: 14) {
             HStack {
                 Text(mode == .new ? "New session" : "Take over a session")
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.title3.weight(.semibold))
                 Spacer()
-                Button { onStart() } label: {
-                    Image(systemName: "xmark").font(.system(size: 11, weight: .bold))
+                Button { requestClose() } label: {
+                    Image(systemName: "xmark").font(.caption.weight(.bold))
                         .foregroundStyle(palette.mutedForeground)
                         .frame(width: 22, height: 22)
                         .background(Circle().fill(palette.muted.opacity(0.5)))
+                        // The glyph stays 22pt; only the hit area grows to the touch floor, which
+                        // .buttonStyle(.plain) otherwise strips off entirely.
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Close")
             }
-            Picker("", selection: $mode) {
+            Picker("Mode", selection: $mode) {
                 ForEach(Mode.allCases) { Text($0.rawValue).tag($0) }
             }
             .pickerStyle(.segmented).labelsHidden()
         }
-        .padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 14)
+        .padding(.horizontal, 20).padding(.top, 4).padding(.bottom, 14)
     }
 
     private var footer: some View {
@@ -281,7 +340,7 @@ struct NewSessionView: View {
                     .font(.caption).foregroundStyle(palette.mutedForeground)
             }
             Spacer()
-            Button("Cancel") { onStart() }
+            Button("Cancel") { requestClose() }
                 .keyboardShortcut(.cancelAction)
             if mode == .new {
                 Button {
@@ -355,24 +414,27 @@ struct NewSessionView: View {
             if !terminalCandidates.isEmpty {
                 Button { mode = .takeOver } label: {
                     HStack(spacing: 9) {
-                        Image(systemName: "terminal").font(.system(size: 13))
+                        Image(systemName: "terminal").font(.footnote)
                             .foregroundStyle(palette.primary)
+                            .accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(terminalCandidates.count == 1
                                  ? "1 session is running in your terminal"
                                  : "\(terminalCandidates.count) sessions are running in your terminal")
-                                .font(.system(size: 13, weight: .medium))
+                                .font(.footnote.weight(.medium))
                                 .foregroundStyle(palette.foreground)
                             Text("Continue one here instead of starting fresh")
-                                .font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
+                                .font(.caption).foregroundStyle(palette.mutedForeground)
                         }
                         Spacer(minLength: 6)
-                        Image(systemName: "chevron.right").font(.system(size: 11))
+                        Image(systemName: "chevron.right").font(.caption)
                             .foregroundStyle(palette.mutedForeground)
+                            .accessibilityHidden(true)
                     }
                     .padding(.horizontal, 10).padding(.vertical, 9)
-                    .background(RoundedRectangle(cornerRadius: 10).fill(palette.primary.opacity(0.10)))
-                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(palette.primary.opacity(0.22)))
+                    .frame(minHeight: 44)
+                    .background(OculusShape.rounded(OculusRadius.md).fill(palette.primary.opacity(0.10)))
+                    .overlay(OculusShape.rounded(OculusRadius.md).strokeBorder(palette.primary.opacity(0.22)))
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -382,6 +444,7 @@ struct NewSessionView: View {
                 TextField("Optional — you can also just start and type", text: $firstPrompt, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(2...5)
+                    .focused($focus, equals: .prompt)
             }
             field("Agent") {
                 agentPicker
@@ -409,13 +472,19 @@ struct NewSessionView: View {
             field(isMulti ? "Workspace" : "Worktree") {
                 Toggle(isOn: $useWorktree) {
                     Text(isMulti ? "Isolate each repo in its own worktree" : "Isolate in a fresh git worktree")
-                        .font(.system(size: 13))
+                        .font(.footnote)
                 }
                 .toggleStyle(.switch).tint(palette.primary)
                 .disabled(!canIsolate)
                 if useWorktree && canIsolate {
+                    // This string BECOMES A GIT BRANCH NAME. Autocapitalization turned "api-fix"
+                    // into "Api-fix", which is a different branch from the one the user meant.
                     TextField(isMulti ? "Workspace name (shared branch)" : "Workspace name (branch)", text: $workspaceName)
                         .textFieldStyle(.roundedBorder)
+                        .plainInput()
+                        .focused($focus, equals: .workspace)
+                        .submitLabel(.done)
+                        .onSubmit { focus = nil }
                 }
                 Text(isolationHelp)
                     .font(.caption).foregroundStyle(palette.mutedForeground)
@@ -436,7 +505,7 @@ struct NewSessionView: View {
 
             field("Autonomous") {
                 Toggle(isOn: $autonomous) {
-                    Text("Keep going until the task is done").font(.system(size: 13))
+                    Text("Keep going until the task is done").font(.footnote)
                 }
                 .toggleStyle(.switch).tint(palette.primary)
                 Text("A heartbeat nudges the agent to continue when it stalls with unfinished to-dos, checkpoints its progress before context fills, and pings you if it gets stuck or hits its budget.")
@@ -450,26 +519,32 @@ struct NewSessionView: View {
         return Button { toggle(p.id) } label: {
             HStack(spacing: 10) {
                 Image(systemName: sel ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 15)).foregroundStyle(sel ? palette.primary : palette.mutedForeground)
+                    .font(.subheadline).foregroundStyle(sel ? palette.primary : palette.mutedForeground)
+                    .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 5) {
-                        Text(p.name).font(.system(size: 13, weight: .medium)).foregroundStyle(palette.foreground)
+                        Text(p.name).font(.footnote.weight(.medium)).foregroundStyle(palette.foreground)
                         if p.isGitRepo {
-                            Image(systemName: "arrow.triangle.branch").font(.system(size: 9)).foregroundStyle(palette.mutedForeground)
+                            Image(systemName: "arrow.triangle.branch").font(.caption2).foregroundStyle(palette.mutedForeground)
+                                .accessibilityLabel("Git repository")
                         }
                     }
                     Text((p.path as NSString).abbreviatingWithTildeInPath)
-                        .font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
+                        .font(.caption).foregroundStyle(palette.mutedForeground)
                         .lineLimit(1).truncationMode(.middle)
                 }
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
-            .background(RoundedRectangle(cornerRadius: 8).fill(sel ? palette.primary.opacity(0.10) : palette.muted.opacity(0.22)))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(sel ? palette.primary.opacity(0.3) : .clear))
+            .frame(minHeight: 44)
+            .background(OculusShape.rounded(OculusRadius.sm).fill(sel ? palette.primary.opacity(0.10) : palette.muted.opacity(0.22)))
+            .overlay(OculusShape.rounded(OculusRadius.sm).strokeBorder(sel ? palette.primary.opacity(0.3) : .clear))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(p.name)
+        .accessibilityValue(sel ? "Selected" : "Not selected")
+        .accessibilityAddTraits(sel ? [.isButton, .isSelected] : .isButton)
     }
 
     @ViewBuilder private var addFolderRow: some View {
@@ -479,12 +554,13 @@ struct NewSessionView: View {
             Button { showBrowser = true } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "folder.badge.plus").foregroundStyle(palette.primary)
-                    Text("Browse folders…").font(.system(size: 13, weight: .medium)).foregroundStyle(palette.primary)
+                    Text("Browse folders…").font(.footnote.weight(.medium)).foregroundStyle(palette.primary)
                     Spacer()
                     Text("pick several").font(.caption2).foregroundStyle(palette.mutedForeground)
                 }
                 .padding(.horizontal, 10).padding(.vertical, 9)
-                .background(RoundedRectangle(cornerRadius: 8).strokeBorder(palette.primary.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+                .frame(minHeight: 44)
+                .background(OculusShape.rounded(OculusRadius.sm).strokeBorder(palette.primary.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -502,11 +578,12 @@ struct NewSessionView: View {
             #else
             HStack(spacing: 8) {
                 TextField("…or add by path", text: $addPath)
-                    .textFieldStyle(.roundedBorder).autocorrectionDisabled()
-                Button("Add") {
-                    let p = addPath; addPath = ""
-                    Task { if let proj = await model.addProject(path: p) { selectedProjects.insert(proj.id) } }
-                }.disabled(addPath.isEmpty)
+                    .textFieldStyle(.roundedBorder)
+                    .plainInput()
+                    .focused($focus, equals: .addPath)
+                    .submitLabel(.done)
+                    .onSubmit { addTypedPath() }
+                Button("Add") { addTypedPath() }.disabled(addPath.isEmpty)
             }
             #endif
         }
@@ -518,18 +595,24 @@ struct NewSessionView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(palette.mutedForeground)
+                    .accessibilityHidden(true)
                 TextField("Search running sessions", text: $terminalSearch)
                     .textFieldStyle(.plain)
-                    #if os(iOS)
-                    .autocorrectionDisabled().textInputAutocapitalization(.never)
-                    #endif
+                    .plainInput()
+                    .focused($focus, equals: .search)
+                    .submitLabel(.search)
+                    .accessibilityLabel("Search running sessions")
                 Button { Task { await scan() } } label: {
-                    Image(systemName: scanning ? "circle.dotted" : "arrow.clockwise").foregroundStyle(palette.mutedForeground)
+                    Image(systemName: scanning ? "circle.dotted" : "arrow.clockwise")
+                        .foregroundStyle(palette.mutedForeground)
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain).disabled(scanning)
+                .help("Scan for running sessions")
+                .accessibilityLabel("Scan for running sessions")
             }
-            .padding(.horizontal, 12).padding(.vertical, 9)
-            .background(RoundedRectangle(cornerRadius: 10).fill(palette.muted.opacity(0.4)))
+            .padding(.leading, 12)
+            .background(OculusShape.rounded(OculusRadius.md).fill(palette.muted.opacity(0.4)))
 
             if scanning && filteredDiscovered.isEmpty {
                 centerHint(icon: "circle.dotted", text: "Scanning for running sessions…")
@@ -578,27 +661,33 @@ struct NewSessionView: View {
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: d.provider == "claude-code" ? "terminal" : "bolt.horizontal.circle")
-                    .font(.system(size: 15)).foregroundStyle(palette.primary)
+                    .font(.subheadline).foregroundStyle(palette.primary)
+                    .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(discoveredTitle(d)).font(.system(size: 13, weight: .medium)).foregroundStyle(palette.foreground)
-                    Text(discoveredSubtitle(d)).font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
+                    Text(discoveredTitle(d)).font(.footnote.weight(.medium)).foregroundStyle(palette.foreground)
+                    Text(discoveredSubtitle(d)).font(.caption).foregroundStyle(palette.mutedForeground)
                         .lineLimit(1).truncationMode(.middle)
                 }
                 Spacer(minLength: 0)
                 if d.live == true { liveChip }
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
-            .background(RoundedRectangle(cornerRadius: 8).fill(palette.muted.opacity(0.22)))
+            .frame(minHeight: 44)
+            .background(OculusShape.rounded(OculusRadius.sm).fill(palette.muted.opacity(0.22)))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("\(discoveredTitle(d)), \(discoveredSubtitle(d))\(d.live == true ? ", live" : "")")
+        .accessibilityHint("Continue this terminal session here")
     }
 
     // MARK: bits
 
     @ViewBuilder private func field<Content: View>(_ title: String, @ViewBuilder _ content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(title.uppercased()).font(.system(size: 11, weight: .semibold)).tracking(0.4)
+            // Title Case, not ALL CAPS with tracking: OS 26 moved section headers to Title Case
+            // systemwide, and a shouty header next to a system one reads as a different app.
+            Text(title).font(.footnote.weight(.semibold))
                 .foregroundStyle(palette.mutedForeground)
             content()
         }
@@ -606,22 +695,41 @@ struct NewSessionView: View {
 
     private func centerHint(icon: String, text: String) -> some View {
         VStack(spacing: 8) {
-            Image(systemName: icon).font(.system(size: 26)).foregroundStyle(palette.mutedForeground)
-            Text(text).font(.system(size: 12)).foregroundStyle(palette.mutedForeground)
+            Image(systemName: icon).font(.largeTitle).foregroundStyle(palette.mutedForeground)
+                .accessibilityHidden(true)
+            Text(text).font(.footnote).foregroundStyle(palette.mutedForeground)
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity).padding(.vertical, 30)
     }
 
+    /// The gold dot carried "live" in colour alone. Under Differentiate Without Color the dot
+    /// becomes a filled broadcast glyph and the chip gains an outline, so the state survives without
+    /// the tint. The word "Live" is always present for VoiceOver.
     private var liveChip: some View {
         HStack(spacing: 3) {
-            Circle().fill(palette.primary).frame(width: 5, height: 5)
-            Text("Live").font(.system(size: 10, weight: .semibold))
+            if differentiateWithoutColor {
+                Image(systemName: "dot.radiowaves.left.and.right").font(.caption2.weight(.bold))
+            } else {
+                Circle().fill(palette.primary).frame(width: 5, height: 5)
+            }
+            Text("Live").font(.caption2.weight(.semibold))
         }
         .foregroundStyle(palette.primary)
         .padding(.horizontal, 6).padding(.vertical, 2)
         .background(Capsule().fill(palette.primary.opacity(0.16)))
+        .overlay { if differentiateWithoutColor { Capsule().strokeBorder(palette.primary, lineWidth: 1) } }
+        .accessibilityElement(children: .combine)
     }
+
+    #if os(iOS)
+    private func addTypedPath() {
+        let p = addPath.trimmingCharacters(in: .whitespaces)
+        guard !p.isEmpty else { return }
+        addPath = ""
+        Task { if let proj = await model.addProject(path: p) { selectedProjects.insert(proj.id) } }
+    }
+    #endif
 
     /// Terminal sessions worth offering to adopt — the same set the Take over tab lists.
     private var terminalCandidates: [TakeoverCandidate] {
@@ -680,6 +788,9 @@ struct NewSessionView: View {
 struct FolderBrowser: View {
     @ObservedObject var model: Model
     let palette: OculusPalette
+    /// True when this is PUSHED rather than presented as its own sheet: the navigation bar then
+    /// supplies the title and the back button, so drawing our own header too would duplicate both.
+    var embedded: Bool = false
     let onPicked: ([Project]) -> Void
     let onClose: () -> Void
 
@@ -690,28 +801,37 @@ struct FolderBrowser: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("Add folders").font(.system(size: 16, weight: .semibold))
-                Spacer()
-                Button { onClose() } label: {
-                    Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).foregroundStyle(palette.mutedForeground)
-                        .frame(width: 22, height: 22).background(Circle().fill(palette.muted.opacity(0.5)))
-                }.buttonStyle(.plain)
+            if !embedded {
+                HStack {
+                    Text("Add folders").font(.title3.weight(.semibold))
+                    Spacer()
+                    Button { onClose() } label: {
+                        Image(systemName: "xmark").font(.caption.weight(.bold)).foregroundStyle(palette.mutedForeground)
+                            .frame(width: 22, height: 22).background(Circle().fill(palette.muted.opacity(0.5)))
+                            .frame(width: 44, height: 44).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Close")
+                }
+                .padding(.horizontal)
             }
-            .padding()
 
             // Path bar with an "up" control.
             HStack(spacing: 8) {
                 Button { if let p = listing?.parent, !p.isEmpty { Task { await load(p) } } } label: {
-                    Image(systemName: "arrow.up").font(.system(size: 12, weight: .semibold))
+                    Image(systemName: "arrow.up").font(.footnote.weight(.semibold))
                         .foregroundStyle((listing?.parent ?? "").isEmpty ? palette.mutedForeground : palette.primary)
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain).disabled((listing?.parent ?? "").isEmpty)
-                Text(listing?.path ?? "…").font(.system(size: 12, design: .monospaced))
+                .help("Go up one folder")
+                .accessibilityLabel("Go up one folder")
+                Text(listing?.path ?? "…").font(.system(.footnote, design: .monospaced))
                     .lineLimit(1).truncationMode(.head).foregroundStyle(palette.mutedForeground)
+                    .accessibilityLabel("Current folder, \(listing?.path ?? "loading")")
                 Spacer()
             }
-            .padding(.horizontal, 14).padding(.bottom, 8)
+            .padding(.leading, 6).padding(.bottom, 4)
             Divider().overlay(palette.border)
 
             ScrollView {
@@ -749,27 +869,41 @@ struct FolderBrowser: View {
     private func row(_ e: ProjectDirEntry) -> some View {
         let sel = selected.contains(e.path)
         return HStack(spacing: 10) {
-            Image(systemName: sel ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(sel ? palette.primary : palette.mutedForeground)
-            Image(systemName: e.isGitRepo ? "arrow.triangle.branch" : "folder")
-                .font(.system(size: 13)).foregroundStyle(e.isGitRepo ? palette.primary : palette.mutedForeground)
-            Text(e.name).font(.system(size: 13)).foregroundStyle(palette.foreground).lineLimit(1)
-            if e.isGitRepo {
-                Text("git").font(.system(size: 9, weight: .semibold)).foregroundStyle(palette.primary)
-                    .padding(.horizontal, 5).padding(.vertical, 1)
-                    .background(Capsule().fill(palette.primary.opacity(0.14)))
+            // Selecting was an onTapGesture, so VoiceOver saw a folder name as static text with no
+            // button trait and no way to select it at all. It is the row's primary action, so it is
+            // the row's Button; the chevron stays a separate control for navigating deeper.
+            Button { toggle(e.path) } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: sel ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(sel ? palette.primary : palette.mutedForeground)
+                    Image(systemName: e.isGitRepo ? "arrow.triangle.branch" : "folder")
+                        .font(.footnote).foregroundStyle(e.isGitRepo ? palette.primary : palette.mutedForeground)
+                    Text(e.name).font(.footnote).foregroundStyle(palette.foreground).lineLimit(1)
+                    if e.isGitRepo {
+                        Text("git").font(.caption2.weight(.semibold)).foregroundStyle(palette.primary)
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Capsule().fill(palette.primary.opacity(0.14)))
+                    }
+                    Spacer(minLength: 0)
+                }
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
             }
-            Spacer()
+            .buttonStyle(.plain)
+            .accessibilityLabel(e.isGitRepo ? "\(e.name), git repository" : e.name)
+            .accessibilityValue(sel ? "Selected" : "Not selected")
+            .accessibilityAddTraits(sel ? [.isButton, .isSelected] : .isButton)
             // Navigate INTO the folder (browse deeper) — distinct from selecting it.
             Button { Task { await load(e.path) } } label: {
-                Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(palette.mutedForeground)
-                    .frame(width: 26, height: 26).contentShape(Rectangle())
-            }.buttonStyle(.plain)
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(palette.mutedForeground)
+                    .frame(width: 44, height: 44).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Open \(e.name)")
+            .accessibilityLabel("Open \(e.name)")
         }
-        .padding(.horizontal, 10).padding(.vertical, 7)
-        .background(RoundedRectangle(cornerRadius: 7).fill(sel ? palette.primary.opacity(0.10) : palette.muted.opacity(0.18)))
-        .contentShape(Rectangle())
-        .onTapGesture { toggle(e.path) } // tapping the row selects; the chevron navigates in
+        .padding(.leading, 10)
+        .background(OculusShape.rounded(OculusRadius.sm).fill(sel ? palette.primary.opacity(0.10) : palette.muted.opacity(0.18)))
     }
 
     private func toggle(_ p: String) {

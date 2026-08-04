@@ -16,6 +16,11 @@ public final class LoginItemManager: ObservableObject {
     @Published public private(set) var enabled = false
     @Published public private(set) var lastError: String?
 
+    /// Shared, for the same reason as `DaemonLauncher.shared`: the login-item toggle now appears in
+    /// both the sidebar menu and the Settings window, and two instances would report `enabled`
+    /// independently — so one could show "on" while the other showed "off" for the same machine.
+    public static let shared = LoginItemManager()
+
     public init() { refresh() }
 
     private var plistURL: URL {

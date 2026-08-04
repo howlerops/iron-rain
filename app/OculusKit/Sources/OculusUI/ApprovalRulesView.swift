@@ -20,6 +20,9 @@ public struct ApprovalRulesView: View {
     private var denies: [ApprovalRuleInfo] { model.approvalRules.filter { $0.action == "deny" } }
 
     @State private var query = ""
+    /// The rule a delete is staged against. Deleting is not undoable and there is no other copy of
+    /// the rule anywhere, so nothing here removes one on a single tap.
+    @State private var pendingDelete: ApprovalRuleInfo? = nil
 
     private func matching(_ rs: [ApprovalRuleInfo]) -> [ApprovalRuleInfo] {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
@@ -69,15 +72,58 @@ public struct ApprovalRulesView: View {
             }
         }
         .task { await model.loadApprovalRules() }
+        // Two dialogs rather than one, because the two directions are not the same decision.
+        // Removing a DENY widens what agents may do without asking — the rule that was checked first
+        // and beat every allow simply stops existing — so that one names the consequence out loud.
+        .confirmationDialog(
+            "Remove this block?",
+            isPresented: Binding(get: { pendingDelete?.action == "deny" },
+                                 set: { if !$0 { pendingDelete = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingDelete
+        ) { r in
+            Button("Remove block", role: .destructive) { delete(r) }
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+        } message: { r in
+            Text("“\(r.description)” is currently never allowed, and a deny beats every allow. Remove it and your agents will be able to do this after asking once — or immediately, if an allow rule already covers it.")
+        }
+        .confirmationDialog(
+            "Remove this rule?",
+            isPresented: Binding(get: { pendingDelete != nil && pendingDelete?.action != "deny" },
+                                 set: { if !$0 { pendingDelete = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingDelete
+        ) { r in
+            Button("Remove rule", role: .destructive) { delete(r) }
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+        } message: { r in
+            Text("“\(r.description)” will no longer run without asking. The agent will ask you again next time.")
+        }
+    }
+
+    /// `deleteApprovalRule` returns Void and swallows its own transport error, so a revoke that never
+    /// reached the daemon looks exactly like one that did. The daemon answers with the whole rule
+    /// list, so a list that didn't shrink is the honest signal that nothing was removed — on a
+    /// security surface, silently failing OPEN is the failure worth catching.
+    private func delete(_ r: ApprovalRuleInfo) {
+        pendingDelete = nil
+        let before = model.approvalRules.count
+        Task {
+            await model.deleteApprovalRule(index: r.index)
+            if model.approvalRules.count >= before {
+                model.setError("Couldn’t remove the rule",
+                               "“\(r.description)” is still in effect. Check the daemon is connected and try again.")
+            }
+        }
     }
 
     private func section(_ title: String, tint: Color, note: String?) -> some View {
         VStack(alignment: .leading, spacing: OculusSpace.xxs) {
-            Text(title.uppercased())
-                .font(.system(size: 10, weight: .semibold)).tracking(0.8)
+            Text(title)
+                .font(.footnote.weight(.semibold))
                 .foregroundStyle(tint)
             if let note {
-                Text(note).font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
+                Text(note).font(.caption).foregroundStyle(palette.mutedForeground)
             }
         }
         .padding(.top, OculusSpace.xs)
@@ -89,8 +135,11 @@ public struct ApprovalRulesView: View {
             Image(systemName: r.action == "deny" ? "hand.raised.fill" : "checkmark.shield.fill")
                 .foregroundStyle(r.action == "deny" ? palette.destructive : palette.primary)
                 .padding(.top, 2)
+                // Not decorative — allow vs deny is the whole meaning of the row, and the section
+                // header that carries it visually is a separate element to VoiceOver.
+                .accessibilityLabel(r.action == "deny" ? "Never allowed" : "Always allowed")
             VStack(alignment: .leading, spacing: 3) {
-                Text(r.description).font(.system(size: 13)).foregroundStyle(palette.foreground)
+                Text(r.description).font(.subheadline).foregroundStyle(palette.foreground)
                     .multilineTextAlignment(.leading)
                 HStack(spacing: 6) {
                     if let p = r.provider, !p.isEmpty { tag(p) }
@@ -100,24 +149,29 @@ public struct ApprovalRulesView: View {
                 }
             }
             Spacer(minLength: 6)
-            Button {
-                Task { await model.deleteApprovalRule(index: r.index) }
+            // Destructive role + the destructive colour: rendering a delete in the DE-EMPHASIZED
+            // muted grey inverts the signal, telling the eye this is the safe, minor control.
+            Button(role: .destructive) {
+                pendingDelete = r
             } label: {
-                Image(systemName: "trash").foregroundStyle(palette.mutedForeground)
+                Image(systemName: "trash").foregroundStyle(palette.destructive)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(r.action == "deny" ? "Remove block: \(r.description)"
+                                                   : "Remove rule: \(r.description)")
             .help("Remove this rule — the agent will ask again next time.")
+            .sheetTapTarget()
         }
         }
     }
 
     private func tag(_ s: String, mono: Bool = false) -> some View {
         Text(s)
-            .font(.system(size: 10, design: mono ? .monospaced : .default))
+            .font(.system(.caption2, design: mono ? .monospaced : .default))
             .lineLimit(1).truncationMode(.head)
             .padding(.horizontal, 5).padding(.vertical, 1.5)
             .background(palette.input)
-            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .clipShape(OculusShape.rounded(4))
             .foregroundStyle(palette.mutedForeground)
     }
 

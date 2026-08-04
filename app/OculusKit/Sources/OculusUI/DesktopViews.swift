@@ -100,7 +100,7 @@ struct SessionSkeleton: View {
 
     @ViewBuilder private func stepIcon(_ step: CreateStep) -> some View {
         if step.done {
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).font(.subheadline)
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(palette.success).font(.subheadline)
         } else {
             ProgressView().controlSize(.small).frame(width: 16, height: 16)
         }
@@ -114,7 +114,7 @@ struct SessionSkeleton: View {
     private func bubble(width: CGFloat, mine: Bool) -> some View {
         HStack(spacing: 0) {
             if mine { Spacer(minLength: 0) }
-            RoundedRectangle(cornerRadius: 14)
+            OculusShape.rounded(14)
                 .fill(palette.muted.opacity(pulse ? 0.55 : 0.28))
                 .frame(width: width, height: 46)
             if !mine { Spacer(minLength: 0) }
@@ -172,7 +172,7 @@ struct SoftwareUpdateModifier: ViewModifier {
                     .buttonStyle(.borderedProminent).tint(palette.primary).controlSize(.large)
                 }
                 if let err = updates.installError {
-                    Text(err).font(.caption).foregroundStyle(.red)
+                    Text(err).font(.caption).foregroundStyle(palette.destructive)
                 }
             }
 
@@ -180,17 +180,20 @@ struct SoftwareUpdateModifier: ViewModifier {
             DisclosureGroup("Update manually instead") {
                 HStack(spacing: 6) {
                     Text(DaemonLauncher.installCommand)
-                        .font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+                        .font(.footnote.monospaced()).textSelection(.enabled)
                         .lineLimit(1).truncationMode(.middle)
                         .padding(.horizontal, 8).padding(.vertical, 6)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(palette.input, in: RoundedRectangle(cornerRadius: 6))
+                        .background(palette.input, in: OculusShape.rounded(6))
                     Button {
                         #if canImport(AppKit)
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(DaemonLauncher.installCommand, forType: .string)
                         #endif
-                    } label: { Image(systemName: "doc.on.doc") }.buttonStyle(.borderless).help("Copy")
+                    } label: { Image(systemName: "doc.on.doc") }
+                        .buttonStyle(.borderless).help("Copy")
+                        // `.help` is only a tooltip/hint — an icon-only button still needs a name.
+                        .accessibilityLabel("Copy install command")
                 }
                 .padding(.top, 4)
             }
@@ -203,9 +206,59 @@ struct SoftwareUpdateModifier: ViewModifier {
 }
 #endif
 
-/// The one shared sheet slot for the Loops / Agents panels (kept to a single `.sheet` so they
-/// don't collide with the New Session sheet).
+/// The management panels reachable from the sidebar and the palette.
 private enum PanelSheet: Int, Identifiable { case loops, agents, accounts, remotes, sessions, approvalRules, mcp, sharing, dictionary, usage; var id: Int { rawValue } }
+
+/// EVERY modal this surface presents, in ONE `.sheet(item:)` slot.
+///
+/// There were four `.sheet` modifiers stacked on `mainSurface` plus a fifth inside each of the two
+/// surfaces. SwiftUI only reliably drives one presentation per view and the extras don't fail loudly
+/// — they just stop presenting, which is exactly how the New Session sheet went dead after the first
+/// session once before. One item-valued slot makes "what is on screen" a single value that can only
+/// hold one answer.
+private enum DeckSheet: Identifiable {
+    case newSession
+    case fanoutCompose
+    case fanoutCompare(FanoutSummary)
+    case design
+    case panel(PanelSheet)
+
+    var id: String {
+        switch self {
+        case .newSession:            return "new-session"
+        case .fanoutCompose:         return "fanout-compose"
+        case .fanoutCompare(let s):  return "fanout-compare-\(s.id)"
+        case .design:                return "design"
+        case .panel(let p):          return "panel-\(p.rawValue)"
+        }
+    }
+}
+
+/// What the Sessions navigation stack can push, on the compact (phone / Slide Over) layout.
+private enum SessionRoute: Hashable {
+    case chat
+    case code(String) // the Code & change-review surface for a session id
+
+    var isCode: Bool { if case .code = self { return true }; return false }
+}
+
+#if os(macOS)
+/// The detail column's toolbar backing.
+///
+/// macOS 26 draws the window toolbar itself — Liquid Glass plus the scroll edge effect that
+/// separates the toolbar from content as it scrolls under. Forcing `.toolbarBackground(.visible)`
+/// opts out of both and leaves a flat opaque bar, so only supply a background on systems that don't
+/// provide one.
+private struct DetailToolbarBackground: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content
+        } else {
+            content.toolbarBackground(.visible, for: .windowToolbar)
+        }
+    }
+}
+#endif
 
 public struct RootView: View {
     @ObservedObject var store: DesktopStore
@@ -215,38 +268,51 @@ public struct RootView: View {
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var hSize
     #endif
-    @State private var showSessionDetail = false // iOS: pushes ChatView when a session opens
+    /// The Sessions stack's push state, and the ONLY navigation path in the app.
+    ///
+    /// This was a `showSessionDetail` Bool bound as `navigationDestination(isPresented:)` in the
+    /// Sessions, Activity AND Fleet stacks at once. One Bool cannot own three stacks: opening a
+    /// session from Fleet pushed the chat onto all three, a back-swipe in one silently popped the
+    /// other two, and starting a session popped every stack. Activity and Fleet are jump-off points
+    /// now — they switch the tab and push here.
+    @State private var sessionsPath: [SessionRoute] = []
     @State private var checkForUpdates = false   // macOS: Settings → "Check for updates" trigger
-    // Loops + Agents share ONE sheet slot — stacking two .sheet modifiers on the same view breaks
-    // SwiftUI's sheet presentation (it silently killed the New Session sheet after the first session).
-    @State private var panel: PanelSheet?
-    @State private var showNewSession = false
+    // Every modal goes through this one slot — see DeckSheet.
+    @State private var sheet: DeckSheet?
     /// True when the Sessions destination should show the INDEX rather than the open conversation.
     /// An explicit flag rather than inferring it from "no session is open": inferring meant the only
     /// way to reach the table was to destroy your place in the chat first.
     @State private var showAllSessions = false
     @State private var newSessionTakeOver = false
-    @State private var selectedTab = 0
     // Command Deck: the active top-level destination. macOS = nav-rail selection; iOS = bottom tab.
     // iOS defaults to Activity (index-of .activity) — the phone is a triage inbox; macOS opens on Sessions.
+    // `@SceneStorage`, not `@State`: a cold launch used to drop you back on the default tab no matter
+    // where you had been working. The system persists this per scene and restores it, which is what
+    // makes returning to the app feel like resuming rather than restarting. `Destination` is
+    // Int-backed, so it round-trips without a bridge.
     #if os(macOS)
-    @State private var destination: Destination = .sessions
+    @SceneStorage("oculus.destination") private var destination: Destination = .sessions
     #else
-    @State private var destination: Destination = .activity
+    @SceneStorage("oculus.destination") private var destination: Destination = .activity
     #endif
     @State private var searchText = ""
     @State private var selectedLoopID: String?     // Loops destination: which loop the detail edits (nil = new/templates)
     @State private var editingLoop = false          // Loops destination: detail shows the editor
     @State private var showPalette = false          // Cmd-K command palette
-    @State private var showFanout = false           // Fan-out composer sheet
+    /// Sidebar column visibility, so the toggle is a value the deck owns rather than state buried in
+    /// AppKit that nothing can read or restore.
+    @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
     // Desktop (paired-Mac) switcher — hangs off the window title, Xcode-scheme-menu style.
     @State private var showAddDesktop = false
     @State private var renamingDesktop = false
     @State private var desktopNewName = ""
     @AppStorage("oculus.appearance") private var appearance: Appearance = .system
     #if os(macOS)
-    @StateObject private var launcher = DaemonLauncher()
-    @StateObject private var loginItem = LoginItemManager()
+    // Shared instances, not view-owned: the Settings window needs the SAME launcher, because
+    // `managed` (did this app start the daemon child?) is what makes the login-item handoff correct.
+    // See the note on `DaemonLauncher.shared`.
+    @ObservedObject private var launcher = DaemonLauncher.shared
+    @ObservedObject private var loginItem = LoginItemManager.shared
     @StateObject private var updates = UpdateChecker() // shared: drives the sidebar update card + the check
     #endif
 
@@ -278,49 +344,22 @@ public struct RootView: View {
                     #if os(macOS)
                     .modifier(SoftwareUpdateModifier(palette: palette, forceCheck: $checkForUpdates, updates: updates))
                     #endif
-                    .sheet(item: Binding(get: { model.fanoutSummary }, set: { model.fanoutSummary = $0 })) { sum in
-                        FanoutCompareView(model: model, summary: sum, palette: palette,
-                                          onOpenSession: { sid in
-                                              model.fanoutSummary = nil
-                                              Task { await model.openSession(sid) }
-                                              showSessionDetail = true
-                                          },
-                                          onClose: { model.fanoutSummary = nil })
+                    // ONE sheet slot for everything — see DeckSheet. `onDismiss` clears the two
+                    // model-owned REQUESTS that can open a sheet, so a swipe-to-dismiss doesn't leave
+                    // a stale flag set that immediately re-presents (or blocks the next request).
+                    .sheet(item: $sheet, onDismiss: {
+                        model.fanoutSummary = nil
+                        model.designRequested = false
+                    }) { which in
+                        sheetContent(which, model)
                     }
-                    .sheet(item: $panel) { which in
-                        switch which {
-                        case .loops:
-                            LoopsView(model: model, palette: palette,
-                                      onOpenSession: { sid in
-                                          panel = nil
-                                          Task { await model.openSession(sid) }
-                                          showSessionDetail = true
-                                      },
-                                      onClose: { panel = nil })
-                        case .agents:
-                            ManageAgentsView(model: model, palette: palette)
-                        case .approvalRules:
-                            ApprovalRulesView(model: model, palette: palette, onClose: { panel = nil })
-                        case .mcp:
-                            MCPServersView(model: model, palette: palette, onClose: { panel = nil })
-                        case .sharing:
-                            SharingView(model: model, palette: palette, onClose: { panel = nil })
-                        case .dictionary:
-                            DictionaryView(palette: palette, onClose: { panel = nil })
-                        case .usage:
-                            UsageView(model: model, palette: palette, onClose: { panel = nil })
-                        case .accounts:
-                            AccountsView(model: model, palette: palette, onClose: { panel = nil })
-                        case .remotes:
-                            RemotesView(model: model, palette: palette, onClose: { panel = nil })
-                        case .sessions:
-                            AllSessionsView(model: model, palette: palette, onClose: { panel = nil },
-                                            onOpen: { sid in
-                                                panel = nil
-                                                Task { await model.openSession(sid) }
-                                                showSessionDetail = true
-                                            })
-                        }
+                    // The daemon can push a fan-out summary, and the chat toolbar can request Design
+                    // mode, at any time — mirror those requests into the one slot.
+                    .onChange(of: model.fanoutSummary?.id) { _ in
+                        if let sum = model.fanoutSummary { sheet = .fanoutCompare(sum) }
+                    }
+                    .onChange(of: model.designRequested) { on in
+                        if on { sheet = .design }
                     }
                     // macOS only. On iOS this inset sat on top of the tab bar and swallowed taps
                     // along the bottom edge — and a live-tailing log is a desk affordance anyway, not
@@ -332,15 +371,19 @@ public struct RootView: View {
                     #endif
                     // Cmd-K command palette: one fuzzy entry across destinations, sessions, loops,
                     // agents, and actions. ⌘K on macOS; a search button in the sidebar on iOS.
-                    .background(
-                        Button("") { showPalette = true }
-                            .keyboardShortcut("k", modifiers: .command).opacity(0)
-                    )
+                    // The app has no `.commands { }` scene (that lives in OculusMain), so these
+                    // invisible key equivalents are the only keyboard route to the deck's primary
+                    // actions — see the note in the design report about which still need menu items.
+                    .background(deckShortcuts.opacity(0))
                     .overlay {
                         if showPalette {
                             ZStack {
                                 Color.black.opacity(0.35).ignoresSafeArea()
                                     .onTapGesture { showPalette = false }
+                                    // A bare tap gesture is invisible to VoiceOver and Full Keyboard
+                                    // Access — the scrim is the dismiss control, so name it as one.
+                                    .accessibilityAddTraits(.isButton)
+                                    .accessibilityLabel("Close command palette")
                                 CommandPalette(model: model, palette: palette,
                                                items: paletteItems(model), onClose: { showPalette = false })
                                     .padding(.top, 80)
@@ -349,14 +392,6 @@ public struct RootView: View {
                             .transition(.opacity)
                         }
                     }
-                    .sheet(isPresented: $showFanout) {
-                        FanoutSheet(model: model, palette: palette, onClose: { showFanout = false })
-                    }
-                    #if canImport(WebKit)
-                    .sheet(isPresented: Binding(get: { model.designRequested }, set: { model.designRequested = $0 })) {
-                        DesignModeView(model: model, palette: palette, initialURL: designURL(model), onClose: { model.designRequested = false })
-                    }
-                    #endif
             }
         }
         // CRITICAL: force the surface to FILL the window instead of sizing to the split
@@ -376,6 +411,24 @@ public struct RootView: View {
             #endif
             await store.bootstrap()
         }
+    }
+
+    /// Keyboard equivalents for the deck's own actions: ⌘K palette, ⌘N new session, and ⌘1…⌘5 for the
+    /// five destinations (the order the rail shows them in). Hidden from VoiceOver — they duplicate
+    /// controls that are already reachable, they are not five more things to swipe past.
+    @ViewBuilder private var deckShortcuts: some View {
+        VStack(spacing: 0) {
+            Button("") { showPalette = true }.keyboardShortcut("k", modifiers: .command)
+            #if os(macOS)
+            Button("") { newSessionTakeOver = false; sheet = .newSession }
+                .keyboardShortcut("n", modifiers: .command)
+            ForEach(Array(Destination.allCases.enumerated()), id: \.element.id) { idx, d in
+                Button("") { destination = d }
+                    .keyboardShortcut(KeyEquivalent(Character("\(idx + 1)")), modifiers: .command)
+            }
+            #endif
+        }
+        .accessibilityHidden(true)
     }
 
     /// Shown until the first connection attempt resolves — the wolf mark over a spinner.
@@ -434,7 +487,9 @@ public struct RootView: View {
         // proposed height (the 720pt window), and an explicit .frame() PINS the split view
         // to it, overriding its runaway ideal.
         GeometryReader { proxy in
-            NavigationSplitView {
+            // `columnVisibility` is bound so the sidebar toggle is state the deck owns and can drive
+            // (nothing could read or set it before).
+            NavigationSplitView(columnVisibility: $columnVisibility) {
                 // Command Deck sidebar: the persistent destination rail on top (Sessions · Loops ·
                 // Fleet · Issues · Activity + Needs-You), then the contextual list for the selected
                 // destination below it — so every capability is a first-glance destination, nothing
@@ -455,33 +510,37 @@ public struct RootView: View {
                     }
                     deckList(model)
                 }
-                .background(palette.background)
+                // NOT an opaque fill. On macOS 26 the system floats this column on its own glass
+                // material and SidebarMaterial deliberately leaves it alone; painting a solid colour
+                // over it threw that away and, below 26, made the NSVisualEffectView's behind-window
+                // blend vibrate against our own layer instead of the desktop.
+                .sidebarMaterial()
                 .navigationSplitViewColumnWidth(min: 250, ideal: 290, max: 360)
-                // The window title is the current PAGE (or the open session's name) — set at the deck
-                // level so it's consistent across every destination. The desktop (paired-Mac)
-                // switcher hangs off it as the title menu.
-                .navigationTitle(pageTitle(model))
-                .toolbarTitleMenu { deckDesktopMenu }
-                .sheet(isPresented: $showAddDesktop) {
-                    AddDesktopView(store: store, palette: palette) { showAddDesktop = false }
-                }
-                .alert("Rename desktop", isPresented: $renamingDesktop) {
-                    TextField("Name", text: $desktopNewName)
-                    Button("Save") { if let a = store.active { store.rename(a.id, to: desktopNewName) } }
-                    Button("Cancel", role: .cancel) {}
-                }
             } detail: {
                 deckDetail(model)
                     // Clamp the detail column to the window height (see original note): the split view
                     // sizes to its tallest column's ideal; a flexible detail measured as a runaway
                     // ideal and inflated the sidebar. Pinning decouples them.
                     .frame(height: proxy.size.height)
+                    // The window title belongs to the DETAIL, which is what macOS titles a window
+                    // after. It used to hang off the sidebar column, which is why the sidebar had to
+                    // know which session the detail had open.
+                    .navigationTitle(pageTitle(model))
+                    .toolbarTitleMenu { deckDesktopMenu }
+                    // Both of these are the title menu's actions, so they present from the column the
+                    // menu lives on. On the sidebar they would have had nothing to present from once
+                    // the sidebar was collapsed.
+                    .sheet(isPresented: $showAddDesktop) {
+                        AddDesktopView(store: store, palette: palette) { showAddDesktop = false }
+                    }
+                    .alert("Rename desktop", isPresented: $renamingDesktop) {
+                        TextField("Name", text: $desktopNewName)
+                        Button("Save") { if let a = store.active { store.rename(a.id, to: desktopNewName) } }
+                        Button("Cancel", role: .cancel) {}
+                    }
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
             .onChange(of: selection) { handleSelection($0, model) }
-            .sheet(isPresented: $showNewSession) {
-                NewSessionView(model: model, palette: palette, initialTakeOver: newSessionTakeOver) { showNewSession = false }
-            }
         }
         }
     }
@@ -492,72 +551,81 @@ public struct RootView: View {
     /// needs-you count badges the Activity tab. Also used by an iPad in Slide Over, which is just as
     /// narrow as a phone.
     @ViewBuilder private func tabSurface(_ model: Model) -> some View {
+        // Built by iterating `Destination.mobileOrder` rather than by hand: the "Activity is centered"
+        // intent lives in one array instead of in the order five copy-pasted blocks happen to sit in.
         TabView(selection: $destination) {
-            // Sessions
-            NavigationStack {
+            ForEach(Destination.mobileOrder) { d in
+                tab(d, model)
+                    .tabItem { Label(d.title, systemImage: d.symbol) }
+                    .tag(d)
+            }
+        }
+    }
+
+    @ViewBuilder private func tab(_ d: Destination, _ model: Model) -> some View {
+        switch d {
+        case .sessions:
+            // The ONLY navigation stack with a path. Both the chat and the code surface are routes on
+            // it, so a back-swipe pops exactly one thing and nothing else in the app moves.
+            NavigationStack(path: $sessionsPath) {
                 sessionSidebar(model)
-                    .navigationDestination(isPresented: $showSessionDetail) { ChatView(model: model) }
-                    // Code & change review pushes over the chat when the toolbar button sets the target.
-                    .navigationDestination(isPresented: Binding(
-                        get: { model.codeReviewTarget != nil },
-                        set: { if !$0 { model.codeReviewTarget = nil } })) {
-                        CodeSurface(model: model, sessionID: model.codeReviewTarget, reviewSessionID: model.codeReviewTarget)
+                    .navigationDestination(for: SessionRoute.self) { route in
+                        switch route {
+                        case .chat: ChatView(model: model)
+                        case .code(let sid): CodeSurface(model: model, sessionID: sid, reviewSessionID: sid)
+                        }
                     }
                     .toolbar {
                         ToolbarItem(placement: .automatic) {
                             Button { showPalette = true } label: { Image(systemName: "magnifyingglass") }
+                                .accessibilityLabel("Search")
                         }
                     }
             }
             .onChange(of: selection) { handleSelection($0, model) }
-            .onChange(of: model.currentSession?.id) { if $0 != nil { showSessionDetail = true } }
-            .onChange(of: model.startingSession) { if $0 { showSessionDetail = false } }
-            .sheet(isPresented: $showNewSession) {
-                NewSessionView(model: model, palette: palette, initialTakeOver: newSessionTakeOver) { showNewSession = false }
+            .onChange(of: model.currentSession?.id) { if $0 != nil { pushChat() } }
+            // Starting a session pops back to the list so the create skeleton — not a half-built
+            // conversation — is what you watch.
+            .onChange(of: model.startingSession) { if $0 { sessionsPath.removeAll() } }
+            // The Review action sets `codeReviewTarget` from wherever you are; mirror it onto the path
+            // in both directions so a back-swipe clears the target instead of stranding it set.
+            .onChange(of: model.codeReviewTarget) { target in
+                if let target {
+                    if !sessionsPath.contains(.code(target)) { sessionsPath.append(.code(target)) }
+                } else {
+                    sessionsPath.removeAll(where: \.isCode)
+                }
             }
-            .tabItem { Label("Sessions", systemImage: Destination.sessions.symbol) }
-            .tag(Destination.sessions)
+            .onChange(of: sessionsPath) { path in
+                if model.codeReviewTarget != nil, !path.contains(where: \.isCode) { model.codeReviewTarget = nil }
+            }
 
-            // Loops
+        case .loops:
             NavigationStack {
                 LoopsView(model: model, palette: palette,
-                          onOpenSession: { sid in openMobile(sid, model) }, onClose: {})
+                          onOpenSession: { sid in openSessionNav(sid, model) }, onClose: {})
                     .navigationTitle("Loops")
             }
-            .tabItem { Label("Loops", systemImage: Destination.loops.symbol) }
-            .tag(Destination.loops)
 
-            // Activity (default / centered)
+        case .activity:
+            // A jump-off point, not an owner of the chat: opening an item switches to Sessions and
+            // pushes there. (It used to bind the same push flag as Sessions and Fleet.)
             NavigationStack {
-                ActivityView(model: model, palette: palette, onOpen: { sid in openMobile(sid, model) })
+                ActivityView(model: model, palette: palette, onOpen: { sid in openSessionNav(sid, model) })
                     .navigationTitle("Activity")
-                    .navigationDestination(isPresented: $showSessionDetail) { ChatView(model: model) }
             }
-            .tabItem { Label("Activity", systemImage: Destination.activity.symbol) }
             .badge(model.needsYouCount)
-            .tag(Destination.activity)
 
-            // Fleet
+        case .fleet:
             NavigationStack {
-                FleetView(model: model, palette: palette, onOpen: { sid in openMobile(sid, model) }, onClose: {}, onFanout: { showFanout = true })
+                FleetView(model: model, palette: palette, onOpen: { sid in openSessionNav(sid, model) },
+                          onClose: {}, onFanout: { sheet = .fanoutCompose })
                     .navigationTitle("Fleet")
-                    .navigationDestination(isPresented: $showSessionDetail) { ChatView(model: model) }
             }
-            .tabItem { Label("Fleet", systemImage: Destination.fleet.symbol) }
-            .tag(Destination.fleet)
 
-            // Issues
+        case .issues:
             IssuesView(model: model, palette: palette) { destination = .sessions }
-                .tabItem { Label("Issues", systemImage: Destination.issues.symbol) }
-                .tag(Destination.issues)
         }
-    }
-
-    /// Open a session from Activity/Fleet on iOS: switch to Sessions and push the chat.
-    private func openMobile(_ sid: String, _ model: Model) {
-        Task { await model.openSession(sid) }
-        destination = .sessions
-        showSessionDetail = true
     }
 
     /// The initial Design-Mode URL: the active session's dev-server port if a setup hook allocated
@@ -567,14 +635,21 @@ public struct RootView: View {
         return "http://localhost:3000"
     }
 
-    /// Shared session-open used by the palette (both platforms): go to Sessions and open it.
+    /// Show the chat as the Sessions stack's one pushed screen. An ASSIGNMENT, not an append: opening
+    /// a session from anywhere means "this conversation is where I am", so a stale code surface (or a
+    /// second chat) can't accumulate behind it and hand you a back button that goes somewhere odd.
+    /// No-op on the split layout, where the detail column IS the chat and there is nothing to push.
+    private func pushChat() {
+        if sessionsPath != [.chat] { sessionsPath = [.chat] }
+    }
+
+    /// The ONE way to open a session from anywhere — palette, Activity, Fleet, Loops, a sheet. Every
+    /// caller funnels here so the push has a single owner and can't be duplicated per surface.
     private func openSessionNav(_ sid: String, _ model: Model) {
         destination = .sessions
-        #if os(macOS)
-        model.codeReviewTarget = nil
-        #endif
+        model.codeReviewTarget = nil // a new session must not keep showing the old one's diff
         Task { await model.openSession(sid) }
-        showSessionDetail = true
+        pushChat()
     }
 
     /// Builds the Cmd-K index: destinations, live sessions, loops, agents, and quick actions.
@@ -588,7 +663,7 @@ public struct RootView: View {
         // Actions
         out.append(PaletteItem(id: "act-new", kind: .action, title: "New session",
                                subtitle: "Start an agent", symbol: "plus.circle") {
-            newSessionTakeOver = false; showNewSession = true
+            newSessionTakeOver = false; sheet = .newSession
         })
         out.append(PaletteItem(id: "act-chat", kind: .action, title: "New chat",
                                subtitle: "Ephemeral — just chat, no project", symbol: "bubble.left.and.text.bubble.right") {
@@ -600,15 +675,15 @@ public struct RootView: View {
         })
         out.append(PaletteItem(id: "act-fanout", kind: .action, title: "Fan out a task",
                                subtitle: "Race N agents, merge the winner", symbol: "square.grid.2x2") {
-            showFanout = true
+            sheet = .fanoutCompose
         })
         out.append(PaletteItem(id: "act-accounts", kind: .action, title: "Accounts & usage",
                                subtitle: "Switch credentials · token/cost meter", symbol: "person.2.badge.key") {
-            panel = .accounts
+            sheet = .panel(.accounts)
         })
         out.append(PaletteItem(id: "act-remotes", kind: .action, title: "Remote hosts",
                                subtitle: "Run a worktree on a remote box over SSH", symbol: "server.rack") {
-            panel = .remotes
+            sheet = .panel(.remotes)
         })
         #if canImport(WebKit)
         out.append(PaletteItem(id: "act-design", kind: .action, title: "Design mode",
@@ -639,7 +714,7 @@ public struct RootView: View {
         // Agents
         for a in model.agents {
             out.append(PaletteItem(id: "agent-\(a.id)", kind: .agent, title: a.name,
-                                   subtitle: a.kind, symbol: "cpu") { panel = .agents })
+                                   subtitle: a.kind, symbol: "cpu") { sheet = .panel(.agents) })
         }
         return out
     }
@@ -655,36 +730,36 @@ public struct RootView: View {
         #if os(macOS)
         SessionSidebar(store: store, model: model, selection: $selection, searchText: $searchText,
                        onReview: { sid in model.codeReviewTarget = sid },
-                       onTakeOver: { newSessionTakeOver = true; showNewSession = true },
+                       onTakeOver: { newSessionTakeOver = true; sheet = .newSession },
                        onCheckForUpdates: { checkForUpdates = true },
                        loginAtLogin: loginItem.enabled,
                        loginAtLoginError: loginItem.lastError,
                        onToggleLoginAtLogin: { on in Task { await loginItem.setEnabled(on, launcher: launcher) } },
                        updates: updates,
                        onOpenLoops: { destination = .loops },
-                       onOpenAgents: { panel = .agents },
-                       onOpenApprovalRules: { panel = .approvalRules },
-                       onOpenMCP: { panel = .mcp },
-                       onOpenSharing: { panel = .sharing },
-                       onOpenDictionary: { panel = .dictionary },
-                       onOpenUsage: { panel = .usage },
-                       onOpenAccounts: { panel = .accounts },
-                       onOpenRemotes: { panel = .remotes },
-                       onManageSessions: { panel = .sessions })
+                       onOpenAgents: { sheet = .panel(.agents) },
+                       onOpenApprovalRules: { sheet = .panel(.approvalRules) },
+                       onOpenMCP: { sheet = .panel(.mcp) },
+                       onOpenSharing: { sheet = .panel(.sharing) },
+                       onOpenDictionary: { sheet = .panel(.dictionary) },
+                       onOpenUsage: { sheet = .panel(.usage) },
+                       onOpenAccounts: { sheet = .panel(.accounts) },
+                       onOpenRemotes: { sheet = .panel(.remotes) },
+                       onManageSessions: { sheet = .panel(.sessions) })
         #else
         SessionSidebar(store: store, model: model, selection: $selection, searchText: $searchText,
                        onReview: { sid in model.codeReviewTarget = sid },
-                       onTakeOver: { newSessionTakeOver = true; showNewSession = true },
+                       onTakeOver: { newSessionTakeOver = true; sheet = .newSession },
                        onOpenLoops: { destination = .loops },
-                       onOpenAgents: { panel = .agents },
-                       onOpenApprovalRules: { panel = .approvalRules },
-                       onOpenMCP: { panel = .mcp },
-                       onOpenSharing: { panel = .sharing },
-                       onOpenDictionary: { panel = .dictionary },
-                       onOpenUsage: { panel = .usage },
-                       onOpenAccounts: { panel = .accounts },
-                       onOpenRemotes: { panel = .remotes },
-                       onManageSessions: { panel = .sessions })
+                       onOpenAgents: { sheet = .panel(.agents) },
+                       onOpenApprovalRules: { sheet = .panel(.approvalRules) },
+                       onOpenMCP: { sheet = .panel(.mcp) },
+                       onOpenSharing: { sheet = .panel(.sharing) },
+                       onOpenDictionary: { sheet = .panel(.dictionary) },
+                       onOpenUsage: { sheet = .panel(.usage) },
+                       onOpenAccounts: { sheet = .panel(.accounts) },
+                       onOpenRemotes: { sheet = .panel(.remotes) },
+                       onManageSessions: { sheet = .panel(.sessions) })
         #endif
     }
 
@@ -701,7 +776,7 @@ public struct RootView: View {
             DestinationHint(palette: palette, symbol: "checklist", title: "Issues",
                             message: "Your tracker board is in the detail pane — filter by project, drag cards between real statuses, and open in Jira or Linear.")
         case .activity:
-            ActivityView(model: model, palette: palette, onOpen: { sid in openFromActivity(sid, model) })
+            ActivityView(model: model, palette: palette, onOpen: { sid in openSessionNav(sid, model) })
 
         }
     }
@@ -716,8 +791,7 @@ public struct RootView: View {
                     AllSessionsView(model: model, palette: palette, onClose: { showAllSessions = false },
                                     onOpen: { sid in
                                         showAllSessions = false
-                                        Task { await model.openSession(sid) }
-                                        showSessionDetail = true
+                                        openSessionNav(sid, model)
                                     },
                                     embedded: true)
                 } else if let codeSession = codeTarget(model) {
@@ -726,16 +800,16 @@ public struct RootView: View {
                 } else if model.sessionID == nil {
                     // Nothing open: the index is a better landing than an empty chat pane.
                     AllSessionsView(model: model, palette: palette, onClose: {},
-                                    onOpen: { sid in Task { await model.openSession(sid) }; showSessionDetail = true },
+                                    onOpen: { sid in openSessionNav(sid, model) },
                                     embedded: true)
                 } else {
                     ChatView(model: model)
                 }
             case .fleet:
-                FleetView(model: model, palette: palette, onOpen: { sid in openFromActivity(sid, model) }, onClose: {}, onFanout: { showFanout = true })
+                FleetView(model: model, palette: palette, onOpen: { sid in openSessionNav(sid, model) }, onClose: {}, onFanout: { sheet = .fanoutCompose })
             case .loops:
                 LoopDetail(model: model, palette: palette, loopID: selectedLoopID, editing: editingLoop,
-                           onOpenSession: { sid in openFromActivity(sid, model) },
+                           onOpenSession: { sid in openSessionNav(sid, model) },
                            onDone: { editingLoop = false })
             case .issues:
                 IssuesView(model: model, palette: palette, embedded: true) { destination = .sessions }
@@ -748,17 +822,34 @@ public struct RootView: View {
                 }
             }
         }
-        .id(destination)
+        // Keyed on the CONTENT, not the destination. Sessions and Activity both render ChatView for
+        // the same session, so `.id(destination)` tore the transcript down and rebuilt it every time
+        // you switched between them — scroll position, the initial anchor deadline and the settling
+        // machinery all reset, and you watched the loading skeleton for a conversation you were
+        // reading a second ago.
+        .id(detailIdentity(model))
         .background(palette.background)
         // .windowToolbar is macOS-only; the detail pane now compiles for iPad too.
         #if os(macOS)
-        .toolbarBackground(.visible, for: .windowToolbar)
+        .modifier(DetailToolbarBackground())
         #endif
         .onChange(of: model.currentSession?.id) { _ in
             // Switching sessions (id changed) must drop any open Code/Review detail — otherwise the
             // pane keeps rendering the PREVIOUS session's code surface, which reads as a stale/white
             // screen when going between sessions. (Was only cleared when the session went to nil.)
             if destination == .sessions { model.codeReviewTarget = nil }
+        }
+    }
+
+    /// The detail column's identity: what would have to be REBUILT if it changed. The two
+    /// chat-showing destinations share one identity so switching between them keeps the live view.
+    private func detailIdentity(_ model: Model) -> String {
+        switch destination {
+        case .sessions, .activity:
+            if let code = model.codeReviewTarget { return "code-\(code)" }
+            return "chat-\(model.sessionID ?? "none")"
+        default:
+            return "dest-\(destination.rawValue)"
         }
     }
 
@@ -792,14 +883,6 @@ public struct RootView: View {
         model.codeReviewTarget
     }
 
-    /// Jump to a session from Activity/Fleet: switch to Sessions and open it.
-    private func openFromActivity(_ sid: String, _ model: Model) {
-        destination = .sessions
-        model.codeReviewTarget = nil
-        Task { await model.openSession(sid) }
-        showSessionDetail = true
-    }
-
     private func hasSession(_ model: Model) -> Bool {
         model.currentSession != nil || model.codeReviewTarget != nil
     }
@@ -809,16 +892,75 @@ public struct RootView: View {
         showAllSessions = false // picking a session means you want that session, not the index
         if sel == SessionSidebar.newSessionTag {
             newSessionTakeOver = false // the ✎ / empty-state "New session" opens in Start-new mode
-            showNewSession = true
+            sheet = .newSession
             selection = nil
         } else if model.sessions.contains(where: { $0.id == sel }) {
-            Task { await model.openSession(sel) }
-            showSessionDetail = true // iOS: push the chat
+            openSessionNav(sel, model)
             selection = nil          // reset so tapping the SAME session again re-triggers
         } else if let d = model.discovered.first(where: { $0.sessionID == sel }) {
             Task { await model.attach(d) }
-            showSessionDetail = true
+            pushChat()
             selection = nil
+        }
+    }
+
+    /// The one sheet slot's content. Every close handler nils the SAME state — there is no second
+    /// presentation to leave dangling.
+    @ViewBuilder private func sheetContent(_ which: DeckSheet, _ model: Model) -> some View {
+        switch which {
+        case .newSession:
+            NewSessionView(model: model, palette: palette, initialTakeOver: newSessionTakeOver) { sheet = nil }
+        case .fanoutCompose:
+            FanoutSheet(model: model, palette: palette, onClose: { sheet = nil })
+        case .fanoutCompare(let sum):
+            FanoutCompareView(model: model, summary: sum, palette: palette,
+                              onOpenSession: { sid in
+                                  sheet = nil
+                                  openSessionNav(sid, model)
+                              },
+                              onClose: { sheet = nil })
+        case .design:
+            #if canImport(WebKit)
+            DesignModeView(model: model, palette: palette, initialURL: designURL(model), onClose: { sheet = nil })
+            #else
+            EmptyView()
+            #endif
+        case .panel(let which):
+            panelContent(which, model)
+        }
+    }
+
+    @ViewBuilder private func panelContent(_ which: PanelSheet, _ model: Model) -> some View {
+        switch which {
+        case .loops:
+            LoopsView(model: model, palette: palette,
+                      onOpenSession: { sid in
+                          sheet = nil
+                          openSessionNav(sid, model)
+                      },
+                      onClose: { sheet = nil })
+        case .agents:
+            ManageAgentsView(model: model, palette: palette)
+        case .approvalRules:
+            ApprovalRulesView(model: model, palette: palette, onClose: { sheet = nil })
+        case .mcp:
+            MCPServersView(model: model, palette: palette, onClose: { sheet = nil })
+        case .sharing:
+            SharingView(model: model, palette: palette, onClose: { sheet = nil })
+        case .dictionary:
+            DictionaryView(palette: palette, onClose: { sheet = nil })
+        case .usage:
+            UsageView(model: model, palette: palette, onClose: { sheet = nil })
+        case .accounts:
+            AccountsView(model: model, palette: palette, onClose: { sheet = nil })
+        case .remotes:
+            RemotesView(model: model, palette: palette, onClose: { sheet = nil })
+        case .sessions:
+            AllSessionsView(model: model, palette: palette, onClose: { sheet = nil },
+                            onOpen: { sid in
+                                sheet = nil
+                                openSessionNav(sid, model)
+                            })
         }
     }
 }
@@ -926,20 +1068,37 @@ struct DesktopOnboardView: View {
     @State private var showAdd = false
 
     var body: some View {
-        VStack(spacing: 20) {
+        // Left-aligned and bold, per the OS 26 onboarding treatment — and because this is the entire
+        // explanation of what the app is. It used to be one centred `.subheadline` line in
+        // `mutedForeground`, i.e. the app introduced itself in its de-emphasised colour, and never
+        // mentioned the two things a new user actually needs to know: the daemon has to already be
+        // running on the Mac, and the QR code lives in that Mac's ⋯ menu.
+        VStack(alignment: .leading, spacing: 20) {
             Spacer()
-            Image("WolfMark").resizable().scaledToFit().frame(width: 72, height: 72)
-            IronRainWordmark(size: 30)
-            Text("Pair with your Mac's Iron Rain daemon to get started.")
-                .font(.subheadline).foregroundStyle(palette.mutedForeground)
-                .multilineTextAlignment(.center).padding(.horizontal, 32)
+            VStack(alignment: .leading, spacing: 14) {
+                Image("WolfMark").resizable().scaledToFit().frame(width: 64, height: 64)
+                IronRainWordmark(size: 28)
+                Text("Pair your Mac")
+                    .font(.largeTitle.bold())
+                    .foregroundStyle(palette.foreground)
+                Text("Iron Rain drives coding agents running on your Mac. Open Iron Rain there, then choose **Pair a phone…** from the ⋯ menu to show a QR code.")
+                    .font(.body)
+                    .foregroundStyle(palette.foreground)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Button { showAdd = true } label: {
-                Label("Add a desktop", systemImage: "plus.circle").frame(maxWidth: .infinity)
+                Label("Add a desktop", systemImage: "plus.circle")
+                    .frame(maxWidth: .infinity)
+                    // `.borderedProminent` derives its label colour from the tint, and it picks a dark
+                    // one against this gold — which the darkened light-mode gold made worse, not
+                    // better. State the pairing explicitly so it tracks the palette.
+                    .foregroundStyle(palette.primaryForeground)
             }
             .buttonStyle(.borderedProminent).tint(palette.primary)
-            .padding(.horizontal, 48)
+            .controlSize(.large)
             Spacer()
         }
+        .padding(.horizontal, 28)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(palette.background.ignoresSafeArea())
         .sheet(isPresented: $showAdd) { AddDesktopView(store: store, palette: palette) { showAdd = false } }
@@ -960,7 +1119,7 @@ struct DaemonStatusBanner: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: launcher.running ? "bolt.fill" : "bolt.slash.fill")
-                    .foregroundStyle(launcher.running ? .green : .orange)
+                    .foregroundStyle(launcher.running ? palette.success : palette.warning)
                 Text(launcher.running ? "Local daemon" : "Local daemon isn't running")
                     .font(.callout.bold())
                 Spacer()
@@ -979,8 +1138,8 @@ struct DaemonStatusBanner: View {
             if let t = launcher.trouble { troubleHelp(t) }
         }
         .padding(12)
-        .background(palette.secondary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(palette.border))
+        .background(palette.secondary.opacity(0.5), in: OculusShape.rounded(10))
+        .overlay(OculusShape.rounded(10).strokeBorder(palette.border))
     }
 
     @ViewBuilder private func troubleHelp(_ t: DaemonLauncher.Trouble) -> some View {
@@ -996,13 +1155,14 @@ struct DaemonStatusBanner: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label).font(.caption).foregroundStyle(palette.mutedForeground)
             HStack(spacing: 6) {
-                Text(cmd).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+                Text(cmd).font(.footnote.monospaced()).textSelection(.enabled)
                     .lineLimit(1).truncationMode(.middle)
                     .padding(.horizontal, 8).padding(.vertical, 5)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(palette.input, in: RoundedRectangle(cornerRadius: 6))
+                    .background(palette.input, in: OculusShape.rounded(6))
                 Button { copyCommand(cmd) } label: { Image(systemName: "doc.on.doc") }
                     .buttonStyle(.borderless).help("Copy")
+                    .accessibilityLabel("Copy command")
             }
         }
     }

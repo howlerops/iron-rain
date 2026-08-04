@@ -52,7 +52,12 @@ public struct IssuesView: View {
     @State private var newViewName = ""
     @State private var creatingTicket = false    // "+ New ticket" sheet
     @State private var dropTargetColumn: String? // column id currently under a dragged card
+    /// The tracker a Disconnect button is waiting on. Disconnecting drops the daemon's stored
+    /// credentials for it — every board on that tracker disappears until you re-authorise — and
+    /// three separate buttons did it with no confirmation at all.
+    @State private var pendingDisconnect: String?
     @Environment(\.openURL) private var openURL
+    @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
 
     public init(model: Model, palette: OculusPalette, embedded: Bool = false, onLaunched: @escaping () -> Void = {}) {
         self.model = model; self.palette = palette; self.embedded = embedded; self.onLaunched = onLaunched
@@ -64,6 +69,20 @@ public struct IssuesView: View {
 
     public var body: some View {
         content
+            .confirmationDialog(
+                "Disconnect \(trackerDisplayName(pendingDisconnect ?? ""))?",
+                isPresented: Binding(get: { pendingDisconnect != nil }, set: { if !$0 { pendingDisconnect = nil } }),
+                titleVisibility: .visible,
+                presenting: pendingDisconnect
+            ) { p in
+                Button("Disconnect", role: .destructive) {
+                    pendingDisconnect = nil
+                    Task { await model.disconnectTracker(p) }
+                }
+                Button("Cancel", role: .cancel) { pendingDisconnect = nil }
+            } message: { p in
+                Text("Removes the stored credentials for \(trackerDisplayName(p)). Its issues disappear from every board here until you connect it again. Your OAuth app setup is kept, so reconnecting is one tap.")
+            }
             .overlay(alignment: .trailing) {
                 if let issue = selectedIssue { inspectorOverlay(issue) }
             }
@@ -102,10 +121,15 @@ public struct IssuesView: View {
     /// from the trailing edge, so the board stays visible behind it.
     @ViewBuilder private func inspectorOverlay(_ issue: Issue) -> some View {
         ZStack(alignment: .trailing) {
-            Color.black.opacity(0.28)
-                .ignoresSafeArea()
-                .onTapGesture { selectedIssue = nil }
-                .transition(.opacity)
+            // A tap-to-dismiss scrim is invisible to VoiceOver as a gesture; as a button it is
+            // reachable, and the Escape shortcut gives the same exit from a keyboard.
+            Button { selectedIssue = nil } label: {
+                Color.black.opacity(0.28).ignoresSafeArea()
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut(.cancelAction)
+            .accessibilityLabel("Close inspector")
+            .transition(.opacity)
             IssueInspectorPanel(model: model, issue: issue, palette: palette,
                                 onStart: { let i = issue; selectedIssue = nil; launching = i },
                                 onClose: { selectedIssue = nil })
@@ -157,6 +181,7 @@ public struct IssuesView: View {
                             }
                             ToolbarItem(placement: .cancellationAction) {
                                 Button { Task { await model.loadIssues() } } label: { Image(systemName: "arrow.clockwise") }
+                                    .accessibilityLabel("Refresh issues")
                             }
                         }
                     }
@@ -194,8 +219,8 @@ public struct IssuesView: View {
         }
         .padding(12)
         .frame(maxWidth: 460)
-        .background(palette.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(palette.primary.opacity(0.4)))
+        .background(palette.primary.opacity(0.08), in: OculusShape.rounded(OculusRadius.md))
+        .overlay(OculusShape.rounded(OculusRadius.md).strokeBorder(palette.primary.opacity(0.4)))
     }
 
     /// Shown when trackers are connected but the board is empty — distinguishes "working, but no
@@ -204,8 +229,19 @@ public struct IssuesView: View {
     private var trackerEmptyState: some View {
         VStack(spacing: 16) {
             Spacer()
-            Image(systemName: "tray").font(.system(size: 40)).foregroundStyle(palette.mutedForeground)
-            Text("No issues to show").font(.headline).foregroundStyle(palette.foreground)
+            // The shared empty state, so "you have nothing" says WHY and offers a way forward
+            // instead of a bare line of grey text.
+            SheetEmptyState(icon: "tray",
+                            title: "No issues to show",
+                            message: model.jiraSites.count > 1
+                                ? "Your trackers answered, but nothing came back. If you have more than one Jira site, the wrong one may be selected."
+                                : "Your trackers answered, but no issues are assigned to you. Reconnect if you expected some, or disconnect a tracker you no longer use.",
+                            palette: palette) {
+                Button { Task { await model.loadIssues() } } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.borderedProminent).tint(palette.primary).controlSize(.small)
+            }
             if model.jiraSites.count > 1 { jiraSitePicker }
             VStack(spacing: 12) {
                 ForEach(model.connectedTrackers, id: \.self) { p in
@@ -213,7 +249,7 @@ public struct IssuesView: View {
                     VStack(spacing: 6) {
                         if let d = model.trackerAuthDetails[p], !d.isEmpty {
                             Text("\(dn) failed: \(d)")
-                                .font(.caption.monospaced()).foregroundStyle(.orange)
+                                .font(.caption.monospaced()).foregroundStyle(palette.warning)
                                 .textSelection(.enabled).multilineTextAlignment(.center)
                         } else {
                             Text("\(dn) is connected and responded, but no issues are assigned to you.")
@@ -223,14 +259,14 @@ public struct IssuesView: View {
                         HStack(spacing: 8) {
                             Button { Task { await model.startOAuth(provider: p) } } label: { Text("Reconnect") }
                                 .buttonStyle(.bordered)
-                            Button(role: .destructive) { Task { await model.disconnectTracker(p) } } label: { Text("Disconnect") }
+                            Button(role: .destructive) { pendingDisconnect = p } label: { Text("Disconnect") }
                                 .buttonStyle(.bordered)
                         }
                     }
                     .padding(12)
                     .frame(maxWidth: 460)
-                    .background(palette.card, in: RoundedRectangle(cornerRadius: 10))
-                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(palette.border))
+                    .background(palette.card, in: OculusShape.rounded(OculusRadius.md))
+                    .overlay(OculusShape.rounded(OculusRadius.md).strokeBorder(palette.border))
                 }
             }
             Spacer()
@@ -244,7 +280,8 @@ public struct IssuesView: View {
         ForEach(model.trackerAuthErrors, id: \.self) { provider in
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(palette.warning)
+                        .accessibilityHidden(true)
                     Text("\(provider == "jira" ? "Jira" : provider.capitalized) isn’t loading issues.")
                         .font(.callout.weight(.medium)).foregroundStyle(palette.foreground)
                     Spacer()
@@ -252,7 +289,7 @@ public struct IssuesView: View {
                         Text("Reconnect").font(.callout.weight(.semibold))
                     }
                     .buttonStyle(.borderedProminent).tint(palette.primary)
-                    Button(role: .destructive) { Task { await model.disconnectTracker(provider) } } label: {
+                    Button(role: .destructive) { pendingDisconnect = provider } label: {
                         Text("Disconnect").font(.callout)
                     }
                     .buttonStyle(.bordered)
@@ -266,8 +303,8 @@ public struct IssuesView: View {
                 }
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
-            .background(Color.orange.opacity(0.12))
-            .overlay(Rectangle().frame(height: 1).foregroundStyle(Color.orange.opacity(0.3)), alignment: .bottom)
+            .background(palette.warning.opacity(0.12))
+            .overlay(Rectangle().frame(height: 1).foregroundStyle(palette.warning.opacity(0.3)), alignment: .bottom)
         }
     }
 
@@ -331,15 +368,19 @@ public struct IssuesView: View {
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").font(.caption).foregroundStyle(palette.mutedForeground)
                 TextField("Search issues…", text: $searchText).textFieldStyle(.plain).font(.callout)
-                    #if os(iOS)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    #endif
+                    .plainInput()
+                    .submitLabel(.search)
+                    .accessibilityLabel("Search issues")
                 if !searchText.isEmpty {
-                    Button { searchText = "" } label: { Image(systemName: "xmark.circle.fill").font(.caption) }
+                    Button { searchText = "" } label: {
+                        Image(systemName: "xmark.circle.fill").font(.caption)
+                            .frame(width: 30, height: 30).contentShape(Rectangle())
+                    }
                         .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
+                        .accessibilityLabel("Clear search")
                 }
             }
-            .padding(.horizontal, 10).padding(.vertical, 6)
+            .padding(.leading, 10)
             .background(palette.card).clipShape(Capsule())
             .overlay(Capsule().strokeBorder(palette.border))
 
@@ -423,6 +464,10 @@ public struct IssuesView: View {
         Label(text, systemImage: on ? "checkmark" : "")
     }
 
+    private func trackerDisplayName(_ p: String) -> String {
+        p == "jira" ? "Jira" : p.capitalized
+    }
+
     private func priorityLabel(_ p: Int) -> String {
         switch p { case 1: return "Urgent"; case 2: return "High"; case 3: return "Medium"; case 4: return "Low"; default: return "No priority" }
     }
@@ -434,11 +479,16 @@ public struct IssuesView: View {
             if !model.connectedTrackers.isEmpty {
                 Picker("", selection: $kanban) { Text("Board").tag(true); Text("List").tag(false) }
                     .pickerStyle(.segmented).labelsHidden().fixedSize()
-                Button { Task { await model.loadIssues() } } label: { Image(systemName: "arrow.clockwise") }
+                Button { Task { await model.loadIssues() } } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                }
                     .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
+                    .help("Refresh issues")
+                    .accessibilityLabel("Refresh issues")
             }
         }
-        .padding(.horizontal, 14).padding(.vertical, 10)
+        .padding(.leading, 14).padding(.trailing, 4)
     }
 
     // MARK: connect
@@ -498,6 +548,9 @@ public struct IssuesView: View {
                 Circle()
                     .fill(palette.primary.opacity(0.10))
                     .frame(width: 78, height: 78)
+                // Deliberately NOT Dynamic Type: this is one composed illustration, not text — the
+                // three glyphs are positioned by fixed offsets inside fixed-diameter circles, and
+                // scaling only the glyphs would slide them out of their halo.
                 Image(systemName: "checklist")
                     .font(.system(size: 38, weight: .semibold))
                     .foregroundStyle(palette.primary)
@@ -529,12 +582,13 @@ public struct IssuesView: View {
     private func trackerErrorBanner(_ err: String) -> some View {
         HStack(spacing: 0) {
             Rectangle()
-                .fill(Color.orange.opacity(0.85))
+                .fill(palette.warning.opacity(0.85))
                 .frame(width: 3)
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.callout)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(palette.warning)
+                    .accessibilityHidden(true)
                 Text(err)
                     .font(.callout)
                     .foregroundStyle(palette.foreground)
@@ -545,9 +599,9 @@ public struct IssuesView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: 560, alignment: .leading)
-        .background(Color.orange.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.orange.opacity(0.22)))
+        .background(palette.warning.opacity(0.08))
+        .clipShape(OculusShape.rounded(OculusRadius.md))
+        .overlay(OculusShape.rounded(OculusRadius.md).strokeBorder(palette.warning.opacity(0.22)))
         .padding(.horizontal, 20)
     }
 
@@ -682,9 +736,9 @@ public struct IssuesView: View {
         .frame(maxHeight: .infinity, alignment: .top)
         .padding(10)
         .background(dropTargetColumn == col.id ? palette.primary.opacity(0.14) : palette.card.opacity(0.5))
-        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .clipShape(OculusShape.rounded(OculusRadius.lg))
         .overlay(
-            RoundedRectangle(cornerRadius: 14)
+            OculusShape.rounded(OculusRadius.lg)
                 .strokeBorder(dropTargetColumn == col.id ? palette.primary : Color.clear, lineWidth: 1.5)
         )
         .modifier(ColumnDropModifier(columnID: col.id, dropTarget: $dropTargetColumn,
@@ -711,16 +765,27 @@ public struct IssuesView: View {
                 Spacer(minLength: 4)
                 Button { launching = issue } label: {
                     Label("Start agent", systemImage: "play.circle.fill").font(.caption2)
-                }.buttonStyle(.plain).foregroundStyle(palette.primary)
+                        .frame(minHeight: 32).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).foregroundStyle(palette.primary)
+                .accessibilityLabel("Start an agent on \(issue.key)")
             }
         }
         .padding(12)
         .background(palette.card)
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(selectedIssue?.id == issue.id ? palette.primary : palette.border))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(OculusShape.rounded(OculusRadius.md).strokeBorder(selectedIssue?.id == issue.id ? palette.primary : palette.border))
+        .clipShape(OculusShape.rounded(OculusRadius.md))
         .contentShape(Rectangle())
         .opacity(model.hiddenIssueIDs.contains(issue.id) ? 0.5 : 1) // dim while revealed via "show hidden"
+        // Opening a ticket was a bare tap gesture, so the whole card came through VoiceOver as a
+        // pile of static text with no way to act on it. `.accessibilityAction` rather than wrapping
+        // the card in a Button: the card already contains its own Start-agent button, and nesting
+        // buttons breaks the drag-to-column gesture.
         .onTapGesture { selectedIssue = issue }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint("Open ticket details")
+        .accessibilityAction { selectedIssue = issue }
         .contextMenu { issueRowMenu(issue) }
         .modifier(CardDragModifier(id: issue.id))
     }
@@ -746,9 +811,32 @@ public struct IssuesView: View {
         }
     }
 
+    /// Priority was red/orange/grey and NOTHING else, so P1 and P3 differed only by hue — invisible
+    /// to a red-green colour blindness and to Differentiate Without Color alike. The glyph differs per
+    /// level, and the level is always spoken.
     private func priorityDot(_ p: Int) -> some View {
-        let color: Color = p == 1 ? .red : (p == 2 ? .orange : palette.mutedForeground)
-        return Circle().fill(color).frame(width: 7, height: 7)
+        let color: Color = p == 1 ? palette.destructive : (p == 2 ? palette.warning : palette.mutedForeground)
+        return Group {
+            if differentiateWithoutColor {
+                Text(p <= 4 ? "P\(p)" : "—")
+                    .font(.caption2.weight(.bold).monospacedDigit())
+                    .foregroundStyle(color)
+            } else {
+                Image(systemName: prioritySymbol(p))
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(color)
+            }
+        }
+        .accessibilityLabel("Priority: \(priorityLabel(p))")
+    }
+
+    private func prioritySymbol(_ p: Int) -> String {
+        switch p {
+        case 1: return "exclamationmark.2"
+        case 2: return "exclamationmark"
+        case 3: return "equal"
+        default: return "minus"
+        }
     }
 
     /// The assignee's initials in a small tinted circle (with the full name on hover) — compact
@@ -756,11 +844,13 @@ public struct IssuesView: View {
     private func assigneeChip(_ name: String) -> some View {
         let initials = name.split(separator: " ").prefix(2).compactMap { $0.first }.map(String.init).joined().uppercased()
         return Text(initials.isEmpty ? "?" : initials)
-            .font(.system(size: 9, weight: .bold))
+            .font(.caption2.weight(.bold))
             .foregroundStyle(palette.primary)
-            .frame(width: 18, height: 18)
-            .background(Circle().fill(palette.primary.opacity(0.16)))
+            .frame(minWidth: 18, minHeight: 18)
+            .padding(.horizontal, 2)
+            .background(Capsule().fill(palette.primary.opacity(0.16)))
             .help(name)
+            .accessibilityLabel("Assigned to \(name)")
     }
 
     // MARK: table
@@ -770,7 +860,8 @@ public struct IssuesView: View {
             HStack(spacing: 10) {
                 Text(issue.key).font(.caption.bold()).foregroundStyle(palette.primary).frame(width: 72, alignment: .leading)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(issue.title).lineLimit(1)
+                    // The title is how you pick the ticket; it takes a second line before truncating.
+                    Text(issue.title).lineLimit(2)
                     HStack(spacing: 6) {
                         Text(issue.status).font(.caption2).foregroundStyle(palette.mutedForeground)
                         if let cycle = issue.cycleLabel {
@@ -779,12 +870,22 @@ public struct IssuesView: View {
                     }
                 }
                 Spacer()
-                Button { launching = issue } label: { Image(systemName: "play.circle.fill") }
+                Button { launching = issue } label: {
+                    Image(systemName: "play.circle.fill")
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                }
                     .buttonStyle(.plain).foregroundStyle(palette.primary)
+                    .help("Start an agent on this ticket")
+                    .accessibilityLabel("Start an agent on \(issue.key)")
             }
             .opacity(model.hiddenIssueIDs.contains(issue.id) ? 0.5 : 1)
+            .frame(minHeight: 44)
             .contentShape(Rectangle())
             .onTapGesture { selectedIssue = issue }
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityHint("Open ticket details")
+            .accessibilityAction { selectedIssue = issue }
             .contextMenu { issueRowMenu(issue) }
             #if os(iOS)
             .swipeActions(edge: .trailing) {
@@ -861,6 +962,8 @@ struct TrackerConnectCard: View {
     @State private var tokenField = ""
     @State private var addingApp = false
     @State private var showToken = false
+    /// Disconnect drops the daemon's stored credentials for this tracker; it had no confirmation.
+    @State private var confirmDisconnect = false
 
     private var configured: Bool { model.oauthApps.contains(provider) }
     private var connected: Bool { model.connectedTrackers.contains(provider) }
@@ -880,7 +983,7 @@ struct TrackerConnectCard: View {
             // Card header: icon badge, tracker name, connected pill
             HStack(spacing: 12) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 10)
+                    OculusShape.rounded(OculusRadius.md)
                         .fill(brandColor?.opacity(0.14) ?? palette.accent.opacity(0.7))
                         .frame(width: 44, height: 44)
                     if let brandColor {
@@ -892,6 +995,8 @@ struct TrackerConnectCard: View {
                             .frame(width: 22, height: 22)
                             .foregroundStyle(brandColor)
                     } else {
+                        // Sized to match the 22pt bundled provider logo it stands in for; a scaling
+                        // symbol next to a fixed-size image would make the two branches disagree.
                         Image(systemName: systemImage)
                             .font(.system(size: 20, weight: .semibold))
                             .foregroundStyle(palette.primary)
@@ -909,10 +1014,10 @@ struct TrackerConnectCard: View {
                 if connected {
                     Label("Connected", systemImage: "checkmark.circle.fill")
                         .font(.caption.bold())
-                        .foregroundStyle(.green)
+                        .foregroundStyle(palette.success)
                         .padding(.horizontal, 8).padding(.vertical, 4)
-                        .background(Color.green.opacity(0.1), in: Capsule())
-                    Button(role: .destructive) { Task { await model.disconnectTracker(provider) } } label: {
+                        .background(palette.success.opacity(0.12), in: Capsule())
+                    Button(role: .destructive) { confirmDisconnect = true } label: {
                         Text("Disconnect").font(.caption.weight(.medium))
                     }
                     .buttonStyle(.bordered)
@@ -981,7 +1086,7 @@ struct TrackerConnectCard: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         .padding(10)
-                        .background(palette.secondary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+                        .background(palette.secondary.opacity(0.5), in: OculusShape.rounded(OculusRadius.sm))
 
                         field(SecureField(tokenLabel, text: $tokenField))
 
@@ -1002,8 +1107,17 @@ struct TrackerConnectCard: View {
         }
         .frame(maxWidth: 460, alignment: .leading)
         .background(palette.card)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(palette.border))
+        .clipShape(OculusShape.rounded(OculusRadius.lg))
+        .overlay(OculusShape.rounded(OculusRadius.lg).strokeBorder(palette.border))
+        .confirmationDialog("Disconnect \(displayName)?", isPresented: $confirmDisconnect,
+                            titleVisibility: .visible) {
+            Button("Disconnect", role: .destructive) {
+                Task { await model.disconnectTracker(provider) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Removes the stored credentials for \(displayName). Its issues disappear from every board here until you connect it again. Your OAuth app setup is kept, so reconnecting is one tap.")
+        }
     }
 
     /// Inline OAuth app credential form (client_id + secret) with setup instructions and a cancel affordance.
@@ -1022,8 +1136,11 @@ struct TrackerConnectCard: View {
                     Image(systemName: "xmark.circle.fill")
                         .font(.callout)
                         .foregroundStyle(palette.mutedForeground)
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .help("Cancel OAuth setup")
+                .accessibilityLabel("Cancel OAuth setup")
             }
 
             let steps = oauthSteps(for: provider)
@@ -1034,7 +1151,7 @@ struct TrackerConnectCard: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(10)
-                .background(palette.secondary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+                .background(palette.secondary.opacity(0.5), in: OculusShape.rounded(OculusRadius.sm))
             } else {
                 VStack(alignment: .leading, spacing: 9) {
                     ForEach(Array(steps.enumerated()), id: \.offset) { i, step in
@@ -1042,7 +1159,7 @@ struct TrackerConnectCard: View {
                     }
                 }
                 .padding(11)
-                .background(palette.secondary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+                .background(palette.secondary.opacity(0.5), in: OculusShape.rounded(OculusRadius.sm))
             }
 
             field(TextField("Client ID", text: $clientID))
@@ -1131,15 +1248,19 @@ struct TrackerConnectCard: View {
                 if let value = step.copyable {
                     HStack(spacing: 6) {
                         Text(value)
-                            .font(.system(size: 11, design: .monospaced))
+                            .font(.system(.caption, design: .monospaced))
                             .textSelection(.enabled)
                             .lineLimit(2).truncationMode(.middle)
                             .padding(.horizontal, 7).padding(.vertical, 4)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(palette.input, in: RoundedRectangle(cornerRadius: 6))
+                            .background(palette.input, in: OculusShape.rounded(OculusRadius.sm))
                         Button { copyToClipboard(value) } label: {
                             Image(systemName: "doc.on.doc").font(.caption2)
-                        }.buttonStyle(.plain).foregroundStyle(palette.mutedForeground).help("Copy")
+                                .frame(width: 44, height: 44).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
+                        .help("Copy")
+                        .accessibilityLabel("Copy \(value)")
                     }
                 }
             }

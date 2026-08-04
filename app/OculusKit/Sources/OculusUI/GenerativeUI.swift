@@ -23,8 +23,8 @@ struct UIComponentView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
-        .background(palette.secondary.opacity(0.25), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(palette.border))
+        .background(palette.secondary.opacity(0.25), in: OculusShape.rounded(OculusRadius.md))
+        .overlay(OculusShape.rounded(OculusRadius.md).strokeBorder(palette.border))
         .overlay(alignment: .topTrailing) { provenanceChip }
     }
 
@@ -66,7 +66,7 @@ struct UIComponentView: View {
 
     private var provenanceChip: some View {
         Text("agent")
-            .font(.system(size: 8, weight: .semibold))
+            .font(.caption2.weight(.semibold))
             .foregroundStyle(palette.mutedForeground)
             .padding(.horizontal, 4).padding(.vertical, 1)
             .background(Capsule().fill(palette.muted.opacity(0.5)))
@@ -79,15 +79,23 @@ struct UIComponentView: View {
 private struct SkeletonView: View {
     let kind: String
     let palette: OculusPalette
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var shimmer = false
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(0..<rows, id: \.self) { _ in
-                RoundedRectangle(cornerRadius: 4).fill(palette.muted.opacity(shimmer ? 0.25 : 0.5))
+                OculusShape.rounded(OculusRadius.sm / 2).fill(palette.muted.opacity(shimmer ? 0.25 : 0.5))
                     .frame(height: 12).frame(maxWidth: .infinity)
             }
         }
-        .onAppear { withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) { shimmer = true } }
+        // An indefinitely repeating pulse is precisely what Reduce Motion exists to stop. The bars
+        // stay — they still read as "something is loading here" — they just hold still.
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) { shimmer = true }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Loading")
     }
     private var rows: Int { kind == "callout" ? 1 : (kind == "table" ? 4 : 3) }
 }
@@ -144,8 +152,8 @@ private struct TableView: View {
                         }
                     }
                 }
-                .overlay(RoundedRectangle(cornerRadius: OculusRadius.sm).strokeBorder(palette.border))
-                .clipShape(RoundedRectangle(cornerRadius: OculusRadius.sm))
+                .overlay(OculusShape.rounded(OculusRadius.sm).strokeBorder(palette.border))
+                .clipShape(OculusShape.rounded(OculusRadius.sm))
                 .padding(1) // keep the hairline stroke inside the scroll viewport
             }
             if props.rows.count > Self.maxRows {
@@ -185,7 +193,8 @@ private struct ChecklistView: View {
         case "failed": return "xmark.circle.fill"; default: return "circle" }
     }
     private func color(_ s: String?) -> Color {
-        switch s { case "done": return .green; case "active": return palette.primary; case "failed": return .orange
+        switch s { case "done": return palette.success; case "active": return palette.primary
+        case "failed": return palette.destructive
         default: return palette.mutedForeground }
     }
 }
@@ -206,16 +215,17 @@ private struct CalloutView: View {
             }
         }
         .padding(8)
-        .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(tint.opacity(0.4)))
+        .background(tint.opacity(0.12), in: OculusShape.rounded(OculusRadius.sm))
+        .overlay(OculusShape.rounded(OculusRadius.sm).strokeBorder(tint.opacity(0.4)))
     }
     private var symbol: String {
         switch props.level { case "error": return "exclamationmark.octagon.fill"; case "warn": return "exclamationmark.triangle.fill"
         case "success": return "checkmark.seal.fill"; default: return "info.circle.fill" }
     }
     private var tint: Color {
-        switch props.level { case "error": return .red; case "warn": return .orange; case "success": return .green
-        default: return palette.primary }
+        switch props.level { case "error": return palette.destructive; case "warn": return palette.warning
+        case "success": return palette.success
+        default: return palette.info }
     }
 }
 
@@ -242,15 +252,20 @@ private struct DiffCardView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
-                .padding(6).background(palette.background, in: RoundedRectangle(cornerRadius: 6))
+                // Concentric with the component card it sits in: the gap between the two shapes is
+                // the card's own 10pt padding, so the inner radius is derived from that rather than
+                // picked by eye — a fixed inner radius is what makes nested corners visibly flare.
+                .padding(6)
+                .background(palette.background,
+                            in: OculusShape.concentric(outer: OculusRadius.md, padding: 10))
             } else {
                 Text("Diff available — open the session to review.").font(.caption).foregroundStyle(palette.mutedForeground)
             }
         }
     }
     private func lineColor(_ l: String) -> Color {
-        if l.hasPrefix("+") { return .green }
-        if l.hasPrefix("-") { return .red }
+        if l.hasPrefix("+") { return palette.diffAdded }
+        if l.hasPrefix("-") { return palette.diffRemoved }
         if l.hasPrefix("@@") { return palette.primary }
         return palette.mutedForeground
     }
@@ -285,8 +300,9 @@ private struct InteractiveView: View {
                         .foregroundStyle(fg(a))
                         .padding(.horizontal, 12).padding(.vertical, 8)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(bg(a), in: RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(border(a)))
+                        .frame(minHeight: 44)
+                        .background(bg(a), in: OculusShape.rounded(OculusRadius.sm))
+                        .overlay(OculusShape.rounded(OculusRadius.sm).strokeBorder(border(a)))
                     }
                     .buttonStyle(.plain)
                     .disabled(chosen != nil)
@@ -384,31 +400,41 @@ struct FormView: View {
     }
 
     @ViewBuilder private func field(_ f: FormProps.Field) -> some View {
+        // The visible caption is a separate Text, so every control below has to carry the label
+        // itself — a bare `Toggle("")` announces as "switch button" with no hint of WHAT it switches.
+        let name = f.label ?? f.id
         VStack(alignment: .leading, spacing: 3) {
             if let l = f.label, !l.isEmpty {
-                Text(l).font(.system(size: 11, weight: .medium)).foregroundStyle(palette.mutedForeground)
+                Text(l).font(.caption.weight(.medium)).foregroundStyle(palette.mutedForeground)
             }
-            switch f.type {
-            case "textarea":
-                TextEditor(text: binding(f.id))
-                    .font(.system(size: 12)).frame(height: 64)
-                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(palette.border))
-            case "select":
-                Picker("", selection: binding(f.id)) {
-                    ForEach(f.options ?? []) { o in Text(o.label ?? o.value).tag(o.value) }
+            Group {
+                switch f.type {
+                case "textarea":
+                    TextEditor(text: binding(f.id))
+                        .font(.footnote)
+                        // minHeight, not height: at larger Dynamic Type sizes a fixed 64pt box clipped
+                        // the second line of what the user was typing.
+                        .frame(minHeight: 64)
+                        .overlay(OculusShape.rounded(OculusRadius.sm).strokeBorder(palette.border))
+                case "select":
+                    Picker(name, selection: binding(f.id)) {
+                        ForEach(f.options ?? []) { o in Text(o.label ?? o.value).tag(o.value) }
+                    }
+                    .labelsHidden().pickerStyle(.menu)
+                case "toggle":
+                    Toggle(name, isOn: toggleBinding(f.id))
+                        .labelsHidden().toggleStyle(.switch).tint(palette.primary)
+                case "number":
+                    TextField(f.placeholder ?? "", text: binding(f.id))
+                        .textFieldStyle(.roundedBorder)
+                        #if os(iOS)
+                        .keyboardType(.numberPad)
+                        #endif
+                default:
+                    TextField(f.placeholder ?? "", text: binding(f.id)).textFieldStyle(.roundedBorder)
                 }
-                .labelsHidden().pickerStyle(.menu)
-            case "toggle":
-                Toggle("", isOn: toggleBinding(f.id)).labelsHidden().toggleStyle(.switch).tint(palette.primary)
-            case "number":
-                TextField(f.placeholder ?? "", text: binding(f.id))
-                    .textFieldStyle(.roundedBorder)
-                    #if os(iOS)
-                    .keyboardType(.numberPad)
-                    #endif
-            default:
-                TextField(f.placeholder ?? "", text: binding(f.id)).textFieldStyle(.roundedBorder)
             }
+            .accessibilityLabel(name)
         }
     }
 

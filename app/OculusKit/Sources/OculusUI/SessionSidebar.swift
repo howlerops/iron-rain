@@ -1,5 +1,10 @@
 import SwiftUI
 import OculusKit
+#if os(macOS)
+// For the pre-Sonoma route into the Settings scene (`NSApp.sendAction`). SwiftUI does not
+// re-export AppKit, so without this the fallback below fails to compile on macOS 13.
+import AppKit
+#endif
 
 /// A normalized session for the sidebar list, unifying hub-managed sessions and
 /// discovered-on-host sessions into one row model.
@@ -40,20 +45,13 @@ private struct SessionGroup: Identifiable {
 private enum SessionFilter: String, CaseIterable, Identifiable {
     case all, running, managed, viewOnly
     var id: String { rawValue }
+    /// Kept short — four chips have to fit inside a ~260pt sidebar, not a menu.
     var label: String {
         switch self {
-        case .all: return "All sessions"
+        case .all: return "All"
         case .running: return "Running"
         case .managed: return "Managed"
-        case .viewOnly: return "View-only"
-        }
-    }
-    var symbol: String {
-        switch self {
-        case .all: return "square.stack"
-        case .running: return "bolt.fill"
-        case .managed: return "person.crop.circle.badge.checkmark"
-        case .viewOnly: return "eye"
+        case .viewOnly: return "Terminal"
         }
     }
     func matches(_ s: SidebarSession) -> Bool {
@@ -86,6 +84,10 @@ struct SessionSidebar: View {
     var onReview: ((String) -> Void)? = nil
     /// Opens the New Session sheet straight into "Take over" mode (empty-state action).
     var onTakeOver: (() -> Void)? = nil
+    // The next four are macOS-only and no longer reached from this view: "Check for updates" and
+    // "Start daemon at login" are the Settings window's General/Startup sections now (see
+    // SettingsScene.swift), which is the single place that owns them. They stay on the initializer
+    // because DesktopViews.swift constructs this view with them; drop them there first.
     /// macOS: Settings → "Check for updates". The banner (RootView-level) owns the actual check.
     var onCheckForUpdates: (() -> Void)? = nil
     /// macOS: whether the daemon is set to start at login (a launchd LaunchAgent). RootView owns
@@ -98,8 +100,13 @@ struct SessionSidebar: View {
     /// bottom of the sidebar (Claude-Code style). macOS only: iOS updates via TestFlight/App Store.
     @ObservedObject var updates: UpdateChecker
     #endif
-    /// Opens the Loops (recurring autonomous workflows) sheet.
+    /// Opens the Loops (recurring autonomous workflows) destination. No longer in the `⋯` menu on
+    /// either platform — Loops is a peer destination on the rail and the tab bar, and CommandDeck
+    /// exists precisely so a destination is not ALSO an overflow-menu item (see the Fleet note below).
     var onOpenLoops: (() -> Void)? = nil
+    // The panel callbacks below are iOS-only routes now: on macOS each of these is a tab in the
+    // Settings window, so the menu no longer offers a second, modal way in. `onOpenDictionary` is
+    // the exception — it has no Settings tab yet, so macOS still needs it here.
     var onOpenAgents: (() -> Void)? = nil
     var onOpenApprovalRules: (() -> Void)? = nil
     var onOpenMCP: (() -> Void)? = nil
@@ -109,13 +116,31 @@ struct SessionSidebar: View {
     var onOpenAccounts: (() -> Void)? = nil
     var onOpenRemotes: (() -> Void)? = nil
     var onManageSessions: (() -> Void)? = nil
+    /// Set false when the HOST pins `ActiveSessionBar` itself (iOS: on the TabView, so "an agent is
+    /// working" is visible from every tab, not just Sessions). Defaults to true so the sidebar keeps
+    /// carrying it wherever nothing else does.
+    var showsActiveSessionBar: Bool = true
+    // Appearance + chat typography are the Settings window's General tab on macOS, so this view no
+    // longer reads or writes those defaults there. On iOS the `⋯` menu is the only surface that has
+    // them, so the bindings stay — scoped to the platform that still renders the controls.
+    #if !os(macOS)
     @AppStorage("oculus.appearance") private var appearance: Appearance = .system
     @AppStorage("oculus.chatFontDesign") private var chatFontDesign = ChatFontDesign.system.rawValue
     @AppStorage("oculus.chatFontScale") private var chatFontScale = ChatFontScale.standard.rawValue
+    #endif
     @State private var filter: SessionFilter = .all
     @State private var renamingSessionID: String?
     @State private var renameText = ""
-    @State private var showFleet = false
+    /// The LIST's own selection, so macOS draws the highlight, arrow keys walk the sessions, and
+    /// VoiceOver announces which row is selected. Deliberately not `$selection` itself: the host
+    /// treats that binding as a one-shot "open this" command and nils it out a beat later, which
+    /// would blank the highlight after every click. This mirrors `model.sessionID` — the session
+    /// that is actually open — and forwards user-driven changes back out through `$selection`, so
+    /// the write is idempotent and the host needs no change.
+    @State private var listSelection: String?
+    /// Status is carried by colour in several dense chips; when the user has asked the system not to
+    /// rely on colour, those chips grow their text label back.
+    @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
     /// A live terminal row from the strip awaiting confirmation before we take it over.
     /// The row whose `claude --resume` command was just copied — a one-shot "Copied" acknowledgement.
     @State private var copiedResumeFor: String?
@@ -125,7 +150,13 @@ struct SessionSidebar: View {
     var body: some View {
         sessionsList
             .overlay {
-                if model.connected && searchText.isEmpty && filter == .all && filteredGroups.isEmpty {
+                // A pairing that never came up is the ONLY thing this user can act on, so it takes
+                // the whole surface. Showing the usual empty list plus a one-line grey status would
+                // tell a first-run user that they have no sessions, when the truth is that we never
+                // reached the Mac that has them.
+                if isUnreachable {
+                    connectionFailure
+                } else if model.connected && searchText.isEmpty && filter == .all && filteredGroups.isEmpty {
                     emptyState
                 }
             }
@@ -153,11 +184,10 @@ struct SessionSidebar: View {
         .sheet(isPresented: $showAddDesktop) {
             AddDesktopView(store: store, palette: palette) { showAddDesktop = false }
         }
-        .sheet(isPresented: $showFleet) {
-            FleetView(model: model, palette: palette,
-                      onOpen: { id in selection = id; showFleet = false },
-                      onClose: { showFleet = false })
-        }
+        // NOTE: a toolbar button used to open FleetView as a SHEET from here. Fleet is a peer
+        // destination (macOS rail / iOS tab bar), and the same view reached two ways — one of them
+        // modal, with a different action in its header — is exactly what CommandDeck.swift:94-97
+        // says the deck redesign exists to remove.
         .alert("Rename desktop", isPresented: $renamingDesktop) {
             TextField("Name", text: $desktopNewName)
             Button("Save") { if let a = store.active { store.rename(a.id, to: desktopNewName) } }
@@ -187,11 +217,14 @@ struct SessionSidebar: View {
     /// sizing is handled in RootView (windowResizability + detail clamp), so no inset hacks
     /// are needed here.
     private var sessionsList: some View {
-        // Selection is drawn by the rows (a soft, elevated gold card), NOT the native List
-        // highlight — the system selection is a full-bleed accent-blue rectangle that clashes
-        // with the gold theme. Rows are buttons that set `selection`; RootView's onChange opens
-        // the session.
-        List {
+        // The list owns selection. It used to be a bare `List { }` with the "selected" state
+        // hand-drawn behind rows, which meant the sidebar had no selection as far as the system was
+        // concerned: arrow keys did nothing, Tab skipped the list, and VoiceOver read a stack of
+        // unlabelled buttons with no selected item — on macOS, where a sidebar's selection IS the
+        // app's primary navigation state. The old objection was the accent-BLUE highlight, which is
+        // a tint problem: `.listStyle(.sidebar)` + `.tint(palette.primary)` (applied below) draws it
+        // in the brand gold.
+        List(selection: $listSelection) {
             // Prominent New Session action right under the search bar — the primary way to start
             // one, so you don't have to hunt for the titlebar button.
             HStack(spacing: 4) {
@@ -217,6 +250,17 @@ struct SessionSidebar: View {
             .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 4, trailing: 6))
             .listRowSeparator(.hidden)
             .listRowBackground(Color.clear)
+            // The filter scopes THIS LIST, so it lives in the list. As a toolbar item it was one of
+            // four trailing controls sharing a window toolbar with the chat's own — and it claimed
+            // window scope for a list-scoped control. Chips rather than a segmented picker because
+            // they carry live counts: "Running 3" tells you whether it is worth tapping.
+            ScrollView(.horizontal, showsIndicators: false) {
+                FilterChips(selection: $filter, options: filterOptions, palette: palette)
+                    .padding(.horizontal, 2)
+            }
+            .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 6, trailing: 6))
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
             // Connected over a relay: say so. A healthy link normally says nothing, and that's right
             // for the LAN — but a relay round-trips every keystroke through Cloudflare, and a user who
             // can't see the difference blames the agent for the latency (or assumes they're safely on
@@ -224,30 +268,38 @@ struct SessionSidebar: View {
             if model.onRelay {
                 HStack(spacing: 6) {
                     Image(systemName: "antenna.radiowaves.left.and.right")
-                        .font(.system(size: 9)).foregroundStyle(palette.mutedForeground)
+                        .font(.caption2).foregroundStyle(palette.mutedForeground)
+                    // No lineLimit: at large type this clipped to "Connected …", which reads as a
+                    // healthy LAN link — the exact confusion the row exists to prevent.
                     Text("Connected · relay")
-                        .font(.system(size: 11)).foregroundStyle(palette.mutedForeground).lineLimit(1)
+                        .font(.caption).foregroundStyle(palette.mutedForeground)
+                        .fixedSize(horizontal: false, vertical: true)
                     Spacer()
                 }
                 .help(model.connectionRouteHost.isEmpty ? "" : "via \(model.connectionRouteHost)")
                 .listRowSeparator(.hidden)
                 .listRowBackground(Color.clear)
             }
+            // This row is the ONLY place a connection failure is rendered anywhere in the app, so it
+            // has to be legible as a failure: a glyph rather than a bare dot, destructive rather than
+            // muted, and NO lineLimit — the daemon's message is the user's entire diagnosis, and
+            // truncating it to one grey line threw the diagnosis away.
             if !model.connected {
-                HStack(spacing: 6) {
+                HStack(alignment: .top, spacing: 6) {
                     if model.connecting {
                         ProgressView().controlSize(.mini)          // in progress — not an error
                     } else {
-                        Circle().fill(Color.red).frame(width: 6, height: 6) // actually failed/offline
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.caption).foregroundStyle(palette.destructive)
                     }
                     Text(model.connecting ? "Connecting…" : (model.statusDetail ?? model.status))
-                        .font(.system(size: 11))
-                        .foregroundStyle(palette.mutedForeground)
-                        .lineLimit(1)
-                    Spacer()
+                        .font(.footnote)
+                        .foregroundStyle(model.connecting ? palette.mutedForeground : palette.destructive)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 4)
                     if !model.connecting {
                         Button("Retry") { Task { await model.connect() } }
-                            .font(.system(size: 11)).buttonStyle(.plain).foregroundStyle(palette.primary)
+                            .font(.footnote).buttonStyle(.plain).foregroundStyle(palette.primary)
                     }
                 }
                 .listRowSeparator(.hidden)
@@ -257,24 +309,12 @@ struct SessionSidebar: View {
             // Session flow instead — the sidebar is your RECENT sessions, and an offer to adopt
             // something you haven't started yet is a creation step, not a recent. See
             // NewSessionView, which already owns take-over, and AllSessionsView for the full list.
-            #if os(iOS)
-            // On a phone the tab root IS the whole screen, so it has to be both the archive and the
-            // fast way back. One list sorted by last-active does both: the top of it IS your recents,
-            // so nothing is duplicated and nothing has to be scrolled past. Filter chips and search
-            // narrow it; the list grows rather than changing shape as sessions accumulate.
-            Section {
-                ForEach(allSessionsByRecency) { item in sessionRow(item) }
-            } header: {
-                HStack(spacing: 6) {
-                    Text("SESSIONS").font(.system(size: 11, weight: .bold)).tracking(0.4)
-                        .foregroundStyle(palette.mutedForeground)
-                    Text("\(allSessionsByRecency.count)")
-                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(palette.mutedForeground)
-                    Spacer()
-                }
-            }
-            #else
+            // Both platforms group by project, with "Recent" pinned first. The phone used to get ONE
+            // flat SESSIONS section sorted by recency, which threw away the rolled-up "3 running · 1
+            // needs you" counts — the very thing that makes twenty sessions scannable on a small
+            // screen. Sections cost nothing in a List, and content that is grouped on the desktop
+            // should stay grouped when the layout adapts. `groups` already pulls recents out of their
+            // project buckets, so nothing appears twice.
             ForEach(filteredGroups) { group in
                 Section {
                     ForEach(group.items) { item in
@@ -284,13 +324,26 @@ struct SessionSidebar: View {
                     sectionHeader(group.name, running: group.runningCount, needsYou: group.needsYouCount)
                 }
             }
-            #endif
         }
         .listStyle(.sidebar)
+        // Keep the list's selection pointed at the session that is actually open, in both directions:
+        // a click routes through `$selection` (the host opens it, then nils the binding), a keyboard
+        // move routes through the same activation path, and `model.sessionID` is the single truth
+        // that settles both. Writing the value that is already there is a no-op, so this cannot loop.
+        .onChange(of: listSelection) { sel in
+            guard let sel, sel != model.sessionID else { return }
+            activate(sel)
+        }
+        .onChange(of: model.sessionID) { listSelection = $0 }
+        .onAppear { listSelection = model.sessionID }
         // The open conversation, pinned. The recents list scrolls, and on a long list the session you
         // are actually in scrolls out of sight — so the one row that answers "where am I?" was the
         // one row you could lose. Always visible, always the way back.
-        .safeAreaInset(edge: .bottom) { activeSessionBar }
+        .safeAreaInset(edge: .bottom) {
+            if showsActiveSessionBar {
+                ActiveSessionBar(model: model, palette: palette) { selection = $0 }
+            }
+        }
         #if os(macOS)
         // Show the system's translucent sidebar material (the "floating glass") instead of an opaque
         // fill — the list body was painting over it, making the sidebar a solid block.
@@ -301,33 +354,20 @@ struct SessionSidebar: View {
         #endif
     }
 
-    /// The conversation currently open, pinned to the bottom of the sidebar.
-    @ViewBuilder private var activeSessionBar: some View {
-        if let s = model.currentSession {
-            Button { selection = s.id } label: {
-                HStack(spacing: 8) {
-                    RunningPulseDot(color: model.busy ? Color(hex: 0x3FB950) : palette.mutedForeground,
-                                    active: model.busy)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(s.name ?? s.title ?? s.id)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(palette.foreground).lineLimit(1)
-                        Text(model.busy ? "working…" : "open")
-                            .font(.system(size: 10)).foregroundStyle(palette.mutedForeground)
-                    }
-                    Spacer(minLength: 4)
-                    if let cost = s.costUSD, cost > 0 {
-                        Text(String(format: "$%.2f", cost))
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(palette.mutedForeground)
-                    }
-                }
-                .padding(.horizontal, 10).padding(.vertical, 8)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .background(palette.card.opacity(0.6))
-            .overlay(Rectangle().frame(height: 1).foregroundStyle(palette.border), alignment: .top)
+    /// What a row does when it is chosen — by click, or by an arrow key moving the list selection.
+    /// One path for both, so keyboard navigation cannot drift from the pointer: a broken session
+    /// RECOVERS and a stopped one RESTARTS rather than opening a dead conversation.
+    private func activate(_ id: String) {
+        guard let item = filteredGroups.flatMap(\.items).first(where: { $0.id == id }) else {
+            selection = id
+            return
+        }
+        if item.hasError {
+            Task { await model.recoverSession(item.id) }
+        } else if item.stopped {
+            Task { await model.restartSession(item.id) }
+        } else {
+            selection = item.id
         }
     }
 
@@ -365,9 +405,9 @@ struct SessionSidebar: View {
     private var emptyState: some View {
         VStack(spacing: 14) {
             VStack(spacing: 4) {
-                Text("No sessions yet").font(.system(size: 15, weight: .semibold))
+                Text("No sessions yet").font(.subheadline.weight(.semibold))
                 Text("Start an agent on one of your projects, or take over a session already running in a terminal.")
-                    .font(.system(size: 12)).foregroundStyle(palette.mutedForeground)
+                    .font(.footnote).foregroundStyle(palette.mutedForeground)
                     .multilineTextAlignment(.center)
             }
             VStack(spacing: 8) {
@@ -386,10 +426,57 @@ struct SessionSidebar: View {
         .frame(maxWidth: .infinity)
     }
 
-    /// A soft, elevated selection card in the brand gold — a light gold wash + a faint gold
-    /// hairline + a subtle shadow, so the active row reads as raised rather than a jarring
-    /// full-blue system highlight.
+    /// True when this Mac is the ONLY paired desktop and we are not talking to it. With no second
+    /// desktop to fall back to there is nothing else in the app to look at, so the failure earns the
+    /// whole surface.
+    private var isUnreachable: Bool {
+        store.models.count <= 1 && !model.connected && !model.connecting
+    }
+
+    /// The full-surface failure state: what went wrong, in full, plus the only two things that can
+    /// fix it. Previously a first-run user whose pairing failed saw an empty session list and a
+    /// truncated grey sentence.
+    private var connectionFailure: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "bolt.horizontal.circle")
+                .font(.largeTitle).foregroundStyle(palette.destructive)
+            VStack(spacing: 5) {
+                Text("Can't reach your Mac").font(.subheadline.weight(.semibold))
+                Text(model.statusDetail ?? model.status)
+                    .font(.footnote).foregroundStyle(palette.mutedForeground)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled) // the error is the thing people paste into a bug report
+            }
+            VStack(spacing: 8) {
+                Button { Task { await model.connect() } } label: {
+                    Label("Try again", systemImage: "arrow.clockwise").frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent).tint(palette.primary).controlSize(.large)
+                Button { showAddDesktop = true } label: {
+                    #if os(iOS)
+                    Label("Scan a new code", systemImage: "qrcode.viewfinder").frame(maxWidth: .infinity)
+                    #else
+                    Label("Pair a new desktop", systemImage: "qrcode.viewfinder").frame(maxWidth: .infinity)
+                    #endif
+                }
+                .buttonStyle(.bordered).tint(palette.primary)
+            }
+            .padding(.top, 2)
+        }
+        .padding(.horizontal, 22)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(palette.background)
+    }
+
+    /// The brand read on the selected row.
+    ///
+    /// On macOS the LIST now draws selection (gold, because the sidebar is tinted with the palette's
+    /// primary), so painting a second gold card behind it stacks gold on gold. The row's own gold
+    /// left bar carries the brand there. iOS keeps the card: a plain List's selection is inert
+    /// outside edit mode, so without it the phone would show no selected state at all.
     @ViewBuilder private func rowSelectionBackground(_ selected: Bool) -> some View {
+        #if os(iOS)
         if selected {
             // strokeBorder (not stroke) draws the border INSIDE the shape, so its outer half doesn't
             // spill past the row bounds.
@@ -399,13 +486,17 @@ struct SessionSidebar: View {
             // row edges, which is what made the selected card look like its border was cut at the
             // corners. Insetting the card by a point leaves the hairline clear of the boundary; the
             // gold wash and border carry the "raised" read on their own.
-            RoundedRectangle(cornerRadius: 8)
+            OculusShape.rounded(OculusRadius.sm)
                 .fill(palette.primary.opacity(scheme == .dark ? 0.18 : 0.12))
-                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(palette.primary.opacity(0.30), lineWidth: 1))
+                .overlay(OculusShape.rounded(OculusRadius.sm)
+                    .strokeBorder(palette.primary.opacity(0.30), lineWidth: 1))
                 .padding(1)
         } else {
             Color.clear
         }
+        #else
+        Color.clear
+        #endif
     }
 
     /// The desktop switcher — the list of paired Macs plus add/rename/remove. Hangs off the
@@ -427,125 +518,162 @@ struct SessionSidebar: View {
         }
     }
 
-    /// Trailing titlebar actions: the overflow menu and the new-session button.
+    /// Trailing titlebar actions: exactly two — the overflow menu and the new-session button.
+    ///
+    /// This group had FOUR controls. On macOS they share one window toolbar with the chat's own
+    /// (up to eleven), and on an iPhone they land in the Sessions nav bar beside the palette button —
+    /// five trailing controls, the same crowding ChatView.swift:196-201 fixes for the chat. The
+    /// filter moved into the list (it scopes the list, not the window) and Fleet is a destination.
     @ToolbarContentBuilder private var sidebarToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
-            Menu {
-                Picker(selection: $filter) {
-                    ForEach(SessionFilter.allCases) { f in
-                        Label(f.label, systemImage: f.symbol).tag(f)
-                    }
-                } label: { Text("Filter") }
-                .pickerStyle(.inline)
-            } label: {
-                Image(systemName: filter == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
-            }
-            .help("Filter sessions")
-            Menu {
-                if model.canMintPairingCode {
-                    Button { showPairingQR = true } label: { Label("Pair a phone…", systemImage: "qrcode") }
-                }
-                Button { Task { await model.discover() } } label: { Label("Refresh sessions", systemImage: "arrow.clockwise") }
-                if let onOpenLoops {
-                    Button { onOpenLoops() } label: { Label("Loops…", systemImage: "arrow.triangle.2.circlepath") }
-                }
-                if let onOpenAgents {
-                    Button { onOpenAgents() } label: { Label("Agents…", systemImage: "cpu") }
-                }
-                if let onOpenUsage {
-                    Button { onOpenUsage() } label: { Label("Usage & spend…", systemImage: "chart.bar") }
-                }
-                if let onOpenDictionary {
-                    Button { onOpenDictionary() } label: { Label("Dictionary…", systemImage: "character.book.closed") }
-                }
-                if let onOpenSharing {
-                    Button { onOpenSharing() } label: { Label("Sharing…", systemImage: "person.2") }
-                }
-                if let onOpenMCP {
-                    Button { onOpenMCP() } label: { Label("MCP servers…", systemImage: "puzzlepiece.extension") }
-                }
-                if let onOpenApprovalRules {
-                    Button { onOpenApprovalRules() } label: { Label("Approval rules…", systemImage: "checkmark.shield") }
-                }
-                if let onOpenAccounts {
-                    Button { onOpenAccounts() } label: { Label("Accounts & usage…", systemImage: "person.2.badge.key") }
-                }
-                if let onOpenRemotes {
-                    Button { onOpenRemotes() } label: { Label("Remote hosts…", systemImage: "server.rack") }
-                }
-                if let onManageSessions {
-                    Button { onManageSessions() } label: { Label("Manage sessions…", systemImage: "square.stack.3d.up") }
-                }
-                Picker(selection: $appearance) {
-                    ForEach(Appearance.allCases) { a in
-                        Label(a.label, systemImage: a.symbol).tag(a)
-                    }
-                } label: {
-                    Label("Appearance", systemImage: "circle.lefthalf.filled")
-                }
-                Picker(selection: $chatFontDesign) {
-                    ForEach(ChatFontDesign.displayOrder) { f in
-                        Label(f.label, systemImage: f.symbol).tag(f.rawValue)
-                    }
-                } label: {
-                    Label("Chat font", systemImage: "textformat")
-                }
-                Picker(selection: $chatFontScale) {
-                    ForEach(ChatFontScale.allCases) { s in
-                        Text(s.label).tag(s.rawValue)
-                    }
-                } label: {
-                    Label("Chat text size", systemImage: "textformat.size")
-                }
-                Menu {
-                    if model.notifyPrefs.isEmpty {
-                        Text("Loading…")
-                    } else {
-                        ForEach(model.notifyPrefs) { p in
-                            Button { Task { await model.setNotifyPref(p.key, enabled: !p.enabled) } } label: {
-                                // A checkmark = enabled (menus can't host a real Toggle inline).
-                                if p.enabled { Label(p.label, systemImage: "checkmark") } else { Text(p.label) }
-                            }
-                        }
-                    }
-                } label: {
-                    Label("Notifications", systemImage: "bell")
-                }
-                .onAppear { Task { await model.loadNotifyPrefs() } }
-                #if os(macOS)
-                if let onCheckForUpdates {
-                    Button { onCheckForUpdates() } label: { Label("Check for updates…", systemImage: "arrow.down.circle") }
-                }
-                if let onToggleLoginAtLogin {
-                    Divider()
-                    Toggle(isOn: Binding(get: { loginAtLogin }, set: { onToggleLoginAtLogin($0) })) {
-                        Label("Start daemon at login", systemImage: "power")
-                    }
-                    .help("Keep the daemon running across reboots (a launchd agent) so sessions survive and reconnect without opening the app.")
-                    if let err = loginAtLoginError {
-                        Label(err, systemImage: "exclamationmark.triangle").foregroundStyle(.red)
-                    }
-                }
-                #endif
-                Toggle(isOn: Binding(get: { model.telemetryEnabled }, set: { on in Task { await model.setTelemetry(on) } })) {
-                    Label("Send anonymous diagnostics", systemImage: "waveform.path.ecg")
-                }
-                .help("Ships anonymized lifecycle events + scrubbed error classes (no paths, prompts, repo names, or tokens) so failures can be traced.")
-                Button(role: .destructive) { model.disconnect() } label: { Label("Disconnect", systemImage: "bolt.horizontal.circle") }
-            } label: {
+            Menu { overflowMenu } label: {
                 Image(systemName: "ellipsis")
             }
             .help("More options")
-            Button { showFleet = true } label: {
-                Image(systemName: "square.grid.2x2")
-            }
-            .help("Agent fleet — all sessions at a glance")
+            // `.help` is the tooltip/HINT; without a label VoiceOver reads a bare "Button".
+            .accessibilityLabel("More options")
             Button { selection = Self.newSessionTag } label: {
                 Image(systemName: "plus")
             }
             .help("New session")
+            .accessibilityLabel("New session")
         }
     }
+
+    /// The `⋯` menu, for BOTH platforms out of one builder.
+    ///
+    /// It held eighteen items behind an unlabeled glyph: every app-wide preference the app has, plus
+    /// nine panels that each opened as a sheet OVER the sessions you were configuring. macOS now has
+    /// a real `Settings` scene (SettingsScene.swift) that owns all of it, so on that platform this
+    /// menu keeps only what is scoped to THIS connection and THIS list, and points at ⌘, for the rest.
+    ///
+    /// iOS keeps the whole set, because `Settings {}` is a macOS-only scene type — there is nowhere
+    /// for it to go. Stripping it there would not de-duplicate anything; it would delete appearance,
+    /// fonts, notifications and diagnostics from the phone with no replacement, which is a worse
+    /// outcome than the duplication this change exists to remove.
+    ///
+    /// One builder with the branch INSIDE it, rather than a menu per platform: the shared half is
+    /// written once, so the two platforms cannot quietly grow different actions under the same glyph.
+    @ViewBuilder private var overflowMenu: some View {
+        // Session-scoped actions — identical on both platforms, and the reason this menu still exists.
+        // None of these configure the app; they act on the link to this Mac and on the list itself.
+        if model.canMintPairingCode {
+            // The ONLY route to the pairing QR anywhere in the app, and the phone's onboarding copy
+            // names this menu when it tells you where to look. Label and placement are load-bearing.
+            Button { showPairingQR = true } label: { Label("Pair a phone…", systemImage: "qrcode") }
+        }
+        Button { Task { await model.discover() } } label: { Label("Refresh sessions", systemImage: "arrow.clockwise") }
+        if let onManageSessions {
+            Button { onManageSessions() } label: { Label("Manage sessions…", systemImage: "square.stack.3d.up") }
+        }
+        Divider()
+        #if os(macOS)
+        settingsItem
+        // Kept on macOS ONLY because SettingsScene has no Dictionary tab. Removing it with the rest
+        // of the panels would leave the feature with no route into it at all, which is a regression,
+        // not a cleanup. Delete this the moment Settings gains the tab.
+        if let onOpenDictionary {
+            Button { onOpenDictionary() } label: { Label("Dictionary…", systemImage: "character.book.closed") }
+        }
+        #else
+        mobilePreferences
+        #endif
+        Divider()
+        Button(role: .destructive) { model.disconnect() } label: { Label("Disconnect", systemImage: "bolt.horizontal.circle") }
+    }
+
+    #if os(macOS)
+    /// The single route from this menu into the Settings window. The menu still has to LEAD somewhere
+    /// for a user who opens `⋯` looking for a preference — discovering ⌘, is not something to assume.
+    @ViewBuilder private var settingsItem: some View {
+        if #available(macOS 14, *) {
+            // Sonoma's purpose-built API; it knows about the scene, so it cannot miss.
+            SettingsLink { Label("Settings…", systemImage: "gearshape") }
+        } else {
+            Button {
+                // Ventura (this app's floor) renamed the responder action when Preferences became
+                // Settings, so `showSettingsWindow:` is the one that fires on 13. `showPreferencesWindow:`
+                // is the pre-Ventura name, tried second so a rename we guessed wrong about degrades to
+                // "nothing happened" only after both have been attempted.
+                if !NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) {
+                    _ = NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+                }
+            } label: {
+                Label("Settings…", systemImage: "gearshape")
+            }
+        }
+    }
+    #else
+    /// Everything the macOS Settings window owns, inline. This is the phone's ENTIRE preferences
+    /// surface, so it is kept whole rather than trimmed for length — see `overflowMenu`.
+    @ViewBuilder private var mobilePreferences: some View {
+        if let onOpenAgents {
+            Button { onOpenAgents() } label: { Label("Agents…", systemImage: "cpu") }
+        }
+        if let onOpenUsage {
+            Button { onOpenUsage() } label: { Label("Usage & spend…", systemImage: "chart.bar") }
+        }
+        if let onOpenDictionary {
+            Button { onOpenDictionary() } label: { Label("Dictionary…", systemImage: "character.book.closed") }
+        }
+        if let onOpenSharing {
+            Button { onOpenSharing() } label: { Label("Sharing…", systemImage: "person.2") }
+        }
+        if let onOpenMCP {
+            Button { onOpenMCP() } label: { Label("MCP servers…", systemImage: "puzzlepiece.extension") }
+        }
+        if let onOpenApprovalRules {
+            Button { onOpenApprovalRules() } label: { Label("Approval rules…", systemImage: "checkmark.shield") }
+        }
+        if let onOpenAccounts {
+            Button { onOpenAccounts() } label: { Label("Accounts & usage…", systemImage: "person.2.badge.key") }
+        }
+        if let onOpenRemotes {
+            Button { onOpenRemotes() } label: { Label("Remote hosts…", systemImage: "server.rack") }
+        }
+        Divider()
+        Picker(selection: $appearance) {
+            ForEach(Appearance.allCases) { a in
+                Label(a.label, systemImage: a.symbol).tag(a)
+            }
+        } label: {
+            Label("Appearance", systemImage: "circle.lefthalf.filled")
+        }
+        Picker(selection: $chatFontDesign) {
+            ForEach(ChatFontDesign.displayOrder) { f in
+                Label(f.label, systemImage: f.symbol).tag(f.rawValue)
+            }
+        } label: {
+            Label("Chat font", systemImage: "textformat")
+        }
+        Picker(selection: $chatFontScale) {
+            ForEach(ChatFontScale.allCases) { s in
+                Text(s.label).tag(s.rawValue)
+            }
+        } label: {
+            Label("Chat text size", systemImage: "textformat.size")
+        }
+        Menu {
+            if model.notifyPrefs.isEmpty {
+                Text("Loading…")
+            } else {
+                ForEach(model.notifyPrefs) { p in
+                    Button { Task { await model.setNotifyPref(p.key, enabled: !p.enabled) } } label: {
+                        // A checkmark = enabled (menus can't host a real Toggle inline).
+                        if p.enabled { Label(p.label, systemImage: "checkmark") } else { Text(p.label) }
+                    }
+                }
+            }
+        } label: {
+            Label("Notifications", systemImage: "bell")
+        }
+        .onAppear { Task { await model.loadNotifyPrefs() } }
+        Toggle(isOn: Binding(get: { model.telemetryEnabled }, set: { on in Task { await model.setTelemetry(on) } })) {
+            Label("Send anonymous diagnostics", systemImage: "waveform.path.ecg")
+        }
+        .help("Ships anonymized lifecycle events + scrubbed error classes (no paths, prompts, repo names, or tokens) so failures can be traced.")
+    }
+    #endif
 
     #if os(macOS)
     /// Claude-Code-style "Relaunch to update" card pinned to the bottom of the sidebar. Only shows
@@ -559,28 +687,29 @@ struct SessionSidebar: View {
                 } label: {
                     HStack(spacing: 10) {
                         ZStack {
-                            RoundedRectangle(cornerRadius: 8).fill(palette.primary.opacity(0.16)).frame(width: 30, height: 30)
+                            OculusShape.rounded(OculusRadius.sm).fill(palette.primary.opacity(0.16)).frame(width: 30, height: 30)
                             if updates.installing {
                                 ProgressView().controlSize(.small)
                             } else {
-                                Image(systemName: "arrow.down.circle.fill").foregroundStyle(palette.primary).font(.system(size: 15))
+                                Image(systemName: "arrow.down.circle.fill").foregroundStyle(palette.primary).font(.subheadline)
                             }
                         }
                         VStack(alignment: .leading, spacing: 1) {
                             Text(updates.installing ? "Updating…" : "Relaunch to update")
-                                .font(.system(size: 13, weight: .semibold)).foregroundStyle(palette.foreground)
+                                .font(.footnote.weight(.semibold)).foregroundStyle(palette.foreground)
                             Text(updates.installing ? updates.installPhase : "v\(updates.latestVersion ?? "")")
-                                .font(.system(size: 11)).foregroundStyle(palette.mutedForeground).lineLimit(1)
+                                .font(.caption).foregroundStyle(palette.mutedForeground).lineLimit(1)
                         }
                         Spacer(minLength: 0)
                         if !updates.installing {
-                            Image(systemName: "arrow.right").font(.system(size: 12, weight: .semibold))
+                            Image(systemName: "arrow.right").font(.footnote.weight(.semibold))
                                 .foregroundStyle(palette.mutedForeground)
+                                .accessibilityHidden(true)
                         }
                     }
                     .padding(10)
-                    .background(palette.card, in: RoundedRectangle(cornerRadius: 12))
-                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(palette.primary.opacity(0.3)))
+                    .background(palette.card, in: OculusShape.rounded(OculusRadius.md))
+                    .overlay(OculusShape.rounded(OculusRadius.md).strokeBorder(palette.primary.opacity(0.3)))
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -601,32 +730,21 @@ struct SessionSidebar: View {
         return n.isEmpty ? "Desktop" : n
     }
 
-    /// `groups`, narrowed by the search field and the active filter. Empty sections are
-    /// dropped so the list collapses to just the hits.
-    /// Every session, newest first — the iOS tab root. Deliberately NOT a separate "recent" section
-    /// above the full list: recency order already puts your recents at the top, and duplicating them
-    /// means the same row appears twice with an arbitrary boundary between.
-    private var allSessionsByRecency: [SidebarSession] {
-        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return groups.flatMap(\.items)
-            .filter { (q.isEmpty || $0.title.localizedCaseInsensitiveContains(q)) && filter.matches($0) }
-            .sorted { ($0.updatedAt ?? .distantPast) > ($1.updatedAt ?? .distantPast) }
+    /// The filter's options, with live counts — the counts are the reason these are chips and not a
+    /// segmented picker.
+    private var filterOptions: [FilterChips<SessionFilter>.Option] {
+        let all = groups.flatMap(\.items)
+        return SessionFilter.allCases.map { f in
+            .init(value: f, label: f.label, count: all.filter(f.matches).count)
+        }
     }
 
-    /// One session row. Shared by the grouped desktop list and the flat phone list so they cannot
-    /// drift — the tap behaviour in particular, where a broken session RECOVERS and a stopped one
-    /// RESTARTS rather than opening a dead conversation.
+    /// One session row. Still a Button as well as a tagged list row: on iOS a plain List's selection
+    /// does not respond to taps outside edit mode, and re-choosing the session you are already in
+    /// has to re-push the chat — neither of which a selection binding alone would do.
     @ViewBuilder private func sessionRow(_ item: SidebarSession, showProvider: Bool = true, showProject: Bool = true) -> some View {
         let selected = model.sessionID == item.id
-        Button {
-            if item.hasError {
-                Task { await model.recoverSession(item.id) }
-            } else if item.stopped {
-                Task { await model.restartSession(item.id) }
-            } else {
-                selection = item.id
-            }
-        } label: {
+        Button { activate(item.id) } label: {
             SessionRow(item: item, active: selected,
                        showProvider: showProvider, showProject: showProject, palette: palette)
                 .padding(.horizontal, 8).padding(.vertical, 5)
@@ -635,10 +753,12 @@ struct SessionSidebar: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .tag(item.id)
         .listRowInsets(EdgeInsets(top: 1, leading: 6, bottom: 1, trailing: 6))
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
         .contextMenu { rowMenu(item) }
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
     }
 
     private var filteredGroups: [SessionGroup] {
@@ -691,23 +811,35 @@ struct SessionSidebar: View {
 
     /// Project header with ROLLED-UP status: a project row shows its aggregate agent states
     /// ("3 running · 1 needs you") so you read a whole project at a glance without expanding it.
+    ///
+    /// Title Case, not ALL CAPS: OS 26 moved every system list header to title case, so a
+    /// hand-uppercased header now reads as a deliberate departure from every native list.
     private func sectionHeader(_ name: String, running: Int, needsYou: Int) -> some View {
         HStack(spacing: 6) {
-            Text(name.uppercased())
-                .font(.system(size: 11, weight: .bold)).tracking(0.4)
+            Text(name)
+                .font(.caption.weight(.semibold))
                 .foregroundStyle(palette.mutedForeground)
             Spacer()
             if running > 0 {
+                // A glyph, not a dot: the two aggregates differ only in hue otherwise.
+                // `.caption2` on the glyph as well as the count so the pair scales together — at a
+                // hardcoded 8pt the glyph stayed a speck beside a count three times its height.
                 HStack(spacing: 3) {
-                    Circle().fill(palette.primary).frame(width: 5, height: 5)
-                    Text("\(running)").font(.system(size: 10, weight: .semibold, design: .monospaced))
-                }.foregroundStyle(palette.primary)
+                    Image(systemName: "bolt.fill").font(.caption2)
+                    Text("\(running)").font(.caption2.weight(.semibold).monospacedDigit())
+                }
+                .foregroundStyle(palette.primary)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("\(running) running")
             }
             if needsYou > 0 {
                 HStack(spacing: 3) {
-                    Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 8))
-                    Text("\(needsYou)").font(.system(size: 10, weight: .semibold, design: .monospaced))
-                }.foregroundStyle(Color(hex: 0xE0912A))
+                    Image(systemName: "exclamationmark.triangle.fill").font(.caption2)
+                    Text("\(needsYou)").font(.caption2.weight(.semibold).monospacedDigit())
+                }
+                .foregroundStyle(palette.warning)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("\(needsYou) need you")
             }
         }
     }
@@ -828,6 +960,58 @@ struct SessionSidebar: View {
     }
 }
 
+/// The conversation currently open — one compact row: a pulse dot, the session's name, whether it is
+/// working, and what it has cost.
+///
+/// It lives outside SessionSidebar because it was only ever visible in the Sessions tab, which is not
+/// where a phone user starts: Activity is the default tab, and from there nothing said an agent was
+/// running or what it was spending. The host can pin this to the whole TabView instead. (The WWDC25
+/// answer is `.tabViewBottomAccessory`, which is iOS 26 — far above this app's iOS 16 floor.)
+///
+/// Deliberately ONE row tall. The daemon log inset was pulled from iOS because a taller bottom
+/// accessory swallowed taps along the screen edge; the tab bar has to keep owning the safe area
+/// beneath this.
+struct ActiveSessionBar: View {
+    @ObservedObject var model: Model
+    let palette: OculusPalette
+    /// Re-opening the session it names — the way back into the conversation from anywhere.
+    var onOpen: (String) -> Void
+
+    var body: some View {
+        if let s = model.currentSession {
+            Button { onOpen(s.id) } label: {
+                HStack(spacing: 8) {
+                    RunningPulseDot(color: model.busy ? palette.success : palette.mutedForeground,
+                                    active: model.busy)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(s.name ?? s.title ?? s.id)
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(palette.foreground)
+                            .lineLimit(1)
+                            // This bar answers "where am I?", so the name has to stay readable at
+                            // large type — shrink it rather than truncate it to an ellipsis.
+                            .minimumScaleFactor(0.85)
+                        Text(model.busy ? "working…" : "open")
+                            .font(.caption2).foregroundStyle(palette.mutedForeground)
+                    }
+                    Spacer(minLength: 4)
+                    if let cost = s.costUSD, cost > 0 {
+                        Text(String(format: "$%.2f", cost))
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(palette.mutedForeground)
+                    }
+                }
+                .padding(.horizontal, 10).padding(.vertical, 8)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .background(palette.card.opacity(0.6))
+            .overlay(Rectangle().frame(height: 1).foregroundStyle(palette.border), alignment: .top)
+            .accessibilityHint("Returns to the open session")
+        }
+    }
+}
+
 /// One session row: a gold left-bar + gold title when it's the active session, a running
 /// dot only while running, provider only when its group mixes providers, branch as a chip.
 private struct SessionRow: View {
@@ -836,28 +1020,37 @@ private struct SessionRow: View {
     let showProvider: Bool
     let showProject: Bool
     let palette: OculusPalette
+    @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
+    /// The filled chips pair a deliberately sub-caption status pip with a `.caption2` label; giving
+    /// the pip `.caption2` too would render it as tall as the word beside it and turn "Live" into a
+    /// bullet point. ScaledMetric keeps the proportion while still growing with the user's type size,
+    /// which a hardcoded 6pt did not — at accessibility sizes the pip simply vanished.
+    @ScaledMetric(relativeTo: .caption2) private var pipSize: CGFloat = 6
 
     var body: some View {
         HStack(spacing: 9) {
-            RoundedRectangle(cornerRadius: 2)
+            OculusShape.rounded(2)
                 .fill(active ? palette.primary : Color.clear)
                 .frame(width: 3, height: 22)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 4) {
                     if item.isChild {
                         Image(systemName: "arrow.turn.down.right")
-                            .font(.system(size: 10)).foregroundStyle(palette.mutedForeground)
+                            .font(.caption2).foregroundStyle(palette.mutedForeground)
+                            .accessibilityLabel("Sub-agent")
                     }
                     Text(item.title)
-                        .font(.system(size: 13, weight: active ? .semibold : .medium))
+                        .font(.footnote.weight(active ? .semibold : .medium))
                         .foregroundStyle(palette.foreground)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.85) // a long name must shrink, not disappear, at large type
                 }
                 if let sub = secondary {
                     Text(sub)
-                        .font(.system(size: 11))
+                        .font(.caption)
                         .foregroundStyle(palette.mutedForeground)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.85) // "project · provider · 4m ago" — the time is the tail
                 }
             }
             Spacer(minLength: 6)
@@ -877,7 +1070,7 @@ private struct SessionRow: View {
             if item.conflicted {
                 // Worktree branch conflicts with the default branch — flag it so parallel agents on
                 // one repo don't silently collide.
-                chip(icon: "arrow.triangle.merge", text: "Conflict", tint: Color(hex: 0xA071D6), filled: true)
+                chip(icon: "arrow.triangle.merge", text: "Conflict", tint: palette.conflict, filled: true)
             }
             if item.hasError {
                 // A background session whose last turn errored / got no response. The chip IS the
@@ -888,7 +1081,11 @@ private struct SessionRow: View {
             } else if item.stopped {
                 chip(icon: "moon.zzz.fill", text: "Stopped", tint: palette.mutedForeground)
             } else if !item.managed {
-                chip(icon: "terminal", text: nil, tint: palette.mutedForeground)
+                // The only glyph-only chip in the row. Spell it out when the user has asked not to
+                // depend on colour, and always name it for VoiceOver.
+                chip(icon: "terminal", text: differentiateWithoutColor ? "Terminal" : nil,
+                     tint: palette.mutedForeground)
+                    .accessibilityLabel("Started in a terminal")
             }
         }
         .padding(.vertical, 3)
@@ -897,8 +1094,8 @@ private struct SessionRow: View {
 
     private func chip(icon: String, text: String?, tint: Color, filled: Bool = false) -> some View {
         HStack(spacing: 3) {
-            Image(systemName: icon).font(.system(size: filled ? 6 : 9))
-            if let text { Text(text).font(.system(size: 10, weight: .semibold)).lineLimit(1) }
+            Image(systemName: icon).font(filled ? .system(size: pipSize) : .caption2)
+            if let text { Text(text).font(.caption2.weight(.semibold)).lineLimit(1) }
         }
         .foregroundStyle(filled ? tint : palette.mutedForeground)
         .padding(.horizontal, text == nil ? 5 : 6).padding(.vertical, 2)

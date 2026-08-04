@@ -42,6 +42,13 @@ func extractDocumentText(from url: URL) -> String? {
 /// then scrolls. Placeholder is drawn by the caller (a SwiftUI overlay) since it stays empty text.
 struct ComposerTextView: View {
     @Binding var text: String
+    /// Drives AND reports first responder.
+    ///
+    /// SwiftUI's `.focused()` cannot reach the text view inside a representable, so the flag is
+    /// plumbed to becomeFirstResponder/resignFirstResponder directly — otherwise a control that
+    /// wants the keyboard up (the slash button) inserts text into a field that never gains focus.
+    /// The platform side writes back, so a tap elsewhere clears it too.
+    @Binding var isFocused: Bool
     var maxHeight: CGFloat = 160
     var onSubmit: () -> Void
     // Return true to CONSUME the key (used to drive the slash-command popup: Tab completes,
@@ -52,7 +59,7 @@ struct ComposerTextView: View {
     @State private var measured: CGFloat = 34
 
     var body: some View {
-        Representable(text: $text, maxHeight: maxHeight, height: $measured,
+        Representable(text: $text, isFocused: $isFocused, maxHeight: maxHeight, height: $measured,
                       onSubmit: onSubmit, onTab: onTab, onMoveUp: onMoveUp, onMoveDown: onMoveDown)
             // maxWidth pins the composer to its container. Without it the platform text view's own
             // intrinsic width (the width of the LONGEST UNWRAPPED LINE) can propose a size wider than
@@ -65,6 +72,7 @@ struct ComposerTextView: View {
 #if canImport(AppKit)
 private struct Representable: NSViewRepresentable {
     @Binding var text: String
+    @Binding var isFocused: Bool
     var maxHeight: CGFloat
     @Binding var height: CGFloat
     var onSubmit: () -> Void
@@ -106,6 +114,16 @@ private struct Representable: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let tv = scroll.documentView as? KeyTextView else { return }
         tv.onSubmit = onSubmit
+        // Report focus back so the composer's ring tracks the real responder. The equality check is
+        // load-bearing: our own makeFirstResponder call below re-enters this closure synchronously,
+        // and writing state from inside a view update is what turns that into a loop.
+        let focus = _isFocused
+        tv.onFocusChange = { flag in if focus.wrappedValue != flag { focus.wrappedValue = flag } }
+        if isFocused, tv.window?.firstResponder !== tv {
+            tv.window?.makeFirstResponder(tv)
+        } else if !isFocused, tv.window?.firstResponder === tv {
+            tv.window?.makeFirstResponder(nil)
+        }
         if tv.string != text {
             // A PROGRAMMATIC swap (the per-session draft switch). A bare `tv.string =` keeps the old
             // selection AND any in-flight autocomplete/marked-text session — whose stale ranges then
@@ -154,13 +172,27 @@ private struct Representable: NSViewRepresentable {
     }
 }
 
-/// NSTextView subclass carrying the submit closure (used by the delegate, kept here for clarity).
+/// NSTextView subclass carrying the submit closure (used by the delegate, kept here for clarity)
+/// and reporting responder changes — `textDidBeginEditing` fires on the first EDIT, not on focus,
+/// so it would leave the field looking unfocused until you typed.
 private final class KeyTextView: NSTextView {
     var onSubmit: (() -> Void)?
+    var onFocusChange: ((Bool) -> Void)?
+    override func becomeFirstResponder() -> Bool {
+        let ok = super.becomeFirstResponder()
+        if ok { onFocusChange?(true) }
+        return ok
+    }
+    override func resignFirstResponder() -> Bool {
+        let ok = super.resignFirstResponder()
+        if ok { onFocusChange?(false) }
+        return ok
+    }
 }
 #elseif canImport(UIKit)
 private struct Representable: UIViewRepresentable {
     @Binding var text: String
+    @Binding var isFocused: Bool
     var maxHeight: CGFloat
     @Binding var height: CGFloat
     var onSubmit: () -> Void
@@ -174,6 +206,9 @@ private struct Representable: UIViewRepresentable {
         let tv = KeyTextView()
         tv.delegate = context.coordinator
         tv.font = .preferredFont(forTextStyle: .body)
+        // Without this the prompt keeps whatever size it was built at, so the one field in the app
+        // you type into ignores the text-size setting entirely.
+        tv.adjustsFontForContentSizeCategory = true
         tv.backgroundColor = .clear
         // Scrolling stays ON permanently. A UITextView with scrolling DISABLED advertises an
         // intrinsic content size — including a width equal to its longest unwrapped line — and
@@ -201,6 +236,13 @@ private struct Representable: UIViewRepresentable {
         (tv as? KeyTextView)?.onMoveUp = onMoveUp
         (tv as? KeyTextView)?.onMoveDown = onMoveDown
         if tv.text != text { tv.text = text }
+        // Guarded on the CURRENT responder state — calling become/resign unconditionally on every
+        // keystroke's update pass would tear the keyboard down and rebuild it.
+        if isFocused, !tv.isFirstResponder {
+            tv.becomeFirstResponder()
+        } else if !isFocused, tv.isFirstResponder {
+            tv.resignFirstResponder()
+        }
         recompute(tv)
     }
 
@@ -229,6 +271,10 @@ private struct Representable: UIViewRepresentable {
         let parent: Representable
         init(_ p: Representable) { parent = p }
         func textViewDidChange(_ tv: UITextView) { parent.text = tv.text; parent.recompute(tv) }
+        // Report the real responder state back, so the focus ring tracks taps on the field itself
+        // and on anything that takes focus away from it.
+        func textViewDidBeginEditing(_ tv: UITextView) { if !parent.isFocused { parent.isFocused = true } }
+        func textViewDidEndEditing(_ tv: UITextView) { if parent.isFocused { parent.isFocused = false } }
     }
 }
 

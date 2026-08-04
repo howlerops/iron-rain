@@ -26,6 +26,15 @@ public final class DaemonLauncher: ObservableObject {
     /// How to start it by hand if the app can't (e.g. a sandboxed build can't spawn subprocesses).
     public static let manualCommand = "oculusd serve"
 
+    /// The one launcher for the process.
+    ///
+    /// This has to be shared rather than per-view. `managed` — whether THIS app started the daemon
+    /// child — is the state that decides whether handing off to a launchd agent must stop that child
+    /// first. A second instance reports `managed == false` and skips the stop, so launchd loads the
+    /// agent, the agent's daemon then can't bind its port, and the user is left with a switch that
+    /// reads "on" having done nothing. That failure is silent, which is what makes it dangerous.
+    public static let shared = DaemonLauncher()
+
     public init() {}
 
     /// Ensures a local daemon is running, waiting briefly for it to come up. Safe to call at

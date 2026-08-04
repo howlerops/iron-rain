@@ -98,6 +98,9 @@ public struct ChatView: View {
         Binding(get: { model.currentDraft }, set: { model.currentDraft = $0 })
     }
     @State private var anchorTask: Task<Void, Never>?
+    /// Separate from `anchorTask` so the streaming follow and the open-time re-pin never cancel
+    /// each other mid-flight.
+    @State private var followTask: Task<Void, Never>?
     /// Explicit bottom re-pins only fire before this time (a short window after a session opens), so
     /// they can't fight defaultScrollAnchor during streaming and bounce the view.
     @State private var initialAnchorDeadline: Date = .distantPast
@@ -109,6 +112,9 @@ public struct ChatView: View {
     @State private var showDelegate = false
     /// iOS: the session's controls live on a sheet instead of eight squeezed navigation-bar items.
     @State private var showSessionControls = false
+    /// Where the controls sheet asked to go, acted on in its `onDismiss` so the destination isn't
+    /// presented underneath a sheet that is still on screen.
+    @State private var controlsDestination: SessionControlsDestination?
     @State private var showUsage = false
 
     public init(model: Model) { self.model = model }
@@ -126,6 +132,29 @@ public struct ChatView: View {
 
     /// A session the daemon couldn't re-attach after a restart — persisted, not live, restartable.
     private var isStopped: Bool { model.currentSession?.status == SessionStatusValue.stopped }
+
+    #if !os(iOS)
+    // Lifted out of the toolbar builder so each one can be written once and referenced from BOTH
+    // arms of the OS-26 `sharedBackgroundVisibility` availability check (see the toolbar).
+    private var toolActivityToolbarChip: some View {
+        ToolActivityView(activity: model.activity, palette: palette, compact: true)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(model.activity.map { "Agent activity: \($0)" } ?? "Working")
+            .help(model.activity.map { "Agent activity: \($0)" } ?? "Working")
+    }
+
+    private var runningAgentsToolbarChip: some View {
+        let phrase = "\(runningChildCount) sub-agent\(runningChildCount == 1 ? " is" : "s are") running"
+        return HStack(spacing: 5) {
+            RunningPulseDot(color: .green, active: true)
+            Text("\(runningChildCount) agent\(runningChildCount == 1 ? "" : "s")")
+                .font(.caption.weight(.medium)).foregroundStyle(palette.mutedForeground)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(phrase)
+        .help(phrase)
+    }
+    #endif
 
     public var body: some View {
         VStack(spacing: 0) {
@@ -188,6 +217,26 @@ public struct ChatView: View {
         // Plain background keeps the detail bounded to the window.
         .background(palette.background)
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: model.pendingApproval)
+        // Handoff, publishing side. Both Info.plists have declared NSUserActivityTypes for this type
+        // since the app shipped, so the OS was told Handoff was supported while nothing ever created
+        // an activity — the icon simply never appeared on the other device. `isActive` is the whole
+        // lifecycle: it goes false the moment no session is open, which is how the advertisement is
+        // withdrawn (there is nothing to invalidate by hand), and SwiftUI re-runs the update block
+        // whenever this body re-evaluates, so switching sessions re-points the activity.
+        .userActivity(oculusSessionActivityType, isActive: model.sessionID != nil) { activity in
+            guard let sid = model.sessionID else { return }
+            activity.title = model.currentSession?.name ?? model.currentSession?.title ?? "Iron Rain session"
+            activity.isEligibleForHandoff = true
+            // NOT indexed: `isEligibleForSearch` would put session titles — usually a branch or a
+            // ticket summary — into Spotlight, where the user never asked for them.
+            activity.isEligibleForSearch = false
+            // See OculusHandoffKey: identifiers only, because this payload travels via iCloud.
+            activity.userInfo = [
+                OculusHandoffKey.sessionID: sid,
+                OculusHandoffKey.desktopID: model.id,
+            ]
+            activity.targetContentIdentifier = sid
+        }
         .navigationTitle(model.sessionID == nil ? "New session" : statusLabel)
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -205,41 +254,64 @@ public struct ChatView: View {
                         SessionTitleChip(model: model, palette: palette, status: statusLabel)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Session — \(statusLabel)")
+                    .accessibilityHint("Opens session controls")
                 }
                 if model.activeHandoff != nil {
                     ToolbarItem(placement: .navigationBarTrailing) {
                         Button { showHandoff = true } label: { Image(systemName: "doc.text.magnifyingglass") }
+                            // `.help()` populates the VoiceOver HINT, not the label, so an icon-only
+                            // button with only a `.help` announces as a bare "Button". The label has to
+                            // be set explicitly; it reuses the help string so the two never drift.
+                            .accessibilityLabel("The agent saved its progress to a handoff file.")
                             .help("The agent saved its progress to a handoff file.")
                     }
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button { showSessionControls = true } label: { Image(systemName: "slider.horizontal.3") }
+                        .accessibilityLabel("Session controls — model, mode, tools, usage")
                         .help("Session controls — model, mode, tools, usage")
                 }
             }
             #else
+            // UsageChip / HeartbeatChip / ToolActivityView / the agent count are READOUTS, not
+            // controls. On OS 26 the system gives every toolbar item its own glass background, which
+            // is the platform's visual language for "this is a button" — so four things you cannot tap
+            // started advertising themselves as tappable. Hiding the shared background puts them back
+            // to being text. The modifier returns `some ToolbarContent`, so the availability check has
+            // to wrap the whole ToolbarItem, not just the modifier.
             if let s = model.currentSession, (s.costUSD ?? 0) > 0 || (s.inputTokens ?? 0) > 0 {
-                ToolbarItem(placement: .automatic) { UsageChip(session: s, palette: palette) }
+                if #available(iOS 26.0, macOS 26.0, *) {
+                    ToolbarItem(placement: .automatic) { UsageChip(session: s, palette: palette) }
+                        .sharedBackgroundVisibility(.hidden)
+                } else {
+                    ToolbarItem(placement: .automatic) { UsageChip(session: s, palette: palette) }
+                }
             }
             if let sid = model.sessionID, let hb = model.heartbeats[sid] {
-                ToolbarItem(placement: .automatic) { HeartbeatChip(hb: hb, palette: palette) }
+                if #available(iOS 26.0, macOS 26.0, *) {
+                    ToolbarItem(placement: .automatic) { HeartbeatChip(hb: hb, palette: palette) }
+                        .sharedBackgroundVisibility(.hidden)
+                } else {
+                    ToolbarItem(placement: .automatic) { HeartbeatChip(hb: hb, palette: palette) }
+                }
             }
             // The live tool-use chip (what the agent is doing NOW) replaces the old generic running
             // blob in the top bar — a real per-tool icon + word instead of an anonymous pulse.
             if model.busy, model.messages.last?.streaming != true {
-                ToolbarItem(placement: .automatic) {
-                    ToolActivityView(activity: model.activity, palette: palette, compact: true)
-                        .help(model.activity.map { "Agent activity: \($0)" } ?? "Working")
+                if #available(iOS 26.0, macOS 26.0, *) {
+                    ToolbarItem(placement: .automatic) { toolActivityToolbarChip }
+                        .sharedBackgroundVisibility(.hidden)
+                } else {
+                    ToolbarItem(placement: .automatic) { toolActivityToolbarChip }
                 }
             }
             if runningChildCount > 0 {
-                ToolbarItem(placement: .automatic) {
-                    HStack(spacing: 5) {
-                        RunningPulseDot(color: .green, active: true)
-                        Text("\(runningChildCount) agent\(runningChildCount == 1 ? "" : "s")")
-                            .font(.caption.weight(.medium)).foregroundStyle(palette.mutedForeground)
-                    }
-                    .help("\(runningChildCount) sub-agent\(runningChildCount == 1 ? " is" : "s are") running")
+                if #available(iOS 26.0, macOS 26.0, *) {
+                    ToolbarItem(placement: .automatic) { runningAgentsToolbarChip }
+                        .sharedBackgroundVisibility(.hidden)
+                } else {
+                    ToolbarItem(placement: .automatic) { runningAgentsToolbarChip }
                 }
             }
             if model.activeHandoff != nil {
@@ -247,6 +319,7 @@ public struct ChatView: View {
                     Button { showHandoff = true } label: {
                         Label("Handoff", systemImage: "doc.text.magnifyingglass")
                     }
+                    .accessibilityLabel("The agent saved its progress to a handoff file. Tap to view.")
                     .help("The agent saved its progress to a handoff file. Tap to view.")
                 }
             }
@@ -385,7 +458,22 @@ public struct ChatView: View {
             }
             #endif
         }
-        .sheet(isPresented: $showSessionControls) {
+        // `onDismiss` rather than a timer: the sheet records where it wants to go, and we act once it
+        // has actually gone. The sheet's own fallback is a 250ms `Task.sleep` guessing at the dismiss
+        // animation, which is a race that a slow device — or Reduce Motion changing the duration —
+        // loses. Binding `destination` retires it.
+        .sheet(isPresented: $showSessionControls, onDismiss: {
+            guard let d = controlsDestination else { return }
+            controlsDestination = nil
+            switch d {
+            case .code:      model.codeReviewTarget = model.sessionID
+            case .design:    model.designRequested = true
+            case .delegate:  showDelegate = true
+            case .worktree:  showWorktreePanel = true
+            case .workspace: showWorkspace = true; Task { await model.workspaceDiff() }
+            case .usage:     showUsage = true
+            }
+        }) {
             SessionControlsSheet(
                 model: model, palette: palette,
                 onClose: { showSessionControls = false },
@@ -394,7 +482,8 @@ public struct ChatView: View {
                 onDelegate: { showDelegate = true },
                 onWorktree: { showWorktreePanel = true },
                 onWorkspace: { showWorkspace = true; Task { await model.workspaceDiff() } },
-                onUsage: { showUsage = true })
+                onUsage: { showUsage = true },
+                destination: $controlsDestination)
         }
         .sheet(isPresented: $showUsage) {
             UsageView(model: model, palette: palette) { showUsage = false }
@@ -533,6 +622,9 @@ public struct ChatView: View {
             // the to-do bar above it, and the top line is sliced in half — it reads as a layout bug
             // rather than as content continuing upward.
             .modifier(TopScrollInset())
+            // Dragging the transcript puts the keyboard away. On a phone the keyboard covers half the
+            // conversation, and the only previous way out was tapping a target that wasn't there.
+            .scrollDismissesKeyboard(.interactively)
             Group {
                 if #available(macOS 14.0, iOS 17.0, *) {
                     // Native bottom anchoring keeps the view pinned as a message streams (text grows
@@ -582,6 +674,16 @@ public struct ChatView: View {
             }
             .onChange(of: model.messages.count) { _ in
                 if Date() < initialAnchorDeadline { anchorBottom(proxy) }
+            }
+            // Streaming grows the LAST MESSAGE'S TEXT — `messages.count` never changes — so the
+            // count-based re-pin above cannot follow a stream, and it is deadline-gated anyway. On
+            // iOS 16 / macOS 13 there is no `defaultScrollAnchor` either, which left the transcript
+            // simply not moving while an answer streamed in. This follows the text itself, on every
+            // OS version. It fires ONLY while the bottom is already visible: that gate is what stops
+            // it from yanking a user who deliberately scrolled up to read.
+            .onChange(of: model.messages.last?.text.count) { _ in
+                guard isTranscriptBottomVisible else { return }
+                followBottom(proxy)
             }
         }
     }
@@ -665,7 +767,7 @@ public struct ChatView: View {
                     // so "Thinking" shows WHAT it's thinking, not just that it is.
                     if !model.liveThinkingTail.isEmpty {
                         Text(model.liveThinkingTail)
-                            .font(.system(size: 12)).italic()
+                            .font(.footnote).italic()
                             .foregroundStyle(palette.mutedForeground)
                             .lineLimit(2).truncationMode(.head)
                             .frame(maxWidth: 520, alignment: .leading)
@@ -691,6 +793,18 @@ public struct ChatView: View {
         }
     }
 
+    /// Debounced bottom-follow for a streaming message (see the onChange that calls it). Separate task
+    /// from `anchorBottom` so the two can't cancel each other, and debounced because the stream flushes
+    /// every ~40ms — one scroll per flush would queue dozens of them per second.
+    private func followBottom(_ proxy: ScrollViewProxy) {
+        followTask?.cancel()
+        followTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard !Task.isCancelled else { return }
+            proxy.scrollTo("bottom", anchor: .bottom) // no withAnimation → instant, no bounce
+        }
+    }
+
     private static let starters = ["Explain this project", "Find and fix a bug", "Review my changes"]
 
     /// Compact label for the model menu — the model id (e.g. "gpt-5.4"), or "Default" when the
@@ -710,15 +824,15 @@ public struct ChatView: View {
         VStack(spacing: 14) {
             Spacer()
             Image("WolfMark").resizable().scaledToFit().frame(width: 44, height: 44).opacity(0.9)
-            Text("Start a session").font(.system(size: 22, weight: .semibold))
+            Text("Start a session").font(.title2.weight(.semibold))
             Text("Send a prompt below and an agent gets to work on your Mac — steer it, review tool calls, and approve from anywhere.")
-                .font(.system(size: 14)).foregroundStyle(palette.mutedForeground)
+                .font(.subheadline).foregroundStyle(palette.mutedForeground)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 360).fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 8) {
                 ForEach(Self.starters, id: \.self) { prompt in
                     Button { draft.wrappedValue = prompt } label: {
-                        Text(prompt).font(.system(size: 12))
+                        Text(prompt).font(.footnote)
                             .foregroundStyle(palette.foreground)
                             .padding(.horizontal, 12).padding(.vertical, 7)
                             .background(Capsule().fill(palette.muted.opacity(0.45)))
@@ -852,8 +966,8 @@ struct InlineImagesView: View {
                     Image(decorative: cg, scale: 1)
                         .resizable().scaledToFit()
                         .frame(maxWidth: 420, maxHeight: 280)
-                        .clipShape(RoundedRectangle(cornerRadius: OculusRadius.sm))
-                        .overlay(RoundedRectangle(cornerRadius: OculusRadius.sm).strokeBorder(palette.border))
+                        .clipShape(OculusShape.rounded(OculusRadius.sm))
+                        .overlay(OculusShape.rounded(OculusRadius.sm).strokeBorder(palette.border))
                 } else {
                     HStack(spacing: 6) {
                         Image(systemName: "photo").font(.caption)
@@ -926,8 +1040,8 @@ struct MessageRow: View, Equatable {
                 // messages with your own name is noise in the overwhelmingly common single-user case.
                 if let author = message.author, !author.isEmpty {
                     HStack(spacing: 4) {
-                        Image(systemName: "person.crop.circle").font(.system(size: 9))
-                        Text(author).font(.system(size: 10, weight: .medium))
+                        Image(systemName: "person.crop.circle").font(.caption2)
+                        Text(author).font(.caption2.weight(.medium))
                     }
                     .foregroundStyle(palette.mutedForeground)
                     .padding(.trailing, 2)
@@ -940,9 +1054,9 @@ struct MessageRow: View, Equatable {
                         .foregroundStyle(palette.foreground)
                         .padding(.horizontal, OculusSpace.md).padding(.vertical, OculusSpace.sm)
                         .background(palette.secondary)
-                        .overlay(RoundedRectangle(cornerRadius: OculusRadius.md)
+                        .overlay(OculusShape.rounded(OculusRadius.md)
                             .strokeBorder(message.delivery == .failed ? palette.destructive : palette.border))
-                        .clipShape(RoundedRectangle(cornerRadius: OculusRadius.md))
+                        .clipShape(OculusShape.rounded(OculusRadius.md))
                         .textSelection(.enabled)
                 }
                 if let load = imageLoader {
@@ -1024,8 +1138,8 @@ struct MessageRow: View, Equatable {
                 .padding(.horizontal, 12).padding(.vertical, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(palette.accent)
-                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(palette.primary.opacity(0.25)))
-                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(OculusShape.rounded(10).strokeBorder(palette.primary.opacity(0.25)))
+                .clipShape(OculusShape.rounded(10))
             }
         case .subagent:
             // The rich inline card is rendered at the transcript level (it needs the live model); this
@@ -1151,6 +1265,45 @@ enum AssistantContentParser {
     }
 }
 
+/// Puts a string on the system pasteboard. One helper for the whole chat surface, because "copy" has
+/// to behave identically whether it came from a code block, a tool card or a message context menu.
+func chatCopyToPasteboard(_ text: String) {
+    #if canImport(AppKit)
+    NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
+    #elseif canImport(UIKit)
+    UIPasteboard.general.string = text
+    #endif
+}
+
+/// A persistent copy control for monospaced content (code blocks, tool output).
+///
+/// Persistent rather than hover-revealed, and sized to the 44pt minimum target: on touch there is no
+/// hover, and `.textSelection` inside a horizontally-scrolling container is unusable there anyway —
+/// long-press-then-drag fights the pan gesture, so selection was never a real copy path on a phone.
+struct CopyContentButton: View {
+    let text: String
+    let palette: OculusPalette
+    var label: String = "Copy"
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            chatCopyToPasteboard(text)
+            copied = true
+            Task { try? await Task.sleep(nanoseconds: 1_400_000_000); copied = false }
+        } label: {
+            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                .font(.caption)
+                .foregroundStyle(copied ? palette.success : palette.mutedForeground)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(copied ? "Copied" : label)
+        .help(label)
+    }
+}
+
 /// A tool call as a distinct, collapsible inline card — the invocation (icon · tool · command) reads
 /// separately from the agent's prose, and the OUTPUT expands on demand rather than hiding behind a
 /// "running…" chip. A running tool shows a spinner; completed/error show a result affordance.
@@ -1162,6 +1315,24 @@ struct ToolCallCard: View {
     private var running: Bool { call.status == "running" }
     private var isError: Bool { call.status == "error" }
     private var hasOutput: Bool { !call.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    /// How many trailing lines of output the card lays out. Bounds LAYOUT, not what Copy gives you.
+    private static let outputTailLines = 60
+
+    /// The TAIL of the output, plus an honest header when it was cut.
+    ///
+    /// The old card rendered the output from the top inside a `ScrollView(.horizontal)` capped at
+    /// 220pt — a horizontal-only scroll view with a height clamp, so anything past ~17 lines was
+    /// clipped with no gesture that could reach it. Expanding a failed bash card to find the error
+    /// showed the first 17 lines and hid the failure. Errors live at the END of output, which is why
+    /// ShellRunCard already shows the tail; this matches it.
+    private var outputPreview: (text: String, truncated: Int, total: Int) {
+        let trimmed = call.output.hasSuffix("\n") ? String(call.output.dropLast()) : call.output
+        let all = trimmed.components(separatedBy: "\n")
+        guard all.count > Self.outputTailLines else { return (trimmed, 0, all.count) }
+        return (all.suffix(Self.outputTailLines).joined(separator: "\n"),
+                all.count - Self.outputTailLines, all.count)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1177,26 +1348,48 @@ struct ToolCallCard: View {
                     // Live elapsed so a long-running (or stuck) tool is visibly still going.
                     ElapsedLabel(since: call.startedAt, palette: palette)
                     ProgressView().controlSize(.mini)
-                } else if hasOutput {
-                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 9)).foregroundStyle(palette.mutedForeground)
+                } else {
+                    // An explicit outcome mark. "Finished" and "finished with an error" used to differ
+                    // only by a tint on the icon and a border alpha — two things you have to already
+                    // know to look for. Success and failure now each have their own glyph.
+                    Image(systemName: isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(isError ? palette.destructive : palette.success)
+                        .accessibilityLabel(isError ? "Failed" : "Succeeded")
+                    if hasOutput {
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                            .font(.caption2).foregroundStyle(palette.mutedForeground)
+                    }
                 }
             }
             if expanded, hasOutput {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    Text(call.output).font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(isError ? palette.destructive : palette.foreground)
-                        .textSelection(.enabled)
-                        .padding(.top, 6)
+                let preview = outputPreview
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 4) {
+                        if preview.truncated > 0 {
+                            Text("showing the last \(Self.outputTailLines) of \(preview.total) lines — Copy takes all of it")
+                                .font(.caption2).foregroundStyle(palette.mutedForeground)
+                        }
+                        Spacer(minLength: 0)
+                        // Copy is on the FULL output, not the preview: the whole point of bounding the
+                        // layout is that you can still get at what isn't drawn.
+                        CopyContentButton(text: call.output, palette: palette, label: "Copy \(call.name) output")
+                    }
+                    // No height clamp: the row grows to fit the (already tail-bounded) preview and the
+                    // transcript scrolls it, so nothing is unreachable.
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        Text(preview.text).font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(isError ? palette.destructive : palette.foreground)
+                            .textSelection(.enabled)
+                    }
                 }
-                .frame(maxHeight: 220)
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(palette.secondary.opacity(0.3), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder((isError ? palette.destructive : palette.primary).opacity(running ? 0.4 : 0.2)))
+        .background(palette.secondary.opacity(0.3), in: OculusShape.rounded(10))
+        .overlay(OculusShape.rounded(10).strokeBorder((isError ? palette.destructive : palette.primary).opacity(running ? 0.4 : 0.2)))
         // Tap ANYWHERE on the card to expand/collapse its output. This is its own tap target, so a tool
         // card nested inside a sub-agent card handles its own taps and never collapses the parent.
         .contentShape(Rectangle())
@@ -1204,6 +1397,11 @@ struct ToolCallCard: View {
             guard hasOutput else { return }
             withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
         }
+        // A tap-gesture card is invisible to VoiceOver as a control: no trait, no label, no state. It
+        // has to say what it is, what it did, and whether it's open.
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel("\(call.name) tool call\(call.title.isEmpty ? "" : ", \(call.title)"), \(running ? "running" : (isError ? "failed" : "succeeded"))")
+        .accessibilityValue(hasOutput ? (expanded ? "Expanded" : "Collapsed") : "No output")
     }
 
     private var icon: String {
@@ -1256,14 +1454,14 @@ struct ShellRunCard: View {
                     ProgressView().controlSize(.mini)
                 } else if let code = exitCode {
                     Text(BangCommand.resultLabel(ok: !failed, exitCode: code))
-                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .font(.system(.caption2, design: .monospaced).weight(.semibold))
                         .foregroundStyle(failed ? palette.destructive : palette.mutedForeground)
                         .padding(.horizontal, 5).padding(.vertical, 1)
                         .background(Capsule().fill(palette.muted.opacity(0.45)))
                 }
                 if hasOutput {
                     Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 9)).foregroundStyle(palette.mutedForeground)
+                        .font(.caption2).foregroundStyle(palette.mutedForeground)
                 }
             }
             // Expand/collapse hangs off the HEADER only, not the whole card. Putting it on the card
@@ -1274,6 +1472,10 @@ struct ShellRunCard: View {
                 guard hasOutput else { return }
                 withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel("Command you ran: \(message.text)\(running ? ", running" : (failed ? ", failed" : ", finished"))")
+            .accessibilityValue(hasOutput ? (expanded ? "Expanded" : "Collapsed") : "No output")
             if expanded, hasOutput {
                 // Horizontal scroll only (matching ToolCallCard) and NO height clamp: the row grows
                 // to fit and the transcript scrolls it. A vertical clamp here would show the TOP of
@@ -1294,6 +1496,10 @@ struct ShellRunCard: View {
                     Text("You ran this — the agent hasn't seen it.")
                         .font(.caption2).foregroundStyle(palette.mutedForeground)
                     Spacer(minLength: 6)
+                    if hasOutput {
+                        // Copy takes the FULL output, not the tail-bounded preview above it.
+                        CopyContentButton(text: output, palette: palette, label: "Copy command output")
+                    }
                     Button {
                         Task { await model.send(BangCommand.shareMessage(command: message.text, output: output)) }
                     } label: {
@@ -1307,8 +1513,8 @@ struct ShellRunCard: View {
         }
         .padding(.horizontal, OculusSpace.md).padding(.vertical, OculusSpace.sm)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(palette.secondary.opacity(0.3), in: RoundedRectangle(cornerRadius: OculusRadius.sm))
-        .overlay(RoundedRectangle(cornerRadius: OculusRadius.sm)
+        .background(palette.secondary.opacity(0.3), in: OculusShape.rounded(OculusRadius.sm))
+        .overlay(OculusShape.rounded(OculusRadius.sm)
             .strokeBorder((failed ? palette.destructive : palette.primary).opacity(running ? 0.4 : 0.2)))
     }
 
@@ -1358,7 +1564,10 @@ struct StreamStallBar: View {
     let onReconnect: () -> Void
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: "wifi.exclamationmark").font(.caption).foregroundStyle(Color(hex: 0xE0912A))
+            // A stalled stream is a WARNING, not a failure — nothing has gone wrong yet, we just
+            // stopped hearing. palette.warning carries that, and unlike the hardcoded amber it
+            // darkens for light mode instead of glowing off a white background.
+            Image(systemName: "wifi.exclamationmark").font(.caption).foregroundStyle(palette.warning)
             Text("No updates for a while — the stream may be stuck")
                 .font(.caption).foregroundStyle(palette.foreground).lineLimit(1)
             Button(action: onReconnect) {
@@ -1367,26 +1576,8 @@ struct StreamStallBar: View {
             .buttonStyle(.plain).foregroundStyle(palette.primary)
         }
         .padding(.horizontal, 8).padding(.vertical, 3)
-        .background(Capsule().fill(Color(hex: 0xE0912A).opacity(0.12)))
-        .overlay(Capsule().strokeBorder(Color(hex: 0xE0912A).opacity(0.35)))
-    }
-}
-
-struct TypingIndicator: View {
-    let palette: OculusPalette
-    @State private var phase = 0.0
-    var body: some View {
-        HStack(spacing: 4) {
-            ForEach(0..<3) { i in
-                Circle().fill(palette.mutedForeground)
-                    .frame(width: 6, height: 6)
-                    .opacity(phase == Double(i) ? 1 : 0.3)
-            }
-        }
-        .onAppear {
-            withAnimation(.easeInOut(duration: 0.5).repeatForever()) { phase = 2 }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Capsule().fill(palette.warning.opacity(0.12)))
+        .overlay(Capsule().strokeBorder(palette.warning.opacity(0.35)))
     }
 }
 
@@ -1401,6 +1592,7 @@ struct ToolActivityView: View {
     /// The concrete thing being done right now (a command line, a file path) — appended to the full
     /// bar so it reads "Running a command · npm test" instead of a contentless label. Ignored when compact.
     var detail: String? = nil
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var pulse = false
 
     var body: some View {
@@ -1410,6 +1602,11 @@ struct ToolActivityView: View {
                 .font(.caption).foregroundStyle(palette.primary)
                 .scaleEffect(pulse ? 1.0 : 0.82)
                 .opacity(pulse ? 1 : 0.65)
+                // With Reduce Motion the icon settles at full size/opacity rather than disappearing:
+                // this chip is the only "the agent is doing something" signal in the bar, so it has to
+                // stay legible when it stops moving.
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.7).repeatForever(autoreverses: true),
+                           value: pulse)
             Text(compact ? t.short : t.label)
                 .font(.caption.weight(.medium)).foregroundStyle(palette.foreground).lineLimit(1)
             if !compact, let d = detail?.trimmingCharacters(in: .whitespacesAndNewlines), !d.isEmpty {
@@ -1423,7 +1620,7 @@ struct ToolActivityView: View {
         .padding(.horizontal, 8).padding(.vertical, 3)
         .background(Capsule().fill(palette.primary.opacity(0.12)))
         .overlay(Capsule().strokeBorder(palette.primary.opacity(0.18)))
-        .onAppear { withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) { pulse = true } }
+        .onAppear { pulse = true }
     }
 
     /// Maps a tool name to (SF Symbol, long label, short word). Kept broad so opencode/claude/pi
@@ -1453,20 +1650,56 @@ struct ToolActivityView: View {
 /// A compact three-dot pulse (the animated "…" used inline in the tool-activity chip).
 struct TypingDots: View {
     let palette: OculusPalette
-    @State private var phase = 0.0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var animating = false
+
     var body: some View {
         HStack(spacing: 3) {
-            ForEach(0..<3) { i in
+            ForEach(0..<3, id: \.self) { i in
                 Circle().fill(palette.primary.opacity(0.7))
                     .frame(width: 4, height: 4)
-                    .opacity(phase == Double(i) ? 1 : 0.3)
+                    // Was `phase == Double(i)` — an exact Double equality test against a value being
+                    // continuously interpolated 0→2. That is essentially never true, so all three dots
+                    // sat at 0.3 forever and the "animation" never appeared. The travelling pulse comes
+                    // from three independent repeating animations offset by a staggered delay.
+                    .opacity(animating ? 1 : 0.3)
+                    .animation(reduceMotion
+                               ? nil
+                               : .easeInOut(duration: 0.5).repeatForever(autoreverses: true).delay(Double(i) * 0.15),
+                               value: animating)
             }
         }
-        .onAppear { withAnimation(.easeInOut(duration: 0.5).repeatForever()) { phase = 2 } }
+        // Under Reduce Motion the dots hold at full opacity: still a visible "…", just not moving.
+        .onAppear { animating = true }
+        .accessibilityHidden(true) // decorative; the chip's text already says what's happening
     }
 }
 
 // MARK: - Approval card
+
+/// Speaks a fact to VoiceOver that has no on-screen focus change to carry it.
+///
+/// The transcript streams silently — there are no announcements anywhere in this app — so a
+/// VoiceOver user has no way to learn that the agent stopped and is blocked waiting on them. They
+/// just hear nothing and assume it's still working.
+func announceToAccessibility(_ message: String) {
+    #if canImport(UIKit)
+    if #available(iOS 17.0, *) {
+        AccessibilityNotification.Announcement(message).post()
+    } else {
+        UIAccessibility.post(notification: .announcement, argument: message)
+    }
+    #elseif canImport(AppKit)
+    if #available(macOS 14.0, *) {
+        AccessibilityNotification.Announcement(message).post()
+    } else if let window = NSApp.keyWindow {
+        NSAccessibility.post(element: window, notification: .announcementRequested, userInfo: [
+            .announcement: message,
+            .priority: NSAccessibilityPriorityLevel.high.rawValue,
+        ])
+    }
+    #endif
+}
 
 struct ApprovalCard: View {
     let approval: ApprovalRequest
@@ -1476,12 +1709,65 @@ struct ApprovalCard: View {
     let onAlways: (ApprovalScope?) -> Void
     let onDeny: () -> Void
 
-    @State private var showArgs = false
+    @State private var showArgs: Bool
+    @State private var confirmingBroadAlways = false
+
+    /// Tools that can write, execute, or otherwise change the machine. An approval for one of these
+    /// is not undone by closing a window, so the card treats them louder everywhere below.
+    private static let writeCapableTools: Set<String> = [
+        "bash", "write", "edit", "multiedit", "notebookedit",
+    ]
+
+    /// Fragments that make a payload dangerous no matter which tool carries it — a `Read` whose
+    /// argument is a piped installer is not a read.
+    private static let dangerousFragments = [
+        "rm ", "rm -", "sudo", "--force", "-force", "curl", "wget", "| sh", "|sh",
+        "git push", "chmod", "dd ",
+    ]
+
+    static func isWriteCapable(_ tool: String) -> Bool {
+        writeCapableTools.contains(tool.lowercased())
+    }
+
+    /// Whether this request gets the loud treatment. Deliberately errs toward loud: a false alarm
+    /// costs a glance, a missed one costs an `rm -rf`.
+    static func isRisky(_ approval: ApprovalRequest) -> Bool {
+        if isWriteCapable(approval.tool) { return true }
+        let haystack = ((approval.detail ?? "") + " " + (approval.input?.prettyJSON ?? "")).lowercased()
+        return dangerousFragments.contains { haystack.contains($0) }
+    }
+
+    /// Arguments start OPEN whenever the decision actually turns on them — a write-capable tool, or a
+    /// payload short enough to take in at a glance. Defaulting them collapsed meant the common case
+    /// was approving a command nobody ever saw, which is exactly the failure this disclosure exists
+    /// to prevent. Long read-only payloads stay folded so the card doesn't swallow the screen.
+    static func argsOpenByDefault(_ approval: ApprovalRequest) -> Bool {
+        if isWriteCapable(approval.tool) { return true }
+        guard let pretty = approval.input?.prettyJSON else { return false }
+        return pretty.components(separatedBy: "\n").count <= 15
+    }
+
+    init(approval: ApprovalRequest, palette: OculusPalette,
+         onAllow: @escaping () -> Void,
+         onAlways: @escaping (ApprovalScope?) -> Void,
+         onDeny: @escaping () -> Void) {
+        self.approval = approval
+        self.palette = palette
+        self.onAllow = onAllow
+        self.onAlways = onAlways
+        self.onDeny = onDeny
+        _showArgs = State(initialValue: Self.argsOpenByDefault(approval))
+    }
+
+    private var risky: Bool { Self.isRisky(approval) }
+    /// The card's accent — border, header glyph, and the Allow button when the request is risky.
+    private var accent: Color { risky ? palette.destructive : palette.primary }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Image(systemName: "bell.badge.fill").foregroundStyle(palette.primary)
+                Image(systemName: risky ? "exclamationmark.triangle.fill" : "bell.badge.fill")
+                    .foregroundStyle(accent)
                 Text("Approve \(approval.tool)").font(.headline)
                 Spacer()
             }
@@ -1491,7 +1777,7 @@ struct ApprovalCard: View {
                     .padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(palette.input)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .clipShape(OculusShape.concentric(outer: 16, padding: 14))
                     .textSelection(.enabled)
             }
             // The exact arguments, when the harness sent them. The one-line detail is a summary;
@@ -1499,35 +1785,64 @@ struct ApprovalCard: View {
             // failure mode this fixes.
             if let args = approval.input, let pretty = args.prettyJSON, pretty != approval.detail {
                 DisclosureGroup(isExpanded: $showArgs) {
+                    // No height clamp, and a real reading size rather than 11pt: this was the smallest
+                    // text in the app sitting on the single most consequential thing it renders, and
+                    // clipping it hid the tail of the very command being approved.
                     ScrollView(.horizontal) {
                         Text(pretty)
-                            .font(.system(size: 11, design: .monospaced))
+                            .font(.system(.footnote, design: .monospaced))
                             .textSelection(.enabled)
                             .padding(8)
                     }
-                    .frame(maxHeight: 160)
                     .background(palette.input)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .clipShape(OculusShape.concentric(outer: 16, padding: 14))
                 } label: {
-                    Text("Details").font(.system(size: 11.5, weight: .medium))
+                    Text("Details").font(.caption.weight(.medium))
                         .foregroundStyle(palette.mutedForeground)
                 }
             }
             HStack(spacing: 8) {
-                Button("Deny", action: onDeny)
-                    .buttonStyle(.bordered).tint(palette.destructive)
-                Spacer()
-                alwaysControl
-                Button("Allow", action: onAllow)
-                    .buttonStyle(.borderedProminent).tint(palette.primary)
-                    .keyboardShortcut(.defaultAction)
+                if risky {
+                    // For a write/exec request the SAFE choice is the prominent one. Allow drops to a
+                    // bordered, destructive-tinted button so the "big button = go ahead" reflex no
+                    // longer lands on the dangerous action.
+                    Button("Deny", action: onDeny)
+                        .buttonStyle(.borderedProminent).tint(palette.primary)
+                        .keyboardShortcut(.cancelAction)
+                    Spacer()
+                    Button("Allow", action: onAllow)
+                        .buttonStyle(.bordered).tint(palette.destructive)
+                } else {
+                    Button("Deny", action: onDeny)
+                        .buttonStyle(.bordered).tint(palette.destructive)
+                        // Allow used to carry `.keyboardShortcut(.defaultAction)`, so Return approved
+                        // an agent-proposed command — on a card that animates in directly above the
+                        // composer, where the user's hands already are. KeyChangeAlert makes the same
+                        // call for the same reason: the destructive option must never be what a
+                        // reflexive keypress selects. Here "destructive" is APPROVING, so the
+                        // reflexive key is bound to Deny and nothing is bound to Allow.
+                        .keyboardShortcut(.cancelAction)
+                    Spacer()
+                    Button("Allow", action: onAllow)
+                        .buttonStyle(.borderedProminent).tint(palette.primary)
+                }
             }
+            // "Always" gets its own row: stating its real scope takes a full sentence, and that
+            // sentence will not fit beside Deny/Allow at any Dynamic Type size.
+            alwaysControl
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .padding(14)
         .background(palette.card)
-        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(palette.primary.opacity(0.4)))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(OculusShape.rounded(16).strokeBorder(accent.opacity(0.4)))
+        .clipShape(OculusShape.rounded(16))
         .padding(.horizontal, 12).padding(.bottom, 6)
+        // The run is BLOCKED on this card. Trapping VoiceOver inside it keeps a screen-reader user
+        // from wandering off into the transcript behind a decision the agent is waiting on.
+        .accessibilityAddTraits(.isModal)
+        .onAppear {
+            announceToAccessibility("The agent is waiting for your approval to run \(approval.tool).")
+        }
     }
 
     /// "Always" is a plain button when the daemon offered no scopes (older daemon), and a menu when
@@ -1535,8 +1850,20 @@ struct ApprovalCard: View {
     /// available without the user inventing a pattern.
     @ViewBuilder private var alwaysControl: some View {
         if approval.suggestedScopes.isEmpty {
-            Button("Always") { onAlways(nil) }
+            // The label used to be the single word "Always", while the rule it writes is "this tool,
+            // in every project, forever". One tap silently granting Bash everywhere is not something
+            // a user can consent to from a word that never says it. The button now states the scope,
+            // and the dialog names exactly what is about to become permanent.
+            Button("Always allow \(approval.tool) everywhere") { confirmingBroadAlways = true }
                 .buttonStyle(.bordered).tint(palette.primary)
+                .font(.footnote)
+                .confirmationDialog("Always allow \(approval.tool) everywhere?",
+                                    isPresented: $confirmingBroadAlways, titleVisibility: .visible) {
+                    Button("Always allow \(approval.tool)", role: .destructive) { onAlways(nil) }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("Every future \(approval.tool) call runs without asking — in every project, in every session on this machine, until you remove the rule.")
+                }
         } else {
             Menu {
                 ForEach(approval.suggestedScopes) { scope in
@@ -1548,6 +1875,7 @@ struct ApprovalCard: View {
             .menuStyle(.borderlessButton)
             .fixedSize()
             .tint(palette.primary)
+            .accessibilityLabel("Always allow, choose a scope")
         }
     }
 }
@@ -1602,7 +1930,8 @@ struct TodoBar: View {
         s == "completed" ? "checkmark.circle.fill" : (s == "in_progress" ? "arrow.triangle.2.circlepath" : "circle")
     }
     private func color(_ s: String) -> Color {
-        s == "completed" ? Color(hex: 0x2EA043) : (s == "in_progress" ? palette.primary : palette.mutedForeground)
+        // "completed" is a success state, not a diff-added one — the shared token, not a hardcoded green.
+        s == "completed" ? palette.success : (s == "in_progress" ? palette.primary : palette.mutedForeground)
     }
 }
 
@@ -1711,7 +2040,7 @@ struct HandoffSheet: View {
             ScrollView {
                 if let c = content {
                     Text(c)
-                        .font(.system(size: 13, design: .monospaced))
+                        .font(.system(.footnote, design: .monospaced))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(16)
@@ -1798,13 +2127,18 @@ struct InlineSubAgentCard: View {
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 9)
-        .background(palette.secondary.opacity(0.3), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(palette.primary.opacity(running ? 0.4 : 0.2)))
+        .background(palette.secondary.opacity(0.3), in: OculusShape.rounded(10))
+        .overlay(OculusShape.rounded(10).strokeBorder(palette.primary.opacity(running ? 0.4 : 0.2)))
         // Tap anywhere on the card to expand/collapse. Nested tool cards + the Collapse button are their
         // own tap targets, so tapping INSIDE a running tool toggles that tool — it doesn't fold the
         // whole sub-agent (child taps win over this parent gesture, so inheritance is respected).
         .contentShape(Rectangle())
         .onTapGesture(perform: toggle)
+        // A bare tap gesture is not a control to VoiceOver — without these the card announced as
+        // unlabelled static text with no hint that it opens.
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel("Sub-agent: \(title), \(running ? "running" : "done")")
+        .accessibilityValue(expanded ? "Expanded" : "Collapsed")
     }
 }
 
@@ -1897,18 +2231,25 @@ struct SubAgentsStrip: View {
                         .foregroundStyle(palette.mutedForeground)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Open as full session")
                 .help("Open as full session")
             }
             .contentShape(Rectangle())
             .onTapGesture { withAnimation(.easeInOut(duration: 0.22)) { model.toggleChildExpanded(child.id) } }
+            // Same reason as the tool/sub-agent cards: a tap gesture carries no button trait, label or
+            // state of its own, so the lane header was silent to VoiceOver.
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel("Sub-agent lane: \(child.subtask ?? child.workspaceName ?? "subtask")")
+            .accessibilityValue(expanded ? "Expanded" : "Collapsed")
             if expanded {
                 childTranscript(child)
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
-        .background(palette.background, in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(palette.border))
+        .background(palette.background, in: OculusShape.rounded(8))
+        .overlay(OculusShape.rounded(8).strokeBorder(palette.border))
     }
 
     /// The nested lane: a bordered, scrollable compact transcript of the child's messages (reusing
@@ -1936,7 +2277,7 @@ struct SubAgentsStrip: View {
                 .frame(maxHeight: 260)
             }
         }
-        .background(palette.secondary.opacity(0.25), in: RoundedRectangle(cornerRadius: 6))
+        .background(palette.secondary.opacity(0.25), in: OculusShape.rounded(6))
     }
 
     private func isRunning(_ child: Session, _ hb: SessionHeartbeat?) -> Bool {
@@ -2085,13 +2426,7 @@ struct ChatMarkdownView: View {
     private func headingSize(_ l: Int) -> CGFloat {
         switch l { case 1: return 22; case 2: return 19; case 3: return 16.5; default: return 15 }
     }
-    private func copyAll() {
-        #if canImport(AppKit)
-        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
-        #elseif canImport(UIKit)
-        UIPasteboard.general.string = text
-        #endif
-    }
+    private func copyAll() { chatCopyToPasteboard(text) }
 }
 
 private struct ChatCodeBlockView: View {
@@ -2111,8 +2446,14 @@ private struct ChatCodeBlockView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
         }
-        .background(theme.background, in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(palette.border))
+        .background(theme.background, in: OculusShape.rounded(8))
+        .overlay(OculusShape.rounded(8).strokeBorder(palette.border))
+        // A persistent copy control, because `.textSelection` inside a horizontally-scrolling view is
+        // not a copy path on touch: long-press-then-drag fights the pan gesture, so on a phone there
+        // was NO way to get a code block out of the transcript at all.
+        .overlay(alignment: .topTrailing) {
+            CopyContentButton(text: code, palette: palette, label: "Copy code")
+        }
     }
 
     private var codeLanguage: CodeLanguage {
@@ -2135,6 +2476,7 @@ private struct ChatCodeBlockView: View {
 struct RunningPulseDot: View {
     let color: Color
     let active: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var pulse = false
 
     var body: some View {
@@ -2144,15 +2486,18 @@ struct RunningPulseDot: View {
                     .frame(width: 14, height: 14)
                     .scaleEffect(pulse ? 1.0 : 0.5)
                     .opacity(pulse ? 0 : 0.8)
+                    .animation(reduceMotion ? nil : .easeOut(duration: 1.1).repeatForever(autoreverses: false),
+                               value: pulse)
             }
+            // The solid core is never animated: it's what still says "running" once the halo stops.
             Circle().fill(color).frame(width: 7, height: 7)
         }
         .frame(width: 14, height: 14)
-        .onAppear { if active { withAnimation(.easeOut(duration: 1.1).repeatForever(autoreverses: false)) { pulse = true } } }
-        .onChange(of: active) { on in
-            pulse = false
-            if on { withAnimation(.easeOut(duration: 1.1).repeatForever(autoreverses: false)) { pulse = true } }
-        }
+        // Reduce Motion matters more here than anywhere else in this file — one of these renders per
+        // running sub-agent, so a fan-out put a dozen simultaneous, unstoppable pulses on screen. With
+        // motion reduced the halo simply holds still at its resting size instead of never starting.
+        .onAppear { pulse = active && !reduceMotion }
+        .onChange(of: active) { on in pulse = on && !reduceMotion }
     }
 }
 
@@ -2183,19 +2528,20 @@ struct DelegateSheet: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Subtask").font(.caption).foregroundStyle(palette.mutedForeground)
                 TextEditor(text: $subtask)
-                    .font(.system(size: 13))
+                    .font(.footnote)
                     .frame(minHeight: 80)
-                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(palette.border))
+                    .overlay(OculusShape.rounded(6).strokeBorder(palette.border))
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text("Files it may change (optional, one per line)").font(.caption).foregroundStyle(palette.mutedForeground)
                 TextEditor(text: $filesText)
-                    .font(.system(size: 12, design: .monospaced))
+                    .font(.system(.footnote, design: .monospaced))
                     .frame(minHeight: 54)
-                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(palette.border))
+                    .plainInput() // paths + branch names: autocorrect turns these into nonsense
+                    .overlay(OculusShape.rounded(6).strokeBorder(palette.border))
             }
             Toggle(isOn: $autonomous) {
-                Text("Run autonomously (heartbeat keeps it going)").font(.system(size: 13))
+                Text("Run autonomously (heartbeat keeps it going)").font(.footnote)
             }
             .toggleStyle(.switch).tint(palette.primary)
             HStack {
@@ -2314,10 +2660,12 @@ struct TestResultPanel: View {
                     ProgressView().controlSize(.small)
                     Text("Running tests…").font(.caption.bold())
                 } else if let r = model.testResult {
+                    // Pass/fail is a success/failure reading, not a diff — the semantic tokens rather
+                    // than the hardcoded GitHub greens/reds, which didn't darken for light mode.
                     Image(systemName: r.ok ? "checkmark.seal.fill" : "xmark.octagon.fill")
-                        .foregroundStyle(r.ok ? Color(hex: 0x2EA043) : Color(hex: 0xF85149))
+                        .foregroundStyle(r.ok ? palette.success : palette.destructive)
                     Text(r.ok ? "Tests passed" : "Tests failed (exit \(r.exitCode))").font(.caption.bold())
-                        .foregroundStyle(r.ok ? Color(hex: 0x2EA043) : Color(hex: 0xF85149))
+                        .foregroundStyle(r.ok ? palette.success : palette.destructive)
                 }
                 Spacer()
                 if let r = model.testResult, !r.ok {
@@ -2328,6 +2676,8 @@ struct TestResultPanel: View {
                 }
                 Button { model.showTests = false } label: { Image(systemName: "xmark").font(.caption2) }
                     .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
+                    .accessibilityLabel("Close test results")
+                    .help("Close test results")
             }
             .padding(.horizontal, 12).padding(.vertical, 7)
             Divider().overlay(palette.border)
@@ -2348,8 +2698,8 @@ struct TestResultPanel: View {
             .frame(maxHeight: 180)
         }
         .background(palette.input)
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder((passed == false ? Color(hex: 0xF85149) : palette.border).opacity(0.5)))
-        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(OculusShape.rounded(14).strokeBorder((passed == false ? palette.destructive : palette.border).opacity(0.5)))
+        .clipShape(OculusShape.rounded(14))
         .padding(.horizontal, 12).padding(.bottom, 6)
     }
 }
@@ -2396,7 +2746,7 @@ struct TranscriptSkeleton: View {
             if row.mine { Spacer(minLength: 40) }
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(0..<row.lines, id: \.self) { i in
-                    RoundedRectangle(cornerRadius: 5)
+                    OculusShape.rounded(5)
                         // The last line of a paragraph is short — that irregularity is most of what
                         // makes this read as text rather than as bars.
                         .frame(height: 10)
@@ -2407,7 +2757,7 @@ struct TranscriptSkeleton: View {
             .padding(.horizontal, row.mine ? 12 : 0)
             .padding(.vertical, row.mine ? 9 : 0)
             .background(row.mine ? palette.secondary : Color.clear)
-            .clipShape(RoundedRectangle(cornerRadius: OculusRadius.md))
+            .clipShape(OculusShape.rounded(OculusRadius.md))
             .frame(width: max(width * row.frac, 80), alignment: .leading)
             if !row.mine { Spacer(minLength: 40) }
         }

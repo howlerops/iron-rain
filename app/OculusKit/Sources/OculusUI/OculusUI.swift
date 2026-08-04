@@ -83,6 +83,19 @@ public final class Model: ObservableObject {
     @Published public var sessionID: String?
     @Published public var currentSession: Session? // metadata (project/worktree/branch) of the active session
     @Published public var pendingApproval: ApprovalRequest? { didSet { refreshLiveActivity() } }
+
+    /// Every approval currently waiting on the user, keyed by session id.
+    ///
+    /// `pendingApproval` above is only ever the OPEN session's, because the request handler used to
+    /// drop anything whose `sessionID` didn't match the one on screen. That made the Activity screen
+    /// — the app's default tab, and the one whose entire job is answering "what needs me?" — able to
+    /// show that a session was blocked but not to unblock it: every approval cost a round trip into
+    /// the session and a full transcript replay, and an approval raised while you were elsewhere was
+    /// discarded outright until the daemon happened to re-send it.
+    ///
+    /// Keeping the map means an approval survives wherever you are, and `respond(_:scope:for:)` can
+    /// answer one without opening its session.
+    @Published public var pendingApprovals: [String: ApprovalRequest] = [:]
     @Published public var discovered: [Discovered] = []
     @Published public var busy = false { didSet { refreshLiveActivity() } } // agent is producing output; drives the Live Activity
     @Published public var activity: String? // current step, e.g. "running bash"
@@ -2774,11 +2787,24 @@ public final class Model: ObservableObject {
            let list = try? env.payload(as: MCPList.self) { mcpServers = list.servers }
     }
 
+    /// Enables/disables a server, and REVERTS if the daemon didn't take it.
+    ///
+    /// The optimistic write below lands before the request, so a failure used to leave the switch
+    /// showing a state the daemon never agreed to — the toggle read "on" while the server stayed off.
+    /// A control that silently disagrees with the thing it controls is worse than one that fails.
     public func setMCPServerEnabled(name: String, enabled: Bool) async {
         guard client != nil else { return }
+        let previous = mcpServers.first(where: { $0.name == name })?.enabled
         if let i = mcpServers.firstIndex(where: { $0.name == name }) { mcpServers[i].enabled = enabled }
-        if let env = try? await request(MessageType.mcpEnable, payload: MCPEnable(name: name, enabled: enabled)),
-           let list = try? env.payload(as: MCPList.self) { mcpServers = list.servers }
+        do {
+            let env = try await request(MessageType.mcpEnable, payload: MCPEnable(name: name, enabled: enabled))
+            if let list = try? env.payload(as: MCPList.self) { mcpServers = list.servers }
+        } catch {
+            if let previous, let i = mcpServers.firstIndex(where: { $0.name == name }) {
+                mcpServers[i].enabled = previous
+            }
+            setError("Couldn’t \(enabled ? "enable" : "disable") \(name)", error.localizedDescription)
+        }
     }
 
     /// Connects to the server and lists its tools — the honest "does this actually work" check.
@@ -3027,10 +3053,20 @@ public final class Model: ObservableObject {
         if let resp = try? await request(MessageType.loopDelete, payload: LoopRef(id: id)),
            let ll = try? resp.payload(as: LoopList.self) { loops = ll.loops; loopRuns = ll.runs }
     }
+    /// Arms or disarms a loop, and says so when it fails.
+    ///
+    /// This only updated on success, so a failure left the switch snapping back with no explanation —
+    /// and a loop is an AUTONOMOUS agent run, so "did that arm or not" is not a question to leave the
+    /// user guessing at.
     public func setLoopEnabled(_ id: String, _ on: Bool) async {
         guard client != nil else { return }
-        if let resp = try? await request(MessageType.loopSetEnabled, payload: LoopSetEnabled(id: id, enabled: on)),
-           let ll = try? resp.payload(as: LoopList.self) { loops = ll.loops; loopRuns = ll.runs }
+        do {
+            let resp = try await request(MessageType.loopSetEnabled, payload: LoopSetEnabled(id: id, enabled: on))
+            if let ll = try? resp.payload(as: LoopList.self) { loops = ll.loops; loopRuns = ll.runs }
+        } catch {
+            let name = loops.first(where: { $0.id == id })?.name ?? "loop"
+            setError("Couldn’t \(on ? "turn on" : "turn off") \(name)", error.localizedDescription)
+        }
     }
 
     public func removeProject(id: String) async {
@@ -3439,6 +3475,31 @@ public final class Model: ObservableObject {
         for (_, cont) in inflight { cont.resume(throwing: error) }
     }
 
+    /// Answer an approval for a session that isn't open, without navigating to it.
+    ///
+    /// This is what lets the Activity screen resolve "needs you" in place. It deliberately does NOT
+    /// touch `pendingApproval` unless the target happens to be the open session — answering session
+    /// B's request must not disturb what session A is showing.
+    public func respond(_ decision: String, scope: ApprovalScope? = nil, for sessionID: String) async {
+        guard let client, let ap = pendingApprovals[sessionID] else { return }
+        pendingApprovals[sessionID] = nil
+        if self.sessionID == sessionID { pendingApproval = nil }
+        refreshLiveActivity()
+        do {
+            let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.approvalRespond,
+                                          payload: ApprovalRespond(approvalID: ap.approvalID, decision: decision, scope: scope))
+            try await client.send(env)
+        } catch {
+            // Put it back — the agent is still blocked, and a silently-dropped decision is the one
+            // failure mode this surface cannot have.
+            pendingApprovals[sessionID] = ap
+            if self.sessionID == sessionID { pendingApproval = ap }
+            refreshLiveActivity()
+            actionError = "Couldn’t send your \(decision == Decision.deny ? "denial" : "approval").\n\n\(error.localizedDescription)"
+            status = "Respond failed"
+        }
+    }
+
     /// - Parameter scope: only meaningful with `Decision.always`; nil means the broad
     ///   "this tool, everywhere" rule. The daemon supplies the available scopes on the request.
     public func respond(_ decision: String, scope: ApprovalScope? = nil) async {
@@ -3542,7 +3603,13 @@ public final class Model: ObservableObject {
             let t = (last.text + streamBuffer)
             return String(t.suffix(240))
         }
-        if let t = messages.last(where: { $0.role == .thinking })?.text, !t.isEmpty {
+        // Bounded scan. This property is read from the working bar's body, which re-evaluates on every
+        // stream flush (~25×/second), and an unbounded `last(where:)` walks to index 0 every time the
+        // turn has no reasoning yet — i.e. the common case, on the longest transcripts, at the highest
+        // frequency. Reasoning that is more than a screen of messages back is also not "what the agent
+        // is thinking now", so the bound costs nothing real.
+        let window = messages.suffix(40)
+        if let t = window.last(where: { $0.role == .thinking })?.text, !t.isEmpty {
             return String(t.suffix(240))
         }
         return ""
@@ -3995,14 +4062,27 @@ public final class Model: ObservableObject {
                 }
             }
         case MessageType.approvalRequest:
-            if let ar = try? env.payload(as: ApprovalRequest.self), ar.sessionID == sessionID {
-                stopStallLoop()
-                pendingApproval = ar
+            // Record EVERY approval, not just the open session's. The old `ar.sessionID == sessionID`
+            // guard silently dropped the rest, so a request raised while you were on another screen
+            // was gone until the daemon re-sent it.
+            if let ar = try? env.payload(as: ApprovalRequest.self) {
+                pendingApprovals[ar.sessionID] = ar
+                if ar.sessionID == sessionID {
+                    stopStallLoop()
+                    pendingApproval = ar
+                }
                 refreshLiveActivity()
             }
         case MessageType.approvalResolved:
             // Another device answered this exact approval — clear our card and
             // mirror the decision so both transcripts match.
+            if let r = try? env.payload(as: ApprovalResolved.self) {
+                // Drop it from the map wherever it lived, so a stale "needs you" row can't survive
+                // another device answering it.
+                for (sid, ap) in pendingApprovals where ap.approvalID == r.approvalID {
+                    pendingApprovals[sid] = nil
+                }
+            }
             if let r = try? env.payload(as: ApprovalResolved.self),
                let ap = pendingApproval, ap.approvalID == r.approvalID {
                 let verb = r.decision == Decision.deny ? "✗ Denied"

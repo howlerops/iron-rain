@@ -11,6 +11,13 @@ import OculusKit
 /// So on iOS the navigation bar carries one legible summary and this sheet carries the controls,
 /// full-width, with labels — the state you glance at stays in the bar, the state you CHANGE lives
 /// where there's room to change it.
+///
+/// Where a control leads once this sheet closes, so the parent can present the destination in
+/// `.sheet(onDismiss:)` instead of the sheet racing its own dismissal with a timer.
+enum SessionControlsDestination: Hashable {
+    case code, design, delegate, worktree, workspace, usage
+}
+
 struct SessionControlsSheet: View {
     @ObservedObject var model: Model
     let palette: OculusPalette
@@ -22,6 +29,11 @@ struct SessionControlsSheet: View {
     var onWorktree: () -> Void
     var onWorkspace: () -> Void
     var onUsage: () -> Void
+    /// Where the sheet wants to go next, published for a parent that presents in `.sheet(onDismiss:)`.
+    ///
+    /// Optional with a nil default so the existing call site keeps compiling and keeps today's
+    /// behaviour. Bind it and `dismissThen` stops racing — see the note on `dismissThen`.
+    var destination: Binding<SessionControlsDestination?>? = nil
 
     private var isWorktree: Bool { model.currentSession?.branch != nil }
 
@@ -36,39 +48,64 @@ struct SessionControlsSheet: View {
             settings
             tools
         }
+        // This is a stack of controls, not a document: at full height it is mostly empty space and
+        // it covers the transcript you are reading the controls ABOUT. Medium first, draggable up.
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
     }
 
     // MARK: - What it has cost
 
     private var meter: some View {
         SheetCard(palette: palette) {
-            HStack(alignment: .firstTextBaseline, spacing: OculusSpace.md) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("THIS SESSION")
-                        .font(.system(size: 9, weight: .semibold)).tracking(0.8)
-                        .foregroundStyle(palette.mutedForeground)
-                    Text(String(format: "$%.3f", model.currentSession?.costUSD ?? 0))
-                        .font(.system(size: 18, weight: .semibold, design: .rounded).monospacedDigit())
-                        .foregroundStyle(palette.foreground)
-                    Text("\(tokens) tokens")
-                        .font(.system(size: 10).monospacedDigit())
-                        .foregroundStyle(palette.mutedForeground)
+            // One figure and one button, not a column of a table — so the money scales with Dynamic
+            // Type like everything else, and the button drops below it rather than being squeezed
+            // off the card.
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: OculusSpace.md) {
+                    meterFigure
+                    Spacer()
+                    allUsageButton
                 }
-                Spacer()
-                Button("All usage") { dismissThen(onUsage) }
-                    .buttonStyle(.bordered).controlSize(.small)
+                VStack(alignment: .leading, spacing: OculusSpace.sm) {
+                    meterFigure
+                    allUsageButton
+                }
             }
             if let hb = model.sessionID.flatMap({ model.heartbeats[$0] }) {
                 Divider().overlay(palette.border)
                 HStack(spacing: OculusSpace.xs) {
-                    RunningPulseDot(color: hb.state == "working" ? .green : palette.mutedForeground,
+                    RunningPulseDot(color: hb.state == "working" ? palette.success : palette.mutedForeground,
                                     active: hb.state == "working")
                     Text(hb.state == "working" ? "Working" : hb.state.capitalized)
-                        .font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
+                        .font(.caption).foregroundStyle(palette.mutedForeground)
                     Spacer()
                 }
             }
         }
+    }
+
+    private var meterFigure: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("THIS SESSION")
+                .font(.caption2.weight(.semibold)).tracking(0.8)
+                .foregroundStyle(palette.mutedForeground)
+            Text(String(format: "$%.3f", model.currentSession?.costUSD ?? 0))
+                .font(.system(.title3, design: .rounded).weight(.semibold).monospacedDigit())
+                .foregroundStyle(palette.foreground)
+                .lineLimit(1).minimumScaleFactor(0.6)
+            Text("\(tokens) tokens")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(palette.mutedForeground)
+        }
+    }
+
+    private var allUsageButton: some View {
+        Button("All usage") { dismissThen(.usage, onUsage) }
+            .buttonStyle(.bordered)
+            #if os(macOS)
+            .controlSize(.small)
+            #endif
     }
 
     private var tokens: String {
@@ -127,9 +164,9 @@ struct SessionControlsSheet: View {
                 )) {
                     VStack(alignment: .leading, spacing: 1) {
                         Label("Keep going on its own", systemImage: "bolt.circle")
-                            .font(.system(size: 13)).foregroundStyle(palette.foreground)
+                            .font(.subheadline).foregroundStyle(palette.foreground)
                         Text("The heartbeat nudges this session until its to-dos are done.")
-                            .font(.system(size: 10.5)).foregroundStyle(palette.mutedForeground)
+                            .font(.caption).foregroundStyle(palette.mutedForeground)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -146,23 +183,22 @@ struct SessionControlsSheet: View {
             SheetCard(palette: palette) {
                 if isWorktree {
                     action("Finish worktree", detail: model.currentSession?.branch ?? "review and merge",
-                           systemImage: "arrow.triangle.branch", prominent: true) { dismissThen(onWorktree) }
+                           systemImage: "arrow.triangle.branch", prominent: true) { dismissThen(.worktree, onWorktree) }
                     Divider().overlay(palette.border)
                 }
                 if model.currentSession?.isWorkspace == true {
                     action("Review workspace", detail: "changes across every repo",
-                           systemImage: "folder.badge.magnifyingglass") { dismissThen(onWorkspace) }
+                           systemImage: "folder.badge.magnifyingglass") { dismissThen(.workspace, onWorkspace) }
                     Divider().overlay(palette.border)
                 }
                 action("Code & changes", detail: "browse files and review the diff",
                        systemImage: "chevron.left.forwardslash.chevron.right") {
-                    model.codeReviewTarget = model.sessionID
-                    onClose()
+                    dismissThen(.code) { model.codeReviewTarget = model.sessionID }
                 }
                 Divider().overlay(palette.border)
                 #if canImport(WebKit)
                 action("Browser / Design", detail: "open a page and point at it",
-                       systemImage: "safari") { dismissThen(onOpenDesign) }
+                       systemImage: "safari") { dismissThen(.design, onOpenDesign) }
                 Divider().overlay(palette.border)
                 #endif
                 // Running the suite executes a shell command on the host, so it carries the same
@@ -175,7 +211,7 @@ struct SessionControlsSheet: View {
                 .disabled(model.runBusy || model.knownNonOwner)
                 Divider().overlay(palette.border)
                 action("Delegate subtask", detail: "hand part of this to a sub-agent",
-                       systemImage: "arrowshape.turn.up.right") { dismissThen(onDelegate) }
+                       systemImage: "arrowshape.turn.up.right") { dismissThen(.delegate, onDelegate) }
                 Divider().overlay(palette.border)
                 action("Recover session", detail: "re-sync if it looks stuck", systemImage: "bandage") {
                     onClose()
@@ -188,8 +224,22 @@ struct SessionControlsSheet: View {
 
     // MARK: - Pieces
 
-    /// Presenting a second sheet from inside a dismissing one races on iOS; close first, then open.
-    private func dismissThen(_ go: @escaping () -> Void) {
+    /// Presenting a second sheet from inside a dismissing one races on iOS, so the destination has to
+    /// wait for this sheet to actually be gone.
+    ///
+    /// The correct wait is the dismissal itself: the parent presents `destination` in its
+    /// `.sheet(onDismiss:)`, which fires when the sheet has finished going away — however long that
+    /// takes. Bind `destination` and that is what happens.
+    ///
+    /// Unbound, we fall back to a 250ms sleep, which is a GUESS at the dismissal animation and will
+    /// lose the race on a slow device or when Reduce Motion changes the timing. The parent is
+    /// ChatView, which this change does not own; adopting the binding there retires the timer.
+    private func dismissThen(_ dest: SessionControlsDestination, _ go: @escaping () -> Void) {
+        if let destination {
+            destination.wrappedValue = dest
+            onClose()
+            return
+        }
         onClose()
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 250_000_000)
@@ -198,14 +248,14 @@ struct SessionControlsSheet: View {
     }
 
     private func sectionHeader(_ t: String) -> some View {
-        Text(t).font(.system(size: 10, weight: .semibold)).tracking(0.8)
+        Text(t).font(.caption2.weight(.semibold)).tracking(0.8)
             .foregroundStyle(palette.mutedForeground)
     }
 
     private func row<T: View>(_ title: String, systemImage: String, @ViewBuilder trailing: () -> T) -> some View {
         HStack(spacing: OculusSpace.sm) {
             Label(title, systemImage: systemImage)
-                .font(.system(size: 13)).foregroundStyle(palette.foreground)
+                .font(.subheadline).foregroundStyle(palette.foreground)
             Spacer(minLength: OculusSpace.sm)
             trailing()
         }
@@ -213,13 +263,13 @@ struct SessionControlsSheet: View {
 
     private func pill(_ s: String) -> some View {
         HStack(spacing: 4) {
-            Text(s).font(.system(size: 12)).lineLimit(1)
-            Image(systemName: "chevron.up.chevron.down").font(.system(size: 8))
+            Text(s).font(.footnote).lineLimit(1).minimumScaleFactor(0.8)
+            Image(systemName: "chevron.up.chevron.down").font(.caption2)
         }
         .foregroundStyle(palette.foreground)
         .padding(.horizontal, OculusSpace.sm).padding(.vertical, 5)
         .background(palette.input)
-        .clipShape(RoundedRectangle(cornerRadius: OculusRadius.sm))
+        .clipShape(OculusShape.rounded(OculusRadius.sm))
     }
 
     private func action(_ title: String, detail: String, systemImage: String,
@@ -227,18 +277,20 @@ struct SessionControlsSheet: View {
         Button(action: go) {
             HStack(spacing: OculusSpace.sm) {
                 Image(systemName: systemImage)
-                    .font(.system(size: 13))
+                    .font(.footnote)
                     .foregroundStyle(prominent ? palette.primary : palette.mutedForeground)
-                    .frame(width: 20)
+                    .frame(minWidth: 20)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(title).font(.system(size: 13))
+                    Text(title).font(.subheadline)
                         .foregroundStyle(prominent ? palette.primary : palette.foreground)
-                    Text(detail).font(.system(size: 10.5)).foregroundStyle(palette.mutedForeground)
-                        .lineLimit(1)
+                    // The detail line is what tells you what the action will do — it wraps.
+                    Text(detail).font(.caption).foregroundStyle(palette.mutedForeground)
+                        .lineLimit(2)
                 }
                 Spacer(minLength: 0)
-                Image(systemName: "chevron.right").font(.system(size: 10))
+                Image(systemName: "chevron.right").font(.caption2)
                     .foregroundStyle(palette.mutedForeground)
+                    .accessibilityHidden(true)
             }
             .contentShape(Rectangle())
             .padding(.vertical, 3)
@@ -258,21 +310,29 @@ struct SessionTitleChip: View {
         VStack(spacing: 0) {
             HStack(spacing: 4) {
                 if model.autonomous {
-                    Image(systemName: "bolt.circle.fill").font(.system(size: 10))
+                    Image(systemName: "bolt.circle.fill").font(.caption2)
                         .foregroundStyle(palette.primary)
+                        // The ONLY indication that this session keeps going on its own — nothing
+                        // else in the bar says so, so it can't be decorative.
+                        .accessibilityLabel("Running autonomously")
                 }
                 if SessionMode.isRestricted(model.sessionMode) {
-                    Image(systemName: "lock.shield").font(.system(size: 10))
+                    Image(systemName: "lock.shield").font(.caption2)
                         .foregroundStyle(palette.primary)
+                        .accessibilityLabel("Restricted mode: \(SessionMode.label(model.sessionMode))")
                 }
-                Text(modelName).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                Text(modelName).font(.footnote.weight(.semibold))
+                    .lineLimit(1).minimumScaleFactor(0.8)
                     .foregroundStyle(palette.foreground)
-                Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold))
+                Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
                     .foregroundStyle(palette.mutedForeground)
             }
-            Text(status).font(.system(size: 10)).lineLimit(1)
+            Text(status).font(.caption2).lineLimit(1)
                 .foregroundStyle(palette.mutedForeground)
         }
+        // A navigation-bar title, and the bar's height is not ours to grow. Two lines of type inside
+        // 220pt is all there is, so this clamps rather than overrunning the toolbar.
+        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
         .frame(maxWidth: 220)
     }
 

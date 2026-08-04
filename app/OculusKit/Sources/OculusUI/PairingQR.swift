@@ -44,7 +44,7 @@ public struct PairingQRView: View {
                     .frame(width: 240, height: 240)
                     .padding(14)
                     .background(Color.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .clipShape(OculusShape.rounded(14))
             } else if model.mintingPairCode {
                 ProgressView().frame(width: 240, height: 240)
             } else {
@@ -53,8 +53,11 @@ public struct PairingQRView: View {
             }
 
             if let code = model.pairingCode {
-                Text("Pairs one device · expires \(code.expiry.formatted(date: .omitted, time: .shortened))")
-                    .font(.caption).foregroundStyle(palette.mutedForeground)
+                // A live countdown, not a wall-clock time. "Expires 3:42 PM" makes the user do
+                // subtraction to answer the only question they have — do I still have time to walk
+                // to my phone — and "I walked to my desk, then scanned" is the single most common
+                // first-run failure this screen produces.
+                PairingExpiryCountdown(expiry: code.expiry, palette: palette)
                 Text(code.url ?? "")
                     .font(.system(.caption2, design: .monospaced))
                     .foregroundStyle(palette.mutedForeground)
@@ -79,5 +82,43 @@ public struct PairingQRView: View {
             // (short) lifetime since.
             await model.mintPairingCode()
         }
+    }
+}
+
+/// Counts a pairing code down to zero, then says plainly that it is dead and what to do about it.
+///
+/// Codes are deliberately short-lived and single-use, which is the right security posture — but it
+/// makes expiry the NORMAL outcome rather than an edge case, so it needs to be legible rather than
+/// discovered when a scan mysteriously fails.
+struct PairingExpiryCountdown: View {
+    let expiry: Date
+    let palette: OculusPalette
+    @State private var now = Date()
+
+    // 1Hz. The countdown is the only thing on screen that moves, and a second is the resolution the
+    // user is actually reasoning at.
+    private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+    private var remaining: TimeInterval { expiry.timeIntervalSince(now) }
+
+    var body: some View {
+        Group {
+            if remaining <= 0 {
+                Label("This code has expired — tap New code", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(palette.destructive)
+            } else {
+                let m = Int(remaining) / 60, s = Int(remaining) % 60
+                Text("Pairs one device · expires in \(m):\(String(format: "%02d", s))")
+                    .font(.caption)
+                    .monospacedDigit()
+                    // Warn before it bites rather than after.
+                    .foregroundStyle(remaining < 30 ? palette.warning : palette.mutedForeground)
+            }
+        }
+        .onReceive(tick) { now = $0 }
+        .accessibilityLabel(remaining <= 0
+            ? "Pairing code expired. Tap New code for another."
+            : "Pairing code expires in \(Int(remaining) / 60) minutes \(Int(remaining) % 60) seconds.")
     }
 }

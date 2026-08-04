@@ -24,6 +24,13 @@ struct OculusApp: App {
                     }
                 }
         }
+        // Same main menu and Settings window as the shipping app (OculusMain) — the harness is
+        // where these get exercised, so it must not diverge from what ships.
+        .commands { OculusCommands(store: store) }
+
+        Settings {
+            SettingsView(store: store)
+        }
 
         MenuBarExtra {
             MenuBarView(store: store)

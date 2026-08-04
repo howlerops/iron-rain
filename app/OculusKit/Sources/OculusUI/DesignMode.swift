@@ -207,12 +207,12 @@ struct DesignModeView: View {
                 HStack(spacing: 10) {
                     if let shot = lastShot, let img = platformImage(shot) {
                         img.resizable().aspectRatio(contentMode: .fit)
-                            .frame(width: 48, height: 36).clipShape(RoundedRectangle(cornerRadius: 4))
-                            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(palette.border))
+                            .frame(width: 48, height: 36).clipShape(OculusShape.rounded(4))
+                            .overlay(OculusShape.rounded(4).strokeBorder(palette.border))
                     }
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Picked: \(el.selector)").font(.system(size: 12, weight: .medium)).lineLimit(1)
-                        if let t = el.text, !t.isEmpty { Text(t).font(.system(size: 10)).foregroundStyle(palette.mutedForeground).lineLimit(1) }
+                        Text("Picked: \(el.selector)").font(.footnote.weight(.medium)).lineLimit(1).minimumScaleFactor(0.8)
+                        if let t = el.text, !t.isEmpty { Text(t).font(.caption2).foregroundStyle(palette.mutedForeground).lineLimit(1) }
                     }
                     Spacer()
                     Button {

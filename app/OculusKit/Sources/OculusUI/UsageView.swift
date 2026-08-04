@@ -33,9 +33,9 @@ struct UsageView: View {
             if let r = model.usage {
                 totals(r)
                 window(r.window, subscription: r.subscription)
-                breakdown("BY PROVIDER", r.providers, icon: "shippingbox")
-                breakdown("BY MODEL", r.models, icon: "cpu")
-                breakdown("BY SESSION", r.sessions, icon: "bubble.left.and.bubble.right")
+                breakdown("By provider", r.providers, icon: "shippingbox")
+                breakdown("By model", r.models, icon: "cpu")
+                breakdown("By session", r.sessions, icon: "bubble.left.and.bubble.right")
                 if r.today.tokens == 0 && r.month.tokens == 0 {
                     SheetEmptyState(icon: "chart.bar",
                                     title: "Nothing recorded yet",
@@ -58,25 +58,35 @@ struct UsageView: View {
         .onReceive(tick) { now = $0 }
     }
 
+    /// Three money cards side by side — until they can't be. The figures scale with Dynamic Type
+    /// rather than staying frozen, so the row is allowed to become a column when three columns of
+    /// dollars no longer fit; freezing the type instead would keep the layout and lose the reader.
     private func totals(_ r: UsageReport) -> some View {
-        HStack(spacing: OculusSpace.sm) {
-            totalCard("Today", r.today)
-            totalCard("This week", r.week)
-            totalCard("This month", r.month)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: OculusSpace.sm) {
+                totalCard("Today", r.today)
+                totalCard("This week", r.week)
+                totalCard("This month", r.month)
+            }
+            VStack(spacing: OculusSpace.sm) {
+                totalCard("Today", r.today)
+                totalCard("This week", r.week)
+                totalCard("This month", r.month)
+            }
         }
     }
 
     private func totalCard(_ label: String, _ s: UsageSlice) -> some View {
         SheetCard(palette: palette) {
-            Text(label.uppercased())
-                .font(.system(size: 9, weight: .semibold)).tracking(0.8)
+            Text(label)
+                .font(.caption2.weight(.semibold))
                 .foregroundStyle(palette.mutedForeground)
             Text(money(s.costUSD))
-                .font(.system(size: 20, weight: .semibold, design: .rounded).monospacedDigit())
+                .font(.system(.title3, design: .rounded).weight(.semibold).monospacedDigit())
                 .foregroundStyle(palette.foreground)
                 .lineLimit(1).minimumScaleFactor(0.6)
             Text("\(compact(s.tokens)) tokens")
-                .font(.system(size: 10).monospacedDigit())
+                .font(.caption2.monospacedDigit())
                 .foregroundStyle(palette.mutedForeground)
         }
     }
@@ -86,32 +96,32 @@ struct UsageView: View {
         SheetCard(palette: palette, tint: w.active ? palette.primary : nil) {
             HStack(alignment: .firstTextBaseline) {
                 Label("Current \(w.hours)-hour window", systemImage: "clock.arrow.circlepath")
-                    .font(.system(size: 12, weight: .medium)).foregroundStyle(palette.foreground)
+                    .font(.footnote.weight(.medium)).foregroundStyle(palette.foreground)
                 Spacer()
                 Text(w.active ? resetText(w) : "idle")
-                    .font(.system(size: 11, weight: .medium).monospacedDigit())
+                    .font(.caption.weight(.medium).monospacedDigit())
                     .foregroundStyle(w.active ? palette.primary : palette.mutedForeground)
             }
             if w.active {
                 HStack(spacing: OculusSpace.md) {
                     Text(money(w.costUSD))
-                        .font(.system(size: 15, weight: .semibold).monospacedDigit())
+                        .font(.subheadline.weight(.semibold).monospacedDigit())
                         .foregroundStyle(palette.foreground)
                     Text("\(compact(w.tokens)) tokens")
-                        .font(.system(size: 11).monospacedDigit()).foregroundStyle(palette.mutedForeground)
+                        .font(.caption.monospacedDigit()).foregroundStyle(palette.mutedForeground)
                     Spacer()
                 }
                 Text("Started \(clock(w.startedAt)) — the window is anchored to your first activity, not the clock hour.")
-                    .font(.system(size: 10.5)).foregroundStyle(palette.mutedForeground)
+                    .font(.caption).foregroundStyle(palette.mutedForeground)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 Text("No usage in the last \(w.hours) hours. A new window opens with your next turn.")
-                    .font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
+                    .font(.caption).foregroundStyle(palette.mutedForeground)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if subscription {
                 Text("Costs are estimates at API rates. Your subscription agents don't bill per token, and this can't see your plan's own limits.")
-                    .font(.system(size: 10.5)).foregroundStyle(palette.mutedForeground)
+                    .font(.caption).foregroundStyle(palette.mutedForeground)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -121,29 +131,34 @@ struct UsageView: View {
         if !slices.isEmpty {
             let top = slices.map(\.costUSD).max() ?? 0
             VStack(alignment: .leading, spacing: OculusSpace.xs) {
-                Text(title).font(.system(size: 10, weight: .semibold)).tracking(0.8)
+                Text(title).font(.caption.weight(.semibold))
                     .foregroundStyle(palette.mutedForeground)
                 SheetCard(palette: palette) {
                     ForEach(slices) { s in
                         VStack(alignment: .leading, spacing: 3) {
                             HStack(spacing: OculusSpace.xs) {
-                                Image(systemName: icon).font(.system(size: 10))
+                                Image(systemName: icon).font(.caption2)
                                     .foregroundStyle(palette.mutedForeground)
-                                Text(s.label ?? s.key).font(.system(size: 12))
-                                    .foregroundStyle(palette.foreground).lineLimit(1)
+                                Text(s.label ?? s.key).font(.footnote)
+                                    .foregroundStyle(palette.foreground)
+                                    .lineLimit(2).minimumScaleFactor(0.8)
                                 Spacer(minLength: OculusSpace.sm)
                                 Text(money(s.costUSD))
-                                    .font(.system(size: 12).monospacedDigit())
+                                    .font(.footnote.monospacedDigit())
                                     .foregroundStyle(palette.foreground)
                                 Text(compact(s.tokens))
-                                    .font(.system(size: 10).monospacedDigit())
+                                    .font(.caption2.monospacedDigit())
                                     .foregroundStyle(palette.mutedForeground)
-                                    .frame(width: 46, alignment: .trailing)
+                                    .frame(minWidth: 46, alignment: .trailing)
                             }
+                            // Three columns — name, dollars, tokens — that only read as a table while
+                            // they stay on one line. The type scales, but past AX2 there is no width
+                            // left for a session name, so the row stops growing rather than collapsing.
+                            .dynamicTypeSize(...DynamicTypeSize.accessibility2)
                             // A bar against the heaviest line makes the distribution readable at a
                             // glance — which agent is eating the budget, not just what each cost.
                             GeometryReader { geo in
-                                RoundedRectangle(cornerRadius: 2)
+                                OculusShape.rounded(2)
                                     .fill(palette.primary.opacity(0.35))
                                     .frame(width: top > 0 ? max(2, geo.size.width * (s.costUSD / top)) : 2)
                             }

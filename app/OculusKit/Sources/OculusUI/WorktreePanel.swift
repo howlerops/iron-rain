@@ -14,6 +14,16 @@ struct WorktreePanel: View {
 
     private var session: Session? { model.currentSession }
 
+    /// The CI verdict must not be carried by the badge's colour alone: the icon set below already
+    /// differs per state, and this adds the word to the summary line for the same reason.
+    private func checksStateWord(_ c: PRChecks) -> String {
+        switch c.state {
+        case "SUCCESS": return "Passing"
+        case "FAILURE": return "Failing"
+        default: return "Running"
+        }
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -30,7 +40,8 @@ struct WorktreePanel: View {
                         ForEach(model.conflicts) { c in
                             HStack(alignment: .top, spacing: 8) {
                                 Image(systemName: "exclamationmark.triangle.fill")
-                                    .foregroundStyle(.orange).font(.caption)
+                                    .foregroundStyle(palette.warning).font(.caption)
+                                    .accessibilityHidden(true)
                                 VStack(alignment: .leading, spacing: 1) {
                                     Text(c.path).font(.system(.caption, design: .monospaced))
                                     Text("also edited on: \(c.branches.joined(separator: ", "))")
@@ -58,11 +69,11 @@ struct WorktreePanel: View {
                     .disabled(model.catchingUp)
                     if let msg = model.catchUpMessage {
                         Text(msg).font(.caption)
-                            .foregroundStyle(model.catchUpConflicts.isEmpty ? palette.mutedForeground : .orange)
+                            .foregroundStyle(model.catchUpConflicts.isEmpty ? palette.mutedForeground : palette.warning)
                     }
                     ForEach(model.catchUpConflicts, id: \.self) { f in
                         Label(f, systemImage: "exclamationmark.triangle")
-                            .font(.system(.caption, design: .monospaced)).foregroundStyle(.orange)
+                            .font(.system(.caption, design: .monospaced)).foregroundStyle(palette.warning)
                     }
                 } header: {
                     Text("Update")
@@ -73,7 +84,9 @@ struct WorktreePanel: View {
 
                 Section("Review") {
                     DiffReviewView(model: model, palette: palette)
-                        .frame(height: 360)
+                        // minHeight so the reviewer can grow with Dynamic Type; capped so a large
+                        // diff can't turn one Form row into an unscrollable wall.
+                        .frame(minHeight: 360, maxHeight: 560)
                         .listRowInsets(EdgeInsets())
                         .listRowBackground(Color.clear)
                 }
@@ -146,7 +159,8 @@ struct WorktreePanel: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Image(systemName: checksIcon(c)).font(.caption).foregroundStyle(checksTint(c))
-                Text(checksSummary(c)).font(.caption)
+                    .accessibilityHidden(true)
+                Text("\(checksStateWord(c)) · \(checksSummary(c))").font(.caption)
             }
             // Indexed: two CI apps can report the same check name, and \.self would collapse them.
             ForEach(Array((c.failing ?? []).enumerated()), id: \.offset) { _, name in
@@ -172,7 +186,7 @@ struct WorktreePanel: View {
 
     private func checksTint(_ c: PRChecks) -> Color {
         switch c.state {
-        case "SUCCESS": return .green
+        case "SUCCESS": return palette.success
         case "FAILURE": return palette.destructive
         default: return palette.mutedForeground
         }

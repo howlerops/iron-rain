@@ -31,7 +31,9 @@ public enum Destination: Int, CaseIterable, Identifiable {
         }
     }
 
-    /// iOS tab order puts Activity in the center (index 2) as the default launch tab.
+    /// iOS tab order puts Activity in the center (index 2) as the default launch tab. `tabSurface`
+    /// builds the tab bar by iterating this, so the order is defined once here rather than being an
+    /// intention a hand-written tab list can silently drift out of.
     static var mobileOrder: [Destination] { [.sessions, .loops, .activity, .fleet, .issues] }
 }
 
@@ -45,9 +47,9 @@ public enum AgentState {
     var color: (OculusPalette) -> Color {
         switch self {
         case .running:  return { $0.primary }
-        case .needsYou: return { _ in Color(hex: 0xE0912A) }
+        case .needsYou: return { $0.warning }
         case .failed:   return { $0.destructive }
-        case .conflict: return { _ in Color(hex: 0xA071D6) }
+        case .conflict: return { $0.conflict }
         case .idle, .loop, .viewOnly: return { $0.mutedForeground }
         }
     }
@@ -111,20 +113,22 @@ struct DestinationRail: View {
                     destination = .activity
                 } label: {
                     HStack(spacing: 8) {
-                        Text("NEEDS YOU").font(.system(size: 10.5, weight: .semibold)).tracking(0.8)
+                        Text("NEEDS YOU").font(.caption.weight(.semibold)).tracking(0.8)
                         Spacer()
                         Text("\(model.needsYouCount)")
-                            .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                            .font(.caption.weight(.bold).monospaced())
                             .foregroundStyle(palette.background)
                             .padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(Capsule().fill(Color(hex: 0xE0912A)))
+                            .background(Capsule().fill(palette.warning))
                     }
-                    .foregroundStyle(Color(hex: 0xE0912A))
+                    .foregroundStyle(palette.warning)
                     .padding(.horizontal, 10).padding(.vertical, 7)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Color(hex: 0xE0912A).opacity(0.12))
-                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color(hex: 0xE0912A).opacity(0.32))))
+                    .background(OculusShape.rounded(OculusRadius.sm).fill(palette.warning.opacity(0.12))
+                        .overlay(OculusShape.rounded(OculusRadius.sm).strokeBorder(palette.warning.opacity(0.32))))
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("\(model.needsYouCount) items need you")
+                .accessibilityHint("Opens Activity")
                 .padding(.bottom, 4)
             }
             ForEach(Destination.allCases) { d in
@@ -145,21 +149,24 @@ struct DestinationRail: View {
             destination = d
         } label: {
             HStack(spacing: 9) {
-                Image(systemName: d.symbol).font(.system(size: 14)).frame(width: 18)
-                Text(d.title).font(.system(size: 13, weight: active ? .semibold : .medium))
+                Image(systemName: d.symbol).font(.subheadline).frame(width: 18)
+                Text(d.title).font(.footnote.weight(active ? .semibold : .medium))
                 Spacer(minLength: 4)
                 if let badge = count(d) {
                     Text("\(badge)")
-                        .font(.system(size: 10.5, design: .monospaced))
-                        .foregroundStyle(d == .activity && model.needsYouCount > 0 ? Color(hex: 0xE0912A) : palette.mutedForeground)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(d == .activity && model.needsYouCount > 0 ? palette.warning : palette.mutedForeground)
                 }
             }
             .foregroundStyle(active ? palette.foreground : palette.mutedForeground)
             .padding(.horizontal, 10).padding(.vertical, 7)
-            .background(RoundedRectangle(cornerRadius: 8).fill(active ? palette.primary.opacity(0.14) : .clear))
+            .background(OculusShape.rounded(OculusRadius.sm).fill(active ? palette.primary.opacity(0.14) : .clear))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // The rail is a selection list, not five unrelated buttons — VoiceOver should say which one
+        // you are on, the way it does for a real sidebar List.
+        .accessibilityAddTraits(active ? [.isButton, .isSelected] : .isButton)
     }
 
     /// Live count badge per destination — the "no hunting" signal.
@@ -183,18 +190,20 @@ struct DeckSearchBar: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(palette.mutedForeground)
+            Image(systemName: "magnifyingglass").font(.footnote).foregroundStyle(palette.mutedForeground)
             TextField(prompt, text: $text)
                 .textFieldStyle(.plain)
-                .font(.system(size: 12.5))
+                .font(.footnote)
+                .plainInput()
             if !text.isEmpty {
-                Button { text = "" } label: { Image(systemName: "xmark.circle.fill").font(.system(size: 11)) }
+                Button { text = "" } label: { Image(systemName: "xmark.circle.fill").font(.caption) }
                     .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
+                    .accessibilityLabel("Clear search")
             }
         }
         .padding(.horizontal, 9).padding(.vertical, 6)
-        .background(RoundedRectangle(cornerRadius: 8).fill(palette.secondary.opacity(0.6))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(palette.border)))
+        .background(OculusShape.rounded(OculusRadius.sm).fill(palette.secondary.opacity(0.6))
+            .overlay(OculusShape.rounded(OculusRadius.sm).strokeBorder(palette.border)))
         .padding(.horizontal, 10)
         .padding(.top, 10)   // breathing room after the destination rail (the "top section")
         .padding(.bottom, 4)
@@ -209,7 +218,7 @@ struct DestinationHint: View {
     let message: String
     var body: some View {
         VStack(spacing: 12) {
-            Image(systemName: symbol).font(.system(size: 32)).foregroundStyle(palette.mutedForeground.opacity(0.5))
+            Image(systemName: symbol).font(.largeTitle).foregroundStyle(palette.mutedForeground.opacity(0.5))
             Text(title).font(.title3.weight(.semibold)).foregroundStyle(palette.foreground)
             Text(message).font(.callout).foregroundStyle(palette.mutedForeground)
                 .multilineTextAlignment(.center).frame(maxWidth: 360)
@@ -232,9 +241,9 @@ struct LoopsListColumn: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Loops").font(.system(size: 13, weight: .semibold))
+                Text("Loops").font(.footnote.weight(.semibold))
                 Spacer()
-                Button(action: onNew) { Label("New", systemImage: "plus") .font(.system(size: 12, weight: .medium)) }
+                Button(action: onNew) { Label("New", systemImage: "plus") .font(.footnote.weight(.medium)) }
                     .buttonStyle(.plain).foregroundStyle(palette.primary)
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
@@ -267,21 +276,21 @@ struct LoopsListColumn: View {
         let running = model.loopRuns.contains { $0.loopID == loop.id && ($0.status == "running" || $0.status.isEmpty) }
         return HStack(spacing: 9) {
             Image(systemName: "arrow.trianglehead.2.clockwise.rotate.90")
-                .font(.system(size: 12)).foregroundStyle(loop.enabled ? palette.primary : palette.mutedForeground)
+                .font(.footnote).foregroundStyle(loop.enabled ? palette.primary : palette.mutedForeground)
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 2) {
-                Text(loop.name).font(.system(size: 13, weight: .medium)).foregroundStyle(palette.foreground).lineLimit(1)
-                Text(subtitle(loop)).font(.system(size: 10.5, design: .monospaced)).foregroundStyle(palette.mutedForeground).lineLimit(1)
+                Text(loop.name).font(.footnote.weight(.medium)).foregroundStyle(palette.foreground).lineLimit(2)
+                Text(subtitle(loop)).font(.caption.monospaced()).foregroundStyle(palette.mutedForeground).lineLimit(1)
             }
             Spacer(minLength: 4)
             if running {
                 StatusChip(.running, palette: palette, showLabel: false, compact: true)
             } else if !loop.enabled {
-                Text("paused").font(.system(size: 10)).foregroundStyle(palette.mutedForeground)
+                Text("paused").font(.caption2).foregroundStyle(palette.mutedForeground)
             }
         }
         .padding(.horizontal, 8).padding(.vertical, 7)
-        .background(RoundedRectangle(cornerRadius: 7).fill(selected == loop.id ? palette.secondary : .clear))
+        .background(OculusShape.rounded(7).fill(selected == loop.id ? palette.secondary : .clear))
         .contentShape(Rectangle())
     }
 
@@ -336,7 +345,7 @@ struct LoopDetail: View {
                     Spacer()
                     Button("Edit") { onDone(); }.buttonStyle(.bordered)
                 }
-                Text("Recent runs").font(.system(size: 11, weight: .semibold)).tracking(0.6)
+                Text("Recent runs").font(.caption.weight(.semibold)).tracking(0.6)
                     .foregroundStyle(palette.mutedForeground)
                 if runs.isEmpty {
                     Text("No runs yet — this loop will start an agent when its next trigger fires.")
@@ -347,13 +356,13 @@ struct LoopDetail: View {
                             HStack(spacing: 9) {
                                 StatusChip(run.status == "running" || run.status.isEmpty ? .running : .idle,
                                            palette: palette, showLabel: false)
-                                Text(run.issueKey.isEmpty ? run.sessionID : run.issueKey).font(.system(size: 13, design: .monospaced))
+                                Text(run.issueKey.isEmpty ? run.sessionID : run.issueKey).font(.footnote.monospaced())
                                     .foregroundStyle(palette.foreground)
                                 Spacer()
-                                Image(systemName: "chevron.right").font(.system(size: 10)).foregroundStyle(palette.mutedForeground)
+                                Image(systemName: "chevron.right").font(.caption2).foregroundStyle(palette.mutedForeground)
                             }
                             .padding(.horizontal, 12).padding(.vertical, 9)
-                            .background(RoundedRectangle(cornerRadius: 8).fill(palette.secondary.opacity(0.4)))
+                            .background(OculusShape.rounded(OculusRadius.sm).fill(palette.secondary.opacity(0.4)))
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
@@ -383,19 +392,23 @@ public struct StatusChip: View {
             if state == .running {
                 Circle().fill(tint).frame(width: 6, height: 6)
             } else {
-                Image(systemName: state.glyph).font(.system(size: compact ? 8 : 9))
+                Image(systemName: state.glyph).font(.caption2)
             }
             if showLabel {
-                Text(state.label).font(.system(size: compact ? 10 : 11, weight: .medium))
+                Text(state.label).font((compact ? Font.caption2 : .caption).weight(.medium))
             }
         }
         .foregroundStyle(tint)
         .padding(.horizontal, showLabel ? 7 : 4)
         .padding(.vertical, compact ? 1 : 2)
         .background(
-            RoundedRectangle(cornerRadius: 5)
+            OculusShape.rounded(5)
                 .fill(tint.opacity(state == .running || state == .needsYou ? 0.14 : 0.0))
-                .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(tint.opacity(0.35), lineWidth: showLabel ? 1 : 0))
+                .overlay(OculusShape.rounded(5).strokeBorder(tint.opacity(0.35), lineWidth: showLabel ? 1 : 0))
         )
+        // Without the label the chip is a bare glyph — colour and shape carry the whole meaning, which
+        // VoiceOver can't see. Say the state out loud instead.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(state.label)
     }
 }

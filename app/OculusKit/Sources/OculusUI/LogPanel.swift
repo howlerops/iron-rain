@@ -43,23 +43,28 @@ struct DaemonLogPanel: View {
                 HStack(spacing: 8) {
                     if runningCount > 0 {
                         HStack(spacing: 4) {
-                            Circle().fill(palette.primary).frame(width: 6, height: 6)
-                            Text("\(runningCount) running").font(.system(size: 11))
+                            // A glyph, not a bare dot: this strip is the ambient status for the whole
+                            // app, and "running" was carried by a gold circle whose only difference
+                            // from the amber needs-you state was hue.
+                            Image(systemName: "bolt.fill").font(.caption2)
+                                .foregroundStyle(palette.primary)
+                            Text("\(runningCount) running").font(.caption)
                         }.foregroundStyle(palette.foreground)
                     }
                     if model.needsYouCount > 0 {
                         HStack(spacing: 4) {
-                            Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 9))
-                            Text("\(model.needsYouCount) need you").font(.system(size: 11, weight: .medium))
-                        }.foregroundStyle(Color(hex: 0xE0912A))
+                            Image(systemName: "exclamationmark.triangle.fill").font(.caption2)
+                            Text("\(model.needsYouCount) need you").font(.caption.weight(.medium))
+                        }.foregroundStyle(palette.warning)
                     }
                     if runningCount == 0 && model.needsYouCount == 0 {
-                        Text("Idle").font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
+                        Text("Idle").font(.caption).foregroundStyle(palette.mutedForeground)
                     }
                 }
             }
             .buttonStyle(.plain)
             .disabled(onOpenActivity == nil)
+            .accessibilityHint("Opens Activity")
 
             Divider().frame(height: 12).overlay(palette.border)
 
@@ -68,14 +73,14 @@ struct DaemonLogPanel: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: model.showLogPanel ? "chevron.down" : "chevron.up")
-                        .font(.system(size: 9, weight: .bold))
+                        .font(.caption2.weight(.bold))
                     Image(systemName: "terminal")
-                        .font(.system(size: 10))
+                        .font(.caption2)
                     Text("Daemon Logs")
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.caption.weight(.medium))
                     if !model.daemonLog.isEmpty {
                         Text("\(model.daemonLog.count)")
-                            .font(.system(size: 10, design: .monospaced))
+                            .font(.system(.caption2, design: .monospaced))
                             .foregroundStyle(palette.mutedForeground)
                     }
                 }
@@ -86,19 +91,26 @@ struct DaemonLogPanel: View {
             Spacer()
 
             if model.showLogPanel {
+                // `.help` supplies the tooltip/HINT only — without a label VoiceOver announces these
+                // as an unnamed "Button".
                 Button { copyAll() } label: {
-                    Image(systemName: "doc.on.doc").font(.system(size: 10))
+                    Image(systemName: "doc.on.doc").font(.caption2)
                 }
                 .buttonStyle(.plain).help("Copy all")
+                .accessibilityLabel("Copy all log output")
                 Button { model.clearDaemonLog() } label: {
-                    Image(systemName: "trash").font(.system(size: 10))
+                    Image(systemName: "trash").font(.caption2)
                 }
                 .buttonStyle(.plain).help("Clear")
+                .accessibilityLabel("Clear the log")
                 .foregroundStyle(palette.mutedForeground)
             }
         }
         .padding(.horizontal, 12)
-        .frame(height: 26)
+        // A single-line status bar docked under the whole app: it can afford to grow taller, but not
+        // to grow so wide that the counts, the label and the two buttons stop sharing one line.
+        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
+        .frame(minHeight: 26)
         .background(palette.secondary)
         .foregroundStyle(palette.mutedForeground)
     }
@@ -108,6 +120,8 @@ struct DaemonLogPanel: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 1) {
                     ForEach(Array(model.daemonLog.enumerated()), id: \.offset) { pair in
+                        // Deliberately NOT Dynamic Type: log lines are column-aligned output, and a
+                        // scaling monospaced grid rewraps every timestamp prefix into noise.
                         Text(pair.element.isEmpty ? " " : pair.element)
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundStyle(color(for: pair.element))
@@ -124,7 +138,7 @@ struct DaemonLogPanel: View {
             .overlay(alignment: .center) {
                 if model.daemonLog.isEmpty {
                     Text("Waiting for daemon output…")
-                        .font(.system(size: 11))
+                        .font(.caption)
                         .foregroundStyle(palette.mutedForeground)
                 }
             }
@@ -141,7 +155,7 @@ struct DaemonLogPanel: View {
     private func color(for line: String) -> Color {
         let l = line.lowercased()
         if l.contains("error") || l.contains("failed") || l.contains("panic") { return palette.destructive }
-        if l.contains("warn") { return OculusPalette.brandGold }
+        if l.contains("warn") { return palette.warning }
         return palette.foreground
     }
 

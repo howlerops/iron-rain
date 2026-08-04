@@ -9,22 +9,38 @@ public enum IronRainBrand {
     public static let goldDark   = Color(red: 154/255.0, green: 122/255.0, blue: 24/255.0)  // #9a7a18
 
     /// The signature 135° gold gradient — used to fill the wordmark and brand accents.
+    ///
+    /// This is the DARK-MODE gradient. Its lightest stop, `goldLight`, measures 1.82:1 on white, so
+    /// on a light background the top half of the wordmark all but disappears. Prefer
+    /// `goldGradient(for:)` so the lockup stays legible in both schemes.
     public static let goldGradient = LinearGradient(
         colors: [goldLight, gold, goldDark],
         startPoint: .topLeading, endPoint: .bottomTrailing
     )
+
+    /// Light-mode stops: the same hue walk, shifted down until every stop clears AA on white.
+    public static let goldGradientLight = LinearGradient(
+        colors: [Color(hex: 0xA8801A), Color(hex: 0x8A6510), Color(hex: 0x6B4C0A)],
+        startPoint: .topLeading, endPoint: .bottomTrailing
+    )
+
+    /// The gradient to use for `scheme`.
+    public static func goldGradient(for scheme: ColorScheme) -> LinearGradient {
+        scheme == .dark ? goldGradient : goldGradientLight
+    }
 }
 
 /// The stylized "IRON RAIN" wordmark: uppercase, tracked, monospaced, filled with the gold
 /// gradient. `size` scales the type. Matches the landing-site + terminal treatments.
 public struct IronRainWordmark: View {
+    @Environment(\.colorScheme) private var scheme
     private let size: CGFloat
     public init(size: CGFloat = 30) { self.size = size }
     public var body: some View {
         Text("IRON RAIN")
             .font(.system(size: size, weight: .heavy, design: .monospaced))
             .tracking(size * 0.12)
-            .foregroundStyle(IronRainBrand.goldGradient)
+            .foregroundStyle(IronRainBrand.goldGradient(for: scheme))
             .accessibilityLabel("Iron Rain")
     }
 }

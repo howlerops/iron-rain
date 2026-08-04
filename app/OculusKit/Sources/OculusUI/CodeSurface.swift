@@ -55,6 +55,11 @@ struct OpenTab: Identifiable, Equatable {
     // Open tabs (multiple files).
     @Published var tabs: [OpenTab] = []
     @Published var activeTabID: String?
+    /// Bumped every time something becomes worth SHOWING (a file opened, a tab activated, a diff
+    /// loaded). The compact layout pushes its detail off this rather than off `openPath`, because
+    /// re-opening the file you already had open leaves `openPath` unchanged — and then tapping the
+    /// file you just came back from would do nothing at all.
+    @Published private(set) var revealCount = 0
     var scopeSessionID: String?  // set by the view, for workspace-scoped search
     private var dismissedLangs: Set<String> = []
 
@@ -179,6 +184,7 @@ struct OpenTab: Identifiable, Equatable {
         guard let snap = snapshotLive() else { return }
         if let i = tabs.firstIndex(where: { $0.id == snap.id }) { tabs[i] = snap } else { tabs.append(snap) }
         activeTabID = snap.id
+        revealCount += 1
     }
 
     /// Switch to an already-open tab, hydrating the editor from its buffered state.
@@ -202,6 +208,7 @@ struct OpenTab: Identifiable, Equatable {
         conflict = false
         activeTabID = tab.id
         symbols = []
+        revealCount += 1
         if !readOnly { startReloadPoll(); Task { await loadSymbols() } }
     }
 
@@ -318,6 +325,8 @@ struct OpenTab: Identifiable, Equatable {
     func openAt(path: String, line: Int, character: Int = 0) async {
         if path != openPath {
             await openFile(path: path, name: (path as NSString).lastPathComponent)
+        } else {
+            revealCount += 1   // already the open file: still a request to look at it
         }
         scrollTarget = EditorTarget(line: line, char: character)
     }
@@ -403,7 +412,10 @@ struct OpenTab: Identifiable, Equatable {
 
     /// Shows a session's changes (or an in-root path's) as a diff.
     func review(sessionID: String? = nil, path: String? = nil) async {
-        do { diffText = try await model.fsDiff(sessionID: sessionID, path: path) }
+        do {
+            diffText = try await model.fsDiff(sessionID: sessionID, path: path)
+            revealCount += 1
+        }
         catch { status = "Diff failed: \(error.localizedDescription)" }
     }
 
@@ -434,6 +446,7 @@ struct CodeSurface: View {
     @ObservedObject var model: Model
     @StateObject private var code: CodeModel
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
     private var palette: OculusPalette { .current(scheme) }
     private var theme: CodeTheme { .current(scheme) }
     /// The session whose workspace folder(s) scope the file tree (nil → browse all roots).
@@ -444,6 +457,11 @@ struct CodeSurface: View {
     @State private var sidebarMode: SidebarMode = .files
     @State private var renameText = ""
     @State private var showRename = false
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var hSize
+    /// Compact only: whether the editor/diff is pushed on top of the file tree.
+    @State private var showDetail = false
+    #endif
 
     enum SidebarMode: Hashable { case files, search, outline }
 
@@ -455,40 +473,85 @@ struct CodeSurface: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            VStack(spacing: 0) {
-                sessionContextHeader
-                Divider().overlay(palette.border)
-                Picker("", selection: $sidebarMode) {
-                    Image(systemName: "folder").tag(SidebarMode.files)
-                    Image(systemName: "magnifyingglass").tag(SidebarMode.search)
-                    Image(systemName: "list.bullet.indent").tag(SidebarMode.outline)
-                }
-                .pickerStyle(.segmented).labelsHidden()
-                .padding(.horizontal, 8).padding(.vertical, 6)
-                Divider().overlay(palette.border)
-                switch sidebarMode {
-                case .files: FileTreeView(code: code)
-                case .search: SearchPanel(code: code, palette: palette)
-                case .outline: OutlinePanel(code: code, palette: palette)
-                }
+        layout
+            .task {
+                code.scopeSessionID = sessionID
+                await code.loadRoots(sessionID: sessionID)
+                if let sid = reviewSessionID { await code.review(sessionID: sid) }
             }
-            .frame(width: 250)
-            .background(palette.background)
+            .alert("Rename symbol", isPresented: $showRename) {
+                TextField("New name", text: $renameText).plainInput()
+                Button("Rename") { let n = renameText; Task { await code.rename(to: n) } }
+                Button("Cancel", role: .cancel) {}
+            } message: { Text("Renames every reference across the workspace.") }
+    }
+
+    @ViewBuilder private var layout: some View {
+        #if os(iOS)
+        if hSize == .compact { compactLayout } else { splitLayout }
+        #else
+        splitLayout
+        #endif
+    }
+
+    /// Mac and regular-width iPad: tree and editor side by side.
+    private var splitLayout: some View {
+        HStack(spacing: 0) {
+            sidebar
+                .frame(width: 250)
+                .background(palette.background)
             Divider().overlay(palette.border)
             editorPane
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .task {
-            code.scopeSessionID = sessionID
-            await code.loadRoots(sessionID: sessionID)
-            if let sid = reviewSessionID { await code.review(sessionID: sid) }
+    }
+
+    #if os(iOS)
+    /// Phone (and iPad in Slide Over): the 250pt tree left about 140pt of editor on a 390pt screen,
+    /// which is not an editor. The tree becomes the whole screen and the editor/diff is PUSHED onto
+    /// the navigation stack this surface is already sitting on — so back goes tree → chat, and each
+    /// view gets the full width. No nested NavigationStack: that would hide the outer back button
+    /// and strand the user in Code with no way to the transcript.
+    private var compactLayout: some View {
+        sidebar
+            .background(palette.background)
+            .navigationDestination(isPresented: $showDetail) {
+                editorPane
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(palette.background)
+                    .navigationTitle(detailTitle)
+                    .navigationBarTitleDisplayMode(.inline)
+            }
+            .onChange(of: code.revealCount) { _ in showDetail = true }
+    }
+
+    private var detailTitle: String {
+        if code.diffText != nil { return "Changes" }
+        return code.fileName.isEmpty ? "Editor" : code.fileName
+    }
+    #endif
+
+    private var sidebar: some View {
+        VStack(spacing: 0) {
+            sessionContextHeader
+            Divider().overlay(palette.border)
+            Picker("Sidebar", selection: $sidebarMode) {
+                Image(systemName: "folder").tag(SidebarMode.files)
+                    .accessibilityLabel("Files")
+                Image(systemName: "magnifyingglass").tag(SidebarMode.search)
+                    .accessibilityLabel("Search")
+                Image(systemName: "list.bullet.indent").tag(SidebarMode.outline)
+                    .accessibilityLabel("Outline")
+            }
+            .pickerStyle(.segmented).labelsHidden()
+            .padding(.horizontal, 8).padding(.vertical, 6)
+            Divider().overlay(palette.border)
+            switch sidebarMode {
+            case .files: FileTreeView(code: code)
+            case .search: SearchPanel(code: code, palette: palette)
+            case .outline: OutlinePanel(code: code, palette: palette)
+            }
         }
-        .alert("Rename symbol", isPresented: $showRename) {
-            TextField("New name", text: $renameText)
-            Button("Rename") { let n = renameText; Task { await code.rename(to: n) } }
-            Button("Cancel", role: .cancel) {}
-        } message: { Text("Renames every reference across the workspace.") }
     }
 
     /// Shows which session's workspace the editor is scoped to — its active directory, worktree
@@ -497,14 +560,21 @@ struct CodeSurface: View {
     @ViewBuilder private var sessionContextHeader: some View {
         let s = model.sessions.first { $0.id == sessionID }
         HStack(spacing: 7) {
-            // Back to the chat transcript (this surface is a per-session sub-mode of Sessions).
+            // Back to the chat transcript. macOS ONLY: there the Code surface replaces the detail
+            // column, which has no navigation stack, so this is the only way back. On iOS the
+            // surface is PUSHED and the navigation bar already draws a back button — rendering this
+            // too gave the same screen two identical back controls.
+            #if os(macOS)
             Button { model.codeReviewTarget = nil } label: {
                 Label("Chat", systemImage: "chevron.left").font(.caption)
             }
             .buttonStyle(.plain).foregroundStyle(palette.primary)
+            .accessibilityLabel("Back to chat")
             Divider().frame(height: 14)
+            #endif
             Image(systemName: s == nil ? "folder" : "chevron.left.forwardslash.chevron.right")
                 .font(.caption).foregroundStyle(s == nil ? palette.mutedForeground : palette.primary)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {
                 Text(scopeTitle(s)).font(.caption.bold()).lineLimit(1)
                 Text(scopeSubtitle(s)).font(.caption2).foregroundStyle(palette.mutedForeground)
@@ -579,51 +649,53 @@ struct CodeSurface: View {
         HStack(spacing: 10) {
             if code.diffText != nil {
                 Label("Reviewing changes", systemImage: "plus.forwardslash.minus")
-                    .font(.system(size: 12, weight: .medium)).foregroundStyle(palette.mutedForeground)
+                    .font(.footnote.weight(.medium)).foregroundStyle(palette.mutedForeground)
                 Spacer()
-                Button("Close diff") { code.closeDiff() }.font(.system(size: 12))
+                Button("Close diff") { code.closeDiff() }.font(.footnote)
             } else {
                 Text(code.fileName.isEmpty ? "No file open" : code.fileName)
-                    .font(.system(size: 12, weight: .semibold)).lineLimit(1)
-                if code.dirty { Circle().fill(palette.primary).frame(width: 6, height: 6) }
+                    .font(.footnote.weight(.semibold)).lineLimit(1)
+                dirtyIndicator
                 diagnosticsCounts
                 if let s = code.status {
-                    Text(s).font(.system(size: 11)).foregroundStyle(palette.mutedForeground).lineLimit(1)
+                    Text(s).font(.caption).foregroundStyle(palette.mutedForeground).lineLimit(1)
                 }
                 Spacer()
                 if !code.readOnly {
-                    Button { Task { await code.jumpToDefinition() } } label: {
-                        Image(systemName: "arrow.uturn.forward.square")
+                    toolbarIcon("arrow.uturn.forward.square", label: "Jump to definition (caret)") {
+                        Task { await code.jumpToDefinition() }
                     }
-                    .font(.system(size: 12)).help("Jump to definition (caret)")
-                    .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
-                    Button { Task { await code.findReferences() } } label: {
-                        Image(systemName: "text.magnifyingglass")
+                    toolbarIcon("text.magnifyingglass", label: "Find references (caret)") {
+                        Task { await code.findReferences() }
                     }
-                    .font(.system(size: 12)).help("Find references (caret)")
-                    .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
-                    Button { renameText = ""; showRename = true } label: {
-                        Image(systemName: "pencil.and.outline")
+                    toolbarIcon("pencil.and.outline", label: "Rename symbol (caret)") {
+                        renameText = ""; showRename = true
                     }
-                    .font(.system(size: 12)).help("Rename symbol (caret)")
-                    .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
                     Button { Task { await code.format() } } label: {
-                        if code.formatting { ProgressView().controlSize(.small) }
-                        else { Image(systemName: "text.alignleft") }
+                        Group {
+                            if code.formatting { ProgressView().controlSize(.small) }
+                            else { Image(systemName: "text.alignleft") }
+                        }
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
                     }
-                    .font(.system(size: 12)).help("Format document (⌥⇧F)")
+                    .font(.footnote).help("Format document (⌥⇧F)")
                     .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
                     .keyboardShortcut("f", modifiers: [.option, .shift])
+                    .accessibilityLabel("Format document")
                     Menu {
                         Toggle("Format on save", isOn: $code.formatOnSave)
-                    } label: { Image(systemName: "ellipsis.circle") }
+                    } label: {
+                        Image(systemName: "ellipsis.circle").frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
                         .menuStyle(.borderlessButton).fixedSize()
-                        .font(.system(size: 12)).foregroundStyle(palette.mutedForeground)
+                        .font(.footnote).foregroundStyle(palette.mutedForeground)
+                        .accessibilityLabel("Editor options")
                 }
                 if code.conflict {
-                    Button("Reload") { Task { await code.reload() } }.font(.system(size: 12))
+                    Button("Reload") { Task { await code.reload() } }.font(.footnote)
                     Button("Overwrite") { Task { await code.overwrite() } }
-                        .font(.system(size: 12)).foregroundStyle(palette.destructive)
+                        .font(.footnote).foregroundStyle(palette.destructive)
                 }
                 Button { Task { await code.save() } } label: {
                     if code.saving { ProgressView().controlSize(.small) } else { Text("Save") }
@@ -632,8 +704,37 @@ struct CodeSurface: View {
                 .keyboardShortcut("s", modifiers: .command)
             }
         }
-        .padding(.horizontal, 12).padding(.vertical, 7)
+        .padding(.horizontal, 12)
+        .frame(minHeight: 44)   // the icon-only actions carry full-size touch targets
         .background(palette.background)
+    }
+
+    /// An icon-only toolbar action. Factored out so the accessibility label, the touch target and
+    /// the hover help can never again be added to one button and forgotten on the next.
+    private func toolbarIcon(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .frame(width: 44, height: 44).contentShape(Rectangle())
+        }
+        .font(.footnote).help(label)
+        .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
+        .accessibilityLabel(label)
+    }
+
+    /// Unsaved-changes marker. The bare gold dot carried the whole meaning in colour, which is
+    /// invisible under Differentiate Without Color and unspoken by VoiceOver.
+    @ViewBuilder private var dirtyIndicator: some View {
+        if code.dirty {
+            if differentiateWithoutColor {
+                Text("Unsaved").font(.caption2.weight(.semibold))
+                    .foregroundStyle(palette.foreground)
+                    .padding(.horizontal, 5).padding(.vertical, 1)
+                    .overlay(OculusShape.rounded(4).strokeBorder(palette.foreground.opacity(0.5)))
+            } else {
+                Circle().fill(palette.primary).frame(width: 6, height: 6)
+                    .accessibilityLabel("Unsaved changes")
+            }
+        }
     }
 
     /// Error/warning counts from the language server for the open file.
@@ -645,11 +746,13 @@ struct CodeSurface: View {
             HStack(spacing: 8) {
                 if errors > 0 {
                     Label("\(errors)", systemImage: "xmark.octagon.fill")
-                        .font(.system(size: 11)).foregroundStyle(Color(hex: 0xF85149))
+                        .font(.caption).foregroundStyle(palette.destructive)
+                        .accessibilityLabel("\(errors) error\(errors == 1 ? "" : "s")")
                 }
                 if warnings > 0 {
                     Label("\(warnings)", systemImage: "exclamationmark.triangle.fill")
-                        .font(.system(size: 11)).foregroundStyle(Color(hex: 0xD9A520))
+                        .font(.caption).foregroundStyle(palette.warning)
+                        .accessibilityLabel("\(warnings) warning\(warnings == 1 ? "" : "s")")
                 }
             }
             .labelStyle(.titleAndIcon)
@@ -659,9 +762,11 @@ struct CodeSurface: View {
     private var emptyState: some View {
         VStack(spacing: 8) {
             Image(systemName: "chevron.left.forwardslash.chevron.right")
-                .font(.system(size: 30)).foregroundStyle(palette.mutedForeground)
+                .font(.largeTitle).foregroundStyle(palette.mutedForeground)
+                .accessibilityHidden(true)
             Text("Select a file to edit, or review a session's changes")
-                .font(.system(size: 13)).foregroundStyle(palette.mutedForeground)
+                .font(.footnote).foregroundStyle(palette.mutedForeground)
+                .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.background)
@@ -700,13 +805,14 @@ private struct DirNode: View {
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: expanded ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 9, weight: .bold)).foregroundStyle(palette.mutedForeground)
+                    .font(.caption2.weight(.bold)).foregroundStyle(palette.mutedForeground)
                     .frame(width: 10)
-                Image(systemName: "folder").font(.system(size: 11)).foregroundStyle(palette.primary)
-                Text(node.name).font(.system(size: 12)).lineLimit(1)
+                Image(systemName: "folder").font(.caption).foregroundStyle(palette.primary)
+                Text(node.name).font(.footnote).lineLimit(1)
                 Spacer()
             }
             .padding(.leading, CGFloat(depth) * 10)
+            .frame(minHeight: codeHitTarget)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -737,13 +843,14 @@ private struct FileRow: View {
             Task { await code.open(node) }
         } label: {
             HStack(spacing: 5) {
-                Image(systemName: "doc.text").font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
-                Text(node.name).font(.system(size: 12))
+                Image(systemName: "doc.text").font(.caption).foregroundStyle(palette.mutedForeground)
+                Text(node.name).font(.footnote)
                     .foregroundStyle(code.openPath == node.path ? palette.primary : palette.foreground)
                     .lineLimit(1)
                 Spacer()
             }
             .padding(.leading, CGFloat(depth) * 10 + 15)
+            .frame(minHeight: codeHitTarget)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -765,8 +872,8 @@ struct ImageFileView: View {
                 }
             } else {
                 VStack(spacing: 8) {
-                    Image(systemName: "photo").font(.system(size: 28)).foregroundStyle(palette.mutedForeground)
-                    Text("Unsupported image format").font(.system(size: 13)).foregroundStyle(palette.mutedForeground)
+                    Image(systemName: "photo").font(.largeTitle).foregroundStyle(palette.mutedForeground)
+                    Text("Unsupported image format").font(.footnote).foregroundStyle(palette.mutedForeground)
                 }
             }
         }
@@ -785,16 +892,16 @@ struct DiagnosticsBar: View {
             VStack(alignment: .leading, spacing: 0) {
                 ForEach(diagnostics) { d in
                     HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: icon(d.severity)).font(.system(size: 11)).foregroundStyle(color(d.severity))
+                        Image(systemName: icon(d.severity)).font(.caption).foregroundStyle(color(d.severity))
                             .frame(width: 14)
                         Text("\(d.startLine + 1):\(d.startChar + 1)")
-                            .font(.system(size: 11, design: .monospaced)).foregroundStyle(palette.mutedForeground)
-                            .frame(width: 54, alignment: .leading)
-                        Text(d.message).font(.system(size: 11)).foregroundStyle(palette.foreground)
+                            .font(.system(.caption, design: .monospaced)).foregroundStyle(palette.mutedForeground)
+                            .frame(minWidth: 54, alignment: .leading)
+                        Text(d.message).font(.caption).foregroundStyle(palette.foreground)
                             .fixedSize(horizontal: false, vertical: true)
                         Spacer(minLength: 6)
                         if let s = d.source, !s.isEmpty {
-                            Text(s).font(.system(size: 10)).foregroundStyle(palette.mutedForeground)
+                            Text(s).font(.caption2).foregroundStyle(palette.mutedForeground)
                         }
                     }
                     .padding(.horizontal, 12).padding(.vertical, 4)
@@ -812,8 +919,8 @@ struct DiagnosticsBar: View {
         default: return "info.circle.fill" }
     }
     private func color(_ sev: Int) -> Color {
-        switch sev { case 1: return Color(hex: 0xF85149); case 2: return Color(hex: 0xD9A520)
-        default: return palette.mutedForeground }
+        switch sev { case 1: return palette.destructive; case 2: return palette.warning
+        default: return palette.info }
     }
 }
 
@@ -827,13 +934,13 @@ struct ServerInstallBanner: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "wand.and.stars").font(.system(size: 12)).foregroundStyle(palette.primary)
+            Image(systemName: "wand.and.stars").font(.footnote).foregroundStyle(palette.primary)
             if info.installable {
                 Text("Install **\(info.installLabel)** for \(info.language.capitalized) language support (autocomplete, diagnostics, types)?")
-                    .font(.system(size: 12)).foregroundStyle(palette.foreground)
+                    .font(.footnote).foregroundStyle(palette.foreground)
             } else {
                 Text("\(info.language.capitalized) language support needs **\(info.installLabel)**.")
-                    .font(.system(size: 12)).foregroundStyle(palette.foreground)
+                    .font(.footnote).foregroundStyle(palette.foreground)
             }
             Spacer()
             if info.installable {
@@ -843,14 +950,27 @@ struct ServerInstallBanner: View {
                 .buttonStyle(.borderedProminent).tint(palette.primary).controlSize(.small)
                 .disabled(installing)
             }
-            Button(action: onDismiss) { Image(systemName: "xmark") }
-                .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .frame(width: codeHitTarget, height: codeHitTarget).contentShape(Rectangle())
+            }
+                .buttonStyle(.plain).font(.caption).foregroundStyle(palette.mutedForeground)
                 .disabled(installing)
+                .help("Dismiss")
+                .accessibilityLabel("Dismiss language-server suggestion")
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .background(palette.primary.opacity(0.08))
     }
 }
+
+/// The minimum hit target for the editor's dense icon-only chrome. 44pt is the touch floor; a
+/// pointer does not need it, and forcing it on macOS would inflate the tab bar and toolbar.
+#if os(macOS)
+private let codeHitTarget: CGFloat = 24
+#else
+private let codeHitTarget: CGFloat = 44
+#endif
 
 /// A horizontal bar of open-file tabs above the editor (VSCode-style).
 struct EditorTabBar: View {
@@ -865,22 +985,38 @@ struct EditorTabBar: View {
                     // The active tab's dirty state is live; others use their stored snapshot.
                     let dirty = isActive ? code.dirty : tab.dirty
                     HStack(spacing: 6) {
-                        Text(tab.name).font(.system(size: 12, weight: isActive ? .semibold : .regular))
-                            .foregroundStyle(isActive ? palette.foreground : palette.mutedForeground)
-                            .lineLimit(1)
+                        // A Button, not an onTapGesture: activating a tab was the only way to switch
+                        // files, and as a tap gesture VoiceOver exposed it as plain static text with
+                        // no button trait and no way to trigger it.
+                        Button { code.activateTab(tab.id) } label: {
+                            Text(tab.name).font(.footnote.weight(isActive ? .semibold : .regular))
+                                .foregroundStyle(isActive ? palette.foreground : palette.mutedForeground)
+                                .lineLimit(1)
+                                .frame(minHeight: codeHitTarget)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(tab.name)
+                        .accessibilityValue(dirty ? "Unsaved changes" : "")
+                        .accessibilityAddTraits(isActive ? [.isButton, .isSelected] : .isButton)
                         Button { code.closeTab(tab.id) } label: {
+                            // Fixed, not Dynamic Type: the dot and the × are deliberately different
+                            // sizes so "unsaved" reads as a dot rather than a small close button,
+                            // and both are centred in a fixed hit target.
                             Image(systemName: dirty ? "circle.fill" : "xmark")
                                 .font(.system(size: dirty ? 7 : 9))
+                                .frame(width: codeHitTarget, height: codeHitTarget)
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
+                        .help(dirty ? "Close (unsaved changes)" : "Close tab")
+                        .accessibilityLabel("Close \(tab.name)")
                     }
-                    .padding(.horizontal, 12).padding(.vertical, 7)
+                    .padding(.leading, 12).padding(.trailing, 2)
                     .background(isActive ? palette.background : palette.card.opacity(0.4))
                     .overlay(alignment: .bottom) {
                         if isActive { Rectangle().fill(palette.primary).frame(height: 2) }
                     }
-                    .contentShape(Rectangle())
-                    .onTapGesture { code.activateTab(tab.id) }
                     Divider().frame(height: 18).overlay(palette.border)
                 }
             }
@@ -897,27 +1033,29 @@ struct SearchPanel: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
+                Image(systemName: "magnifyingglass").font(.caption).foregroundStyle(palette.mutedForeground)
                 TextField("Search workspace…", text: $code.searchQuery)
-                    .textFieldStyle(.plain).font(.system(size: 12))
+                    .textFieldStyle(.plain).font(.footnote)
                     .onSubmit { Task { await code.runSearch() } }
-                    #if os(iOS)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    #endif
+                    .submitLabel(.search)
+                    .plainInput()
                 Button { code.searchRegex.toggle(); Task { await code.runSearch() } } label: {
-                    Text(".*").font(.system(size: 11, weight: .bold))
+                    Text(".*").font(.caption.weight(.bold))
+                        .frame(width: codeHitTarget, height: codeHitTarget).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain).help("Regular expression")
                 .foregroundStyle(code.searchRegex ? palette.primary : palette.mutedForeground)
+                .accessibilityLabel("Regular expression")
+                .accessibilityValue(code.searchRegex ? "On" : "Off")
             }
-            .padding(.horizontal, 10).padding(.vertical, 7)
+            .padding(.leading, 10)
             Divider().overlay(palette.border)
             if code.searching {
                 ProgressView().controlSize(.small).frame(maxWidth: .infinity).padding(.top, 12)
                 Spacer()
             } else if code.searchResults.isEmpty {
                 Text(code.searchQuery.isEmpty ? "Type to search files" : "No results")
-                    .font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
+                    .font(.caption).foregroundStyle(palette.mutedForeground)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(code.searchResults) { hit in
@@ -927,10 +1065,10 @@ struct SearchPanel: View {
                         VStack(alignment: .leading, spacing: 1) {
                             HStack(spacing: 4) {
                                 Text((hit.path as NSString).lastPathComponent)
-                                    .font(.system(size: 11, weight: .medium)).foregroundStyle(palette.primary)
-                                Text(":\(hit.line)").font(.system(size: 10)).foregroundStyle(palette.mutedForeground)
+                                    .font(.caption.weight(.medium)).foregroundStyle(palette.primary)
+                                Text(":\(hit.line)").font(.caption2).foregroundStyle(palette.mutedForeground)
                             }
-                            Text(hit.text).font(.system(size: 11, design: .monospaced))
+                            Text(hit.text).font(.system(.caption, design: .monospaced))
                                 .foregroundStyle(palette.foreground).lineLimit(1)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
@@ -952,9 +1090,9 @@ struct OutlinePanel: View {
         if code.symbols.isEmpty {
             VStack(spacing: 8) {
                 Text(code.openPath == nil ? "Open a file" : "No symbols")
-                    .font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
+                    .font(.caption).foregroundStyle(palette.mutedForeground)
                 if code.openPath != nil {
-                    Button("Reload") { Task { await code.loadSymbols() } }.font(.system(size: 11))
+                    Button("Reload") { Task { await code.loadSymbols() } }.font(.caption)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -978,14 +1116,16 @@ struct SymbolRow: View {
             Task { await code.openAt(path: code.openPath ?? "", line: sym.line, character: sym.character) }
         } label: {
             HStack(spacing: 5) {
-                Image(systemName: symbolIcon(sym.kind)).font(.system(size: 10)).foregroundStyle(palette.primary).frame(width: 13)
-                Text(sym.name).font(.system(size: 12)).lineLimit(1)
+                Image(systemName: symbolIcon(sym.kind)).font(.caption2).foregroundStyle(palette.primary).frame(width: 13)
+                Text(sym.name).font(.footnote).lineLimit(1)
                 if let d = sym.detail, !d.isEmpty {
-                    Text(d).font(.system(size: 10)).foregroundStyle(palette.mutedForeground).lineLimit(1)
+                    Text(d).font(.caption2).foregroundStyle(palette.mutedForeground).lineLimit(1)
                 }
                 Spacer()
             }
-            .padding(.leading, CGFloat(depth) * 12).contentShape(Rectangle())
+            .padding(.leading, CGFloat(depth) * 12)
+            .frame(minHeight: codeHitTarget)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         if let children = sym.children {
@@ -1018,12 +1158,17 @@ struct ReferencesPanel: View {
         VStack(spacing: 0) {
             HStack {
                 Text("References (\(code.references.count))")
-                    .font(.system(size: 11, weight: .semibold)).foregroundStyle(palette.mutedForeground)
+                    .font(.caption.weight(.semibold)).foregroundStyle(palette.mutedForeground)
                 Spacer()
-                Button { code.showReferences = false } label: { Image(systemName: "xmark") }
-                    .buttonStyle(.plain).font(.system(size: 10)).foregroundStyle(palette.mutedForeground)
+                Button { code.showReferences = false } label: {
+                    Image(systemName: "xmark")
+                        .frame(width: codeHitTarget, height: codeHitTarget).contentShape(Rectangle())
+                }
+                    .buttonStyle(.plain).font(.caption2).foregroundStyle(palette.mutedForeground)
+                    .help("Close references")
+                    .accessibilityLabel("Close references")
             }
-            .padding(.horizontal, 12).padding(.vertical, 6)
+            .padding(.leading, 12)
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(code.references) { ref in
@@ -1032,9 +1177,9 @@ struct ReferencesPanel: View {
                         } label: {
                             HStack(spacing: 6) {
                                 Text((ref.path as NSString).lastPathComponent)
-                                    .font(.system(size: 11, weight: .medium)).foregroundStyle(palette.primary)
+                                    .font(.caption.weight(.medium)).foregroundStyle(palette.primary)
                                 Text(":\(ref.line + 1):\(ref.character + 1)")
-                                    .font(.system(size: 10, design: .monospaced)).foregroundStyle(palette.mutedForeground)
+                                    .font(.system(.caption2, design: .monospaced)).foregroundStyle(palette.mutedForeground)
                                 Spacer()
                             }
                             .padding(.horizontal, 12).padding(.vertical, 3).contentShape(Rectangle())
@@ -1049,44 +1194,140 @@ struct ReferencesPanel: View {
     }
 }
 
-/// Renders a unified diff with per-line add/remove backgrounds.
+/// Renders a unified diff with per-line add/remove backgrounds, old/new line numbers, and a soft
+/// wrap toggle that defaults ON at compact width.
 struct DiffView: View {
     let diff: String
     let palette: OculusPalette
     let theme: CodeTheme
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var hSize
+    #endif
+    /// nil = follow the width default; set once the reviewer picks explicitly.
+    @State private var wrapOverride: Bool?
 
-    private var lines: [(Int, String)] {
-        Array(diff.split(separator: "\n", omittingEmptySubsequences: false).map(String.init).enumerated())
+    /// One rendered diff row: the raw text plus the file line numbers it occupies.
+    private struct Row: Identifiable {
+        let id: Int
+        let text: String
+        let oldLine: Int?
+        let newLine: Int?
+    }
+
+    private var compact: Bool {
+        #if os(iOS)
+        return hSize == .compact
+        #else
+        return false
+        #endif
+    }
+    /// At 390pt a monospaced diff shows ~48 characters, so most real lines needed two horizontal
+    /// drags — a pan that also fought the vertical scroll. Wrapping is the readable default there.
+    private var wrapLines: Bool { wrapOverride ?? compact }
+
+    /// The diff lines, numbered by walking each `@@` header's ranges.
+    private var rows: [Row] {
+        var out: [Row] = []
+        var oldNo = 0
+        var newNo = 0
+        var inHunk = false
+        for (i, raw) in diff.split(separator: "\n", omittingEmptySubsequences: false).map(String.init).enumerated() {
+            if raw.hasPrefix("@@") {
+                inHunk = true
+                let s = Self.hunkStarts(from: raw)
+                oldNo = s.old; newNo = s.new
+                out.append(Row(id: i, text: raw, oldLine: nil, newLine: nil))
+            } else if !inHunk || raw.hasPrefix("\\") {
+                out.append(Row(id: i, text: raw, oldLine: nil, newLine: nil))
+            } else if raw.hasPrefix("+") {
+                out.append(Row(id: i, text: raw, oldLine: nil, newLine: newNo)); newNo += 1
+            } else if raw.hasPrefix("-") {
+                out.append(Row(id: i, text: raw, oldLine: oldNo, newLine: nil)); oldNo += 1
+            } else {
+                out.append(Row(id: i, text: raw, oldLine: oldNo, newLine: newNo)); oldNo += 1; newNo += 1
+            }
+        }
+        return out
+    }
+
+    /// Old/new start lines from `@@ -12,7 +14,9 @@ context`. Only the span between the two `@@`
+    /// markers is scanned — git's trailing function signature routinely contains `-`/`+` tokens.
+    private static func hunkStarts(from header: String) -> (old: Int, new: Int) {
+        guard let open = header.range(of: "@@"),
+              let close = header.range(of: "@@", range: open.upperBound..<header.endIndex)
+        else { return (1, 1) }
+        var old = 1, new = 1
+        for token in header[open.upperBound..<close.lowerBound].split(separator: " ") {
+            guard let mark = token.first, mark == "-" || mark == "+" else { continue }
+            guard let n = Int(token.dropFirst().prefix { $0.isNumber }) else { continue }
+            if mark == "-" { old = n } else { new = n }
+        }
+        return (old, new)
+    }
+
+    private var numberColumnWidth: CGFloat {
+        let widest = rows.reduce(0) { max($0, max($1.oldLine ?? 0, $1.newLine ?? 0)) }
+        return CGFloat(max(String(widest).count, 2)) * 6
     }
 
     var body: some View {
         if diff.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             VStack(spacing: 6) {
-                Image(systemName: "checkmark.circle").font(.system(size: 28)).foregroundStyle(palette.mutedForeground)
-                Text("No changes").font(.system(size: 13)).foregroundStyle(palette.mutedForeground)
+                Image(systemName: "checkmark.circle").font(.largeTitle)
+                    .foregroundStyle(palette.mutedForeground).accessibilityHidden(true)
+                Text("No changes").font(.footnote).foregroundStyle(palette.mutedForeground)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(theme.background)
         } else {
-            ScrollView([.vertical, .horizontal]) {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(lines, id: \.0) { _, line in
-                        row(line)
-                    }
+            VStack(spacing: 0) {
+                wrapBar
+                Divider().overlay(palette.border)
+                if wrapLines {
+                    ScrollView(.vertical) { rowStack(width: numberColumnWidth) }
+                } else {
+                    ScrollView([.vertical, .horizontal]) { rowStack(width: numberColumnWidth) }
                 }
-                .padding(.vertical, 6)
-                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             }
             .background(theme.background)
         }
     }
 
-    private func row(_ line: String) -> some View {
+    private func rowStack(width: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(rows) { row in
+                self.row(row, numberWidth: width)
+            }
+        }
+        .padding(.vertical, 6)
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var wrapBar: some View {
+        HStack {
+            Spacer()
+            Button { wrapOverride = !wrapLines } label: {
+                Image(systemName: wrapLines ? "arrow.turn.down.left" : "arrow.left.and.right")
+                    .font(.footnote)
+                    .frame(width: codeHitTarget, height: codeHitTarget).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(wrapLines ? palette.primary : palette.mutedForeground)
+            .help(wrapLines ? "Turn off soft wrap" : "Wrap long lines")
+            .accessibilityLabel("Soft wrap")
+            .accessibilityValue(wrapLines ? "On" : "Off")
+        }
+        .padding(.trailing, 4)
+        .background(palette.background)
+    }
+
+    private func row(_ row: Row, numberWidth: CGFloat) -> some View {
+        let line = row.text
         let (bg, fg): (Color, Color)
         if line.hasPrefix("+") && !line.hasPrefix("+++") {
-            bg = Color(hex: 0x2EA043).opacity(0.16); fg = theme.plain
+            bg = palette.diffAdded.opacity(0.16); fg = theme.plain
         } else if line.hasPrefix("-") && !line.hasPrefix("---") {
-            bg = Color(hex: 0xF85149).opacity(0.16); fg = theme.plain
+            bg = palette.diffRemoved.opacity(0.16); fg = theme.plain
         } else if line.hasPrefix("@@") {
             bg = palette.primary.opacity(0.10); fg = palette.mutedForeground
         } else if line.hasPrefix("diff ") || line.hasPrefix("index ") || line.hasPrefix("+++") || line.hasPrefix("---") {
@@ -1094,11 +1335,37 @@ struct DiffView: View {
         } else {
             bg = .clear; fg = theme.plain
         }
-        return Text(line.isEmpty ? " " : line)
-            .font(.system(size: 12, design: .monospaced))
-            .foregroundStyle(fg)
-            .padding(.horizontal, 10).padding(.vertical, 0.5)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(bg)
+        // Code keeps a fixed size: it is read on a character grid, and Dynamic Type would break the
+        // alignment between the gutter, the +/- marker column and the code.
+        return HStack(alignment: .top, spacing: 0) {
+            HStack(spacing: 4) {
+                Text(row.oldLine.map(String.init) ?? "").frame(width: numberWidth, alignment: .trailing)
+                Text(row.newLine.map(String.init) ?? "").frame(width: numberWidth, alignment: .trailing)
+            }
+            .font(.system(size: 10, design: .monospaced))
+            .foregroundStyle(palette.mutedForeground.opacity(0.7))
+            .padding(.horizontal, 6)
+            .accessibilityHidden(true)
+            // The marker sits in its own column so a wrapped continuation hangs under the code
+            // rather than under the gutter, where it would read as a separate diff line.
+            Text(line.isEmpty ? " " : String(line.prefix(1)))
+                .frame(width: 10, alignment: .leading)
+            wrapped(String(line.dropFirst(1)))
+        }
+        .font(.system(size: 12, design: .monospaced))
+        .foregroundStyle(fg)
+        .padding(.trailing, 8).padding(.vertical, 0.5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(bg)
+    }
+
+    @ViewBuilder private func wrapped(_ text: String) -> some View {
+        if wrapLines {
+            Text(text.isEmpty ? " " : text)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            Text(text.isEmpty ? " " : text).lineLimit(1).fixedSize(horizontal: true, vertical: false)
+        }
     }
 }

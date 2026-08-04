@@ -27,8 +27,22 @@ struct OculusSheet<Content: View>: View {
     var filters: AnyView? = nil
     /// A sheet's own dismissal. Always rendered last in the header, always labelled the same.
     var onClose: (() -> Void)? = nil
-    /// Content is placed inside a scroll view unless the sheet manages its own (a List, say).
+
+    /// Set false when the content brings its own scrolling container.
+    ///
+    /// The body is normally a `ScrollView`, which is right for a stack of cards but makes a `List`
+    /// impossible: a List inside a ScrollView has no height to size itself against, so it either
+    /// collapses to nothing or scrolls within a scroll. That is the whole reason the iOS sheets in
+    /// this app hand-rolled Mac-style cards instead of using the platform's list — there was no way
+    /// to put a List in one.
     var scrolls: Bool = true
+
+    /// Set false when this sheet is PUSHED onto a navigation stack rather than presented as a modal.
+    ///
+    /// The stack already draws the title and the way back. Drawing the scaffold header too would
+    /// show the title twice and offer two different ways out of the same screen — and only one of
+    /// them would run the sheet's unsaved-work guard.
+    var showsHeader: Bool = true
 
     @ViewBuilder let content: () -> Content
 
@@ -39,7 +53,7 @@ struct OculusSheet<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header
+            if showsHeader { header } else if subtitle != nil { pushedSubtitle }
             if search != nil || filters != nil { controlBar }
             Divider().overlay(palette.border)
             if scrolls {
@@ -69,11 +83,11 @@ struct OculusSheet<Content: View>: View {
         HStack(alignment: .firstTextBaseline, spacing: OculusSpace.md) {
             VStack(alignment: .leading, spacing: OculusSpace.xxs) {
                 Text(title)
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(palette.foreground)
                 if let subtitle {
                     Text(subtitle)
-                        .font(.system(size: 11.5))
+                        .font(.caption)
                         .foregroundStyle(palette.mutedForeground)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -83,11 +97,26 @@ struct OculusSheet<Content: View>: View {
             if let onClose {
                 Button("Done", action: onClose)
                     .keyboardShortcut(.defaultAction)
+                    .accessibilityLabel("Close \(title)")
             }
         }
         .padding(.horizontal, OculusSpace.lg)
         .padding(.top, OculusSpace.lg)
         .padding(.bottom, OculusSpace.md)
+    }
+
+    /// A pushed screen loses the header, and with it the subtitle — which in these sheets is not
+    /// decoration but the sentence saying what the thing does and where its credentials end up.
+    /// It moves above the content rather than being dropped.
+    private var pushedSubtitle: some View {
+        Text(subtitle ?? "")
+            .font(.caption)
+            .foregroundStyle(palette.mutedForeground)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, OculusSpace.lg)
+            .padding(.top, OculusSpace.md)
+            .padding(.bottom, OculusSpace.md)
     }
 
     private var controlBar: some View {
@@ -114,11 +143,12 @@ struct SearchField: View {
     var body: some View {
         HStack(spacing: OculusSpace.xs) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 11))
+                .font(.caption)
                 .foregroundStyle(palette.mutedForeground)
+                .accessibilityHidden(true)
             TextField(prompt, text: $text)
                 .textFieldStyle(.plain)
-                .font(.system(size: 12))
+                .font(.footnote)
                 .focused($focused)
                 .foregroundStyle(palette.foreground)
             if !text.isEmpty {
@@ -126,19 +156,23 @@ struct SearchField: View {
                     text = ""
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 11))
+                        .font(.caption)
                         .foregroundStyle(palette.mutedForeground)
                 }
                 .buttonStyle(.plain)
+                // An icon-only button with no label announces as a bare "Button". This one is in
+                // every sheet in the app, so the omission was the app's most-repeated VoiceOver bug.
+                .accessibilityLabel("Clear search")
+                .sheetTapTarget()
                 .transition(.opacity)
             }
         }
         .padding(.horizontal, OculusSpace.sm)
         .padding(.vertical, 5)
         .background(palette.input)
-        .clipShape(RoundedRectangle(cornerRadius: OculusRadius.sm))
+        .clipShape(OculusShape.rounded(OculusRadius.sm))
         .overlay(
-            RoundedRectangle(cornerRadius: OculusRadius.sm)
+            OculusShape.rounded(OculusRadius.sm)
                 .strokeBorder(focused ? palette.primary.opacity(0.5) : palette.border)
         )
         .frame(maxWidth: 260)
@@ -172,16 +206,16 @@ struct FilterChips<T: Hashable>: View {
                         Text(opt.label)
                         if let c = opt.count, c > 0 {
                             Text("\(c)")
-                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .font(.caption2.weight(.semibold).monospaced())
                                 .opacity(0.75)
                         }
                     }
-                    .font(.system(size: 11, weight: active ? .semibold : .regular))
+                    .font(.caption.weight(active ? .semibold : .regular))
                     .foregroundStyle(active ? palette.primaryForeground : palette.mutedForeground)
                     .padding(.horizontal, OculusSpace.sm)
                     .padding(.vertical, 4)
                     .background(active ? palette.primary : palette.input)
-                    .clipShape(RoundedRectangle(cornerRadius: OculusRadius.pill))
+                    .clipShape(OculusShape.rounded(OculusRadius.pill))
                 }
                 .buttonStyle(.plain)
             }
@@ -202,13 +236,14 @@ struct SheetEmptyState<Actions: View>: View {
     var body: some View {
         VStack(spacing: OculusSpace.md) {
             Image(systemName: icon)
-                .font(.system(size: 28))
+                .font(.largeTitle)
                 .foregroundStyle(palette.mutedForeground.opacity(0.5))
+                .accessibilityHidden(true)
             Text(title)
-                .font(.system(size: 14, weight: .semibold))
+                .font(.subheadline.weight(.semibold))
                 .foregroundStyle(palette.foreground)
             Text(message)
-                .font(.system(size: 12))
+                .font(.footnote)
                 .foregroundStyle(palette.mutedForeground)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
@@ -241,9 +276,68 @@ struct SheetCard<Content: View>: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(palette.card)
         .overlay(
-            RoundedRectangle(cornerRadius: OculusRadius.md)
+            OculusShape.rounded(OculusRadius.md)
                 .strokeBorder(tint?.opacity(0.45) ?? palette.border)
         )
-        .clipShape(RoundedRectangle(cornerRadius: OculusRadius.md))
+        .clipShape(OculusShape.rounded(OculusRadius.md))
+    }
+}
+
+extension View {
+    /// Grows a control's HIT AREA to the 44pt HIG minimum without changing how big it looks.
+    ///
+    /// These sheets were drawn against the Mac's control idiom — 11pt trash glyphs, `.mini` toggles —
+    /// and then shipped unchanged to iPhone, where an 11pt target is roughly a quarter of the area a
+    /// finger can reliably hit. The glyph stays the size the layout was designed around; only the
+    /// tappable rectangle around it grows, and only where there is a finger.
+    func sheetTapTarget() -> some View {
+        #if os(iOS)
+        return self.frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+        #else
+        return self
+        #endif
+    }
+
+    /// The list chrome these sheets share: the platform's grouped list, but drawn on the sheet's own
+    /// background. The system grey a grouped List brings with it reads as a foreign panel dropped
+    /// into a palette-themed sheet.
+    func sheetListChrome(_ palette: OculusPalette) -> some View {
+        #if os(iOS)
+        return self
+            .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
+            .background(palette.background)
+        #else
+        return self
+        #endif
+    }
+
+    /// The platform's swipe-to-delete on a list row — routed through the SAME confirmation the row's
+    /// trash button uses.
+    ///
+    /// The gesture was missing from every one of these sheets, because none of them used a List. The
+    /// obvious way to add it back — a destructive button that deletes — would have made the swipe the
+    /// one path in the app to an UNCONFIRMED delete, and what these rows remove (MCP credentials, API
+    /// keys, an SSH host's forwards) cannot be re-derived from anywhere. So `stage` sets the pending
+    /// item and the existing `confirmationDialog` still has the last word. Full swipe is off for the
+    /// same reason: the fastest gesture shouldn't be the one that skips a step.
+    func sheetSwipeDelete(_ label: String, stage: @escaping () -> Void) -> some View {
+        #if os(iOS)
+        return self.swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(role: .destructive, action: stage) { Label(label, systemImage: "trash") }
+        }
+        #else
+        return self
+        #endif
+    }
+
+    /// Guards a sheet that holds unsaved typed input against an accidental swipe-to-dismiss.
+    ///
+    /// Every sheet in this app was a freely drag-dismissible takeover, so a stray downward swipe on
+    /// an editor threw away whatever had been typed — including hand-entered API keys, which are the
+    /// one thing in here that cannot be recovered by looking somewhere else. A sheet with a dirty
+    /// draft now refuses the gesture; Cancel still works, and confirms.
+    func sheetDraftGuard(_ dirty: Bool) -> some View {
+        interactiveDismissDisabled(dirty)
     }
 }

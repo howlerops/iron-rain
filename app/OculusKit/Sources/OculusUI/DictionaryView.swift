@@ -15,6 +15,9 @@ struct DictionaryView: View {
     @State private var query = ""
     @State private var showSeeded = false
     @State private var justAdded: String? = nil
+    /// "Forget the built-in words" unteaches ~100 entries from the SYSTEM dictionary in one tap,
+    /// affecting Mail and Notes too, and there is no button that puts them back individually.
+    @State private var confirmForget = false
 
     private var filteredSeeded: [String] {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
@@ -38,7 +41,7 @@ struct DictionaryView: View {
             addRow
 
             if !filteredCustom.isEmpty {
-                sectionHeader("YOUR WORDS", count: filteredCustom.count)
+                sectionHeader("Your words", count: filteredCustom.count)
                 SheetCard(palette: palette) {
                     FlowChips(words: filteredCustom, palette: palette, removable: true) { word in
                         TechDictionary.remove(word)
@@ -61,20 +64,32 @@ struct DictionaryView: View {
                 .padding(.top, OculusSpace.xs)
             } label: {
                 Text("Built-in technical words (\(TechDictionary.seeded.count))")
-                    .font(.system(size: 12)).foregroundStyle(palette.foreground)
+                    .font(.footnote).foregroundStyle(palette.foreground)
             }
 
             SheetCard(palette: palette) {
                 Text("These are taught to your Mac's dictionary, so they also stop being flagged in Mail and Notes — not just here.")
-                    .font(.system(size: 11)).foregroundStyle(palette.mutedForeground)
+                    .font(.caption).foregroundStyle(palette.mutedForeground)
                     .fixedSize(horizontal: false, vertical: true)
-                Button("Forget the built-in words") {
-                    TechDictionary.forgetSeeded()
+                Button(role: .destructive) { confirmForget = true } label: {
+                    Text("Forget the built-in words")
                 }
-                .buttonStyle(.bordered).controlSize(.small)
+                .buttonStyle(.bordered)
+                #if os(macOS)
+                .controlSize(.small)
+                #endif
             }
         }
         .onAppear { custom = TechDictionary.custom }
+        .confirmationDialog("Forget the built-in words?",
+                            isPresented: $confirmForget, titleVisibility: .visible) {
+            Button("Forget \(TechDictionary.seeded.count) words", role: .destructive) {
+                TechDictionary.forgetSeeded()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Removes all \(TechDictionary.seeded.count) built-in technical words from your Mac's dictionary — so autocorrect starts rewriting them again here, and they're flagged again in Mail and Notes. Your own words are kept.")
+        }
     }
 
     private var addRow: some View {
@@ -82,18 +97,16 @@ struct DictionaryView: View {
             HStack(spacing: OculusSpace.sm) {
                 TextField("Add a word (e.g. kubectl)", text: $draft)
                     .textFieldStyle(.roundedBorder)
+                    .submitLabel(.done)
                     .onSubmit(add)
-                    #if os(iOS)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                    #endif
+                    .plainInput()
                 Button("Add", action: add)
                     .buttonStyle(.borderedProminent).tint(palette.primary)
                     .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
             }
             if let w = justAdded {
                 Label("“\(w)” added — autocorrect will leave it alone.", systemImage: "checkmark.circle.fill")
-                    .font(.system(size: 11)).foregroundStyle(Color(hex: 0x3FB950))
+                    .font(.caption).foregroundStyle(palette.success)
                     .transition(.opacity)
             }
         }
@@ -114,8 +127,8 @@ struct DictionaryView: View {
 
     private func sectionHeader(_ t: String, count: Int) -> some View {
         HStack(spacing: OculusSpace.xs) {
-            Text(t).font(.system(size: 10, weight: .semibold)).tracking(0.8)
-            Text("\(count)").font(.system(size: 10, weight: .semibold, design: .monospaced))
+            Text(t).font(.caption.weight(.semibold))
+            Text("\(count)").font(.caption.weight(.semibold).monospaced())
             Spacer()
         }
         .foregroundStyle(palette.mutedForeground)
@@ -162,18 +175,20 @@ struct FlowChips: View {
 
     private func chip(_ w: String) -> some View {
         HStack(spacing: 3) {
-            Text(w).font(.system(size: 11, design: .monospaced))
+            Text(w).font(.system(.caption, design: .monospaced))
             if removable {
                 Button { onRemove(w) } label: {
-                    Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+                    Image(systemName: "xmark").font(.caption2.weight(.bold))
                 }
                 .buttonStyle(.plain)
+                // A tiny glyph announcing as a bare "Button" in a wall of ~100 identical ones.
+                .accessibilityLabel("Forget the word \(w)")
             }
         }
         .foregroundStyle(palette.mutedForeground)
         .padding(.horizontal, OculusSpace.sm)
         .padding(.vertical, 3)
         .background(palette.input)
-        .clipShape(RoundedRectangle(cornerRadius: OculusRadius.pill))
+        .clipShape(OculusShape.rounded(OculusRadius.pill))
     }
 }

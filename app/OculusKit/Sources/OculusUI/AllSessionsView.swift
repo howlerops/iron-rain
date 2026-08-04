@@ -88,14 +88,14 @@ public struct AllSessionsView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Text("RUNNING IN A TERMINAL")
-                    .font(.system(size: 10, weight: .bold)).tracking(0.5)
+                    .font(.caption2.bold()).tracking(0.5)
                     .foregroundStyle(palette.mutedForeground)
                 Text("\(terminalCandidates.count)")
-                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .font(.system(.caption2, design: .monospaced).weight(.semibold))
                     .foregroundStyle(palette.mutedForeground)
                 Spacer()
                 Button { Task { await model.discover() } } label: {
-                    Label("Rescan", systemImage: "arrow.clockwise").font(.system(size: 11))
+                    Label("Rescan", systemImage: "arrow.clockwise").font(.caption)
                 }
                 .buttonStyle(.plain).foregroundStyle(palette.primary)
             }
@@ -106,22 +106,25 @@ public struct AllSessionsView: View {
                 } label: {
                     HStack(spacing: 9) {
                         Image(systemName: c.provider == "claude-code" ? "terminal" : "bolt.horizontal.circle")
-                            .font(.system(size: 12)).foregroundStyle(palette.primary)
+                            .font(.footnote).foregroundStyle(palette.primary)
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(c.title).font(.system(size: 12.5, weight: .medium))
-                                .foregroundStyle(palette.foreground).lineLimit(1)
-                            Text(c.subtitle).font(.system(size: 10.5))
+                            // Which terminal session this is, is the whole decision being made here —
+                            // it wraps rather than truncating. The subtitle is a path, so it keeps
+                            // middle truncation, where the tail is what identifies it.
+                            Text(c.title).font(.footnote.weight(.medium))
+                                .foregroundStyle(palette.foreground).lineLimit(2)
+                            Text(c.subtitle).font(.caption)
                                 .foregroundStyle(palette.mutedForeground)
                                 .lineLimit(1).truncationMode(.middle)
                         }
                         Spacer(minLength: 6)
                         if c.live {
-                            Text("Live").font(.system(size: 10, weight: .semibold))
+                            Text("Live").font(.caption2.weight(.semibold))
                                 .foregroundStyle(palette.primary)
                                 .padding(.horizontal, 6).padding(.vertical, 2)
                                 .background(Capsule().fill(palette.primary.opacity(0.16)))
                         }
-                        Text("Continue").font(.system(size: 11, weight: .medium))
+                        Text("Continue").font(.caption.weight(.medium))
                             .foregroundStyle(palette.primary)
                     }
                     .padding(.vertical, 5).contentShape(Rectangle())
@@ -268,7 +271,7 @@ public struct AllSessionsView: View {
     private var header: some View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
-                Text("All sessions").font(.system(size: 15, weight: .semibold))
+                Text("All sessions").font(.subheadline.weight(.semibold))
                 Text("\(model.sessions.filter { $0.ephemeral != true }.count) total · \(worktreeCount) worktrees")
                     .font(.caption).foregroundStyle(palette.mutedForeground)
                 Spacer()
@@ -279,16 +282,18 @@ public struct AllSessionsView: View {
                             .foregroundStyle(palette.mutedForeground)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Close")
                 }
             }
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").font(.caption).foregroundStyle(palette.mutedForeground)
                 TextField("Filter by name or provider…", text: $query)
                     .textFieldStyle(.plain).font(.callout)
+                    .plainInput() // provider ids and branch names must not be autocapitalized
             }
             .padding(.horizontal, 10).padding(.vertical, 7)
-            .background(palette.input, in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(palette.border))
+            .background(palette.input, in: OculusShape.rounded(OculusRadius.sm))
+            .overlay(OculusShape.rounded(OculusRadius.sm).strokeBorder(palette.border))
             scopeChips
         }
         .padding(.horizontal, 16).padding(.vertical, 12)
@@ -297,15 +302,24 @@ public struct AllSessionsView: View {
     /// Filter chips carrying live counts — "Stopped 3" tells you whether it is worth clicking before
     /// you click it, which a bare segmented control cannot.
     private var scopeChips: some View {
+        // Three capsules that no longer share a line once the type is large. They scroll rather than
+        // clamp, because a filter you cannot reach is worse than a filter you have to swipe to.
+        ViewThatFits(in: .horizontal) {
+            chipRow
+            ScrollView(.horizontal, showsIndicators: false) { chipRow }
+        }
+    }
+
+    private var chipRow: some View {
         HStack(spacing: 6) {
             ForEach(Scope.allCases) { sc in
                 let n = count(for: sc)
                 let active = scope == sc
                 Button { scope = sc } label: {
                     HStack(spacing: 5) {
-                        Text(sc.rawValue).font(.system(size: 11.5, weight: active ? .semibold : .regular))
+                        Text(sc.rawValue).font(.caption.weight(active ? .semibold : .regular))
                         if n > 0 {
-                            Text("\(n)").font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            Text("\(n)").font(.system(.caption2, design: .monospaced).weight(.semibold))
                                 .opacity(0.75)
                         }
                     }
@@ -344,6 +358,7 @@ public struct AllSessionsView: View {
         .foregroundStyle(palette.mutedForeground)
         .padding(.horizontal, 16).padding(.vertical, 7)
         .background(palette.secondary.opacity(0.25))
+        .dynamicTypeSize(...DynamicTypeSize.accessibility2) // must track `row`'s clamp or the columns drift
     }
 
     private func sortButton(_ title: String, _ key: SortKey) -> some View {
@@ -352,7 +367,7 @@ public struct AllSessionsView: View {
         } label: {
             HStack(spacing: 3) {
                 Text(title)
-                if sort == key { Image(systemName: ascending ? "chevron.up" : "chevron.down").font(.system(size: 8)) }
+                if sort == key { Image(systemName: ascending ? "chevron.up" : "chevron.down").font(.caption2) }
             }
         }
         .buttonStyle(.plain)
@@ -368,27 +383,40 @@ public struct AllSessionsView: View {
                     .font(.body)
             }
             .buttonStyle(.plain).frame(width: 22)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(label(s)).font(.callout).lineLimit(1)
-                HStack(spacing: 6) {
-                    if let b = s.branch, !b.isEmpty {
-                        Label(b, systemImage: "arrow.triangle.branch").font(.system(size: 9)).lineLimit(1)
-                            .foregroundStyle(palette.primary)
-                    }
-                    if let p = projectName(s) {
-                        Text(p).font(.system(size: 9)).foregroundStyle(palette.mutedForeground).lineLimit(1)
+            .accessibilityLabel(selection.contains(s.id) ? "Deselect \(label(s))" : "Select \(label(s))")
+            // The name is a real Button, not just part of the row's tap gesture. Opening a session is
+            // the primary action of this screen, and a bare `.onTapGesture` is invisible to
+            // VoiceOver — the name was announced as static text with no way to act on it. The row
+            // keeps its full-width tap target below for pointer users.
+            Button { open(s) } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    // The name is what you are scanning for; it shrinks and takes a second line
+                    // before it will truncate.
+                    Text(label(s)).font(.callout).lineLimit(2).minimumScaleFactor(0.85)
+                    HStack(spacing: 6) {
+                        if let b = s.branch, !b.isEmpty {
+                            Label(b, systemImage: "arrow.triangle.branch").font(.caption2).lineLimit(1)
+                                .foregroundStyle(palette.primary)
+                        }
+                        if let p = projectName(s) {
+                            Text(p).font(.caption2).foregroundStyle(palette.mutedForeground).lineLimit(1)
+                        }
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityHint("Opens this session")
             .frame(maxWidth: .infinity, alignment: .leading)
             Text(s.provider).font(.caption).foregroundStyle(palette.mutedForeground)
                 .frame(width: 90, alignment: .leading).lineLimit(1)
             // A pill, not a dot beside grey text. Status is the column you scan down when you are
             // looking for the session that needs you, and it has to read at a glance.
             HStack(spacing: 4) {
-                Circle().fill(statusColor(s.status)).frame(width: 5, height: 5)
+                Image(systemName: statusSymbol(s.status)).font(.caption2)
                 Text(statusLabel(s.status))
-                    .font(.system(size: 10.5, weight: .medium)).lineLimit(1)
+                    .font(.caption.weight(.medium)).lineLimit(1)
             }
             .foregroundStyle(statusColor(s.status))
             .padding(.horizontal, 7).padding(.vertical, 2.5)
@@ -401,6 +429,11 @@ public struct AllSessionsView: View {
                 .frame(width: 92, alignment: .trailing)
             rowMenu(s).frame(width: 28)
         }
+        // A genuine table: the provider/status/cost/age columns only read as columns because every
+        // row pins them to the same widths. The type scales up to AX2 and the row grows taller with
+        // it; beyond that there is no width left for the name, so growth stops rather than the
+        // columns sliding out of alignment. `columnHeader` carries the same clamp.
+        .dynamicTypeSize(...DynamicTypeSize.accessibility2)
         .padding(.horizontal, 16).padding(.vertical, 9)
         .background(hovered == s.id ? palette.muted.opacity(0.35) : .clear)
         .contentShape(Rectangle())
@@ -437,6 +470,7 @@ public struct AllSessionsView: View {
         }
         .menuIndicator(.hidden)
         .fixedSize()
+        .accessibilityLabel("Actions for \(label(s))")
     }
 
     private var emptyState: some View {
@@ -467,11 +501,22 @@ public struct AllSessionsView: View {
     }
     private func statusColor(_ status: String) -> Color {
         switch status {
-        case SessionStatusValue.running: return .green
-        case SessionStatusValue.awaitingApproval: return .yellow
-        case SessionStatusValue.error, "errored": return .orange
+        case SessionStatusValue.running: return palette.success
+        case SessionStatusValue.awaitingApproval: return palette.warning
+        case SessionStatusValue.error, "errored": return palette.destructive
         case SessionStatusValue.stopped: return palette.mutedForeground
         default: return palette.mutedForeground
+        }
+    }
+    /// A glyph per status, so the pill is legible without colour (the dot alone was hue-only).
+    private func statusSymbol(_ status: String) -> String {
+        switch status {
+        case SessionStatusValue.running: return "circle.fill"
+        case SessionStatusValue.awaitingApproval: return "exclamationmark.triangle.fill"
+        case SessionStatusValue.error, "errored": return "xmark.octagon.fill"
+        case SessionStatusValue.stopped: return "pause.circle"
+        case SessionStatusValue.done: return "checkmark.circle.fill"
+        default: return "circle"
         }
     }
     private func statusLabel(_ status: String) -> String {
@@ -501,13 +546,21 @@ public struct AllSessionsView: View {
 
 
 /// A sheet needs a minimum size; a pane embedded in the detail column must take whatever it is given.
+///
+/// …and a minimum size is a macOS idea either way. The non-embedded path IS reachable on iOS (the
+/// sidebar's ⋯ → "Manage sessions…"), where demanding 640pt forced the sheet wider than the phone and
+/// let the page scroll sideways. Same bug and same fix as SheetScaffold.swift:56-63.
 private struct SheetSizing: ViewModifier {
     let embedded: Bool
     func body(content: Content) -> some View {
+        #if os(macOS)
         if embedded {
             content.frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             content.frame(minWidth: 640, minHeight: 440)
         }
+        #else
+        content.frame(maxWidth: .infinity, maxHeight: .infinity)
+        #endif
     }
 }
