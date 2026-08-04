@@ -330,7 +330,7 @@ func serve(args []string) error {
 	// same end-to-end-encrypted session runs over it. The relay server_id is the daemon pubkey, so
 	// pairing needs nothing extra beyond the relay URL (the app already has `pub`).
 	for _, ru := range splitRelays(*relayURL) {
-		go relayHost(ru, hex.EncodeToString(kp.Public()), srv)
+		go relayHost(ru, hex.EncodeToString(kp.Public()), kp.PrivateBytes(), srv)
 	}
 
 	mux := http.NewServeMux()
@@ -457,12 +457,22 @@ func serve(args []string) error {
 // that client disconnects), then returns — so we loop to re-register for the next client. A quick
 // return means the relay was unreachable (down / network), so we back off; a long-lived return
 // means we served a real session, so we re-register promptly. Traffic stays end-to-end encrypted.
-func relayHost(relayURL, serverID string, srv *server.Server) {
+func relayHost(relayURL, serverID string, hostPriv []byte, srv *server.Server) {
 	ctx := context.Background()
 	backoff := time.Second
 	for {
 		start := time.Now()
-		_ = relay.ServeHost(ctx, relayURL, serverID, srv.ServeConn)
+		// ServeHostKey, not ServeHost: it answers the relay's proof-of-possession challenge, which is
+		// the only thing that makes the relay-side check worth anything. The relay verifies a host
+		// ONLY when the host opts in — deliberately, so daemons already in the field are not locked
+		// out — so without this line the host slot is still granted on presentation of serverID, a
+		// value printed to stdout, embedded in every pairing QR, and logged by the relay itself.
+		// Anyone who has seen it could evict this daemon and take the bridge position.
+		//
+		// It degrades rather than fails: a relay not yet redeployed ignores the offer, and a key that
+		// doesn't match serverID falls back to an unproven registration, so this cannot break remote
+		// access on its own.
+		_ = relay.ServeHostKey(ctx, relayURL, serverID, hostPriv, relay.DefaultKeepalive, srv.ServeConn)
 		if time.Since(start) > 5*time.Second {
 			backoff = time.Second // served a client (or waited on one) — re-register immediately
 			continue

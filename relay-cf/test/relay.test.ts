@@ -20,8 +20,8 @@ class Peer {
     });
   }
 
-  static async connect(sid: string, role: "host" | "client"): Promise<Peer> {
-    const res = await SELF.fetch(`https://relay.test/ws?sid=${sid}&role=${role}`, {
+  static async connect(sid: string, role: "host" | "client", pop = false): Promise<Peer> {
+    const res = await SELF.fetch(`https://relay.test/ws?sid=${sid}&role=${role}${pop ? "&pop=1" : ""}`, {
       headers: { Upgrade: "websocket" },
     });
     if (!res.webSocket) throw new Error(`no webSocket on response (status ${res.status})`);
@@ -59,6 +59,54 @@ const settle = () => scheduler.wait(100);
 
 let n = 0;
 const freshSid = () => `sid-${Date.now()}-${n++}`; // one Durable Object per test, no state leak
+
+// --- the daemon half of the proof of possession (mirrors daemon/relay/pop.go) --------------------
+
+const POP_LABEL = "iron-rain/relay-pop/v1";
+
+const hex = (b: Uint8Array) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+const unhex = (s: string) => new Uint8Array(s.match(/../g)!.map((h) => parseInt(h, 16)));
+
+async function hmac(key: Uint8Array, msg: Uint8Array): Promise<Uint8Array> {
+  const k = await crypto.subtle.importKey("raw", key, { name: "HMAC", hash: "SHA-256" }, false, [
+    "sign",
+  ]);
+  return new Uint8Array(await crypto.subtle.sign("HMAC", k, msg));
+}
+
+type DaemonKey = { sid: string; priv: CryptoKey };
+
+/** A daemon identity: an X25519 key pair whose PUBLIC half is the server_id. */
+async function daemonKey(): Promise<DaemonKey> {
+  const kp = (await crypto.subtle.generateKey({ name: "X25519" }, true, [
+    "deriveBits",
+  ])) as CryptoKeyPair;
+  const pub = new Uint8Array((await crypto.subtle.exportKey("raw", kp.publicKey)) as ArrayBuffer);
+  return { sid: hex(pub), priv: kp.privateKey };
+}
+
+/** Registers as a host and answers the challenge — what an updated daemon does on every dial. */
+async function provenHost(key: DaemonKey): Promise<Peer> {
+  const host = await Peer.connect(key.sid, "host", true);
+  const challenge = JSON.parse((await host.waitMessage()) as string);
+  expect(challenge.ir).toBe("pop-challenge");
+
+  const eph = await crypto.subtle.importKey("raw", unhex(challenge.eph), { name: "X25519" }, false, []);
+  // workers-types spells the peer key `$public`; the runtime property is `public`.
+  const agree = { name: "X25519", public: eph } as unknown as SubtleCryptoDeriveKeyAlgorithm;
+  const shared = new Uint8Array(await crypto.subtle.deriveBits(agree, key.priv, 256));
+
+  const nonce = unhex(challenge.nonce);
+  const sid = unhex(key.sid);
+  const signed = new Uint8Array(nonce.length + sid.length);
+  signed.set(nonce);
+  signed.set(sid, nonce.length);
+
+  const prk = await hmac(new TextEncoder().encode(POP_LABEL), shared);
+  host.send(JSON.stringify({ ir: "pop-proof", v: 1, mac: hex(await hmac(prk, signed)) }));
+  await settle();
+  return host;
+}
 
 describe("relay DO", () => {
   it("closes a client with a policy code when no host is registered", async () => {
@@ -120,6 +168,97 @@ describe("relay DO", () => {
     expect(await fresh.waitMessage()).toBe("to-fresh-host");
     await settle();
     expect(stale.messages).toEqual([]);
+  });
+
+  it("refuses an unproven host while a proven host holds the slot", async () => {
+    // The host-slot hijack (docs/security-interception-review.md §4.2). The sid is the daemon's
+    // PUBLIC key — printed on daemon start, in every pairing QR, in this Worker's request logs — so
+    // before the proof, presenting it was enough to evict the real daemon, kill remote access for
+    // as long as you kept re-registering, and take the bridge position.
+    const key = await daemonKey();
+    const daemon = await provenHost(key);
+
+    const attacker = await Peer.connect(key.sid, "host"); // knows the sid and nothing else
+    const refused = await attacker.waitClose();
+    expect(refused.code).toBe(1008);
+    expect(refused.reason).toBe("host slot held by a proven host");
+
+    // The daemon is still the bridge, not merely still connected.
+    const client = await Peer.connect(key.sid, "client");
+    client.send("c2h");
+    expect(await daemon.waitMessage()).toBe("c2h");
+    expect(daemon.closeInfo).toBeNull();
+  });
+
+  it("lets a proven host reclaim its own slot", async () => {
+    // The protection must not lock the daemon out of its own registration: its re-dial loop opens a
+    // fresh socket for every client, and each of those proves itself.
+    const key = await daemonKey();
+    const stale = await provenHost(key);
+    const fresh = await provenHost(key);
+
+    expect((await stale.waitClose()).code).toBe(1012);
+
+    const client = await Peer.connect(key.sid, "client");
+    client.send("to-fresh-host");
+    expect(await fresh.waitMessage()).toBe("to-fresh-host");
+  });
+
+  it("lets a proven host evict an unproven squatter", async () => {
+    // Why the rule is "proven beats unproven" and not "the incumbent always wins": the latter would
+    // have turned an eviction loop into a permanent squat by whoever registered first, which is
+    // worse. The real daemon must always be able to take its slot back.
+    const key = await daemonKey();
+    const squatter = await Peer.connect(key.sid, "host");
+    await settle();
+
+    const daemon = await provenHost(key);
+    expect((await squatter.waitClose()).code).toBe(1012);
+
+    const client = await Peer.connect(key.sid, "client");
+    client.send("c2h");
+    expect(await daemon.waitMessage()).toBe("c2h");
+  });
+
+  it("closes a host whose proof does not verify and leaves the incumbent alone", async () => {
+    // Opting in with a wrong answer must not evict the incumbent as a side effect of being refused.
+    const key = await daemonKey();
+    const daemon = await provenHost(key);
+
+    const attacker = await Peer.connect(key.sid, "host", true);
+    await attacker.waitMessage(); // the challenge
+    attacker.send(JSON.stringify({ ir: "pop-proof", v: 1, mac: "aa".repeat(32) }));
+    const refused = await attacker.waitClose();
+    expect(refused.code).toBe(1008);
+    expect(refused.reason).toBe("host proof failed");
+
+    const client = await Peer.connect(key.sid, "client");
+    client.send("c2h");
+    expect(await daemon.waitMessage()).toBe("c2h");
+    expect(daemon.closeInfo).toBeNull();
+  });
+
+  it("does not bridge a client to a host that has not answered its challenge yet", async () => {
+    // A pending host holds no slot: it is deliberately invisible until it proves itself, so the
+    // window between registering and answering reads as "no host" rather than as a bridge to
+    // someone unverified. It is one round trip wide, and the app already retries an unreachable
+    // relay.
+    const key = await daemonKey();
+    const pending = await Peer.connect(key.sid, "host", true);
+    await pending.waitMessage(); // challenge received, deliberately unanswered
+
+    const client = await Peer.connect(key.sid, "client");
+    expect((await client.waitClose()).code).toBe(1008);
+    expect(pending.closeInfo).toBeNull();
+  });
+
+  it("rejects ?pop=1 on a server_id that is not a public key", async () => {
+    // A challenge against a non-key can never be answered, so it is refused at the edge rather than
+    // becoming a socket that hangs until the daemon gives up.
+    const res = await SELF.fetch("https://relay.test/ws?sid=srv-1&role=host&pop=1", {
+      headers: { Upgrade: "websocket" },
+    });
+    expect(res.status).toBe(400);
   });
 
   it("answers the app-level keepalive itself without forwarding it to the peer", async () => {
