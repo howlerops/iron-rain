@@ -318,10 +318,14 @@ public struct ChatView: View {
                             Label("Browser / Design", systemImage: "safari")
                         }
                         #endif
+                        // Same host-shell gate as the `!` escape: this runs a command on the machine,
+                        // so a non-owner gets a disabled item that explains itself instead of one
+                        // that looks live and is refused by the daemon.
                         Button { Task { await model.runTests() } } label: {
                             Label(model.testRunning ? "Running tests…" : "Run tests", systemImage: Self.runTestsSymbol)
                         }
-                        .disabled(model.testRunning)
+                        .disabled(model.runBusy || model.knownNonOwner)
+                        .help(model.knownNonOwner ? model.ownerOnlyReason : "Run this project's test suite")
                         Button { showDelegate = true } label: {
                             Label("Delegate subtask", systemImage: "arrowshape.turn.up.right")
                         }
@@ -497,6 +501,11 @@ public struct ChatView: View {
                     ForEach(Array(model.messages.suffix(visibleWindow))) { msg in
                         if msg.role == .subagent, let sid = msg.subAgentID {
                             InlineSubAgentCard(model: model, subAgentID: sid, title: msg.text, palette: palette)
+                        } else if msg.role == .shell {
+                            // Rendered here rather than inside MessageRow because the card needs the
+                            // live model: the exit code, and the explicit "hand this to the agent"
+                            // action that is the ONLY way this output ever reaches the model.
+                            ShellRunCard(model: model, message: msg, palette: palette)
                         } else {
                             MessageRow(message: msg, palette: palette,
                                        sessionID: model.sessionID,
@@ -1023,6 +1032,11 @@ struct MessageRow: View, Equatable {
             // is a minimal fallback for any context that renders a MessageRow directly.
             Label(message.text.isEmpty ? "Sub-agent" : message.text, systemImage: "person.2.fill")
                 .font(.caption).foregroundStyle(palette.mutedForeground)
+        case .shell:
+            // Same split as .subagent: ShellRunCard needs the model, so this is the fallback for any
+            // context rendering a MessageRow directly (e.g. a sub-agent's nested transcript).
+            Label("! \(message.text)", systemImage: "terminal")
+                .font(.system(.caption, design: .monospaced)).foregroundStyle(palette.mutedForeground)
         case .system:
             Text(message.text).font(.caption).foregroundStyle(palette.mutedForeground)
                 .frame(maxWidth: .infinity, alignment: .center)
@@ -1203,6 +1217,102 @@ struct ToolCallCard: View {
         }
     }
     private var tint: Color { isError ? palette.destructive : palette.primary }
+}
+
+/// A `!command` YOU ran on the host — the command, its streaming output, and how it exited.
+///
+/// It borrows ToolCallCard's shape deliberately (same radius, padding, mono caption, tap-to-expand)
+/// so the transcript keeps one visual language for "a thing ran". What it does NOT borrow is the
+/// agent's identity: the leading glyph is `!` in the primary tint with a "you" tag, and a finished
+/// row says in plain words that the agent hasn't seen the output. Dressing this as an agent tool
+/// call would be a lie the user would act on — they'd follow up with "fix that error" and the model
+/// would have no idea what error.
+struct ShellRunCard: View {
+    @ObservedObject var model: Model
+    let message: ChatMessage
+    let palette: OculusPalette
+    @State private var expanded = true // output is the reason you ran it — start open, unlike a tool card
+
+    private var call: ToolCall? { message.tool }
+    private var running: Bool { call?.status == "running" }
+    private var failed: Bool { call?.status == "error" }
+    private var output: String { call?.output ?? "" }
+    private var hasOutput: Bool { !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var exitCode: Int? { model.shellExit[message.id] }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: OculusSpace.sm) {
+                Image(systemName: "terminal").font(.caption2).foregroundStyle(tint).frame(width: 14)
+                Text("!").font(.system(.caption, design: .monospaced).bold()).foregroundStyle(tint)
+                Text(message.text)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(palette.foreground)
+                    .lineLimit(expanded ? 4 : 1).truncationMode(.middle)
+                    .textSelection(.enabled)
+                Spacer(minLength: 6)
+                if running {
+                    ElapsedLabel(since: call?.startedAt ?? Date(), palette: palette)
+                    ProgressView().controlSize(.mini)
+                } else if let code = exitCode {
+                    Text(BangCommand.resultLabel(ok: !failed, exitCode: code))
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(failed ? palette.destructive : palette.mutedForeground)
+                        .padding(.horizontal, 5).padding(.vertical, 1)
+                        .background(Capsule().fill(palette.muted.opacity(0.45)))
+                }
+                if hasOutput {
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 9)).foregroundStyle(palette.mutedForeground)
+                }
+            }
+            // Expand/collapse hangs off the HEADER only, not the whole card. Putting it on the card
+            // would make it compete with the "Send to agent" button and with selecting the output —
+            // and an accidental collapse while you're reading the output is exactly the annoyance.
+            .contentShape(Rectangle())
+            .onTapGesture {
+                guard hasOutput else { return }
+                withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
+            }
+            if expanded, hasOutput {
+                // Horizontal scroll only (matching ToolCallCard) and NO height clamp: the row grows
+                // to fit and the transcript scrolls it. A vertical clamp here would show the TOP of
+                // the output and hide the end — which for a command you just ran is the only part
+                // you wanted. The line count is bounded by previewOutput instead.
+                ScrollView(.horizontal, showsIndicators: false) {
+                    Text(BangCommand.previewOutput(output))
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(failed ? palette.destructive : palette.foreground.opacity(0.9))
+                        .textSelection(.enabled)
+                }
+            }
+            if !running {
+                // The agent-context boundary, stated rather than implied. Claude Code's `!` output is
+                // not fed to the model unless you ask, and a user who ASSUMES it was fed will write a
+                // follow-up ("fix that") that lands with no referent.
+                HStack(spacing: OculusSpace.sm) {
+                    Text("You ran this — the agent hasn't seen it.")
+                        .font(.caption2).foregroundStyle(palette.mutedForeground)
+                    Spacer(minLength: 6)
+                    Button {
+                        Task { await model.send(BangCommand.shareMessage(command: message.text, output: output)) }
+                    } label: {
+                        Label("Send to agent", systemImage: "arrowshape.turn.up.right")
+                            .font(.caption2)
+                    }
+                    .buttonStyle(.plain).foregroundStyle(palette.primary)
+                    .help("Paste this command and its output into the conversation as a message from you.")
+                }
+            }
+        }
+        .padding(.horizontal, OculusSpace.md).padding(.vertical, OculusSpace.sm)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(palette.secondary.opacity(0.3), in: RoundedRectangle(cornerRadius: OculusRadius.sm))
+        .overlay(RoundedRectangle(cornerRadius: OculusRadius.sm)
+            .strokeBorder((failed ? palette.destructive : palette.primary).opacity(running ? 0.4 : 0.2)))
+    }
+
+    private var tint: Color { failed ? palette.destructive : palette.primary }
 }
 
 /// A tiny live "elapsed" readout (ticks ~1×/s) — shows how long a running tool or sub-agent has been

@@ -9,6 +9,10 @@ public struct ChatMessage: Identifiable, Equatable {
         case assistant
         case thinking // the agent's reasoning ("it's working")
         case tool     // a tool invocation / result note
+        /// A `!command` YOU ran on the host (see BangCommand). Deliberately its own role rather than
+        /// a `.tool` row: a tool row means "the agent did this", and dressing a user-run command as
+        /// one would imply the agent both ran it and can see its output. Neither is true.
+        case shell
         case system   // session lifecycle, status, handoff
         case ui       // a normalized generative-UI component (see UIComponent)
         case subagent // an inline, collapsible sub-agent card (its work streams into childMessages[id])

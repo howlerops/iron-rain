@@ -110,6 +110,13 @@ public final class Model: ObservableObject {
     @Published public var testResult: RunResult?
     @Published public var testRunning = false
     @Published public var showTests = false
+    /// The transcript row a `!command` run is streaming into, or nil when no bang run is in flight.
+    ///
+    /// This exists because run.output / run.result carry only a session id — there is no run id to
+    /// correlate on — so exactly ONE consumer of that stream may be active at a time. While this is
+    /// set, output lands in the transcript row; otherwise it lands in the test panel. The two entry
+    /// points disable each other (see `runBusy`) rather than racing for the same lines.
+    @Published public var shellRunID: UUID? = nil
 
     // Projects + worktrees.
     @Published public var projects: [Project] = []
@@ -1116,6 +1123,10 @@ public final class Model: ObservableObject {
         lastDiff = nil
         todos = []
         testOutput = []; testResult = nil; testRunning = false; showTests = false
+        // A bang run belongs to the session it was typed in. Leaving the marker set would route the
+        // OLD session's remaining output into whatever row the new session appends first.
+        shellRunID = nil; shellBuffer = ""; shellEcho = nil
+        shellFlushTask?.cancel(); shellFlushTask = nil
     }
 
     /// Starts a fresh session with explicit options (provider, one or more project folders,
@@ -1418,6 +1429,131 @@ public final class Model: ObservableObject {
             try? await client.send(env)
         }
     }
+
+    // MARK: !command — run a shell command yourself
+
+    /// True while EITHER a test run or a `!command` owns the run.output stream. Both surfaces gate
+    /// on this: the daemon tags run output with a session, not a run, so two concurrent runs would
+    /// interleave their lines into whichever surface happened to be listening.
+    public var runBusy: Bool { testRunning || shellRunID != nil }
+
+    /// Runs `command` on the host, in this session's workspace, and streams it into its own
+    /// transcript row.
+    ///
+    /// The AGENT IS NOT INVOLVED — it does not run the command, is not told the command ran, and
+    /// never sees the output unless the user taps "Send to agent" on the row. That matches Claude
+    /// Code's `!` behaviour, and it is the point of the feature: a quick `git status` should cost
+    /// nothing and change nothing about the conversation.
+    ///
+    /// Uses the correlated request path rather than fire-and-forget, so a REFUSAL (shell is
+    /// owner-only) resolves into the row that asked for it. Fire-and-forget would surface the
+    /// daemon's error as a detached global alert with no visible link to the command you just typed.
+    public func runShell(_ command: String) async {
+        let cmd = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cmd.isEmpty else { return }
+        guard let sid = sessionID else {
+            actionError = "Open or start a session first — a command runs in that session's folder."
+            return
+        }
+        guard !runBusy else {
+            actionError = "Another run is still going. Wait for it to finish, then run this."
+            return
+        }
+        finalizeStreaming() // seal any in-flight agent text so the command row doesn't split it
+        let call = ToolCall(id: "shell-\(UUID().uuidString)", name: "!", title: cmd,
+                            output: "", status: "running")
+        let row = ChatMessage(role: .shell, text: cmd, tool: call)
+        messages.append(row)
+        shellRunID = row.id
+        // The runner opens every run by echoing "$ <command>" (runner.go). We use that first line
+        // twice: to drop it (the header already shows the command) and, when it DOESN'T match, to
+        // notice that our request was dropped — see claimShellLine.
+        shellEcho = "$ " + cmd
+        do {
+            _ = try await request(MessageType.runTest, payload: RunTest(sessionID: sid, command: cmd))
+        } catch {
+            // Refused (owner-only), unsupported by an older daemon, or the socket dropped. Land it
+            // ON the row: the user asked this specific question and deserves this specific answer.
+            finishShellRun(ok: false, exitCode: -1, note: error.localizedDescription)
+        }
+    }
+
+    /// Buffered command output. Coalesced on the same 40ms timer as token streaming — a chatty
+    /// command emits lines far faster than a screen refreshes, and mutating the @Published messages
+    /// array per line re-diffs the whole transcript each time.
+    private var shellBuffer = ""
+    private var shellFlushTask: Task<Void, Never>?
+    /// The "$ <command>" line we expect to open OUR run, cleared once the first line arrives.
+    private var shellEcho: String?
+
+    /// Routes one run.output line to the in-flight `!command` row. Returns false when the line
+    /// demonstrably belongs to a DIFFERENT run, so the caller sends it to the test panel instead.
+    ///
+    /// The daemon runs one command per session and, when a second is requested, returns without
+    /// emitting anything at all (runTestLimits' "someone else is already running" path). Another
+    /// device's test run therefore looks exactly like ours never being answered. The first output
+    /// line disambiguates it: our run always opens with our own command echoed back, so a first line
+    /// that isn't ours means ours was dropped. Without this check the row would spin forever while
+    /// displaying somebody else's output as its own result.
+    private func claimShellLine(_ line: String) -> Bool {
+        guard let echo = shellEcho else {
+            appendShellOutput(line)
+            return true
+        }
+        shellEcho = nil
+        if line == echo { return true } // our run started; the header already shows the command
+        finishShellRun(ok: false, exitCode: -1,
+                       note: "Another run is already in progress on this session — this command didn't start. Try again once it finishes.")
+        return false
+    }
+    /// Keep at most this much output on a row. A `yes` or a full build log would otherwise grow the
+    /// transcript without bound; the tail is the part you ran it for. The ROW shows less again (see
+    /// BangCommand.previewOutput) — this is what "Send to agent" and text selection can reach.
+    private static let shellOutputCap = 64_000
+
+    private func appendShellOutput(_ line: String) {
+        shellBuffer += line + "\n"
+        guard shellFlushTask == nil else { return }
+        shellFlushTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Model.flushInterval)
+            guard let self else { return }
+            self.shellFlushTask = nil
+            self.flushShellOutput()
+        }
+    }
+
+    private func flushShellOutput() {
+        let pending = shellBuffer
+        shellBuffer = ""
+        guard !pending.isEmpty, let id = shellRunID,
+              let idx = messages.firstIndex(where: { $0.id == id }), messages[idx].tool != nil else { return }
+        var out = messages[idx].tool!.output + pending
+        if out.count > Model.shellOutputCap {
+            out = "…(earlier output trimmed)\n" + String(out.suffix(Model.shellOutputCap))
+        }
+        messages[idx].tool!.output = out
+    }
+
+    /// Seals the active bang-command row with its outcome. `note` is appended to the output for
+    /// failures that produced no output of their own (a refusal, a dropped socket).
+    private func finishShellRun(ok: Bool, exitCode: Int, note: String? = nil) {
+        shellFlushTask?.cancel(); shellFlushTask = nil
+        shellEcho = nil
+        flushShellOutput()
+        guard let id = shellRunID else { return }
+        shellRunID = nil
+        shellExit[id] = exitCode
+        guard let idx = messages.firstIndex(where: { $0.id == id }), messages[idx].tool != nil else { return }
+        if let note, !note.isEmpty {
+            let existing = messages[idx].tool!.output
+            messages[idx].tool!.output = existing.isEmpty ? note : existing + "\n" + note
+        }
+        messages[idx].tool!.status = ok ? "completed" : "error"
+    }
+
+    /// Exit code per finished bang-command row, so the card can show "exit 1" without inventing a
+    /// field on ToolCall (which models the AGENT's tool calls and has no exit concept).
+    @Published public var shellExit: [UUID: Int] = [:]
 
     /// Interrupts the current agent turn without ending the session — so you can redirect it
     /// with a new prompt (mid-run steering).
@@ -2215,6 +2351,42 @@ public final class Model: ObservableObject {
     @Published public var participants: [Participant] = []
     /// Whether multi-user enforcement is on. Off (the default) means everyone is the owner.
     @Published public var sharingEnabled = false
+
+    /// This client's OWN role, or nil when we genuinely cannot tell.
+    ///
+    /// The daemon's participant list is a roster of everyone connected — it carries no "this one is
+    /// you" marker (see ParticipantList / hub.participants), so the only way to self-identify is to
+    /// match the name we announced with client.identify. That match is normalized the same way the
+    /// daemon normalizes it (trim, then cap at 60 chars, hub.go's identify handler) or a long device
+    /// name would never find itself.
+    ///
+    /// It returns nil rather than a guess in the two cases where the match is unsound: nobody
+    /// matches (the roster hasn't arrived yet), or SEVERAL do (two Macs both called "Mac"). A
+    /// guessed role would either lock the owner out of their own machine or promise an observer a
+    /// control the daemon will refuse — both worse than admitting we don't know.
+    public var selfRole: String? {
+        // Enforcement off is not ambiguity: roleRegistry.role() returns owner for every connection
+        // until someone shares a session, so a solo user is definitively the owner.
+        guard sharingEnabled else { return ParticipantRole.owner }
+        let me = String(identity.trimmingCharacters(in: .whitespacesAndNewlines).prefix(60))
+        guard !me.isEmpty else { return nil }
+        let mine = participants.filter { $0.name == me }
+        guard mine.count == 1 else { return nil }
+        return mine[0].role
+    }
+
+    /// True only when we KNOW this client is not the owner. Deliberately false while `selfRole` is
+    /// nil: an unknown role must leave controls alive and let the daemon refuse (which surfaces as a
+    /// real message), never hide a control on a hunch.
+    public var knownNonOwner: Bool {
+        guard let role = selfRole else { return false }
+        return role != ParticipantRole.owner
+    }
+
+    /// Why the owner-only controls are unavailable, for the affordance that has to explain itself.
+    public var ownerOnlyReason: String {
+        "Running commands on the host is owner-only. You're \(ParticipantRole.label(selfRole ?? ParticipantRole.observer).lowercased()) on this session — ask the owner to grant it."
+    }
 
     public func loadParticipants() async {
         guard client != nil else { return }
@@ -3679,15 +3851,26 @@ public final class Model: ObservableObject {
             if let sum = try? env.payload(as: FanoutSummary.self) { fanoutSummary = sum }
         case MessageType.approvalRulesChanged: // an Always answer or a revoke, on ANY device
             if let list = try? env.payload(as: ApprovalRulesList.self) { approvalRules = list.rules }
-        case MessageType.runOutput: // streamed line from a test/build run
+        case MessageType.runOutput: // streamed line from a test/build/!command run
             if let o = try? env.payload(as: RunOutput.self), o.sessionID == sessionID {
-                testOutput.append(o.line)
-                if testOutput.count > 2000 { testOutput.removeFirst(testOutput.count - 2000) }
+                // A bang run OWNS the stream while it's in flight (the two entry points disable each
+                // other, so this is never an ambiguous handoff) — its lines belong in its transcript
+                // row, not in the test panel the user never opened.
+                if shellRunID != nil, claimShellLine(o.line) {
+                    // consumed by the `!command` row
+                } else {
+                    testOutput.append(o.line)
+                    if testOutput.count > 2000 { testOutput.removeFirst(testOutput.count - 2000) }
+                }
             }
-        case MessageType.runResult: // test/build run finished
+        case MessageType.runResult: // test/build/!command run finished
             if let r = try? env.payload(as: RunResult.self), r.sessionID == sessionID {
-                testResult = r
-                testRunning = false
+                if shellRunID != nil {
+                    finishShellRun(ok: r.ok, exitCode: r.exitCode)
+                } else {
+                    testResult = r
+                    testRunning = false
+                }
             }
         default:
             break

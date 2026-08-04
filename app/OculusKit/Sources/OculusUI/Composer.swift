@@ -64,6 +64,7 @@ struct Composer: View {
             VStack(alignment: .leading, spacing: 10) {
                 if !model.pendingImages.isEmpty { attachmentChips }
                 if !model.pendingFiles.isEmpty { fileChips }
+                bangBanner
                 messageField
 
                 HStack(spacing: 14) {
@@ -125,6 +126,9 @@ struct Composer: View {
             entrySession = model.sessionID
             entry = draft
             refreshThumbs()
+            // Voice deliberately does NOT go through the `!` escape: speech recognition would have to
+            // hear an exclamation mark to trigger it, and a misheard one would run an arbitrary
+            // command on the host with no chance to read it first. Spoken input is always a prompt.
             voice.onUtterance = { text in
                 guard !text.isEmpty else { return }
                 Task { await model.send(text) }
@@ -262,8 +266,18 @@ struct Composer: View {
     @State private var settingFromHistory = false
 
     /// The prompts this session has SENT, newest last — the ↑/↓ recall list.
+    ///
+    /// `!` commands are in it too, re-prefixed so recalling one gives back exactly what was typed.
+    /// This is the recall people already have in a shell, and a command you ran once is the thing
+    /// you're most likely to run again (`!git status` after every turn).
     private var sentPrompts: [String] {
-        model.messages.filter { $0.role == .user }.map(\.text)
+        model.messages.compactMap { m in
+            switch m.role {
+            case .user: return m.text
+            case .shell: return "!" + m.text
+            default: return nil
+            }
+        }
     }
 
     /// Shell-style history recall. delta -1 = older (↑), +1 = newer (↓). Returns true to CONSUME the
@@ -331,21 +345,91 @@ struct Composer: View {
         if model.drafts[key ?? ""] != entry { model.drafts[key ?? ""] = entry }
     }
 
+    // MARK: the `!` escape
+
+    /// What the current entry would do if you pressed Enter right now. Computed in one place so the
+    /// banner, the send button and submit() can never disagree about it — a send button that says
+    /// "message" while submit() runs a shell command is the worst possible version of this feature.
+    private var parsed: BangCommand.Parsed { BangCommand.parse(entry) }
+    private var isShellEntry: Bool { if case .shell = parsed { return true }; return false }
+
+    /// Explains the escape BEFORE Enter is pressed: what a `!` line is about to do, how to opt out,
+    /// and — for a non-owner — why it won't work. A mode you only discover by triggering it is a
+    /// mode that eats a message you meant for the agent.
+    @ViewBuilder private var bangBanner: some View {
+        switch parsed {
+        case .shell(let cmd):
+            // Three different reasons this line won't behave like a message, each said out loud.
+            // A disabled send button with no sentence next to it is the failure mode here.
+            let blocked = model.knownNonOwner
+            let text = blocked ? model.ownerOnlyReason
+                : model.runBusy ? "Another run is still going in this session — wait for it to finish."
+                : "Runs `\(cmd)` on the host. The agent won't see it. \(BangCommand.escapeHint)"
+            HStack(spacing: 6) {
+                Image(systemName: blocked ? "lock" : "terminal")
+                    .font(.caption2)
+                    .foregroundStyle(blocked ? palette.destructive : palette.primary)
+                Text(text)
+                    .font(.caption2)
+                    .foregroundStyle(blocked ? palette.destructive : palette.mutedForeground)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+        case .nothing:
+            // A bare "!" that does nothing on Enter would read as a broken send button.
+            HStack(spacing: 6) {
+                Image(systemName: "terminal").font(.caption2).foregroundStyle(palette.mutedForeground)
+                Text("Type a command after ! to run it on the host. \(BangCommand.escapeHint)")
+                    .font(.caption2).foregroundStyle(palette.mutedForeground)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+        case .prompt:
+            EmptyView()
+        }
+    }
+
     private func submit() {
         // Enter with the popup open completes the highlighted command instead of sending.
         if !commandMatches.isEmpty { _ = completeSelected(); return }
         guard canSend else { return }
-        let text = entry
+        switch parsed {
+        case .nothing:
+            return // bare "!" — keep it in the field (the banner says what to type next)
+        case .shell(let cmd):
+            // The daemon is the authority on whether this is allowed; the client only avoids
+            // offering a control it already knows will be refused.
+            guard !model.knownNonOwner else { return }
+            clearEntry()
+            // Attachments are deliberately LEFT pending: they were staged for the agent, and a
+            // shell command is not a message to the agent. Clearing them here would silently
+            // discard work (a screenshot the user just captured) for an unrelated action.
+            Task { await model.runShell(cmd) }
+        case .prompt(let text):
+            clearEntry()
+            Task { await model.send(text) }
+        }
+    }
+
+    /// Clears the in-progress entry and its persisted draft after a send/run.
+    private func clearEntry() {
         entry = ""
         flushTask?.cancel()
         model.drafts[entrySession ?? model.sessionID ?? ""] = ""
         historyIndex = nil; historyStash = ""
         if dictator.isRecording { dictator.stop() }
-        Task { await model.send(text) }
     }
 
     private var canSend: Bool {
-        !entry.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !model.pendingImages.isEmpty || !model.pendingFiles.isEmpty
+        switch parsed {
+        case .nothing:
+            return false // a bare "!" has nothing to run and nothing to say
+        case .shell:
+            return !model.knownNonOwner && !model.runBusy
+        case .prompt:
+            return !entry.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !model.pendingImages.isEmpty || !model.pendingFiles.isEmpty
+        }
     }
 
     private var attachmentChips: some View {
@@ -437,7 +521,9 @@ struct Composer: View {
 
     private var sendButton: some View {
         Button(action: submit) {
-            Image(systemName: "arrow.up")
+            // The glyph changes with the DESTINATION. A `!` line doesn't go to the agent, and an
+            // unchanged send arrow would be the only thing on screen still claiming it does.
+            Image(systemName: isShellEntry ? "terminal.fill" : "arrow.up")
                 .font(.system(size: 15, weight: .bold))
                 .foregroundStyle(canSend ? palette.primaryForeground : palette.mutedForeground)
                 .frame(width: 28, height: 28)
@@ -446,7 +532,10 @@ struct Composer: View {
         }
         .buttonStyle(.plain)
         .disabled(!canSend)
-        .help("Send message")
+        .help(isShellEntry
+              ? (model.knownNonOwner ? model.ownerOnlyReason
+                 : (model.runBusy ? "Another run is still going." : "Run this command on the host"))
+              : "Send message")
     }
 
     /// Opens the slash-command palette — especially handy on iPhone where "type /" isn't obvious.

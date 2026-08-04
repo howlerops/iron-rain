@@ -165,11 +165,14 @@ struct SessionControlsSheet: View {
                        systemImage: "safari") { dismissThen(onOpenDesign) }
                 Divider().overlay(palette.border)
                 #endif
+                // Running the suite executes a shell command on the host, so it carries the same
+                // owner-only gate as the `!` escape — and says WHY rather than sitting dead.
                 action(model.testRunning ? "Running tests…" : "Run tests",
-                       detail: "run this project's suite", systemImage: ChatView.runTestsSymbol) {
+                       detail: model.knownNonOwner ? model.ownerOnlyReason : "run this project's suite",
+                       systemImage: ChatView.runTestsSymbol) {
                     onClose(); Task { await model.runTests() }
                 }
-                .disabled(model.testRunning)
+                .disabled(model.runBusy || model.knownNonOwner)
                 Divider().overlay(palette.border)
                 action("Delegate subtask", detail: "hand part of this to a sub-agent",
                        systemImage: "arrowshape.turn.up.right") { dismissThen(onDelegate) }
