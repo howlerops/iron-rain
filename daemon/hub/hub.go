@@ -2728,7 +2728,13 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, res)
 
 	case protocol.TypeRemoteRun:
-		if !h.requireCapability(conn, env.ID, capSteer, "start a remote session") {
+		// capOwner for the same reason run.test is (see that case): req.AgentCommand is a caller-supplied
+		// command STRING, and spawnRemote splices it into `ssh <target> "cd '<path>' && <cmd> {prompt}"`.
+		// ssh hands that line to the remote login shell, so "agent command" is a free shell on the remote
+		// box, reached with the owner's ssh key. Registering the host is already owner-only
+		// (remote.upsert); letting a steerer choose what runs there gave that gate nothing to protect.
+		if !h.requireCapabilityBecause(conn, env.ID, capOwner, "start a remote session",
+			"The agent command runs as a shell on the remote host, using the owner's ssh key.") {
 			return
 		}
 		var req protocol.RemoteRun
@@ -4561,7 +4567,27 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.LSPRenameResult{Files: files, Count: len(files)})
 
 	case protocol.TypeRunTest:
-		if !h.requireCapability(conn, env.ID, capSteer, "run tests") {
+		// capOwner, deliberately — do NOT "fix" this to match the capSteer neighbours above and below.
+		//
+		// run.test is not a test runner in the sense the name implies. req.Command is a caller-supplied
+		// string handed to `/bin/sh -c` (runner.go), in the session's workspace, as the daemon's user.
+		// That isn't a bounded action with a shell as its implementation detail; it IS a shell, and a
+		// shell is the one thing the whole permission model cannot police. Modes, approval rules, the
+		// tool-approval prompts, roles themselves — every one of them gates a NAMED operation the daemon
+		// can see and reason about. `sh -c` presents no name to gate. A steerer typing anything at all
+		// into that field would be executing it with the owner's credentials, keys, and tokens on the
+		// owner's machine, and the owner would see it only as one more line of "test output".
+		//
+		// This is exactly the reasoning that parked the terminal/PTY feature; run.test had quietly
+		// crossed the same line with a friendlier label. Steer-level actions are things you ask the
+		// AGENT to do, where the agent's own approval flow still stands between the request and the
+		// machine. This one goes straight to the machine, so it belongs to whoever owns the machine.
+		//
+		// The narrower fix (allow only the auto-DETECTED command, owner-gate an explicit one) is a real
+		// option and would give steerers their button back; it needs a protocol change to distinguish
+		// the two cases, so it is not this change.
+		if !h.requireCapabilityBecause(conn, env.ID, capOwner, "run tests",
+			"The test runner executes a command as a shell on the owner's machine, so it can do anything the owner can.") {
 			return
 		}
 		var req protocol.RunTest

@@ -119,6 +119,21 @@ func roleAllows(role string, c capability) bool {
 // requireCapability gates one request. It returns true when the caller may proceed; otherwise it has
 // already sent the error and the caller must return.
 func (h *Hub) requireCapability(conn *transport.Conn, envID string, c capability, what string) bool {
+	return h.requireCapabilityBecause(conn, envID, c, what, "")
+}
+
+// requireCapabilityBecause is requireCapability with one extra sentence appended to the refusal.
+//
+// It exists for the handful of actions that are gated HARDER than the neighbouring ones a user just
+// used successfully. A steerer who can prompt the agent, restart it, and write files, and then gets
+// "only the owner can do that" on one button, has no way to tell a deliberate boundary from a bug —
+// and the honest guess, from their side, is that the button is broken. The refusal has to carry the
+// reason, because there is nowhere else for the reason to live: the client renders the control from
+// a static layout, not from a capability the daemon told it about.
+//
+// Pass a `because` only where the answer isn't self-evident from the action's own name. Empty means
+// the name is enough ("Only the session owner can revoke a device.").
+func (h *Hub) requireCapabilityBecause(conn *transport.Conn, envID string, c capability, what, because string) bool {
 	role := h.roles.role(conn)
 	if roleAllows(role, c) {
 		return true
@@ -128,14 +143,23 @@ func (h *Hub) requireCapability(conn *transport.Conn, envID string, c capability
 		who = "an unidentified client"
 	}
 	log.Printf("roles: DENIED %s to %s (role %s)", what, who, role)
+	var msg string
 	switch c {
-	case capApprove:
-		h.sendErr(conn, envID, "Only the session owner can answer approvals.")
-	case capOwner:
-		h.sendErr(conn, envID, "Only the session owner can change daemon settings.")
+	case capApprove, capOwner:
+		// Name the ACTION, not just the rule. Every call site already passes a verb phrase for the
+		// log line ("run tests", "revoke a device"), and a refusal that reads back the thing the user
+		// just tried is the difference between a boundary they can accept and an error they'll retry.
+		// The two capabilities share a message on purpose: both mean "owner only" to the person
+		// reading it, and the previous split produced "Only the session owner can answer approvals."
+		// in response to listing invites.
+		msg = "Only the session owner can " + what + "."
 	default:
-		h.sendErr(conn, envID, "You're watching this session. Ask the owner for permission to steer.")
+		msg = "You're watching this session. Ask the owner for permission to steer."
 	}
+	if because != "" {
+		msg += " " + because
+	}
+	h.sendErr(conn, envID, msg)
 	return false
 }
 
