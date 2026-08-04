@@ -35,6 +35,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/discovery"
@@ -225,6 +226,9 @@ func looksLikeUUID(id string) bool {
 const (
 	replayTranscriptMax     = 200
 	replayTranscriptMsgSize = 20000
+	// replayToolOutputSize caps one replayed tool result, matching the sidecar's live cap so a card
+	// doesn't grow when it comes back from history.
+	replayToolOutputSize = 8000
 )
 
 // transcriptCwd reads the working directory claude recorded for a session, by scanning the head of
@@ -279,8 +283,19 @@ func (s *session) replayTranscript(uuid string) {
 		return
 	}
 	defer f.Close()
-	type msg struct{ role, text, id string }
-	var tail []msg
+	// Messages and tool cards share ONE ordered slice. They have to: a take-over that replayed the
+	// text and then all the tool calls would render a transcript where every command appears after
+	// the conversation that followed it. The trailing window therefore bounds the two together.
+	type row struct {
+		tool                       bool
+		role, text, id             string // message
+		name, title, output, state string // tool card
+	}
+	var tail []row
+	// tool_use id -> the identity half of its card. claude writes the tool_use block before the
+	// tool_result that answers it, so one pass is enough to pair them. Entries are deleted on pairing;
+	// what remains at EOF are tools that never reported, which are deliberately not emitted (below).
+	pending := map[string]struct{ name, title string }{}
 	r := bufio.NewReaderSize(f, 1<<20)
 	for {
 		line, err := r.ReadBytes('\n')
@@ -298,9 +313,37 @@ func (s *session) replayTranscript(uuid string) {
 					if len(text) > replayTranscriptMsgSize {
 						text = text[:replayTranscriptMsgSize] + "\n… [truncated]"
 					}
-					tail = append(tail, msg{role: entry.Message.Role, text: text, id: entry.UUID})
+					tail = append(tail, row{role: entry.Message.Role, text: text, id: entry.UUID})
 					if len(tail) > replayTranscriptMax {
 						tail = tail[1:]
+					}
+				}
+				// Tool blocks live in the SAME content array the text came from, and transcriptText
+				// skips them by design. Without this a taken-over session replays as pure conversation:
+				// the agent appears to have talked its way through the work and never run anything.
+				for _, b := range transcriptToolBlocks(entry.Message.Content) {
+					switch b.Type {
+					case "tool_use":
+						if b.ID != "" {
+							pending[b.ID] = struct{ name, title string }{b.Name, replayToolTitle(b.Input)}
+						}
+					case "tool_result":
+						// A result whose tool_use we never saw would produce exactly the anonymous,
+						// untitled card this adapter was just fixed to stop persisting, so skip it.
+						u, ok := pending[b.ToolUseID]
+						if !ok {
+							continue
+						}
+						delete(pending, b.ToolUseID)
+						state := "completed"
+						if b.IsError {
+							state = "error"
+						}
+						tail = append(tail, row{tool: true, id: b.ToolUseID, name: u.name, title: u.title,
+							output: replayToolOutput(b.Content), state: state})
+						if len(tail) > replayTranscriptMax {
+							tail = tail[1:]
+						}
 					}
 				}
 			}
@@ -309,7 +352,19 @@ func (s *session) replayTranscript(uuid string) {
 			break
 		}
 	}
+	// A tool_use still pending at EOF never reported a result — the turn was interrupted, or the
+	// transcript ends mid-tool. It is NOT emitted: the only states worth replaying are terminal ones,
+	// and a card left "running" in replayed history is a spinner that can never resolve, while
+	// inventing "completed" would claim a result nobody recorded.
 	for _, m := range tail {
+		if m.tool {
+			// ID is claude's tool_use id, which the hub persists as "tool:"+ID — so replaying a
+			// take-over twice dedups against the durable transcript instead of doubling every card.
+			s.emit(agent.Event{Type: protocol.TypeSessionTool, Payload: protocol.SessionTool{
+				SessionID: s.id, ID: m.id, Name: m.name, Title: m.title, Output: m.output, Status: m.state,
+			}})
+			continue
+		}
 		role := m.role
 		if role == "" {
 			role = "assistant"
@@ -318,6 +373,92 @@ func (s *session) replayTranscript(uuid string) {
 			SessionID: s.id, Role: role, Text: m.text, MsgID: m.id,
 		}})
 	}
+}
+
+// transcriptBlock is the union of the content-array block shapes a replay cares about: tool_use
+// (id/name/input) and tool_result (tool_use_id/content/is_error). Text blocks fall through with a
+// Type this caller ignores — transcriptText already handled those.
+type transcriptBlock struct {
+	Type      string          `json:"type"`
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Input     json.RawMessage `json:"input"`
+	ToolUseID string          `json:"tool_use_id"`
+	Content   json.RawMessage `json:"content"`
+	IsError   bool            `json:"is_error"`
+}
+
+// transcriptToolBlocks decodes a message's content array. Plain-string content (the common shape for
+// a typed user prompt) has no blocks and decodes to nothing rather than an error.
+func transcriptToolBlocks(raw json.RawMessage) []transcriptBlock {
+	if len(raw) == 0 {
+		return nil
+	}
+	var blocks []transcriptBlock
+	if json.Unmarshal(raw, &blocks) != nil {
+		return nil
+	}
+	return blocks
+}
+
+// replayToolTitle rebuilds the one-line command summary the sidecar's toolSummary produces live, so
+// a replayed card reads the same as one watched in real time — the same keys in the same order,
+// falling back to the encoded input. Divergence here would be visible as history that doesn't match
+// what the user remembers seeing.
+func replayToolTitle(input json.RawMessage) string {
+	if len(input) == 0 {
+		return ""
+	}
+	var obj map[string]any
+	if json.Unmarshal(input, &obj) != nil {
+		return ""
+	}
+	for _, k := range []string{"command", "file_path", "path", "pattern", "url", "query", "prompt"} {
+		if s, ok := obj[k].(string); ok && strings.TrimSpace(s) != "" {
+			return truncRunes(s, 200)
+		}
+	}
+	if b, err := json.Marshal(obj); err == nil {
+		return truncRunes(string(b), 160)
+	}
+	return ""
+}
+
+// replayToolOutput flattens a tool_result's content — a string, or an array of text blocks — and
+// caps it, mirroring the sidecar's toolResultText so a replayed card carries the same output a live
+// one did.
+func replayToolOutput(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var str string
+	if json.Unmarshal(raw, &str) == nil {
+		return truncRunes(str, replayToolOutputSize)
+	}
+	var blocks []struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &blocks) != nil {
+		return ""
+	}
+	var out strings.Builder
+	for _, b := range blocks {
+		out.WriteString(b.Text)
+	}
+	return truncRunes(out.String(), replayToolOutputSize)
+}
+
+// truncRunes caps s at n BYTES without splitting a rune. A plain s[:n] can cut a multi-byte
+// character in half, and the resulting invalid UTF-8 is silently rewritten to replacement
+// characters when the event is encoded — turning the tail of a truncated command into mojibake.
+func truncRunes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "…"
 }
 
 // transcriptText extracts the human-readable text from a transcript message's content: a plain
