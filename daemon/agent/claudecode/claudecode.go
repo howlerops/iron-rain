@@ -176,6 +176,30 @@ func (p *Provider) Attach(ctx context.Context, sessionID, cwd string) (agent.Ses
 // claiming self-replay unconditionally left restored cc_ sessions with NO history at all.
 func (s *session) SelfReplaying() bool { return s.replayUUID != "" }
 
+// NativeSessionID reports the id CLAUDE knows this session by — the UUID it names the on-disk
+// transcript after (~/.claude/projects/…/<uuid>.jsonl), which is also the only id a host scan can see.
+// For every session we created it differs from s.id (ours is cc_…), and that mismatch is what let a
+// session the daemon already drives keep appearing in the take-over list as if it were an untouched
+// terminal session: discovery reported the UUID, the hub only knew the cc_ id, and "taking it over"
+// a second time resumed the same conversation into a SECOND writer, forking it.
+//
+// Empty means UNKNOWN, not "no id": the sidecar hasn't reported the UUID yet (a brand-new session
+// before its first init), or the resume map was lost. Callers must treat empty as "don't dedupe" —
+// matching on it would drop unrelated rows and hide real take-over candidates.
+func (s *session) NativeSessionID() string {
+	if s.p != nil {
+		if uuid := s.p.resumeID(s.id); uuid != "" {
+			return uuid
+		}
+	}
+	if looksLikeUUID(s.id) {
+		// A discovered session we took over: our id came from the transcript filename, so it already
+		// IS claude's uuid and no resume-map entry is ever recorded for it (setResume skips id==uuid).
+		return s.id
+	}
+	return ""
+}
+
 // looksLikeUUID reports whether id has the 8-4-4-4-12 hex shape of a claude session UUID.
 func looksLikeUUID(id string) bool {
 	if len(id) != 36 {

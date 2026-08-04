@@ -4057,8 +4057,10 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			}
 			items = got
 		}
+		// Projects are registered from the FULL scan on purpose: a session we already drive still marks
+		// a directory the user works in, and dropping it below must not also drop its project.
 		h.autoRegisterProjects(items) // auto-create projects from active agents' cwds
-		h.sendOK(conn, env.ID, protocol.DiscoverList{Items: items})
+		h.sendOK(conn, env.ID, protocol.DiscoverList{Items: h.dropAlreadyManaged(items)})
 
 	case protocol.TypeInviteCreate:
 		if !h.requireCapability(conn, env.ID, capApprove, "create an invite") {
@@ -4551,6 +4553,67 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 	default:
 		h.sendErr(conn, env.ID, "unknown type: "+env.Type)
 	}
+}
+
+// nativeIDReporter is an optional agent.Session capability: the id the PROVIDER knows the session by,
+// when it differs from the id the daemon uses. Only the hub's discover dedupe needs it, so it is
+// asserted at the use site like the `interface{ MarkResumed() }` assertion in persist.go rather than
+// widening the agent.Session contract. Empty result = the provider can't name it right now.
+type nativeIDReporter interface{ NativeSessionID() string }
+
+// dropAlreadyManaged removes discovered rows that are a session THIS DAEMON ALREADY DRIVES under a
+// different id, so they stop being offered as terminal sessions to take over.
+//
+// claude-code is the case this exists for: the daemon names its sessions cc_…, while a host scan finds
+// them by the UUID claude names their transcript after. The two ids never matched, so a session the app
+// was already driving came back in the take-over list looking untouched — and taking it over again
+// resumes the same conversation into a SECOND writer, forking it into two diverging copies.
+//
+// Two deliberate limits. Rows only match a managed session of the SAME provider, because a session id
+// is only unique within a provider. And a managed session that cannot name its provider-side id right
+// now (a create whose sidecar hasn't reported the UUID yet, or a restart that lost the resume map)
+// reports "" and filters NOTHING — leaving the duplicate row visible, exactly as before this existed,
+// rather than letting an empty id match and silently delete unrelated take-over candidates.
+func (h *Hub) dropAlreadyManaged(items []protocol.Discovered) []protocol.Discovered {
+	if len(items) == 0 {
+		return items
+	}
+	// Snapshot first: NativeSessionID reaches into provider state (claude-code takes its own lock), and
+	// the hub lock is held across every session in the map — not somewhere to call out to a provider.
+	h.mu.Lock()
+	sessions := make([]agent.Session, 0, len(h.sessions))
+	for _, m := range h.sessions {
+		if m.sess != nil {
+			sessions = append(sessions, m.sess)
+		}
+	}
+	h.mu.Unlock()
+
+	managed := make(map[string]struct{}, len(sessions))
+	for _, s := range sessions {
+		r, ok := s.(nativeIDReporter)
+		if !ok {
+			continue
+		}
+		if native := r.NativeSessionID(); native != "" {
+			managed[s.Provider()+"\x00"+native] = struct{}{}
+		}
+	}
+	if len(managed) == 0 {
+		return items
+	}
+	// A new slice, never a reuse of items[:0]: the scan's result belongs to the discoverer and may be
+	// cached there, so filtering in place would quietly corrupt the next scan's answer.
+	out := make([]protocol.Discovered, 0, len(items))
+	for _, it := range items {
+		if it.SessionID != "" {
+			if _, dup := managed[it.Provider+"\x00"+it.SessionID]; dup {
+				continue
+			}
+		}
+		out = append(out, it)
+	}
+	return out
 }
 
 // commonAncestor returns the deepest directory containing all the given absolute paths, or the

@@ -39,9 +39,12 @@ enum TerminalTakeover {
     /// Already-managed rows are dropped: they're in the sidebar already, and re-attaching to one
     /// is how you end up with two writers on a single terminal session.
     ///
-    /// NOTE: the match is exact-id only. The daemon rewrites a taken-over claude session to its own
-    /// `cc_…` id while discovery reports claude's UUID, so that one pairing can still slip through
-    /// until the provider exposes `ManagedUUIDs()` (roadmap Phase 3 item 3, daemon-side).
+    /// NOTE: the match here is exact-id only, which the daemon's own id rewriting used to defeat: our
+    /// claude sessions are named `cc_…` while discovery reports claude's UUID, so a managed session
+    /// slipped through and could be "taken over" a second time. The daemon now drops those rows itself
+    /// (it asks each managed session for its provider-side id and dedupes on that), so this filter is
+    /// the second line of defence — it still catches every provider whose ids we don't rewrite, and it
+    /// still holds if an older daemon is on the other end of the socket.
     static func candidates(discovered: [Discovered], managed: [Session], limit: Int? = nil) -> [TakeoverCandidate] {
         let taken = Set(managed.map(\.id))
         let rows: [TakeoverCandidate] = discovered.compactMap { d in
