@@ -373,7 +373,7 @@ const maxFailingChecks = 5
 // can act on; the raw rollup is most of a page of JSON. Passed folds in NEUTRAL/SKIPPED runs because
 // GitHub's own merge gate treats them as non-blocking.
 type PRChecks struct {
-	State   string   // SUCCESS | FAILURE | PENDING
+	State   string // SUCCESS | FAILURE | PENDING
 	Passed  int
 	Failed  int
 	Pending int
