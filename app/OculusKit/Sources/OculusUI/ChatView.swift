@@ -136,6 +136,33 @@ public struct ChatView: View {
     #if !os(iOS)
     // Lifted out of the toolbar builder so each one can be written once and referenced from BOTH
     // arms of the OS-26 `sharedBackgroundVisibility` availability check (see the toolbar).
+    /// A toolbar item that is a READOUT, not a control.
+    ///
+    /// On OS 26 the system gives every toolbar item its own glass background, which is the platform's
+    /// visual language for "this is a button" — so four things you cannot tap started advertising
+    /// themselves as tappable. `sharedBackgroundVisibility(.hidden)` puts them back to being text.
+    ///
+    /// Two separate gates are required and they are NOT interchangeable:
+    ///   • `#if compiler(>=6.2)` is a COMPILE-time gate. `sharedBackgroundVisibility` does not exist
+    ///     in the iOS 18 / macOS 15 SDK, so on an older toolchain the symbol cannot even be named.
+    ///     CI pins Xcode 16.4 (Swift 6.1), which is exactly how this got shipped broken once: the
+    ///     runtime check below compiled fine locally against the 26 SDK and failed on the runner.
+    ///   • `if #available` is a RUNTIME gate, for a 26-SDK build running on an older OS.
+    /// Dropping either one breaks a different set of machines.
+    @ToolbarContentBuilder
+    private func readoutToolbarItem<V: View>(@ViewBuilder _ content: () -> V) -> some ToolbarContent {
+        #if compiler(>=6.2)
+        if #available(iOS 26.0, macOS 26.0, *) {
+            ToolbarItem(placement: .automatic, content: content)
+                .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .automatic, content: content)
+        }
+        #else
+        ToolbarItem(placement: .automatic, content: content)
+        #endif
+    }
+
     private var toolActivityToolbarChip: some View {
         ToolActivityView(activity: model.activity, palette: palette, compact: true)
             .accessibilityElement(children: .ignore)
@@ -281,38 +308,18 @@ public struct ChatView: View {
             // to being text. The modifier returns `some ToolbarContent`, so the availability check has
             // to wrap the whole ToolbarItem, not just the modifier.
             if let s = model.currentSession, (s.costUSD ?? 0) > 0 || (s.inputTokens ?? 0) > 0 {
-                if #available(iOS 26.0, macOS 26.0, *) {
-                    ToolbarItem(placement: .automatic) { UsageChip(session: s, palette: palette) }
-                        .sharedBackgroundVisibility(.hidden)
-                } else {
-                    ToolbarItem(placement: .automatic) { UsageChip(session: s, palette: palette) }
-                }
+                readoutToolbarItem { UsageChip(session: s, palette: palette) }
             }
             if let sid = model.sessionID, let hb = model.heartbeats[sid] {
-                if #available(iOS 26.0, macOS 26.0, *) {
-                    ToolbarItem(placement: .automatic) { HeartbeatChip(hb: hb, palette: palette) }
-                        .sharedBackgroundVisibility(.hidden)
-                } else {
-                    ToolbarItem(placement: .automatic) { HeartbeatChip(hb: hb, palette: palette) }
-                }
+                readoutToolbarItem { HeartbeatChip(hb: hb, palette: palette) }
             }
             // The live tool-use chip (what the agent is doing NOW) replaces the old generic running
             // blob in the top bar — a real per-tool icon + word instead of an anonymous pulse.
             if model.busy, model.messages.last?.streaming != true {
-                if #available(iOS 26.0, macOS 26.0, *) {
-                    ToolbarItem(placement: .automatic) { toolActivityToolbarChip }
-                        .sharedBackgroundVisibility(.hidden)
-                } else {
-                    ToolbarItem(placement: .automatic) { toolActivityToolbarChip }
-                }
+                readoutToolbarItem { toolActivityToolbarChip }
             }
             if runningChildCount > 0 {
-                if #available(iOS 26.0, macOS 26.0, *) {
-                    ToolbarItem(placement: .automatic) { runningAgentsToolbarChip }
-                        .sharedBackgroundVisibility(.hidden)
-                } else {
-                    ToolbarItem(placement: .automatic) { runningAgentsToolbarChip }
-                }
+                readoutToolbarItem { runningAgentsToolbarChip }
             }
             if model.activeHandoff != nil {
                 ToolbarItem(placement: .automatic) {
