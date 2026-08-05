@@ -85,7 +85,18 @@ func TestGenUIFenceProducesComponent(t *testing.T) {
 				sawText = true
 			}
 		}
-		return e.Type == protocol.TypeSessionStatus
+		// Stop on the TERMINAL status, not on any status at all. A turn also emits `running` (and
+		// can emit others), and on a loaded machine one of those can arrive before the prose
+		// deltas — which ended this walk early with sawText still false and failed the test for a
+		// reason that had nothing to do with gen-UI. That is exactly how it failed in CI while
+		// passing every local run. The comment above always said "until the idle status"; the code
+		// just didn't say it.
+		if e.Type != protocol.TypeSessionStatus {
+			return false
+		}
+		var st protocol.SessionStatus
+		_ = json.Unmarshal(e.Payload, &st)
+		return st.Status == protocol.StatusIdle || st.Status == protocol.StatusDone
 	})
 	if !sawText {
 		t.Fatal("surrounding prose never streamed as output.delta")
