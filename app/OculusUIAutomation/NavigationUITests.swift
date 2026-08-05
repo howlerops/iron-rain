@@ -18,15 +18,7 @@ final class NavigationUITests: XCTestCase {
     }
 
     private func launchPaired() throws -> XCUIApplication {
-        let app = XCUIApplication()
-        app.launch()
-        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 20))
-
-        // Onboarding still showing means nothing is paired; there is no session UI to exercise.
-        if app.buttons["Add a desktop"].waitForExistence(timeout: 6) {
-            throw XCTSkip("No paired desktop on this simulator — pair one to run navigation tests.")
-        }
-        return app
+        try PairingSupport.launchPaired(self)
     }
 
     /// Switching tabs must not carry another tab's pushed detail with it.
@@ -43,17 +35,17 @@ final class NavigationUITests: XCTestCase {
         }
 
         sessions.tap()
-        // Open whatever session is first; if there are none, there is nothing to push.
         let firstSession = app.cells.firstMatch
-        guard firstSession.waitForExistence(timeout: 8) else {
-            throw XCTSkip("No sessions available to open.")
+        if firstSession.waitForExistence(timeout: 8) {
+            firstSession.tap()
+        } else if app.buttons["Chat"].waitForExistence(timeout: 6) {
+            app.buttons["Chat"].tap() // no sessions yet — make one, so this can't silently skip
         }
-        firstSession.tap()
 
         // The composer only exists inside a session, so it is a reliable "the chat is pushed" probe.
-        let composer = app.textViews["Message the agent"]
-        guard composer.waitForExistence(timeout: 12) else {
-            throw XCTSkip("Session did not open — daemon may be unreachable.")
+        let composer = app.textViews.firstMatch
+        guard composer.waitForExistence(timeout: 25) else {
+            throw XCTSkip("Could not reach a session — daemon may have no usable agent.")
         }
 
         activity.tap()

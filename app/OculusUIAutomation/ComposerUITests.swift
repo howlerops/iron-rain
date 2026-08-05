@@ -18,21 +18,7 @@ final class ComposerUITests: XCTestCase {
     }
 
     private func openSession() throws -> XCUIApplication {
-        let app = XCUIApplication()
-        app.launch()
-        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 20))
-        if app.buttons["Add a desktop"].waitForExistence(timeout: 6) {
-            throw XCTSkip("No paired desktop — pair one to run composer tests.")
-        }
-        let firstSession = app.cells.firstMatch
-        guard firstSession.waitForExistence(timeout: 10) else {
-            throw XCTSkip("No sessions available.")
-        }
-        firstSession.tap()
-        guard app.textViews.firstMatch.waitForExistence(timeout: 12) else {
-            throw XCTSkip("Session did not open — daemon may be unreachable.")
-        }
-        return app
+        try PairingSupport.openSession(self)
     }
 
     /// Tapping the field must raise the keyboard. This is the bug, stated as a test.

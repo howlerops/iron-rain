@@ -65,10 +65,15 @@ jobs:
     # Attaches the macOS app zip to the drafted release, then PUBLISHES it (draft: false) — so the
     # release only becomes "latest" once every asset (daemon + macOS) is present.
     needs: release
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
       - run: brew install xcodegen
+      # Pin the toolchain explicitly. Liquid Glass is opt-in BY SDK, so which Xcode builds this
+      # decides whether the shipped app gets the new design at all — that is not something to leave
+      # to whatever the runner image happens to default to.
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app || true
       # Import a Developer ID certificate when one is configured.
       #
       # Ad-hoc signing is why the app asks for the login keychain on EVERY launch. A macOS keychain

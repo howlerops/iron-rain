@@ -12,12 +12,17 @@ on:
 
 jobs:
   testflight:
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 
       - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_16.4.app || true
+        # Xcode 26 is the default on macos-26, and it is what the app must be built with: Liquid Glass
+        # is opt-in BY SDK, so a build linked against the 18/15 SDK renders in compatibility appearance
+        # on OS 26 no matter what the device is running. Pinning 16.4 was silently shipping every
+        # release without the new design. Pinned explicitly rather than left implicit so a future
+        # default bump is a deliberate change, not a surprise.
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app || true
 
       - name: Install tools
         run: brew install xcodegen fastlane
