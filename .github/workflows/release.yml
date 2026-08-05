@@ -125,7 +125,8 @@ jobs:
               CODE_SIGN_STYLE=Manual \
               CODE_SIGN_IDENTITY="Developer ID Application" \
               DEVELOPMENT_TEAM="$TEAM_ID" \
-              OTHER_CODE_SIGN_FLAGS="--timestamp --options=runtime"
+              OTHER_CODE_SIGN_FLAGS="--timestamp --options=runtime" \
+              CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO
           else
             xcodebuild -project app/Oculus.xcodeproj -scheme Oculus-macOS -configuration Release \
               -derivedDataPath build/mac -destination 'platform=macOS' build \
@@ -136,6 +137,18 @@ jobs:
           cp -R "Oculus-macOS.app" "Iron Rain.app"
           # Record what actually happened, so "why is it prompting again" is answerable from the log.
           codesign -dv "Iron Rain.app" 2>&1 | grep -E "Signature|TeamIdentifier" || true
+
+          # Fail here rather than in Apple's queue. `get-task-allow` lets a debugger attach; Xcode
+          # injects it, and notarization refuses any binary that requests it. Caught late it costs a
+          # full build plus a round trip to Apple and reads as "notarization is broken", when the
+          # actual problem is one entitlement decided minutes earlier.
+          if [ "$SIGNED" = "true" ]; then
+            if codesign -d --entitlements - "Iron Rain.app" 2>/dev/null | grep -q "get-task-allow"; then
+              echo "::error::Signed build carries com.apple.security.get-task-allow — notarization would be rejected."
+              exit 1
+            fi
+            echo "entitlements clean (no get-task-allow)"
+          fi
           ditto -c -k --keepParent "Iron Rain.app" "$GITHUB_WORKSPACE/IronRain-macos.zip"
 
       # Notarize, then staple.
