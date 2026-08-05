@@ -498,6 +498,24 @@ type session struct {
 	closeOnce sync.Once
 	done      chan struct{}
 
+	// Guards the CLOSE of `events` against concurrent sends.
+	//
+	// `readLoop` used to `defer close(s.events)` on the theory that it was the only sender. It is
+	// not: `emit` also sends, and `sendParts` calls it from the goroutine that POSTs a turn, so a
+	// stream ending while a turn is still emitting had one goroutine closing the channel and another
+	// sending on it. Go's race detector caught it in CI; the production symptom is worse than a
+	// flaky test, because a send on a closed channel is an unrecoverable `panic`, not an error.
+	//
+	// A `select` with `<-s.done` does NOT prevent this. Sending on a closed channel is immediately
+	// "ready", so select can choose that case and panic — closing a channel makes sends fault, it
+	// does not make them block.
+	//
+	// Readers take RLock and re-check `eventsClosed`; the closer takes the write lock. Senders can
+	// hold RLock while parked in the select, so the closer MUST first close `done` (see the deferred
+	// close in readLoop) or it would wait on a sender that is itself waiting forever.
+	emitMu       sync.RWMutex
+	eventsClosed bool
+
 	modelMu       sync.Mutex // guards the selected model (set from the hub, read in sendParts)
 	modelID       string
 	modelProvider string
@@ -575,7 +593,21 @@ func (s *session) openEvents(ctx context.Context) (io.ReadCloser, error) {
 // (opencode restart, network blip, idle timeout) instead of ending the session. It only
 // stops (and closes s.events, ending the session) when the session is Closed/Stopped.
 func (s *session) readLoop(body io.ReadCloser) {
-	defer close(s.events) // single sender; closing ends the session in the hub's run()
+	// Closing `events` ends the session in the hub's run(). It must happen exactly once, and never
+	// while another goroutine is mid-send — see the note on emitMu.
+	//
+	// `s.Close()` first, and unconditionally: it is idempotent via closeOnce, and closing `done` is
+	// what releases any sender parked in emit's select. Without it the failed-reconnect exit below
+	// (which returns WITHOUT anyone having called Close) could leave a sender blocked on a full
+	// channel while this goroutine waits for the write lock — a deadlock instead of a panic, which
+	// is quieter but no better.
+	defer func() {
+		_ = s.Close()
+		s.emitMu.Lock()
+		s.eventsClosed = true
+		close(s.events)
+		s.emitMu.Unlock()
+	}()
 	for {
 		s.scanEvents(body)
 		body.Close()
@@ -988,6 +1020,14 @@ func (s *session) emit(ev agent.Event) {
 			s.lastStatus = ss.Status
 			s.statusMu.Unlock()
 		}
+	}
+	// RLock lets concurrent emitters through while still excluding the close in readLoop. The
+	// re-check inside the lock is the part that matters: without it, this goroutine could pass the
+	// check, lose the CPU, and wake up to a channel that has since been closed.
+	s.emitMu.RLock()
+	defer s.emitMu.RUnlock()
+	if s.eventsClosed {
+		return // the session is over; dropping the event is correct, panicking is not
 	}
 	select {
 	case s.events <- ev:
