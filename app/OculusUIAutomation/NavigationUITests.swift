@@ -26,27 +26,19 @@ final class NavigationUITests: XCTestCase {
     /// The precise regression: open a session (pushing ChatView), switch to Activity, and find the
     /// chat already pushed there too, because both stacks were driven by the same Bool.
     func testTabsDoNotShareAPushedDetail() throws {
-        let app = try launchPaired()
+        // ONE launch. Calling launchPaired() and then openSession() relaunched the app, and a
+        // relaunch currently loses the daemon connection (see PairingSupport) — so the test failed
+        // on a connection problem rather than on the navigation behaviour it exists to check.
+        let app = try PairingSupport.openSession(self)
 
-        let sessions = app.tabBars.buttons["Sessions"]
         let activity = app.tabBars.buttons["Activity"]
-        guard sessions.waitForExistence(timeout: 10), activity.exists else {
+        guard activity.waitForExistence(timeout: 10) else {
             throw XCTSkip("Tab bar not present — likely running in a regular-width layout.")
-        }
-
-        sessions.tap()
-        let firstSession = app.cells.firstMatch
-        if firstSession.waitForExistence(timeout: 8) {
-            firstSession.tap()
-        } else if app.buttons["Chat"].waitForExistence(timeout: 6) {
-            app.buttons["Chat"].tap() // no sessions yet — make one, so this can't silently skip
         }
 
         // The composer only exists inside a session, so it is a reliable "the chat is pushed" probe.
         let composer = app.textViews.firstMatch
-        guard composer.waitForExistence(timeout: 25) else {
-            throw XCTSkip("Could not reach a session — daemon may have no usable agent.")
-        }
+        XCTAssertTrue(composer.waitForExistence(timeout: 25), "Never reached a session.")
 
         activity.tap()
         XCTAssertFalse(composer.waitForExistence(timeout: 3),

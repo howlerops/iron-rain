@@ -47,7 +47,7 @@ final class ComposerUITests: XCTestCase {
     /// The slash button must focus the field, not type into a dead one.
     func testSlashButtonFocusesTheField() throws {
         let app = try openSession()
-        let slash = app.buttons["Insert slash command"]
+        let slash = app.buttons["Slash commands"]
         guard slash.waitForExistence(timeout: 6) else {
             throw XCTSkip("Slash affordance not present for this provider.")
         }

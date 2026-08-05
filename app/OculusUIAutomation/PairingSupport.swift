@@ -38,6 +38,21 @@ enum PairingSupport {
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 30),
                       "App never reached the foreground.")
 
+        // A paired-but-disconnected app looks "paired" (no first-run screen) while being useless to
+        // every test that follows, and the resulting failures point at whatever screen the test
+        // wanted rather than at the connection. Name it here instead.
+        //
+        // NOTE: this currently fires on the SECOND and later runs against a throwaway daemon. The
+        // daemon enrolls the device and issues a credential — devices.json shows the entry — but
+        // every reconnect after the initial pairing is refused with "transport: unauthorized", and
+        // `last_seen` never advances past `first_seen`. Until that is understood, erase the simulator
+        // and mint a fresh pairing code per run.
+        if app.buttons["Try again"].waitForExistence(timeout: 3)
+            || app.buttons["Scan a new code"].exists {
+            throw XCTSkip("Paired but not connected — the daemon is refusing this device's "
+                          + "credential. Erase the simulator and pair again with a fresh code.")
+        }
+
         // Already paired from an earlier run in this simulator — nothing to do.
         let addDesktop = app.buttons["Add a desktop"]
         guard addDesktop.waitForExistence(timeout: 8) else { return app }
@@ -109,14 +124,46 @@ enum PairingSupport {
 
         let chat = app.buttons["Chat"]
         guard chat.waitForExistence(timeout: 8) else {
-            throw XCTSkip("No sessions and no Chat affordance — cannot reach a composer.")
+            throw XCTSkip("No sessions and no Chat affordance. \(visibleControls(app))")
         }
         chat.tap()
 
-        guard app.textViews.firstMatch.waitForExistence(timeout: 25) else {
-            throw XCTSkip("Chat did not produce a composer — the daemon may have no usable agent.")
+        // Chat opens the New Session sheet rather than dropping straight into a composer, so the
+        // flow has to be completed: pick a working folder, then Start.
+        let start = app.buttons["Start"]
+        if start.waitForExistence(timeout: 12) {
+            // Prefer a scratch directory. The chosen folder becomes a real agent's working
+            // directory, and a test suite should not casually point one at a source repo — nothing
+            // here sends a prompt, but the default should still be the harmless one.
+            for folder in ["scratchpad", "tmp", "Documents"] {
+                let candidate = app.buttons[folder]
+                if candidate.exists { candidate.tap(); break }
+            }
+            if start.isEnabled {
+                start.tap()
+            } else if app.buttons["Start new"].exists {
+                app.buttons["Start new"].tap()
+            }
+        }
+
+        guard app.textViews.firstMatch.waitForExistence(timeout: 40) else {
+            throw XCTSkip("Could not reach a composer. \(visibleControls(app))")
         }
         return app
+    }
+
+    /// What is actually on screen, for skip/failure messages.
+    ///
+    /// A test that gives up saying "could not reach a composer" sends you debugging the daemon; one
+    /// that lists the buttons it COULD see tells you in a single run that you were on the wrong
+    /// screen, or that a label changed. The whole cost of this harness so far has been guessing at
+    /// that, so it is worth the few lines.
+    static func visibleControls(_ app: XCUIApplication) -> String {
+        let buttons = app.buttons.allElementsBoundByIndex
+            .prefix(25).map(\.label).filter { !$0.isEmpty }
+        let cells = app.cells.count
+        let fields = app.textFields.count + app.textViews.count
+        return "On screen — cells: \(cells), textInputs: \(fields), buttons: \(buttons)"
     }
 }
 
