@@ -137,6 +137,59 @@ jobs:
           # Record what actually happened, so "why is it prompting again" is answerable from the log.
           codesign -dv "Iron Rain.app" 2>&1 | grep -E "Signature|TeamIdentifier" || true
           ditto -c -k --keepParent "Iron Rain.app" "$GITHUB_WORKSPACE/IronRain-macos.zip"
+
+      # Notarize, then staple.
+      #
+      # Signing alone stops the keychain re-prompt; notarization is what stops Gatekeeper's "Apple
+      # could not verify this app" on first open. Only matters for people who download the zip
+      # directly — the curl installer strips quarantine — but that is the path someone takes when
+      # they don't yet trust the project enough to pipe a script into a shell.
+      #
+      # Stapling matters as much as submitting: it writes the ticket INTO the app, so first launch
+      # works offline and doesn't depend on a round trip to Apple.
+      #
+      # Skipped unless signed AND credentials exist, so this can never break the pipeline.
+      - name: Notarize (skipped when not configured)
+        if: steps.signing.outputs.signed == 'true'
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          APP="build/mac/Build/Products/Release/Iron Rain.app"
+
+          # Prefer the App Store Connect API key: it is scoped and independently revocable, where an
+          # app-specific password is a credential on a human's Apple ID. Fall back to the password
+          # so whichever pair is configured works.
+          if [ -n "${ASC_ISSUER_ID:-}" ] && [ -n "${ASC_KEY_P8_BASE64:-}" ]; then
+            echo "notarizing with the App Store Connect API key"
+            mkdir -p "$RUNNER_TEMP/nk"
+            echo "$ASC_KEY_P8_BASE64" | base64 --decode > "$RUNNER_TEMP/nk/AuthKey.p8"
+            AUTH=(--key "$RUNNER_TEMP/nk/AuthKey.p8" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID")
+          elif [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_APP_PASSWORD:-}" ]; then
+            echo "notarizing with an app-specific password"
+            AUTH=(--apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$TEAM_ID")
+          else
+            echo "no notarization credentials — signed but NOT notarized (Gatekeeper will warn on direct download)"
+            exit 0
+          fi
+
+          # --wait blocks until Apple returns a verdict; without it a failure surfaces as a mystery
+          # days later, in a user's Gatekeeper dialog rather than in this log.
+          xcrun notarytool submit "$GITHUB_WORKSPACE/IronRain-macos.zip" "${AUTH[@]}" --wait --timeout 30m
+          xcrun stapler staple "$APP"
+          rm -rf "$RUNNER_TEMP/nk"
+
+          # Re-zip so the published artifact carries the stapled ticket. Skipping this is the classic
+          # mistake: notarization passes, the log looks clean, and users still get the warning because
+          # the zip predates the staple.
+          rm -f "$GITHUB_WORKSPACE/IronRain-macos.zip"
+          ditto -c -k --keepParent "$APP" "$GITHUB_WORKSPACE/IronRain-macos.zip"
+          spctl -a -vv -t exec "$APP" 2>&1 | head -3 || true
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
