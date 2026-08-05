@@ -222,6 +222,9 @@ private enum DeckSheet: Identifiable {
     case fanoutCompare(FanoutSummary)
     case design
     case panel(PanelSheet)
+    /// Pair another Mac. In the shared slot rather than its own `.sheet`, because a second sheet
+    /// modifier on this view is what silently killed a presentation once before.
+    case addDesktop
 
     var id: String {
         switch self {
@@ -230,6 +233,7 @@ private enum DeckSheet: Identifiable {
         case .fanoutCompare(let s):  return "fanout-compare-\(s.id)"
         case .design:                return "design"
         case .panel(let p):          return "panel-\(p.rawValue)"
+        case .addDesktop:            return "add-desktop"
         }
     }
 }
@@ -303,7 +307,6 @@ public struct RootView: View {
     /// AppKit that nothing can read or restore.
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
     // Desktop (paired-Mac) switcher — hangs off the window title, Xcode-scheme-menu style.
-    @State private var showAddDesktop = false
     @State private var renamingDesktop = false
     @State private var desktopNewName = ""
     @AppStorage("oculus.appearance") private var appearance: Appearance = .system
@@ -341,6 +344,16 @@ public struct RootView: View {
                 mainSurface(model)
                     .modifier(SessionStartingOverlay(model: model, palette: palette))
                     .modifier(ActionErrorAlert(model: model))
+                    // Renaming a paired Mac belongs to BOTH platforms, so it lives at the root rather
+                    // than on the macOS detail column where the title menu happens to sit. A desktop
+                    // is named from whatever hostname it advertised, which on a second machine is
+                    // often indistinguishable from the first — being able to call one "Studio" is
+                    // what makes a multi-Mac setup legible.
+                    .alert("Rename desktop", isPresented: $renamingDesktop) {
+                        TextField("Name", text: $desktopNewName)
+                        Button("Save") { if let a = store.active { store.rename(a.id, to: desktopNewName) } }
+                        Button("Cancel", role: .cancel) {}
+                    }
                     #if os(macOS)
                     .modifier(SoftwareUpdateModifier(palette: palette, forceCheck: $checkForUpdates, updates: updates))
                     #endif
@@ -535,17 +548,6 @@ public struct RootView: View {
                     // know which session the detail had open.
                     .navigationTitle(pageTitle(model))
                     .toolbarTitleMenu { deckDesktopMenu }
-                    // Both of these are the title menu's actions, so they present from the column the
-                    // menu lives on. On the sidebar they would have had nothing to present from once
-                    // the sidebar was collapsed.
-                    .sheet(isPresented: $showAddDesktop) {
-                        AddDesktopView(store: store, palette: palette) { showAddDesktop = false }
-                    }
-                    .alert("Rename desktop", isPresented: $renamingDesktop) {
-                        TextField("Name", text: $desktopNewName)
-                        Button("Save") { if let a = store.active { store.rename(a.id, to: desktopNewName) } }
-                        Button("Cancel", role: .cancel) {}
-                    }
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
             .onChange(of: selection) { handleSelection($0, model) }
@@ -767,7 +769,11 @@ public struct RootView: View {
                        onOpenUsage: { sheet = .panel(.usage) },
                        onOpenAccounts: { sheet = .panel(.accounts) },
                        onOpenRemotes: { sheet = .panel(.remotes) },
-                       onManageSessions: { sheet = .panel(.sessions) })
+                       onManageSessions: { sheet = .panel(.sessions) },
+                       // The same menu macOS puts in the window title. On iOS it is the only way to
+                       // reach a second paired Mac, or to rename one so it reads as "Studio" rather
+                       // than whatever hostname it happened to advertise.
+                       desktopMenu: AnyView(deckDesktopMenu))
         #endif
     }
 
@@ -879,7 +885,7 @@ public struct RootView: View {
             }
         }
         Divider()
-        Button { showAddDesktop = true } label: { Label("Add desktop…", systemImage: "plus") }
+        Button { sheet = .addDesktop } label: { Label("Add desktop…", systemImage: "plus") }
         if let a = store.active {
             Button { desktopNewName = a.name; renamingDesktop = true } label: { Label("Rename…", systemImage: "pencil") }
             Button(role: .destructive) { store.remove(a.id) } label: { Label("Remove desktop", systemImage: "trash") }
@@ -935,6 +941,8 @@ public struct RootView: View {
             #endif
         case .panel(let which):
             panelContent(which, model)
+        case .addDesktop:
+            AddDesktopView(store: store, palette: palette) { sheet = nil }
         }
     }
 
@@ -1013,9 +1021,15 @@ struct AddDesktopView: View {
     let palette: OculusPalette
     let onClose: () -> Void
     @State private var pasteURL = ""
+    /// An optional override for the name the pairing link advertises.
+    @State private var customName = ""
     #if os(iOS)
     @State private var showScanner = false
     #endif
+
+    /// The name the link itself carries, offered as the placeholder so the field shows what you
+    /// would get by leaving it blank rather than making you guess.
+    private var suggestedName: String { PairingPayload(pasteURL)?.name ?? "" }
 
     var body: some View {
         NavigationStack {
@@ -1033,10 +1047,27 @@ struct AddDesktopView: View {
                     #if os(iOS)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                     #endif
+
+                // Name it here, while you know which machine you are holding.
+                //
+                // The name otherwise comes from whatever hostname the daemon advertised, and two
+                // Macs set up the same way advertise the same thing — so the list ends up
+                // distinguishable only by the address in the pairing link. Naming it at the moment
+                // you pair is the one time you unambiguously know which one this is.
+                TextField(suggestedName.isEmpty ? "Name (optional)" : "Name — e.g. \(suggestedName)",
+                          text: $customName)
+                    .textFieldStyle(.roundedBorder)
+                    #if os(iOS)
+                    .autocorrectionDisabled()
+                    #endif
+
                 Button("Add desktop") {
                     // Stay open when the pairing is staged for confirmation — dismissing here would
                     // tear down the alert's host before the user ever sees the question.
-                    if let p = PairingPayload(pasteURL), store.add(p) != nil { onClose() }
+                    guard var p = PairingPayload(pasteURL) else { return }
+                    let chosen = customName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !chosen.isEmpty { p.name = chosen }
+                    if store.add(p) != nil { onClose() }
                 }
                 .buttonStyle(.borderedProminent).tint(palette.primary)
                 .disabled(PairingPayload(pasteURL) == nil)

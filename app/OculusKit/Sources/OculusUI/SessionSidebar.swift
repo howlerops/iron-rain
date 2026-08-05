@@ -116,6 +116,12 @@ struct SessionSidebar: View {
     var onOpenAccounts: (() -> Void)? = nil
     var onOpenRemotes: (() -> Void)? = nil
     var onManageSessions: (() -> Void)? = nil
+    /// The paired-Mac switcher, supplied by the host so this view needs no knowledge of DesktopStore.
+    ///
+    /// A closure returning menu content rather than a store reference: the same menu is the window
+    /// title menu on macOS, and duplicating its contents here would let the two drift into offering
+    /// different actions for the same thing.
+    var desktopMenu: AnyView? = nil
     /// Set false when the HOST pins `ActiveSessionBar` itself (iOS: on the TabView, so "an agent is
     /// working" is visible from every tab, not just Sessions). Defaults to true so the sidebar keeps
     /// carrying it wherever nothing else does.
@@ -558,11 +564,22 @@ struct SessionSidebar: View {
     @ViewBuilder private var overflowMenu: some View {
         // Session-scoped actions — identical on both platforms, and the reason this menu still exists.
         // None of these configure the app; they act on the link to this Mac and on the list itself.
+        #if os(macOS)
         if model.canMintPairingCode {
-            // The ONLY route to the pairing QR anywhere in the app, and the phone's onboarding copy
-            // names this menu when it tells you where to look. Label and placement are load-bearing.
+            // The ONLY route to the pairing QR, and the phone's onboarding copy names this menu when
+            // it tells you where to look. Label and placement are load-bearing.
+            //
+            // macOS only. It was gated on `canMintPairingCode` alone, so it also appeared on the
+            // phone — where "Pair a phone…" is nonsense, and where the QR it produces would have to
+            // be photographed off your own screen by a second device.
             Button { showPairingQR = true } label: { Label("Pair a phone…", systemImage: "qrcode") }
         }
+        #else
+        // The paired-Mac switcher. On macOS this is the window-title menu, which compact iOS has no
+        // equivalent of — so the phone has never had any route to a second desktop once onboarding
+        // stopped showing. Pairing a Mac at your desk and another at home is a thing the app is for.
+        if let desktopMenu { desktopMenu }
+        #endif
         Button { Task { await model.discover() } } label: { Label("Refresh sessions", systemImage: "arrow.clockwise") }
         if let onManageSessions {
             Button { onManageSessions() } label: { Label("Manage sessions…", systemImage: "square.stack.3d.up") }
