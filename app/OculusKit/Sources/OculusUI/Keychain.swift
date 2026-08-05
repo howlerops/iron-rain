@@ -34,9 +34,27 @@ enum Keychain {
         // Update first, add if absent. SecItemAdd on an existing account fails with errSecDuplicateItem
         // rather than replacing, which would silently leave the OLD credential in place — exactly the
         // failure that makes a rotated credential look like a broken pairing.
-        let status = SecItemUpdate(query as CFDictionary, attrs as CFDictionary)
+        var status = SecItemUpdate(query as CFDictionary, attrs as CFDictionary)
         if status == errSecItemNotFound {
-            SecItemAdd(query.merging(attrs) { $1 } as CFDictionary, nil)
+            status = SecItemAdd(query.merging(attrs) { $1 } as CFDictionary, nil)
+        }
+
+        // Say something when the write fails.
+        //
+        // Both statuses used to be discarded, which made the worst case indistinguishable from
+        // success: the credential that gates ALL access to a paired Mac silently not persisting.
+        // What it looks like from the outside is a device that pairs once and is then refused
+        // forever with "unauthorized" — the daemon is holding a credential the client never kept.
+        //
+        // `errSecMissingEntitlement` (-34018) is the one to expect on an unsigned build: without an
+        // `application-identifier` entitlement there is no keychain access group to write into. That
+        // is why an ad-hoc simulator build cannot stay paired, and it is worth naming rather than
+        // rediscovering.
+        if status != errSecSuccess {
+            let hint = status == errSecMissingEntitlement
+                ? " (missing entitlement — is this an unsigned build?)" : ""
+            NSLog("Keychain: failed to store '\(account)' — OSStatus \(status)\(hint). "
+                  + "This device will not stay paired.")
         }
     }
 

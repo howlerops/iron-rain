@@ -2146,6 +2146,10 @@ func (h *Hub) Serve(ctx context.Context, conn *transport.Conn) error {
 	// reply, and widening that wire format would break every existing client. The channel is already
 	// encrypted and already authenticated by this point, so a normal frame is the right carrier.
 	if cred, ok := h.creds().takePending(hexKey(conn.PeerPublicKey())); ok {
+		// Logged because this frame is invisible everywhere else, and when a device pairs but then
+		// cannot reconnect, "was the credential ever handed over, and did it land?" is the first
+		// question and currently the hardest to answer.
+		log.Printf("device: delivering credential to %s", hexKey(conn.PeerPublicKey())[:16])
 		h.sendEvent(conn, protocol.TypeDeviceCredential, protocol.DeviceCredential{
 			Pub: hexKey(conn.PeerPublicKey()), Credential: cred, IssuedAt: time.Now().Unix(),
 		})
@@ -3396,6 +3400,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		// clock on the old permanent secret: a credential that was minted but never landed (client
 		// killed mid-frame, an older build that ignores the frame) must not strand the owner with a
 		// retired secret and no replacement.
+		log.Printf("device: credential ack from %s — it stored the credential", hexKey(conn.PeerPublicKey())[:16])
 		h.creds().noteMigrated()
 
 	case protocol.TypePairCode:
