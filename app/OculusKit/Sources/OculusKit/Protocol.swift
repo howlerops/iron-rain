@@ -1442,9 +1442,16 @@ public struct IntegrationStatus: Codable {
     public var oauthApps: [String]?   // providers with an OAuth app configured
     public var authErrors: [String]?  // connected providers whose fetch/refresh is failing (need reconnect)
     public var authErrorDetails: [String: String]? // provider -> the actual failure message (why it isn't loading)
+    /// The Jira token reaches several Atlassian sites, so the active one was GUESSED.
+    ///
+    /// Atlassian never reports which site you chose at consent, so the daemon picks the first it can
+    /// see. Get it wrong and the board shows a real, populated project — just not yours — which is
+    /// the worst kind of wrong, because nothing looks broken.
+    public var jiraSiteAmbiguous: Bool?
     enum CodingKeys: String, CodingKey {
         case connected; case oauthApps = "oauth_apps"; case authErrors = "auth_errors"
         case authErrorDetails = "auth_error_details"
+        case jiraSiteAmbiguous = "jira_site_ambiguous"
     }
 }
 public struct IntegrationOAuth: Codable {

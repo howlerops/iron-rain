@@ -156,6 +156,11 @@ public final class Model: ObservableObject {
     /// Provider -> the ACTUAL failure message (e.g. "jira: 401 Unauthorized"), so the UI can show
     /// WHY a connected tracker isn't loading, not just that it isn't.
     @Published public var trackerAuthDetails: [String: String] = [:]
+    /// The daemon guessed which Jira site to use because the token reaches several.
+    ///
+    /// Drives a prompt rather than leaving you to notice the board is someone else's project and go
+    /// hunting for the switcher. Cleared once a site is chosen explicitly.
+    @Published public var jiraSiteAmbiguous = false
     /// Whether the daemon is shipping anonymized diagnostics (on by default; toggled in Settings).
     @Published public var telemetryEnabled: Bool = true
     /// Atlassian sites the Jira token can reach + the active one — for orgs with more than one Jira
@@ -1905,6 +1910,7 @@ public final class Model: ObservableObject {
         oauthApps = st.oauthApps ?? []
         trackerAuthErrors = st.authErrors ?? []
         trackerAuthDetails = st.authErrorDetails ?? [:]
+        jiraSiteAmbiguous = st.jiraSiteAmbiguous ?? false
     }
 
     /// Begins an OAuth flow for a tracker (linear/jira). The daemon replies with an authorize URL,

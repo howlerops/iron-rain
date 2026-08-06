@@ -41,6 +41,9 @@ public struct IssuesView: View {
 
     var embedded = false // macOS: rendered inside a NavigationSplitView detail (no own nav/toolbar)
     @State private var kanban = true
+    /// Dismissal for the which-site prompt, so it can be waved away for this viewing without
+    /// choosing. Choosing clears the underlying flag daemon-side and it stops appearing at all.
+    @State private var siteBannerDismissed = false
     @State private var launching: Issue?
     @State private var selectedIssue: Issue?
     @State private var searchText = ""
@@ -198,8 +201,55 @@ public struct IssuesView: View {
                 filterBar
                 if model.issues.isEmpty {
                     trackerEmptyState // connected but nothing to show — explain + let them disconnect
-                } else if kanban { board } else { table }
+                } else if kanban {
+                    VStack(spacing: 0) { jiraSitePrompt; board }
+                } else {
+                    VStack(spacing: 0) { jiraSitePrompt; table }
+                }
             }
+        }
+    }
+
+    /// Offers the site choice when the daemon says it GUESSED, even if the board looks fine.
+    ///
+    /// The switcher used to live only inside the empty state, so it appeared only when the wrong
+    /// site had no issues. Pick a site that does have issues — someone else's project — and the
+    /// board fills with plausible, wrong data and never offers the choice. That is why the fix was
+    /// "re-choose it in the app": there was nothing to tell you, and nowhere obvious to look.
+    ///
+    /// Shown once, dismissible, and gone for good once a site is chosen explicitly.
+    @ViewBuilder private var jiraSitePrompt: some View {
+        if model.jiraSiteAmbiguous, model.jiraSites.count > 1, !siteBannerDismissed {
+            HStack(spacing: 10) {
+                Image(systemName: "questionmark.circle.fill")
+                    .foregroundStyle(palette.warning)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Which Jira site?")
+                        .font(.footnote.weight(.semibold)).foregroundStyle(palette.foreground)
+                    Text("Your Atlassian login reaches \(model.jiraSites.count) sites. These issues are from the one picked for you.")
+                        .font(.caption).foregroundStyle(palette.mutedForeground)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Picker("Jira site", selection: Binding(get: { model.jiraCurrentSite },
+                                                      set: { id in Task { await model.setJiraSite(id) } })) {
+                    ForEach(model.jiraSites) { s in
+                        Text(s.name.isEmpty ? s.url : s.name).tag(s.cloudID)
+                    }
+                }
+                .pickerStyle(.menu).labelsHidden()
+                .accessibilityLabel("Choose the Jira site")
+                Button { siteBannerDismissed = true } label: {
+                    Image(systemName: "xmark").font(.caption)
+                }
+                .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
+                .frame(width: 44, height: 44).contentShape(Rectangle())
+                .accessibilityLabel("Dismiss")
+            }
+            .padding(.horizontal, OculusSpace.md).padding(.vertical, OculusSpace.sm)
+            .background(palette.warning.opacity(0.10))
+            .overlay(alignment: .bottom) { Divider().overlay(palette.border) }
         }
     }
 
