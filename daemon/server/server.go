@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/coder/websocket"
@@ -60,7 +61,21 @@ func (s *Server) ServeConn(ctx context.Context, mc transport.MsgConn) error {
 	conn, err := transport.ServerHandshake(mc, s.kp, s.authorize)
 	if err != nil {
 		if isBenignHandshakeClose(err) {
-			log.Printf("server: client disconnected during handshake: %v", err)
+			// Silent by default, because this is what SUCCESS looks like.
+			//
+			// The app races every route it knows — LAN direct plus each relay — and exactly one
+			// wins; the rest are closed mid-handshake by design. So a single healthy connection
+			// produces several of these, and only these: one real session was measured at 36 benign
+			// closes, 1 successful handshake, and 0 failures.
+			//
+			// Printed at the same volume as a real error, that buries the line that matters. It read
+			// as "a bunch of errors" when nothing was wrong — and worse, it camouflages a genuine
+			// `handshake failed: unauthorized` in a wall of identical-looking noise.
+			//
+			// Set OCULUS_LOG_HANDSHAKE=1 to see them when actually debugging connection races.
+			if os.Getenv("OCULUS_LOG_HANDSHAKE") == "1" {
+				log.Printf("server: client disconnected during handshake (benign, likely a lost connect race): %v", err)
+			}
 		} else {
 			log.Printf("server: handshake failed: %v", err)
 		}
