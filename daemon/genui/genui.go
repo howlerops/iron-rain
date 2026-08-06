@@ -174,7 +174,14 @@ func (s *Segmenter) Flush() (forward string, comps []protocol.UIComponent) {
 		s.inFence = false
 		s.fenceBuf.Reset()
 	}
-	return out.String(), nil
+	// `comps`, not nil. The final partial line is parsed above and any component appended — and then
+	// the return threw it away, so a payload that happened to be the LAST thing in a message, with
+	// no trailing newline after it, rendered as raw JSON forever. Which is the common shape: models
+	// end a turn with the component they were building toward.
+	//
+	// The bug hid because every other path works. Feed handles anything followed by a newline, so
+	// mid-message components were fine, and only the final one was lost.
+	return out.String(), comps
 }
 
 // consumeLine handles one complete line (including its trailing '\n', if any). It returns the text to
