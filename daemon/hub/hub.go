@@ -826,7 +826,7 @@ func (h *Hub) broadcastLogLine(line string) {
 func (h *Hub) BroadcastIssues(in []issues.Issue) {
 	h.broadcast(protocol.TypeIssueList, protocol.IssueList{Issues: toProtoIssues(in)})
 	if m := h.issuesMgr(); m != nil {
-		h.broadcast(protocol.TypeIntegrationStatus, protocol.IntegrationStatus{Connected: m.Connected(), OAuthApps: m.OAuthApps(), AuthErrors: m.AuthErrors(), AuthErrorDetails: m.AuthErrorDetails()})
+		h.broadcast(protocol.TypeIntegrationStatus, protocol.IntegrationStatus{Connected: m.Connected(), OAuthApps: m.OAuthApps(), AuthErrors: m.AuthErrors(), AuthErrorDetails: m.AuthErrorDetails(), JiraSiteAmbiguous: m.JiraSiteAmbiguous()})
 	}
 	// Feed the loop engine so it can start agents on newly-appearing tickets.
 	h.mu.Lock()
@@ -3538,7 +3538,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, err.Error())
 			return
 		}
-		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: m.Connected(), OAuthApps: m.OAuthApps(), AuthErrors: m.AuthErrors(), AuthErrorDetails: m.AuthErrorDetails()})
+		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: m.Connected(), OAuthApps: m.OAuthApps(), AuthErrors: m.AuthErrors(), AuthErrorDetails: m.AuthErrorDetails(), JiraSiteAmbiguous: m.JiraSiteAmbiguous()})
 
 	case protocol.TypeIntegrationDisconnect:
 		if !h.requireCapability(conn, env.ID, capOwner, "disconnect an integration") {
@@ -3558,20 +3558,22 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, err.Error())
 			return
 		}
-		st := protocol.IntegrationStatus{Connected: m.Connected(), OAuthApps: m.OAuthApps(), AuthErrors: m.AuthErrors(), AuthErrorDetails: m.AuthErrorDetails()}
+		st := protocol.IntegrationStatus{Connected: m.Connected(), OAuthApps: m.OAuthApps(), AuthErrors: m.AuthErrors(), AuthErrorDetails: m.AuthErrorDetails(), JiraSiteAmbiguous: m.JiraSiteAmbiguous()}
 		h.sendOK(conn, env.ID, st)
 		h.broadcast(protocol.TypeIntegrationStatus, st) // every device converges on the disconnect
 
 	case protocol.TypeIntegrationStatus:
 		var connected, oauthApps, authErrors []string
 		var details map[string]string
+		var siteAmbiguous bool
 		if m := h.issuesMgr(); m != nil {
 			connected = m.Connected()
 			oauthApps = m.OAuthApps()
 			authErrors = m.AuthErrors()
 			details = m.AuthErrorDetails()
+			siteAmbiguous = m.JiraSiteAmbiguous()
 		}
-		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: connected, OAuthApps: oauthApps, AuthErrors: authErrors, AuthErrorDetails: details})
+		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: connected, OAuthApps: oauthApps, AuthErrors: authErrors, AuthErrorDetails: details, JiraSiteAmbiguous: siteAmbiguous})
 
 	case protocol.TypeIntegrationOAuthApp:
 		if !h.requireCapability(conn, env.ID, capOwner, "change integration OAuth settings") {
@@ -3591,7 +3593,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, err.Error())
 			return
 		}
-		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: m.Connected(), OAuthApps: m.OAuthApps(), AuthErrors: m.AuthErrors(), AuthErrorDetails: m.AuthErrorDetails()})
+		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: m.Connected(), OAuthApps: m.OAuthApps(), AuthErrors: m.AuthErrors(), AuthErrorDetails: m.AuthErrorDetails(), JiraSiteAmbiguous: m.JiraSiteAmbiguous()})
 
 	case protocol.TypeTelemetryStatus:
 		on := false
@@ -3651,7 +3653,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, err.Error())
 			return
 		}
-		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: m.Connected(), OAuthApps: m.OAuthApps(), AuthErrors: m.AuthErrors(), AuthErrorDetails: m.AuthErrorDetails()})
+		h.sendOK(conn, env.ID, protocol.IntegrationStatus{Connected: m.Connected(), OAuthApps: m.OAuthApps(), AuthErrors: m.AuthErrors(), AuthErrorDetails: m.AuthErrorDetails(), JiraSiteAmbiguous: m.JiraSiteAmbiguous()})
 
 	case protocol.TypeIntegrationOAuth:
 		if !h.requireCapability(conn, env.ID, capOwner, "start integration OAuth") {

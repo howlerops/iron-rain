@@ -146,10 +146,11 @@ func (m *Manager) jiraCallback(ctx context.Context, code, redirectURI string) er
 	}
 	// Resolve the Jira site (cloudid) the token can access — OAuth API calls go to
 	// https://api.atlassian.com/ex/jira/{cloudid}/rest/... rather than the site URL.
-	cloudID, err := jiraCloudID(ctx, tok.AccessToken)
+	cloudID, ambiguous, err := jiraCloudID(ctx, tok.AccessToken)
 	if err != nil {
 		return err
 	}
+	m.setJiraSiteAmbiguous(ambiguous)
 	// Persisted token format: oauth|cloudid|access|refresh (see newAdapter).
 	composite := strings.Join([]string{"oauth", cloudID, tok.AccessToken, tok.RefreshToken}, "|")
 	return m.Connect(ctx, "jira", composite)
@@ -237,15 +238,22 @@ func jiraAccessibleSites(ctx context.Context, accessToken string) ([]JiraSiteInf
 	return resources, nil
 }
 
-func jiraCloudID(ctx context.Context, accessToken string) (string, error) {
+// jiraCloudID picks the site to route API calls at, and reports whether that pick was a GUESS.
+//
+// Atlassian returns no indication of which site the user chose on the consent screen — only the full
+// list the token can reach, unordered. With one site there is nothing to get wrong. With several,
+// `sites[0]` is a coin flip, and losing it means the board quietly shows the wrong project. The
+// choice still has to be made (a connection must route somewhere), but the caller now learns it was
+// arbitrary and can ask.
+func jiraCloudID(ctx context.Context, accessToken string) (id string, ambiguous bool, err error) {
 	sites, err := jiraAccessibleSites(ctx, accessToken)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if len(sites) == 0 {
-		return "", fmt.Errorf("jira: the token has access to no sites (grant the app access to a Jira site)")
+		return "", false, fmt.Errorf("jira: the token has access to no sites (grant the app access to a Jira site)")
 	}
-	return sites[0].ID, nil
+	return sites[0].ID, len(sites) > 1, nil
 }
 
 // refreshJiraToken exchanges a refresh token for a fresh access (+ rotated refresh) token.

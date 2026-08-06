@@ -37,6 +37,9 @@ type Manager struct {
 	onUpdate   func([]Issue)
 	pending    map[string]string // oauth state -> provider
 	authErrors map[string]string // provider -> last token-refresh error (drives the "reconnect" pill)
+	// jiraSiteAmbiguous records that the Jira token reaches more than one Atlassian site, so the
+	// cloud id currently in use is a guess. See protocol.IntegrationStatus.JiraSiteAmbiguous.
+	jiraSiteAmbiguous bool
 }
 
 // TokenRefresher is a provider whose OAuth token can be proactively refreshed (Jira).
@@ -142,6 +145,21 @@ func (m *Manager) JiraSites(ctx context.Context) (sites []JiraSiteInfo, current 
 	return sites, current, err
 }
 
+// setJiraSiteAmbiguous records whether the active Jira cloud id was guessed from several options.
+func (m *Manager) setJiraSiteAmbiguous(v bool) {
+	m.mu.Lock()
+	m.jiraSiteAmbiguous = v
+	m.mu.Unlock()
+}
+
+// JiraSiteAmbiguous reports whether the active Jira site was picked arbitrarily, so the app can
+// prompt instead of letting the user discover the wrong board.
+func (m *Manager) JiraSiteAmbiguous() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.jiraSiteAmbiguous
+}
+
 // SetJiraSite switches the active Jira site (cloud id). The OAuth access/refresh tokens work across
 // all of the org's sites — only the cloud id routes the API — so this just rewrites the composite
 // token, rebuilds the adapter, and refreshes. No re-auth needed.
@@ -149,6 +167,8 @@ func (m *Manager) SetJiraSite(ctx context.Context, cloudID string) error {
 	if cloudID == "" {
 		return fmt.Errorf("no site chosen")
 	}
+	// An explicit pick settles it — the app should stop prompting.
+	m.setJiraSiteAmbiguous(false)
 	m.mu.Lock()
 	tok := m.cfg.Jira.Token
 	m.mu.Unlock()

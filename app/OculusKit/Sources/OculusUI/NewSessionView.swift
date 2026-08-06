@@ -418,9 +418,17 @@ struct NewSessionView: View {
                             .foregroundStyle(palette.primaryText)
                             .accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(terminalCandidates.count == 1
-                                 ? "1 session is running in your terminal"
-                                 : "\(terminalCandidates.count) sessions are running in your terminal")
+                            // Count only what is actually RUNNING.
+                            //
+                            // Discovery returns every Claude transcript touched in the last 24 hours
+                            // and flags which are live; this banner counted the whole list, so a busy
+                            // day reported "50 sessions are running in your terminal" when almost all
+                            // had long since exited. A number that overstates by an order of
+                            // magnitude teaches you to ignore it.
+                            //
+                            // The dead ones stay in the takeover list — resuming yesterday's session
+                            // is the point of it — they just are not claimed to be running.
+                            Text(headlineForTerminalCandidates)
                                 .font(.footnote.weight(.medium))
                                 .foregroundStyle(palette.foreground)
                             Text("Continue one here instead of starting fresh")
@@ -734,6 +742,24 @@ struct NewSessionView: View {
     /// Terminal sessions worth offering to adopt — the same set the Take over tab lists.
     private var terminalCandidates: [TakeoverCandidate] {
         TerminalTakeover.candidates(discovered: model.discovered, managed: model.sessions)
+    }
+
+    /// Those the daemon could confirm are actually running, as opposed to merely recent.
+    private var liveTerminalCandidates: [TakeoverCandidate] { terminalCandidates.filter(\.live) }
+
+    /// Says what is true: how many are running, or — when none are — that there are recent ones to
+    /// resume. Both are useful; only one of them is "running".
+    private var headlineForTerminalCandidates: String {
+        let live = liveTerminalCandidates.count
+        switch live {
+        case 0:
+            let n = terminalCandidates.count
+            return n == 1 ? "1 recent terminal session" : "\(n) recent terminal sessions"
+        case 1:
+            return "1 session is running in your terminal"
+        default:
+            return "\(live) sessions are running in your terminal"
+        }
     }
 
     private func scan() async {

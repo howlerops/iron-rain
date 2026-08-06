@@ -380,7 +380,17 @@ public struct IssuesView: View {
                         .accessibilityLabel("Clear search")
                 }
             }
+            // Vertical padding and a floor on the height. There was only leading padding, so the
+            // field collapsed to the intrinsic height of its text — a sliver you have to aim at, and
+            // one that jumped taller the moment the clear button appeared and shorter when it went.
+            // 36pt is the platform's search-field height; the iOS floor is the 44pt touch minimum.
             .padding(.leading, 10)
+            .padding(.vertical, OculusSpace.sm)
+            #if os(iOS)
+            .frame(minHeight: 44)
+            #else
+            .frame(minHeight: 28)
+            #endif
             .background(palette.card).clipShape(Capsule())
             .overlay(Capsule().strokeBorder(palette.border))
 

@@ -97,6 +97,13 @@ func isBenignHandshakeClose(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "use of closed network connection") ||
 		strings.Contains(msg, "websocket: close") ||
+		// A CLEAN websocket close. The client saying "I'm done" politely is the most benign ending
+		// there is, but this library formats it as `received close frame: status =
+		// StatusNormalClosure`, which matches none of the patterns above — so the tidiest possible
+		// disconnect was the one still logged as `handshake failed`. Observed immediately on
+		// restarting a real daemon, right after quieting the other race-close variant.
+		strings.Contains(msg, "StatusNormalClosure") ||
+		strings.Contains(msg, "StatusGoingAway") ||
 		strings.Contains(msg, "connection reset by peer") ||
 		strings.Contains(msg, "broken pipe")
 }

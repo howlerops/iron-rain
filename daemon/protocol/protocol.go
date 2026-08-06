@@ -708,6 +708,18 @@ type IntegrationStatus struct {
 	// AuthErrorDetails is provider -> the actual failure message (e.g. "jira: 401 Unauthorized"), so
 	// the app can show WHY a connected tracker isn't loading, not just that it isn't.
 	AuthErrorDetails map[string]string `json:"auth_error_details,omitempty"`
+	// JiraSiteAmbiguous is set when the OAuth token reaches MORE THAN ONE Atlassian site.
+	//
+	// Atlassian's consent screen lets you choose a site, but the token it returns does not say which
+	// one you chose — `accessible-resources` just lists every site the token can reach, in no
+	// defined order. The daemon has to pick one to route API calls at, and picking the first is a
+	// coin flip: get it wrong and the board loads someone else's project, with nothing on screen
+	// explaining why.
+	//
+	// So the guess is still made (a connection has to route somewhere) but it is now DECLARED, and
+	// the app prompts with `jira.sites` instead of leaving you to discover the wrong data and find
+	// the switcher yourself.
+	JiraSiteAmbiguous bool `json:"jira_site_ambiguous,omitempty"`
 }
 
 type IntegrationOAuth struct {
