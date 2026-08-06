@@ -29,10 +29,10 @@ type Config struct {
 
 // Manager owns the connected trackers, a merged issue cache, and the poll loop.
 type Manager struct {
-	mu        sync.Mutex
-	path      string
-	cfg       Config
-	providers map[string]Provider
+	mu         sync.Mutex
+	path       string
+	cfg        Config
+	providers  map[string]Provider
 	cache      []Issue
 	onUpdate   func([]Issue)
 	pending    map[string]string // oauth state -> provider
@@ -72,6 +72,23 @@ func NewManager(path string, onUpdate func([]Issue)) *Manager {
 func (m *Manager) newAdapter(name, token string) (Provider, error) {
 	switch name {
 	case "linear":
+		// OAuth with refresh: "oauth|access|refresh". Anything else is a bare token (personal API
+		// key, or a connection made before refresh was supported) and needs no renewal.
+		if strings.HasPrefix(token, "oauth|") {
+			parts := strings.SplitN(token, "|", 3)
+			if len(parts) != 3 {
+				return nil, fmt.Errorf("linear token malformed")
+			}
+			l := NewLinear(parts[1])
+			m.mu.Lock()
+			id, secret := m.cfg.Linear.ClientID, m.cfg.Linear.ClientSecret
+			m.mu.Unlock()
+			l.SetOAuth(parts[2], id, secret, func(access, refresh string) {
+				// Persist the rotated pair, or the NEXT refresh presents a spent token.
+				_ = m.Connect(context.Background(), "linear", strings.Join([]string{"oauth", access, refresh}, "|"))
+			})
+			return l, nil
+		}
 		return NewLinear(token), nil
 	case "jira":
 		// OAuth: "oauth|cloudid|access|refresh". Basic: "site|email|apitoken".

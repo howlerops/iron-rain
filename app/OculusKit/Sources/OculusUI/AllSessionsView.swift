@@ -28,14 +28,43 @@ public struct AllSessionsView: View {
         var id: String { rawValue }
     }
     enum Scope: String, CaseIterable, Identifiable {
+        /// What is actually going on right now: running, waiting on you, or errored — and top-level
+        /// only. Everything finished, idle, or spawned by another agent is hidden.
+        ///
+        /// This is the default because the table's job is "what is happening", and a heavy week
+        /// buries that under a hundred finished sessions plus every sub-agent each of them spawned.
+        /// `All` is one tap away and still shows the lot.
+        case active = "Active"
         case all = "All", worktrees = "Worktrees", stopped = "Stopped"
         var id: String { rawValue }
+    }
+
+    /// Sessions worth calling active: doing something, blocked on you, or broken.
+    ///
+    /// Deliberately NOT "not idle": `idle` is the resting state of a session you finished with, and
+    /// including it puts the whole history back. A session you are reading is reachable from the
+    /// recents list and the switcher regardless of this filter.
+    private static func isActive(_ s: Session) -> Bool {
+        switch s.status {
+        case SessionStatusValue.running,
+             SessionStatusValue.awaitingApproval,
+             SessionStatusValue.error, "errored":
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// A session spawned BY another agent rather than by you. Noise in a list of your own work —
+    /// a single fan-out can add a dozen.
+    private static func isChild(_ s: Session) -> Bool {
+        !(s.parentID ?? "").isEmpty
     }
 
     @State private var hovered: String?
     @State private var sort: SortKey = .updated
     @State private var ascending = false
-    @State private var scope: Scope = .all
+    @State private var scope: Scope = .active
     @State private var query = ""
     /// The worktree session pending a delete decision (drives the "remove the worktree too?" dialog).
     @State private var pendingWorktreeDelete: Session?
@@ -56,6 +85,7 @@ public struct AllSessionsView: View {
     private var rows: [Session] {
         var out = model.sessions.filter { $0.ephemeral != true }
         switch scope {
+        case .active: out = out.filter { Self.isActive($0) && !Self.isChild($0) }
         case .all: break
         case .worktrees: out = out.filter { ($0.branch?.isEmpty == false) }
         case .stopped: out = out.filter { $0.status == SessionStatusValue.stopped }
@@ -84,13 +114,19 @@ public struct AllSessionsView: View {
         TerminalTakeover.candidates(discovered: model.discovered, managed: model.sessions)
     }
 
+    /// Those the daemon confirmed are actually running, as opposed to merely recent.
+    private var liveTerminalCandidates: [TakeoverCandidate] { terminalCandidates.filter(\.live) }
+
     @ViewBuilder private var terminalSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                Text("RUNNING IN A TERMINAL")
-                    .font(.caption2.bold()).tracking(0.5)
+                // Title Case (OS 26 dropped all-caps section headers), and the count is of what is
+                // actually LIVE — the candidate list also carries recent-but-exited sessions, which
+                // are still worth offering to resume but are not "running".
+                Text(liveTerminalCandidates.isEmpty ? "Recent terminal sessions" : "Running in a terminal")
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(palette.mutedForeground)
-                Text("\(terminalCandidates.count)")
+                Text("\(liveTerminalCandidates.isEmpty ? terminalCandidates.count : liveTerminalCandidates.count)")
                     .font(.system(.caption2, design: .monospaced).weight(.semibold))
                     .foregroundStyle(palette.mutedForeground)
                 Spacer()
@@ -338,6 +374,7 @@ public struct AllSessionsView: View {
     private func count(for sc: Scope) -> Int {
         let base = model.sessions.filter { $0.ephemeral != true }
         switch sc {
+        case .active: return base.filter { Self.isActive($0) && !Self.isChild($0) }.count
         case .all: return base.count
         case .worktrees: return base.filter { $0.branch?.isEmpty == false }.count
         case .stopped: return base.filter { $0.status == SessionStatusValue.stopped }.count

@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -25,9 +27,23 @@ func drainClose(body io.ReadCloser) {
 // Linear is a Provider backed by Linear's GraphQL API. Auth is a token (OAuth access
 // token or personal API key) sent in the Authorization header.
 type Linear struct {
+	// mu guards the token and OAuth material, which the refresh loop rewrites while API calls read
+	// them. refreshMu serializes the whole exchange including its network round trip — see
+	// RefreshToken, and the same note on Jira: a provider that rotates refresh tokens treats reuse of
+	// a rotated one as theft.
+	mu        sync.Mutex
+	refreshMu sync.Mutex
+
 	token    string
 	endpoint string
 	http     *http.Client
+
+	// OAuth refresh state (empty for a personal API key, which does not expire):
+	oauth        bool
+	clientID     string
+	clientSecret string
+	refreshToken string
+	onRefresh    func(access, refresh string) // persist rotated tokens
 }
 
 const linearEndpoint = "https://api.linear.app/graphql"
@@ -39,6 +55,12 @@ func NewLinear(token string) *Linear {
 func (l *Linear) Name() string { return "linear" }
 
 // gql posts a GraphQL query and decodes data into out.
+func (l *Linear) authToken() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.token
+}
+
 func (l *Linear) gql(ctx context.Context, query string, vars map[string]any, out any) error {
 	body, _ := json.Marshal(map[string]any{"query": query, "variables": vars})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, l.endpoint, bytes.NewReader(body))
@@ -46,7 +68,7 @@ func (l *Linear) gql(ctx context.Context, query string, vars map[string]any, out
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", l.token)
+	req.Header.Set("Authorization", l.authToken())
 	resp, err := l.http.Do(req)
 	if err != nil {
 		return err
@@ -241,8 +263,8 @@ type linearIssueNode struct {
 	State       struct {
 		ID, Name, Type string
 	} `json:"state"`
-	Team     struct{ ID, Key, Name string } `json:"team"`
-	Cycle    struct {
+	Team  struct{ ID, Key, Name string } `json:"team"`
+	Cycle struct {
 		ID     string `json:"id"`
 		Number int    `json:"number"`
 		Name   string `json:"name"`
@@ -487,7 +509,7 @@ func (l *Linear) FetchImage(ctx context.Context, rawURL string) (string, []byte,
 	if !allowedImageHost(req.URL.Hostname()) {
 		return "", nil, fmt.Errorf("linear: refusing to fetch image from disallowed host %q", req.URL.Host)
 	}
-	req.Header.Set("Authorization", l.token)
+	req.Header.Set("Authorization", l.authToken())
 	resp, err := l.http.Do(req)
 	if err != nil {
 		return "", nil, err
@@ -505,4 +527,80 @@ func (l *Linear) FetchImage(ctx context.Context, rawURL string) (string, []byte,
 		mime = http.DetectContentType(data) // sniffs the first 512 bytes
 	}
 	return mime, data, nil
+}
+
+// --- OAuth refresh -----------------------------------------------------------------------------
+//
+// Linear was connected with a bare access token and no way to renew it. The Manager's proactive
+// refresh loop type-asserts each provider to TokenRefresher, so Linear was silently skipped: it fell
+// out of the loop entirely and simply died whenever its token lapsed, surfacing as
+// `linear ListAssigned FAILED: HTTP 401` and a re-login.
+//
+// Mirrors the Jira design: the persisted token becomes a composite when a refresh token exists, and
+// the adapter can exchange it. When Linear issues no refresh token — its OAuth does not always,
+// depending on how the app is configured — RefreshToken says so plainly instead of reporting a
+// success it did not achieve, so a dead connection surfaces as an auth error the app can act on.
+
+// SetOAuth attaches OAuth refresh material to an adapter built from a composite token.
+func (l *Linear) SetOAuth(refreshToken, clientID, clientSecret string, onRefresh func(access, refresh string)) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.oauth = true
+	l.refreshToken = refreshToken
+	l.clientID = clientID
+	l.clientSecret = clientSecret
+	l.onRefresh = onRefresh
+}
+
+// RefreshToken implements TokenRefresher so the Manager's 40-minute loop covers Linear too.
+//
+// Single-flighted for the same reason Jira is: providers that rotate refresh tokens treat reuse of a
+// rotated one as theft and revoke the whole family, and a board load fires many calls at once.
+func (l *Linear) RefreshToken(ctx context.Context) error {
+	l.refreshMu.Lock()
+	defer l.refreshMu.Unlock()
+
+	l.mu.Lock()
+	oauth, refresh, id, secret := l.oauth, l.refreshToken, l.clientID, l.clientSecret
+	l.mu.Unlock()
+
+	if !oauth {
+		return nil // a personal API key does not expire; nothing to do
+	}
+	if refresh == "" || id == "" || secret == "" {
+		return fmt.Errorf("linear: no refresh token (reconnect to restore access)")
+	}
+
+	tok, err := refreshLinearToken(ctx, id, secret, refresh)
+	if err != nil {
+		return err
+	}
+	if tok.AccessToken == "" {
+		return fmt.Errorf("linear: refresh returned no access token")
+	}
+
+	newRefresh := refresh
+	if tok.RefreshToken != "" {
+		newRefresh = tok.RefreshToken // rotated — persist the new one or the next refresh fails
+	}
+	l.mu.Lock()
+	l.token = tok.AccessToken
+	l.refreshToken = newRefresh
+	onRefresh := l.onRefresh
+	l.mu.Unlock()
+
+	if onRefresh != nil {
+		onRefresh(tok.AccessToken, newRefresh)
+	}
+	return nil
+}
+
+// refreshLinearToken exchanges a refresh token for a fresh access token.
+func refreshLinearToken(ctx context.Context, clientID, clientSecret, refreshToken string) (oauthToken, error) {
+	return exchangeCode(ctx, linearTokenURL, url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refreshToken},
+		"client_id":     {clientID},
+		"client_secret": {clientSecret},
+	})
 }

@@ -124,6 +124,12 @@ func (m *Manager) linearCallback(ctx context.Context, code, redirectURI string) 
 	if tok.AccessToken == "" {
 		return fmt.Errorf("linear token exchange returned no access_token")
 	}
+	// Keep the refresh token when Linear issues one — stored in the same composite shape Jira uses,
+	// so the adapter can renew instead of dying at expiry. A bare access token stays bare, which is
+	// what a personal API key looks like and what older connections already on disk look like.
+	if tok.RefreshToken != "" {
+		return m.Connect(ctx, "linear", strings.Join([]string{"oauth", tok.AccessToken, tok.RefreshToken}, "|"))
+	}
 	return m.Connect(ctx, "linear", tok.AccessToken)
 }
 
