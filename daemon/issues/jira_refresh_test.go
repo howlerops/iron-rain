@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // TestConcurrentRefreshIsSingleFlight reproduces the daily re-auth bug. Atlassian ROTATES refresh
@@ -21,7 +22,13 @@ func TestConcurrentRefreshIsSingleFlight(t *testing.T) {
 	var mu sync.Mutex
 	seen := map[string]bool{} // refresh tokens presented to the "IdP"
 
+	// The exchange is HELD OPEN until the test releases it. Without this the first refresh could
+	// complete before the other goroutines had even read their generation counter, and each of those
+	// would then correctly start its own exchange — which is right behaviour, but means the test was
+	// asserting on scheduler luck. It passed locally for weeks and failed on a loaded CI runner.
+	release := make(chan struct{})
 	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
 		_ = r.ParseForm()
 		rt := r.Form.Get("refresh_token")
 		mu.Lock()
@@ -52,16 +59,31 @@ func TestConcurrentRefreshIsSingleFlight(t *testing.T) {
 		func(access, refresh string) { persisted.Add(1) })
 
 	// The real collision: cron + 401 handler + parallel board calls, all at once.
+	//
+	// `entered` makes them genuinely concurrent rather than merely started in a loop: every goroutine
+	// announces itself, all wait for the last, and only then is the held exchange released. That is
+	// the collision this test exists to describe.
 	var wg sync.WaitGroup
+	var entered sync.WaitGroup
+	entered.Add(8)
+	start := make(chan struct{})
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			entered.Done()
+			<-start
 			if err := j.refresh(context.Background()); err != nil {
 				t.Errorf("refresh: %v", err)
 			}
 		}()
 	}
+	entered.Wait()
+	close(start)
+	// Give every goroutine time to read its generation and queue on refreshMu before the one holding
+	// the exchange is allowed to finish and bump that generation.
+	time.Sleep(150 * time.Millisecond)
+	close(release)
 	wg.Wait()
 
 	if got := exchanges.Load(); got != 1 {
