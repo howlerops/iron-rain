@@ -68,6 +68,33 @@ platform :ios do
     else
       UI.important("Authenticated ✔  but no app record for #{APP_ID} yet — run `fastlane ios bootstrap_app`.")
     end
+
+    # Report the signing state a build depends on, without building. The profile count is the
+    # interesting number: it should stay roughly flat. If it climbs by one per build, something
+    # is changing the App ID's capabilities each run and invalidating every profile — see the
+    # note in provision(), which is where that loop came from.
+    bid = Spaceship::ConnectAPI::BundleId.all.find { |b| b.identifier == APP_ID }
+    if bid
+      push = Spaceship::ConnectAPI::BundleIdCapability::Type::PUSH_NOTIFICATIONS
+      enabled = bid.get_capabilities.any? { |c| c.is_type?(push) }
+      UI.message("Push Notifications on #{APP_ID}: #{enabled ? 'enabled ✔' : 'MISSING — the next build will enable it and re-cut profiles'}")
+      profiles = Spaceship::ConnectAPI::Profile.all.select { |p| p.name.to_s.start_with?(APP_ID) }
+      active = profiles.count { |p| p.profile_state == "ACTIVE" }
+      UI.message("Profiles for #{APP_ID}: #{profiles.size} total, #{active} active, #{profiles.size - active} invalid")
+      UI.important("#{profiles.size - active} invalid profiles are just clutter — safe to delete in the Developer portal.") if profiles.size - active > 10
+    end
+  end
+
+  desc "Resolve signing WITHOUT building or uploading — proves a build would reuse existing profiles."
+  lane :signing do
+    key = asc_key
+    # readonly: sigh may only find an existing valid profile, never create one. That is the whole
+    # point — if this passes, the next build reuses a profile instead of cutting a fresh one, and
+    # the invalid-profile pile stops growing. If it fails here, the loop described in provision()
+    # is back, and it is far cheaper to learn that from this lane than from a TestFlight upload.
+    get_provisioning_profile(api_key: key, app_identifier: APP_ID, readonly: true, output_path: "fastlane/build/profiles")
+    get_provisioning_profile(api_key: key, app_identifier: WIDGET_ID, readonly: true, output_path: "fastlane/build/profiles")
+    UI.success("Reused existing profiles ✔  #{ENV["sigh_#{APP_ID}_appstore_profile-name"]}")
   end
 
   desc "Register the bundle id + ensure an External Testers group (run once)."
@@ -131,13 +158,29 @@ platform :ios do
       next if Spaceship::ConnectAPI::BundleId.all.any? { |b| b.identifier == bid }
       Spaceship::ConnectAPI::BundleId.create(name: bid.tr(".", " "), identifier: bid, seed_id: TEAM_ID, platform: "IOS")
     end
-    # The app entitlement needs Push — enable it on the App ID so the profile includes it.
+    # The app entitlement needs Push, so the App ID must have the capability before a profile
+    # is cut. READ FIRST, and only write when it is genuinely missing.
+    #
+    # Writing it unconditionally is not the harmless no-op it looks like. Apple invalidates
+    # EVERY provisioning profile for an App ID whenever that App ID's capabilities change, so
+    # re-applying Push on each run invalidated the profile the previous run had just created —
+    # a build would reject, as "not valid", a profile it had minted sixty seconds earlier.
+    # sigh then dutifully cut a fresh one, which the next build invalidated in turn. That loop
+    # is where the ~99 dead `com.howlerops.oculus AppStore <id>` profiles came from: one per
+    # build, none ever reusable. The step meant to guarantee signing assets was destroying them.
+    push = Spaceship::ConnectAPI::BundleIdCapability::Type::PUSH_NOTIFICATIONS
     app_bid = Spaceship::ConnectAPI::BundleId.all.find { |b| b.identifier == APP_ID }
     begin
-      app_bid.create_capability(Spaceship::ConnectAPI::BundleIdCapability::Type::PUSH_NOTIFICATIONS)
-      UI.message("Enabled Push Notifications on #{APP_ID}.")
+      if app_bid.get_capabilities.any? { |c| c.is_type?(push) }
+        UI.message("Push Notifications already enabled on #{APP_ID} — leaving it alone so the existing profiles stay valid.")
+      else
+        app_bid.create_capability(push)
+        UI.important("Enabled Push Notifications on #{APP_ID}. This invalidates existing profiles; a new one will be cut.")
+      end
     rescue => e
-      UI.message("Push capability: #{e.message} (likely already enabled).")
+      # Never fail the build on this: if the capability really is missing, profile creation
+      # fails next and says so far more precisely than we could here.
+      UI.important("Could not verify the Push capability on #{APP_ID} (#{e.message}) — continuing.")
     end
     get_certificates(api_key: key, output_path: "fastlane/build/certs")
     get_provisioning_profile(api_key: key, app_identifier: APP_ID, output_path: "fastlane/build/profiles")
