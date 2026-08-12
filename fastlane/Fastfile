@@ -39,6 +39,16 @@ def signing_xcargs(build_number)
   ].join(" ")
 end
 
+# signing_xcargs plus the distribution identity, for an ARCHIVE headed to TestFlight.
+#
+# project.yml sets CODE_SIGN_IDENTITY: Apple Development, which is right for the local
+# device builds it is written for and wrong for an app-store archive — Xcode then hunts for
+# an "iOS App Development" profile (exactly what the CI failure named) instead of a
+# distribution one. Overriding it here keeps the project file honest about the common case.
+def archive_xcargs(build_number)
+  "#{signing_xcargs(build_number)} CODE_SIGN_IDENTITY=#{'Apple Distribution'.shellescape}"
+end
+
 platform :ios do
   before_all do
     UI.user_error!("Set ASC_KEY_ID / ASC_ISSUER_ID in fastlane/.env (copy fastlane/.env.example).") if KEY_ID.to_s.empty? || ISSUER_ID.to_s.empty?
@@ -184,7 +194,13 @@ platform :ios do
       project: XCODEPROJ,
       scheme: SCHEME,
       export_method: "app-store",
-      xcargs: "CURRENT_PROJECT_VERSION=#{next_build}",
+      # signing_xcargs, NOT a bare CURRENT_PROJECT_VERSION. The archive inherits
+      # CODE_SIGN_STYLE: Automatic from project.yml, so on a fresh runner with no profiles
+      # installed Xcode has to MINT one — which it can only do with -allowProvisioningUpdates
+      # AND the API-key auth flags. Passing the version alone left it unable to sign at all
+      # ("No profiles for 'com.howlerops.oculus' were found. Automatic signing is disabled"),
+      # which is why this workflow had never once succeeded in CI.
+      xcargs: archive_xcargs(next_build),
       output_directory: "build",
       clean: true,
       export_options: {
@@ -303,15 +319,16 @@ platform :ios do
       api_key: key, app_identifier: APP_ID, initial_build_number: 0,
     ).to_i + 1
 
-    # Same manual-profile signing as :beta (automatic/cloud signing fails here with
-    # "No profiles found"); the only difference is the internal, no-review upload.
+    # Same signing as :beta — Xcode mints the archive's profile via the API key, and the
+    # export uses the manual app-store profiles provision() fetched. The only difference
+    # here is the internal, no-review upload.
     profiles = provision(key)
     sh("cd .. && xcodegen generate --spec app/project.yml")
     build_app(
       project: XCODEPROJ,
       scheme: SCHEME,
       export_method: "app-store",
-      xcargs: "CURRENT_PROJECT_VERSION=#{next_build}",
+      xcargs: archive_xcargs(next_build),
       output_directory: "build",
       clean: true,
       export_options: {
