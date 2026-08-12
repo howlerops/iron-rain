@@ -149,6 +149,30 @@ public enum OculusSpace {
     public static let lg: CGFloat = 16 // the standard content gutter — every full-width container uses this
     public static let xl: CGFloat = 24
     public static let xxl: CGFloat = 32
+
+    /// The widest a column of reading text may get, however wide the window is.
+    ///
+    /// Prose set across a 2000pt monitor runs to ~200 characters a line, and the eye loses its place
+    /// on the return sweep — you re-read the line you just finished. Typography's answer is roughly
+    /// 45–90 characters; this sits near the top of that range, wide enough that a tool card's
+    /// monospaced output and a diff still have room (they scroll horizontally INSIDE the column
+    /// rather than stretching it).
+    public static let readableMeasure: CGFloat = 820
+}
+
+public extension View {
+    /// Caps a view at the readable measure and centres it, so a maximised window gains margins
+    /// instead of longer lines. Inert below the cap — every phone and narrow split view lays out
+    /// exactly as it did before.
+    ///
+    /// Applied to the transcript CONTENT rather than the scroll view itself: the scroll view stays
+    /// full-bleed so its background is continuous and its scrollbar sits at the window edge where
+    /// people reach for it. Every sibling pinned under the transcript (the typing bar, the composer)
+    /// takes the same modifier, or the column visibly steps out at the bottom of the window.
+    func readableColumn() -> some View {
+        frame(maxWidth: OculusSpace.readableMeasure)
+            .frame(maxWidth: .infinity, alignment: .center)
+    }
 }
 
 /// A single corner-radius scale (was 6/8/10/12/16/18 scattered ad-hoc).

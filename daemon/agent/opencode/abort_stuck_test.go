@@ -53,23 +53,24 @@ func (w *wedgeStub) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// TestOpenCode_NewPromptAbortsWedgedTurn is the regression for the "I sent continue?/status? and got
-// nothing back" pile-up: when a prior turn never reached idle (wedged server-side), a new prompt must
-// ABORT the stuck turn first instead of queuing behind it (opencode runs a session serially).
-func TestOpenCode_NewPromptAbortsWedgedTurn(t *testing.T) {
+// wedged starts a session and drives turn 1 into the wedged state (POST blocks, no idle), asserting
+// nothing was aborted along the way. Shared by the two halves of the abort contract below.
+func wedged(t *testing.T) (*wedgeStub, interface {
+	Prompt(context.Context, string) error
+	Close() error
+}) {
+	t.Helper()
 	w := &wedgeStub{msgPosted: make(chan struct{}, 4), aborted: make(chan struct{}, 4), done: make(chan struct{})}
 	srv := httptest.NewServer(w)
-	defer srv.Close()
 	ctx := context.Background()
 	sess, err := New(srv.URL).Create(ctx, "/repo", "") // no auto-prompt
 	if err != nil {
 		close(w.done)
+		srv.Close()
 		t.Fatal(err)
 	}
-	defer sess.Close()
-	defer close(w.done)
+	t.Cleanup(func() { _ = sess.Close(); close(w.done); srv.Close() })
 
-	// Turn 1 — wedges (POST blocks, no idle).
 	if err := sess.Prompt(ctx, "start the merge"); err != nil {
 		t.Fatal(err)
 	}
@@ -78,21 +79,55 @@ func TestOpenCode_NewPromptAbortsWedgedTurn(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("turn 1 never POSTed a message")
 	}
-	// No abort should have happened yet (nothing to abort).
 	select {
 	case <-w.aborted:
 		t.Fatal("aborted on the FIRST turn — nothing was pending to abort")
 	case <-time.After(150 * time.Millisecond):
 	}
+	return w, sess
+}
 
-	// Turn 2 — the follow-up. It must abort the wedged turn 1 first.
-	if err := sess.Prompt(ctx, "continue?"); err != nil {
+// TestOpenCode_PromptDoesNotAbortUnfinishedTurn is the regression for killing WORKING agents: a plain
+// follow-up prompt must never abort the turn in flight.
+//
+// This adapter used to abort whenever the prior turn hadn't reported idle — but "hasn't reported
+// idle" is equally true of a healthy three-hour migration, so typing a follow-up while your agent
+// worked destroyed the work, and it looked like the message had crashed the agent. Only a caller
+// holding real evidence of a wedge may kill a turn; see PromptUnsticking below.
+func TestOpenCode_PromptDoesNotAbortUnfinishedTurn(t *testing.T) {
+	w, sess := wedged(t)
+
+	if err := sess.Prompt(context.Background(), "continue?"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-w.aborted:
+		t.Fatal("a plain follow-up prompt ABORTED the in-flight turn — that destroys working agents")
+	case <-time.After(1 * time.Second):
+		// good: the message queues, and opencode runs it when the turn yields
+	}
+}
+
+// TestOpenCode_PromptUnstickingAbortsWedgedTurn is the other half, and the original regression for
+// the "I sent continue?/status? and got nothing back" pile-up: once the turn engine has JUDGED the
+// turn wedged, the unsticking send must abort it first, because opencode runs a session serially and
+// the message would otherwise queue behind the hang forever.
+func TestOpenCode_PromptUnstickingAbortsWedgedTurn(t *testing.T) {
+	w, sess := wedged(t)
+
+	u, ok := sess.(interface {
+		PromptUnsticking(context.Context, string) error
+	})
+	if !ok {
+		t.Fatal("opencode session no longer implements agent.Unsticker — a wedged turn can never be recovered")
+	}
+	if err := u.PromptUnsticking(context.Background(), "continue?"); err != nil {
 		t.Fatal(err)
 	}
 	select {
 	case <-w.aborted:
 		// good — the stuck turn was aborted so the follow-up can run
 	case <-time.After(3 * time.Second):
-		t.Fatal("follow-up prompt did NOT abort the wedged turn — it would queue behind it forever")
+		t.Fatal("unsticking prompt did NOT abort the wedged turn — it would queue behind it forever")
 	}
 }

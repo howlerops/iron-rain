@@ -78,6 +78,8 @@ func sessionStatusWord(_ raw: String) -> String? {
     case SessionStatusValue.idle: return "idle"
     case SessionStatusValue.awaitingApproval: return "awaiting approval"
     case SessionStatusValue.done: return "done"
+    case SessionStatusValue.stalled: return "stuck — nudging"
+    case SessionStatusValue.needsYou: return "stuck — needs you"
     case SessionStatusValue.error, "errored": return "Error"
     case SessionStatusValue.stopped: return "stopped"
     default: return nil
@@ -235,7 +237,10 @@ public struct ChatView: View {
                              onDeny: { Task { await model.respond(Decision.deny) } })
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-            if isStopped { restartFooter } else { Composer(model: model, draft: draft, palette: palette) }
+            Group {
+                if isStopped { restartFooter } else { Composer(model: model, draft: draft, palette: palette) }
+            }
+            .readableColumn() // the composer is the bottom of the same column the transcript sets
         }
         // NOTE: was `.background(palette.background.ignoresSafeArea())`. In a NavigationSplitView
         // detail column on macOS 26, the ignoresSafeArea inflated ChatView's ideal height, which
@@ -624,6 +629,7 @@ public struct ChatView: View {
                     .id("bottom")
                 }
                 .padding(16)
+                .readableColumn()
             }
             // Breathing room at the top edge. Without it a scrolled transcript butts straight into
             // the to-do bar above it, and the top line is sliced in half — it reads as a layout bug
@@ -758,9 +764,16 @@ public struct ChatView: View {
                         // Fan-out progress: "sub-agents 19/20" from the Turn Engine's child states, so a
                         // long fanout with one straggler reads as PROGRESS, not a stuck "Delegating…".
                         if let kids = model.turn?.children, !kids.isEmpty {
-                            let done = kids.filter { $0.state != "running" }.count
-                            Text("sub-agents \(done)/\(kids.count)")
-                                .font(.caption.monospacedDigit()).foregroundStyle(palette.mutedForeground)
+                            // A STALLED child is neither running nor done. Counting it as done (the
+                            // old `state != "running"` test) reported "sub-agents 20/20" while one
+                            // of them was wedged — the progress bar quietly lying about the thing it
+                            // exists to reveal.
+                            let done = kids.filter { $0.state == "done" || $0.state == "error" }.count
+                            let stuck = kids.filter { $0.state == SessionStatusValue.stalled }.count
+                            Text(stuck > 0 ? "sub-agents \(done)/\(kids.count) · \(stuck) stuck"
+                                           : "sub-agents \(done)/\(kids.count)")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(stuck > 0 ? palette.destructive : palette.mutedForeground)
                                 .padding(.horizontal, 6).padding(.vertical, 1)
                                 .background(Capsule().fill(palette.muted.opacity(0.4)))
                         }
@@ -768,6 +781,16 @@ public struct ChatView: View {
                         // quiet, say so honestly ("still working · 47s since output") — never a guessed timeout.
                         if let last = model.turn?.lastEventAt, model.turn?.state == SessionStatusValue.running {
                             QuietAgeBadge(since: Date(timeIntervalSince1970: TimeInterval(last)), palette: palette)
+                        }
+                        // The daemon has judged this turn wedged and is nudging it to continue. Say
+                        // that plainly: the turn is neither healthy (an ageless spinner) nor over (an
+                        // error banner), and it's the daemon's verdict, not a client-side timer.
+                        if model.turn?.state == SessionStatusValue.stalled {
+                            let n = model.turn?.nudges ?? 0
+                            Text(n > 0 ? "stuck · nudged \(n)×" : "stuck · nudging")
+                                .font(.caption.monospacedDigit()).foregroundStyle(palette.destructive)
+                                .padding(.horizontal, 6).padding(.vertical, 1)
+                                .background(Capsule().fill(palette.destructive.opacity(0.12)))
                         }
                     }
                     // The actual reasoning as it streams (when the model emits it): the last line or two,
@@ -786,6 +809,7 @@ public struct ChatView: View {
         }
         .frame(minHeight: 26, alignment: .leading) // reserve a line; grow for the reasoning tail
         .padding(.horizontal, 16)
+        .readableColumn() // stay in the transcript's column — it sits directly under it
         .animation(.easeInOut(duration: 0.2), value: model.streamMaybeStalled)
     }
 
@@ -1314,6 +1338,33 @@ struct CopyContentButton: View {
 /// A tool call as a distinct, collapsible inline card — the invocation (icon · tool · command) reads
 /// separately from the agent's prose, and the OUTPUT expands on demand rather than hiding behind a
 /// "running…" chip. A running tool shows a spinner; completed/error show a result affordance.
+/// `+29 −2` for an edit, in the transcript's own colours.
+///
+/// Only rendered when the daemon actually counted a diff. Both counts zero means "we couldn't tell",
+/// which is a different thing from "nothing changed" — showing `+0 −0` there would be a confident
+/// claim about an edit that certainly did something.
+struct DiffStatBadge: View {
+    let call: ToolCall
+    let palette: OculusPalette
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if call.additions > 0 {
+                Text("+\(call.additions)")
+                    .font(.system(.caption2, design: .monospaced)).foregroundStyle(palette.success)
+            }
+            if call.deletions > 0 {
+                // A true minus sign, not a hyphen: it lines up with the "+" at the same optical
+                // weight in a monospaced run, which a hyphen does not.
+                Text("−\(call.deletions)")
+                    .font(.system(.caption2, design: .monospaced)).foregroundStyle(palette.destructive)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(call.additions) lines added, \(call.deletions) removed")
+    }
+}
+
 struct ToolCallCard: View {
     let call: ToolCall
     let palette: OculusPalette
@@ -1322,6 +1373,9 @@ struct ToolCallCard: View {
     private var running: Bool { call.status == "running" }
     private var isError: Bool { call.status == "error" }
     private var hasOutput: Bool { !call.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    /// A call that succeeded, is closed, and wants nothing from you — drawn as a plain line rather
+    /// than a panel, so a run full of reads reads as a list instead of a wall of boxes.
+    private var resting: Bool { !running && !isError && !expanded }
 
     /// How many trailing lines of output the card lays out. Bounds LAYOUT, not what Copy gives you.
     private static let outputTailLines = 60
@@ -1350,6 +1404,7 @@ struct ToolCallCard: View {
                     Text(call.title).font(.system(.caption, design: .monospaced))
                         .foregroundStyle(palette.mutedForeground).lineLimit(1).truncationMode(.middle)
                 }
+                if call.hasDiffStat { DiffStatBadge(call: call, palette: palette) }
                 Spacer(minLength: 6)
                 if running {
                     // Live elapsed so a long-running (or stuck) tool is visibly still going.
@@ -1393,10 +1448,20 @@ struct ToolCallCard: View {
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .padding(.horizontal, 12).padding(.vertical, 8)
+        // A finished, collapsed tool call is REFERENCE, not content: what ran, that it worked, and
+        // how to open it. Giving every one of them a filled panel and a tinted border meant a turn
+        // with twenty reads rendered as twenty boxes shouting for attention, and the prose between
+        // them — the part you actually read — lost the argument. Weight is now spent only where
+        // something needs it: a card that is running, failed, or open keeps its surface; the rest
+        // recede to a quiet line.
+        .padding(.horizontal, resting ? 6 : 12).padding(.vertical, resting ? 3 : 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(palette.secondary.opacity(0.3), in: OculusShape.rounded(10))
-        .overlay(OculusShape.rounded(10).strokeBorder((isError ? palette.destructive : palette.primary).opacity(running ? 0.4 : 0.2)))
+        .background(resting ? Color.clear : palette.secondary.opacity(0.3), in: OculusShape.rounded(10))
+        .overlay(
+            OculusShape.rounded(10)
+                .strokeBorder((isError ? palette.destructive : palette.primary)
+                    .opacity(resting ? 0 : (running ? 0.4 : 0.2)))
+        )
         // Tap ANYWHERE on the card to expand/collapse its output. This is its own tap target, so a tool
         // card nested inside a sub-agent card handles its own taps and never collapses the parent.
         .contentShape(Rectangle())

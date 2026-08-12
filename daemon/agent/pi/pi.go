@@ -25,6 +25,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -32,6 +33,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/procutil"
@@ -162,6 +164,12 @@ type session struct {
 	// it also marks the session as self-replaying (see SelfReplaying).
 	resumedPath string
 
+	// busy is whether a turn is in flight: set when we hand pi a prompt, cleared on its agent_end.
+	// It is the answer to the hub reconciler's Probe, and it is tracked here rather than inferred
+	// from event timing because a turn wedged inside a tool produces no events at all — the exact
+	// case where guessing from silence gets it wrong.
+	busy atomic.Bool
+
 	// events now has TWO senders (readLoop and the resume transcript replay), so closing it must be
 	// mutually exclusive with sends — a bare close() could panic a concurrent send and take the whole
 	// daemon down. Same guard the claude adapter needed once it gained a replay goroutine.
@@ -251,7 +259,27 @@ func (s *session) send(v any) error {
 
 // Prompt sends a user turn into the running pi session.
 func (s *session) Prompt(_ context.Context, text string) error {
+	s.busy.Store(true)
 	return s.send(map[string]any{"type": "prompt", "message": text})
+}
+
+// Probe implements agent.Prober: is a turn in flight, and is pi still there to run it?
+//
+// Without this the hub's reconciler skipped pi entirely — it only probes sessions implementing
+// Prober — so a wedged pi turn heartbeated "working" forever and a pi process that had died left
+// its session rendering as busy with nothing able to say otherwise.
+func (s *session) Probe(context.Context) (bool, error) {
+	select {
+	case <-s.done:
+		return false, errors.New("pi: session is closed")
+	default:
+	}
+	// The process is the session here: if it is gone, "busy" is meaningless and the truthful answer
+	// is unreachable, which is what lets the reconciler eventually declare the turn abandoned.
+	if s.cmd != nil && s.cmd.ProcessState != nil && s.cmd.ProcessState.Exited() {
+		return false, fmt.Errorf("pi: process exited (%s)", s.cmd.ProcessState)
+	}
+	return s.busy.Load(), nil
 }
 
 // PromptImages sends a multimodal turn: pi takes an images array of {type,data,mimeType}
@@ -261,6 +289,7 @@ func (s *session) PromptImages(_ context.Context, text string, images []protocol
 	for i, im := range images {
 		ims[i] = map[string]any{"type": "image", "data": im.Data, "mimeType": im.Mime}
 	}
+	s.busy.Store(true)
 	return s.send(map[string]any{"type": "prompt", "message": text, "images": ims})
 }
 
@@ -272,6 +301,14 @@ func (s *session) Respond(_ context.Context, approvalID, decision string) error 
 
 func (s *session) Stop(_ context.Context) error {
 	return s.send(map[string]any{"type": "abort"})
+}
+
+// Nudge implements agent.Nudger: append a user turn over stdin without aborting the running one.
+// pi's protocol keeps "prompt" and "abort" as separate messages, so a prompt sent mid-turn can only
+// be queued or consumed — never destructive. Delivery mid-turn is pi's call; that is exactly the
+// best-effort the Nudger contract allows.
+func (s *session) Nudge(_ context.Context, text string) error {
+	return s.send(map[string]any{"type": "prompt", "message": text})
 }
 
 func (s *session) Close() error {
@@ -498,6 +535,7 @@ func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool) {
 			}
 		case "agent_end":
 			idle = true
+			s.busy.Store(false)
 			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusIdle}})
 		}
 	}

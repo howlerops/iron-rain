@@ -9,9 +9,10 @@
 //
 // Protocol (see ../claudecode.go):
 //   daemon -> sidecar : {"t":"prompt","text"} | {"t":"approval","id","decision"} | {"t":"stop"}
+//                       {"t":"ping","id"}
 //   sidecar -> daemon : {"t":"session","id"} | {"t":"text","text"} | {"t":"thinking","text"}
 //                       {"t":"tool","tool","detail"} | {"t":"approval","id","tool","detail"}
-//                       {"t":"idle"} | {"t":"error","message"}
+//                       {"t":"idle"} | {"t":"error","message"} | {"t":"pong","id","busy"}
 //
 // Auth: uses your logged-in `claude` CLI, i.e. your claude.ai SUBSCRIPTION — no API
 // key needed (verified live). Set ANTHROPIC_API_KEY only to use a metered key instead.
@@ -94,6 +95,12 @@ function canUseTool(toolName, input) {
 // call query.setModel(). Null until the loop begins.
 let currentQuery = null;
 
+// busy is this process's own answer to "is a turn in flight?", for the daemon's liveness probe.
+// It is authoritative in a way the event stream is not: events can be lost or simply never come
+// (a wedged tool emits nothing at all), and the daemon must still be able to tell a working agent
+// from a dead one without guessing from timers.
+let busy = false;
+
 // --- daemon -> sidecar commands ---
 const rl = createInterface({ input: process.stdin });
 rl.on("line", (line) => {
@@ -105,7 +112,15 @@ rl.on("line", (line) => {
   } catch {
     return;
   }
+  if (m.t === "ping") {
+    // Liveness probe. Answered synchronously from the readline handler — deliberately NOT from
+    // inside the query loop, so a turn wedged in a tool still replies and the daemon learns
+    // "alive and busy" rather than "unreachable".
+    send({ t: "pong", id: m.id ?? "", busy });
+    return;
+  }
   if (m.t === "prompt") {
+    busy = true;
     if (Array.isArray(m.images) && m.images.length) {
       // Multimodal turn: a content array of a text block + Anthropic image blocks.
       const content = [];
@@ -329,12 +344,14 @@ try {
         if (inputTokens > 0 || outputTokens > 0 || costUsd > 0) {
           send({ t: "usage", input_tokens: inputTokens, output_tokens: outputTokens, cost_usd: costUsd });
         }
+        busy = false;
         send({ t: "idle" });
         break;
       }
     }
   }
 } catch (e) {
+  busy = false;
   send({ t: "error", message: String((e && e.message) || e) });
   // The query loop has thrown and is DEAD. The stdin readline would keep this process alive as a
   // zombie that silently drops every future prompt (the "claude-code stopped responding to new

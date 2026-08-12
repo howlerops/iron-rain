@@ -27,6 +27,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -35,6 +36,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unicode/utf8"
 
 	"github.com/howlerops/oculus/daemon/agent"
@@ -370,8 +372,10 @@ func (s *session) replayTranscript(uuid string) {
 		if m.tool {
 			// ID is claude's tool_use id, which the hub persists as "tool:"+ID — so replaying a
 			// take-over twice dedups against the durable transcript instead of doubling every card.
+			adds, dels := agent.DiffStatFrom(m.output)
 			s.emit(agent.Event{Type: protocol.TypeSessionTool, Payload: protocol.SessionTool{
 				SessionID: s.id, ID: m.id, Name: m.name, Title: m.title, Output: m.output, Status: m.state,
+				Additions: adds, Deletions: dels,
 			}})
 			continue
 		}
@@ -608,6 +612,12 @@ type session struct {
 	// ("" = it can't — the hub's durable transcript is then the history source, see SelfReplaying).
 	replayUUID string
 
+	// Liveness probes (Probe/deliverPong): one channel per outstanding ping, keyed by its id so a
+	// slow answer can never be mistaken for a newer probe's.
+	pingMu  sync.Mutex
+	pings   map[string]chan bool
+	pingSeq atomic.Uint64
+
 	// toolCards remembers a running tool card's identity (name + command summary) until its terminal
 	// frame arrives. The sidecar splits ONE card across TWO frames: the tool_use frame carries
 	// {tool, detail} and the matching tool_result frame carries only {id, output, status} — no name,
@@ -699,6 +709,8 @@ type outMsg struct {
 	// Input is the approved tool's raw arguments (approval messages only) — what the daemon's rule
 	// engine needs to scope an "always allow" to a path or command shape.
 	Input json.RawMessage `json:"input,omitempty"`
+	// Busy answers a ping: whether the sidecar has a turn in flight (pong messages only).
+	Busy bool `json:"busy,omitempty"`
 }
 
 type sidecarTodo struct {
@@ -742,6 +754,67 @@ func (s *session) Respond(_ context.Context, approvalID, decision string) error 
 }
 
 func (s *session) Stop(_ context.Context) error { return s.send(inMsg{T: "stop"}) }
+
+// Probe implements agent.Prober: ask the sidecar directly whether a turn is in flight.
+//
+// Until this existed the hub's reconciler skipped claude-code entirely (it only probes sessions that
+// implement Prober), so a wedged claude-code turn heartbeated "working" forever with nothing in the
+// system able to contradict it. The round-trip is answered from the sidecar's stdin handler rather
+// than its query loop, so a turn stuck inside a tool still replies — which is the whole point: we
+// need to distinguish "busy" from "dead", and those two look identical from the event stream.
+func (s *session) Probe(ctx context.Context) (bool, error) {
+	id := fmt.Sprintf("pg_%d", s.pingSeq.Add(1))
+	ch := make(chan bool, 1)
+	s.pingMu.Lock()
+	if s.pings == nil {
+		s.pings = map[string]chan bool{}
+	}
+	s.pings[id] = ch
+	s.pingMu.Unlock()
+	defer func() {
+		s.pingMu.Lock()
+		delete(s.pings, id)
+		s.pingMu.Unlock()
+	}()
+
+	if err := s.send(inMsg{T: "ping", ID: id}); err != nil {
+		return false, err
+	}
+	select {
+	case busy := <-ch:
+		return busy, nil
+	case <-s.done:
+		return false, errors.New("claude-code: session closed")
+	case <-ctx.Done():
+		// No answer at all: the sidecar is wedged in a way that blocks even its stdin loop, or it is
+		// gone. Either way it is unreachable, and the reconciler counts these toward abandonment.
+		return false, fmt.Errorf("claude-code: sidecar did not answer a ping: %w", ctx.Err())
+	}
+}
+
+// deliverPong hands a ping's answer to the waiting Probe. A pong with no waiter (a probe that timed
+// out just before the answer arrived) is dropped, never blocked on.
+func (s *session) deliverPong(id string, busy bool) {
+	s.pingMu.Lock()
+	ch := s.pings[id]
+	s.pingMu.Unlock()
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- busy:
+	default:
+	}
+}
+
+// Nudge implements agent.Nudger: deliver a message into a turn that is already running, without
+// disturbing it. This is safe here because the sidecar drives the SDK with a STREAMING input
+// generator (sidecar.mjs inputGen/pushInput): a pushed message joins the input stream the running
+// query is already consuming. It is the same wire message as Prompt — the distinct method exists
+// because the CALLER must not have to know which providers can be nudged and which would abort.
+func (s *session) Nudge(_ context.Context, text string) error {
+	return s.send(inMsg{T: "prompt", Text: text})
+}
 
 // SetModel switches the model via the SDK's setModel (provider is unused — Claude ids stand alone).
 func (s *session) SetModel(_, model string) error { return s.send(inMsg{T: "model", Text: model}) }
@@ -828,6 +901,10 @@ func (s *session) readLoop(stdout io.ReadCloser) {
 			continue
 		}
 		switch m.T {
+		case "pong":
+			// A liveness probe's answer. Route it to whoever is waiting and DON'T let it touch `idle`
+			// or emit anything: a probe must observe the turn, never perturb it.
+			s.deliverPong(m.ID, m.Busy)
 		case "session":
 			// The sidecar echoes our id, then reports claude's REAL session UUID on init. Record
 			// the UUID so a later --resume uses it (claude rejects our cc_… id as "not a UUID").
@@ -865,8 +942,10 @@ func (s *session) readLoop(stdout io.ReadCloser) {
 			} else {
 				s.rememberToolCard(m.ID, name, title)
 			}
+			adds, dels := agent.DiffStatFrom(m.Output, string(m.Input))
 			s.emit(agent.Event{Type: protocol.TypeSessionTool, Payload: protocol.SessionTool{
 				SessionID: s.id, ID: m.ID, Name: name, Title: title, Output: m.Output, Status: m.Status,
+				Additions: adds, Deletions: dels,
 			}})
 		case "approval":
 			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusAwaitingApproval}})

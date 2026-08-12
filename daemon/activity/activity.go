@@ -22,6 +22,10 @@ const (
 	KindLoopRun    = "loop_run"    // a loop started an agent on a ticket
 	KindLoopPR     = "loop_pr"     // a loop run opened a PR
 	KindStarted    = "started"     // a session started a turn (low-signal; kept for the feed)
+	// KindStalled is a turn that stopped making progress and did not respond to being nudged, so it
+	// now needs a person (NEEDS YOU). Held apart from KindError on purpose: nothing failed, and
+	// filing "stuck" under "error" is how a feed teaches people to ignore it.
+	KindStalled = "stalled"
 	KindFanoutRun  = "fanout_run"  // N agents started racing the same prompt
 	KindFanoutDone = "fanout_done" // every variant finished — a comparison is ready
 )

@@ -2,7 +2,10 @@ package hub
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/howlerops/oculus/daemon/activity"
@@ -21,6 +24,13 @@ var (
 	turnQuietAfter     = 30 * time.Second // no provider events for this long → start probing
 	turnReconcileTick  = 5 * time.Second  // reconciler poll granularity
 	turnProbeFailLimit = 4                // consecutive probe FAILURES (not "busy") before abandoning
+	// turnNoProgressFor is how long a turn may claim to be busy while NOTHING actually progresses
+	// before we call it stalled. It is deliberately generous: a model can legitimately think for
+	// minutes, and the cost of nudging a healthy turn is real (it lands as a user message). Every
+	// hang we've been able to reproduce sat here for far longer than this.
+	turnNoProgressFor = 4 * time.Minute
+	// turnNudgeLimit is how many nudges a stalled turn gets before we stop guessing and page a human.
+	turnNudgeLimit = 3
 )
 
 // openTurn starts (or refreshes) the session's turn. Called on prompt-send and on the provider's own
@@ -39,9 +49,13 @@ func (m *managedSession) openTurn(detail string) {
 	m.turnPhase = protocol.StatusRunning
 	m.turnStarted = time.Now()
 	m.turnLastEvent = m.turnStarted
+	m.turnToolAt = m.turnStarted // a fresh turn has, by definition, just progressed
 	m.turnDetail = detail
 	m.turnKids = map[string]*protocol.TurnChild{}
+	m.turnTools = map[string]*protocol.TurnTool{}
 	m.turnProbeFails = 0
+	m.turnNudges = 0
+	m.userInterrupted = false
 	stop := make(chan struct{})
 	m.turnStopLoop = stop
 	m.mu.Unlock()
@@ -82,7 +96,10 @@ func (m *managedSession) turnOnStatus(ss protocol.SessionStatus) {
 	case protocol.StatusRunning:
 		m.mu.Lock()
 		open := m.turnPhase != ""
-		changed := m.turnPhase == protocol.StatusAwaitingApproval
+		// A turn we had written off as stalled reporting running again is a RECOVERY — it deserves the
+		// same visible edge as an answered approval, or the client keeps rendering "stuck, nudging"
+		// over an agent that is demonstrably working.
+		changed := m.turnPhase == protocol.StatusAwaitingApproval || m.turnPhase == protocol.StatusStalled
 		if open {
 			m.turnPhase = protocol.StatusRunning
 			if ss.Detail != "" {
@@ -127,6 +144,7 @@ func (m *managedSession) turnOnChild(sa protocol.SubAgent) {
 	case "error":
 		state = "error"
 	}
+	now := time.Now()
 	m.mu.Lock()
 	if m.turnPhase == "" {
 		m.mu.Unlock()
@@ -137,16 +155,90 @@ func (m *managedSession) turnOnChild(sa protocol.SubAgent) {
 	}
 	kid := m.turnKids[sa.ID]
 	if kid == nil {
-		kid = &protocol.TurnChild{ID: sa.ID}
+		kid = &protocol.TurnChild{ID: sa.ID, StartedAt: now.Unix()}
 		m.turnKids[sa.ID] = kid
 	}
 	kid.State = state
+	kid.LastEventAt = now.Unix()
 	if sa.Title != "" {
 		kid.Title = sa.Title
 	}
-	m.turnLastEvent = time.Now()
+	m.turnLastEvent = now
+	// A child starting or finishing is real forward motion for the PARENT turn, the same way a tool
+	// starting or finishing is — it is the delegation equivalent of a tool call.
+	m.turnToolAt = now
 	m.mu.Unlock()
 	m.emitTurn("")
+}
+
+// turnOnChildEvent records that a child produced ANY event (output, a tool call of its own), keeping
+// that child's own liveness clock honest. The parent's clock is bumped by every event from every
+// child, so it says nothing about whether a PARTICULAR child is still alive: this is what makes
+// "child 2 of 3 stalled" observable instead of invisible behind a chatty sibling.
+func (m *managedSession) turnOnChildEvent(childID string) {
+	now := time.Now()
+	m.mu.Lock()
+	if m.turnPhase == "" || m.turnKids == nil {
+		m.mu.Unlock()
+		return
+	}
+	if kid := m.turnKids[childID]; kid != nil {
+		kid.LastEventAt = now.Unix()
+	}
+	m.mu.Unlock()
+}
+
+// eventSessionID pulls the session id off the event payloads that carry real work. It covers the
+// types a sub-agent actually streams (text, deltas, tools, status) rather than every payload in the
+// protocol: this feeds a liveness clock, so missing an exotic type costs nothing, and the default of
+// "" simply means "no child credited".
+func eventSessionID(ev agent.Event) string {
+	switch p := ev.Payload.(type) {
+	case protocol.SessionMessage:
+		return p.SessionID
+	case protocol.OutputDelta:
+		return p.SessionID
+	case protocol.SessionTool:
+		return p.SessionID
+	case protocol.SessionStatus:
+		return p.SessionID
+	default:
+		return ""
+	}
+}
+
+// turnOnTool folds a tool call into the turn: a `running` tool joins the outstanding set, a finished
+// one leaves it. Either way it stamps turnToolAt — the turn's progress signal, which is the only
+// thing that can tell a busy-and-working turn from a busy-and-wedged one.
+func (m *managedSession) turnOnTool(t protocol.SessionTool) {
+	now := time.Now()
+	m.mu.Lock()
+	if m.turnPhase == "" {
+		m.mu.Unlock()
+		return
+	}
+	if m.turnTools == nil {
+		m.turnTools = map[string]*protocol.TurnTool{}
+	}
+	switch t.Status {
+	case "completed", "error":
+		delete(m.turnTools, t.ID)
+	default: // running (or any status a provider invents): it is outstanding until proven otherwise
+		tt := m.turnTools[t.ID]
+		if tt == nil {
+			tt = &protocol.TurnTool{ID: t.ID, StartedAt: now.Unix()}
+			m.turnTools[t.ID] = tt
+		}
+		if t.Name != "" {
+			tt.Name = t.Name
+		}
+		if t.Title != "" {
+			tt.Title = t.Title
+		}
+	}
+	m.turnLastEvent = now
+	m.turnToolAt = now
+	m.mu.Unlock()
 }
 
 // closeTurn ends the turn in a terminal state (idle | error | abandoned) and stops its loops.
@@ -181,7 +273,7 @@ func (m *managedSession) closeTurnFrom(state, reason string, providerDriven bool
 	// be running, whatever state we last heard for it; this is the one choke point every close path
 	// shares, so the invariant lives here.
 	sealed := "done"
-	if state == protocol.StatusError || state == "abandoned" {
+	if state == protocol.StatusError || state == "abandoned" || state == protocol.StatusNeedsYou {
 		sealed = "error" // don't dress a dead turn's children as cleanly finished
 	}
 	var toSeal []protocol.SubAgent
@@ -191,6 +283,18 @@ func (m *managedSession) closeTurnFrom(state, reason string, providerDriven bool
 			toSeal = append(toSeal, protocol.SubAgent{ParentID: m.sess.ID(), ID: k.ID, Status: sealed})
 		}
 	}
+	// Seal the outstanding TOOL calls for the same reason, and it is the same bug: a tool card is only
+	// ever resolved by its own completion event, so a turn that ended without one left the card
+	// spinning forever — the "my glob has been running for six hours" report. The turn being over is
+	// proof the tool is not still running, whatever we last heard about it.
+	var toolSeal []protocol.SessionTool
+	for _, t := range m.turnTools {
+		toolSeal = append(toolSeal, protocol.SessionTool{
+			SessionID: m.sess.ID(), ID: t.ID, Name: t.Name, Title: t.Title,
+			Status: "error", Output: toolSealNote(state, reason),
+		})
+	}
+	m.turnTools = nil
 	m.mu.Unlock()
 	if stop != nil {
 		close(stop)
@@ -204,6 +308,14 @@ func (m *managedSession) closeTurnFrom(state, reason string, providerDriven bool
 	}
 	if len(toSeal) > 0 {
 		log.Printf("turn: session %s sealed %d sub-agent(s) as %s on %s close", m.sess.ID(), len(toSeal), sealed, state)
+	}
+	for _, st := range toolSeal {
+		if raw, err := (agent.Event{Type: protocol.TypeSessionTool, Payload: st}).Encode(); err == nil {
+			m.broadcast(raw)
+		}
+	}
+	if len(toolSeal) > 0 {
+		log.Printf("turn: session %s sealed %d unfinished tool call(s) on %s close", m.sess.ID(), len(toolSeal), state)
 	}
 	m.emitTurn2(state, reason)
 	m.publishVerdict(state, reason, providerDriven)
@@ -236,15 +348,21 @@ func (m *managedSession) publishVerdict(state, reason string, providerDriven boo
 		return
 	}
 	failed := state == protocol.StatusError || state == "abandoned"
+	stuck := state == protocol.StatusNeedsYou
 	status := protocol.StatusIdle
-	if failed {
+	switch {
+	case failed:
 		status = protocol.StatusError
+	case stuck:
+		status = protocol.StatusNeedsYou
 	}
 	m.mu.Lock()
 	// A turn open when the user pressed Stop ends as "abandoned" through the stream-death path. That
-	// is the human's own doing: record the state, but don't page them about an error they caused.
-	if m.userStopped {
-		failed, status = false, protocol.StatusIdle
+	// is the human's own doing: record the state, but don't page them about an error they caused. The
+	// same goes for an interrupt — which used to page anyway, because only Stop set a flag and
+	// interrupt reached this code looking exactly like a spontaneous agent failure.
+	if m.userStopped || m.userInterrupted {
+		failed, stuck, status = false, false, protocol.StatusIdle
 	}
 	m.lastStatus = status
 	m.turnEnded = true
@@ -257,11 +375,23 @@ func (m *managedSession) publishVerdict(state, reason string, providerDriven boo
 		label = m.meta.workspaceName
 	}
 	project := m.meta.cwd
-	stopped := m.userStopped
+	stopped := m.userStopped || m.userInterrupted
 	m.mu.Unlock()
 
 	m.publishSessionState(status, reason)
 	if stopped {
+		return
+	}
+	if stuck {
+		// Deliberately NOT KindError. The agent didn't fail — it stopped moving, we asked it to
+		// continue as many times as we're willing to, and now it's a person's call. Framing that as an
+		// error trained everyone to ignore the one signal that actually needs them.
+		m.hub.recordActivity(activity.Event{
+			Kind: activity.KindStalled, SessionID: m.sess.ID(), Provider: m.sess.Provider(),
+			Project: project, Title: m.activityTitle() + " is stuck", Detail: reason,
+			NeedsYou: true,
+		})
+		m.hub.pushAgentStalled(m.sess.ID(), label, reason)
 		return
 	}
 	if failed {
@@ -328,6 +458,10 @@ func (m *managedSession) emitTurn(reason string) {
 		m.mu.Unlock()
 		return
 	}
+	// A stalled turn keeps its explanation across heartbeats, which carry no reason of their own.
+	if reason == "" && m.turnPhase == protocol.StatusStalled {
+		reason = m.turnStallReason
+	}
 	ts := m.turnSnapshotLocked(m.turnPhase, reason)
 	m.mu.Unlock()
 	m.sendTurn(ts)
@@ -340,15 +474,178 @@ func (m *managedSession) emitTurn2(state, reason string) {
 	m.sendTurn(ts)
 }
 
+// resumeStalledTurn is called just before a NEW user prompt is delivered. It reports whether the
+// open turn was stalled (so the caller may unstick it) and resets the stall bookkeeping — the
+// progress clock, the spent nudges and the phase — because a user turn is, by definition, forward
+// motion and the next stall verdict deserves a clean window.
+func (m *managedSession) resumeStalledTurn() bool {
+	m.mu.Lock()
+	stalled := m.turnPhase == protocol.StatusStalled
+	if m.turnPhase != "" {
+		m.turnPhase = protocol.StatusRunning
+	}
+	m.turnToolAt = time.Now()
+	m.turnNudges = 0
+	m.turnStallReason = ""
+	m.mu.Unlock()
+	if stalled {
+		m.emitTurn("")
+	}
+	return stalled
+}
+
+// escalateStalled handles a turn the provider calls busy but which has demonstrably stopped moving.
+// It reports whether the turn is still OPEN afterwards (false = it closed as needs_you).
+//
+// The ladder deliberately never ends in an error and never kills the turn itself:
+//
+//	stalled → nudge → (still stuck) nudge → … → needs_you
+//
+// A nudge is a message asking the agent to continue, delivered over agent.Nudger — the channel that
+// is contractually forbidden to abort the turn. If the agent picks it up, real events resume, the
+// progress clock advances and the turn goes back to running with nobody bothered. If it doesn't, we
+// stop guessing and hand it to a human. What we do NOT do is abort on our own initiative: the agent
+// might be one tool-return away from finishing, and "the daemon killed my work on a hunch" is a
+// worse failure than "the daemon asked for help".
+func (m *managedSession) escalateStalled(stuckFor time.Duration) bool {
+	nudger, canNudge := m.sess.(agent.Nudger)
+
+	m.mu.Lock()
+	// Mark the individual children that have gone quiet. The parent's clock is bumped by ANY child,
+	// so without a per-child clock a fan-out with one chatty worker and nine dead ones looked
+	// perfectly healthy — this is what turns that into "child 2 of 3 stalled".
+	var stalledKids []string
+	cutoff := time.Now().Add(-stuckFor)
+	for _, k := range m.turnKids {
+		if k.State != "running" && k.State != protocol.StatusStalled {
+			continue
+		}
+		if k.LastEventAt > 0 && k.LastEventAt <= cutoff.Unix() {
+			k.State = protocol.StatusStalled
+			label := k.Title
+			if label == "" {
+				label = k.ID
+			}
+			stalledKids = append(stalledKids, label)
+		}
+	}
+	var stuckTools []string
+	for _, t := range m.turnTools {
+		label := t.Name
+		if t.Title != "" {
+			label = t.Name + " · " + t.Title
+		}
+		stuckTools = append(stuckTools, label)
+	}
+	sort.Strings(stuckTools) // map order is random; a reason string that reshuffles every heartbeat is noise
+	sort.Strings(stalledKids)
+	spent := m.turnNudges
+	limit := m.nudgeLimit
+	if limit <= 0 {
+		limit = turnNudgeLimit
+	}
+	m.turnPhase = protocol.StatusStalled
+	m.mu.Unlock()
+
+	reason := stallReason(stuckFor, stuckTools, stalledKids)
+
+	// Out of nudges, or a provider that cannot take one (the generic CLI adapter refuses any prompt
+	// while its turn runs). Either way there is nothing further to try automatically.
+	if spent >= limit || !canNudge {
+		why := reason
+		if !canNudge {
+			why = reason + " — this agent can't be nudged mid-turn"
+		} else {
+			why = reason + fmt.Sprintf(" — %d nudge(s) didn't move it", spent)
+		}
+		m.closeTurn(protocol.StatusNeedsYou, why)
+		return false
+	}
+
+	m.mu.Lock()
+	m.turnNudges = spent + 1
+	m.turnStallReason = reason
+	// Give the nudge a full no-progress window to land before we judge it. Without this the very
+	// next tick would see the same stale clock and spend the whole budget in fifteen seconds.
+	m.turnToolAt = time.Now()
+	m.mu.Unlock()
+	m.emitTurn(reason)
+	m.publishSessionState(protocol.StatusRunning, "stalled — nudging")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	err := nudger.Nudge(ctx, stallNudge(stuckTools, stalledKids))
+	cancel()
+	if err != nil {
+		log.Printf("turn: session %s stalled and the nudge failed: %v", m.sess.ID(), err)
+		m.closeTurn(protocol.StatusNeedsYou, reason+" — couldn't reach the agent to nudge it")
+		return false
+	}
+	log.Printf("turn: session %s stalled (%s), nudged %d/%d", m.sess.ID(), reason, spent+1, limit)
+	return true
+}
+
+// stallReason is the human sentence shown wherever a stalled/needs-you turn surfaces.
+func stallReason(stuckFor time.Duration, tools, kids []string) string {
+	b := &strings.Builder{}
+	fmt.Fprintf(b, "no progress for %s", stuckFor.Round(time.Minute))
+	if len(tools) > 0 {
+		b.WriteString(" — waiting on " + strings.Join(tools, ", "))
+	}
+	if len(kids) > 0 {
+		b.WriteString(" — stalled sub-agent(s): " + strings.Join(kids, ", "))
+	}
+	return b.String()
+}
+
+// stallNudge is the message sent INTO the agent. It names what we think it is stuck on, because a
+// bare "continue" to an agent mid-tool reads as a new instruction and can restart work it already
+// did — telling it what we observed lets it either resume or explain that it is genuinely fine.
+func stallNudge(tools, kids []string) string {
+	b := &strings.Builder{}
+	b.WriteString("You appear to have stopped making progress")
+	switch {
+	case len(tools) > 0:
+		b.WriteString(" — the tool call(s) " + strings.Join(tools, ", ") + " never returned")
+	case len(kids) > 0:
+		b.WriteString(" — sub-agent(s) " + strings.Join(kids, ", ") + " went quiet")
+	}
+	b.WriteString(". If that tool or sub-agent is not going to return, abandon it and continue with " +
+		"the rest of your plan (retry it differently, or work around it). If you are in fact still " +
+		"working, ignore this message and carry on. If you are blocked on something only a human can " +
+		"decide, say so explicitly and stop.")
+	return b.String()
+}
+
+// toolSealNote explains, in the tool card itself, why it has no result — otherwise the card silently
+// flips to "error" with an empty body and reads like the tool failed rather than never finishing.
+func toolSealNote(state, reason string) string {
+	switch state {
+	case protocol.StatusIdle, protocol.StatusDone:
+		return "the turn ended before this tool reported a result"
+	case protocol.StatusNeedsYou:
+		return "the turn stalled here and needs you: " + reason
+	default:
+		if reason != "" {
+			return "the turn ended (" + state + "): " + reason
+		}
+		return "the turn ended (" + state + ") before this tool reported a result"
+	}
+}
+
 func (m *managedSession) turnSnapshotLocked(state, reason string) protocol.TurnState {
 	kids := make([]protocol.TurnChild, 0, len(m.turnKids))
 	for _, k := range m.turnKids {
 		kids = append(kids, *k)
 	}
+	tools := make([]protocol.TurnTool, 0, len(m.turnTools))
+	for _, t := range m.turnTools {
+		tools = append(tools, *t)
+	}
 	return protocol.TurnState{
 		SessionID: m.sess.ID(), TurnID: m.turnID, State: state,
 		StartedAt: m.turnStarted.Unix(), LastEventAt: m.turnLastEvent.Unix(),
-		Detail: m.turnDetail, Reason: reason, Children: kids,
+		Detail: m.turnDetail, Reason: reason, Children: kids, Tools: tools,
+		Nudges: m.turnNudges,
 	}
 }
 
@@ -391,8 +688,12 @@ func (m *managedSession) turnLoops(stop chan struct{}) {
 	// loop was still running. Reading them once, before the loop, means the loop's behaviour is fixed
 	// at start and a later write cannot race a read that never happens again.
 	hbEvery, quietAfter, reconcileTick, failLimit := m.hbEvery, m.quietAfter, m.reconcileTick, m.probeFailLimit
+	noProgress := m.noProgressFor
 	if reconcileTick <= 0 { // zero-valued managedSession (constructed directly in a test)
 		hbEvery, quietAfter, reconcileTick, failLimit = turnHeartbeatEvery, turnQuietAfter, turnReconcileTick, turnProbeFailLimit
+	}
+	if noProgress <= 0 {
+		noProgress = turnNoProgressFor
 	}
 	tick := time.NewTicker(reconcileTick)
 	defer tick.Stop()
@@ -439,7 +740,18 @@ func (m *managedSession) turnLoops(stop chan struct{}) {
 			m.mu.Lock()
 			m.turnProbeFails = 0
 			m.turnLastEvent = time.Now() // provider vouched for itself — reset the quiet clock
+			stuckFor := time.Since(m.turnToolAt)
 			m.mu.Unlock()
+			// "Busy" is necessary but nowhere near sufficient. A provider reports busy for a turn
+			// wedged inside a single tool call exactly as it does for one that is thinking hard —
+			// opencode's probe reads an incomplete assistant message, which is precisely what a hung
+			// glob looks like. So a turn that is busy AND has had no tool start, no tool finish and no
+			// sub-agent movement for minutes is the hang, and it used to heartbeat here forever.
+			if stuckFor > noProgress {
+				if !m.escalateStalled(stuckFor) {
+					return // escalated all the way to needs_you; the turn is closed
+				}
+			}
 		default: // provider says the turn is DONE — we missed the completion event
 			if r, ok := m.sess.(agent.Recoverer); ok {
 				rctx, rcancel := context.WithTimeout(context.Background(), 15*time.Second)

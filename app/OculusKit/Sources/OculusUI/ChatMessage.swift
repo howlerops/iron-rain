@@ -67,8 +67,17 @@ public struct ToolCall: Equatable {
     /// When the card was first observed — drives the live "elapsed" indicator so a long-running
     /// (or stuck) tool is visible. Preserved across in-place merges so the clock doesn't reset.
     public var startedAt: Date
-    public init(id: String, name: String, title: String, output: String, status: String, startedAt: Date = Date()) {
+    /// Lines added/removed by an edit, counted daemon-side from the harness's diff. BOTH zero means
+    /// "we couldn't tell" — not "nothing changed" — so the badge is omitted rather than claiming
+    /// a confident "+0 −0" about an edit that certainly did something.
+    public var additions: Int
+    public var deletions: Int
+    /// Whether this call has a diff worth showing.
+    public var hasDiffStat: Bool { additions > 0 || deletions > 0 }
+    public init(id: String, name: String, title: String, output: String, status: String,
+                startedAt: Date = Date(), additions: Int = 0, deletions: Int = 0) {
         self.id = id; self.name = name; self.title = title; self.output = output; self.status = status
         self.startedAt = startedAt
+        self.additions = additions; self.deletions = deletions
     }
 }

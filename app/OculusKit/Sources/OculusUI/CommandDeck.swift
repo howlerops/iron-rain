@@ -83,6 +83,7 @@ public enum AgentState {
         switch session.status {
         case SessionStatusValue.error, "errored": return .failed
         case SessionStatusValue.awaitingApproval: return .needsYou
+        case SessionStatusValue.needsYou: return .needsYou // stuck, nudged, still stuck — a person's call
         default: break
         }
         if session.conflicted == true { return .conflict }

@@ -68,6 +68,39 @@ type Recoverer interface {
 	Recover(ctx context.Context)
 }
 
+// Nudger is an optional Session capability: deliver a message into a turn that is ALREADY RUNNING,
+// without killing it.
+//
+// This exists because Prompt is not safe for the job. For opencode, Prompt aborts an unfinished
+// prior turn before sending (a session runs serially there, so a queued prompt would never run) —
+// which means the obvious implementation of "nudge a stuck agent to keep going" destroys the very
+// work it was trying to rescue. The two operations look identical at the call site and have opposite
+// effects, so they get different names.
+//
+// The contract is narrow and deliberately hard to get wrong:
+//   - Nudge MUST NOT abort, cancel, or restart the in-flight turn.
+//   - Nudge MAY be a no-op that returns an error if the provider cannot deliver mid-turn.
+//   - Nudge is best-effort: the caller treats failure as "this provider can't be nudged" and
+//     escalates to a human instead of retrying.
+//
+// A provider that cannot honor that contract MUST NOT implement Nudger. Falling back to Prompt is
+// never correct here — the caller escalates to a human, which is strictly better than silently
+// killing a running agent.
+type Nudger interface {
+	Nudge(ctx context.Context, text string) error
+}
+
+// Unsticker is an optional Session capability: send a message into a turn the caller has PROVEN is
+// wedged, killing that turn first so the message actually runs.
+//
+// This is the destructive counterpart to Nudger, split out so the destruction is never accidental.
+// Only a caller holding real evidence of a wedge (the hub's turn engine: a provider probe plus a
+// tool-progress clock) may use it — never a bare "the last turn hasn't reported idle yet", which is
+// equally true of an agent that is simply still working.
+type Unsticker interface {
+	PromptUnsticking(ctx context.Context, text string) error
+}
+
 // Provider creates and lists sessions for one agent backend.
 type Provider interface {
 	Name() string

@@ -822,9 +822,14 @@ func (s *session) handle(raw []byte) {
 					if st == "error" {
 						output = firstNonEmpty(pu.Part.State.Error, pu.Part.Error, output)
 					}
+					// The edit's diff, when opencode gave us one. It rides in the part metadata (which
+					// the client never receives), so the counting has to happen here; free-text output
+					// is the fallback. Unknown stays 0/0 and the client shows no badge.
+					adds, dels := agent.DiffStatFrom(string(pu.Part.Metadata), output)
 					s.emit(agent.Event{Type: protocol.TypeSessionTool, Payload: protocol.SessionTool{
 						SessionID: target, ID: pu.Part.ID, Name: toolName,
 						Title: title, Output: output, Status: st,
+						Additions: adds, Deletions: dels,
 					}})
 				}
 			}
@@ -1041,7 +1046,24 @@ func (s *session) emit(ev agent.Event) {
 // the very approval the turn is waiting on. Errors surface as an error status event.
 // v0 sends a single text part, sufficient for a default-configured server.
 func (s *session) Prompt(_ context.Context, text string) error {
-	return s.sendParts([]map[string]any{{"type": "text", "text": text}})
+	return s.sendParts([]map[string]any{{"type": "text", "text": text}}, false)
+}
+
+// Nudge implements agent.Nudger. It is a plain queued send: opencode runs a session serially, so a
+// message posted mid-turn is delivered when the current turn yields — never by interrupting it.
+//
+// The honest limitation: a turn that is truly wedged never yields, so a nudge to one may never be
+// consumed. That is why the turn engine treats a nudge as best-effort and escalates to needs_you
+// when nothing moves, instead of reaching for the abort itself. Killing a user's agent on a
+// heuristic is the failure mode this whole path exists to avoid.
+func (s *session) Nudge(_ context.Context, text string) error {
+	return s.sendParts([]map[string]any{{"type": "text", "text": text}}, false)
+}
+
+// PromptUnsticking is Prompt for a turn the hub's turn engine has DECLARED stalled: it aborts the
+// wedged turn first so this message actually runs. Implements agent.Unsticker.
+func (s *session) PromptUnsticking(_ context.Context, text string) error {
+	return s.sendParts([]map[string]any{{"type": "text", "text": text}}, true)
 }
 
 // PromptImages sends a multimodal turn: a text part + opencode "file" parts carrying each
@@ -1059,7 +1081,7 @@ func (s *session) PromptImages(_ context.Context, text string, images []protocol
 			"url":      "data:" + im.Mime + ";base64," + im.Data,
 		})
 	}
-	return s.sendParts(parts)
+	return s.sendParts(parts, false)
 }
 
 // sendParts fires a message with the given parts asynchronously (opencode's POST blocks
@@ -1096,7 +1118,15 @@ func (s *session) Model() (provider, model string) {
 	return s.modelProvider, s.modelID
 }
 
-func (s *session) sendParts(parts []map[string]any) error {
+// sendParts posts a message. abortStuck asks it to kill an unfinished prior turn first.
+//
+// That abort used to be unconditional on `turnPending`, which is set for ANY turn that hasn't
+// reached idle — including one that is perfectly healthy and three hours into a migration. So a
+// user typing a follow-up while their agent worked silently destroyed the work, and it looked for
+// all the world like the message itself had crashed the agent. turnPending cannot tell wedged from
+// busy; only the hub's turn engine can (it has probes and a tool-progress clock), so the decision
+// now lives THERE and arrives here as an explicit argument. See hub.unstickIfStalled.
+func (s *session) sendParts(parts []map[string]any, abortStuck bool) error {
 	body := map[string]any{"parts": parts}
 	s.modelMu.Lock()
 	if s.agent != "" {
@@ -1114,17 +1144,17 @@ func (s *session) sendParts(parts []map[string]any) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	// If the PREVIOUS turn never reached idle, it's wedged server-side (a hung interactive command, a
-	// lost approval, …). opencode runs a session serially, so a new prompt would just queue behind the
-	// hang and never run — the "I sent continue?/status? and got nothing back" pile-up. Abort the stuck
-	// turn first (best-effort) so THIS prompt starts fresh.
+	// opencode runs a session serially, so a message sent while a turn is genuinely wedged would queue
+	// behind the hang and never run — the "I sent continue?/status? and got nothing back" pile-up.
+	// Aborting first is the cure for that, but ONLY when the caller has evidence of a wedge; without
+	// it we queue, which is the right thing to do to an agent that is actually working.
 	priorUnfinished := s.turnPending.Swap(true)
 	go func() {
-		if priorUnfinished {
+		if priorUnfinished && abortStuck {
 			actx, acancel := context.WithTimeout(ctx, 15*time.Second)
 			_ = s.p.postJSON(actx, withDir("/session/"+s.id+"/abort", s.dir), map[string]any{}, nil)
 			acancel()
-			log.Printf("opencode: sid=%s new prompt while the prior turn was still unfinished → aborted the stuck turn first", s.id)
+			log.Printf("opencode: sid=%s aborted the stalled prior turn before sending (caller declared it wedged)", s.id)
 		}
 		// opencode's message POST blocks server-side for the WHOLE turn. We bound it only to prevent a
 		// leaked goroutine — NOT to bound the turn (huge migrations legitimately run for hours). The

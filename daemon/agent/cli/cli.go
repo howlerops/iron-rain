@@ -331,6 +331,24 @@ func (s *session) newTitleScanner() *osctitle.Scanner {
 // (claude-code/opencode/pi) are the ones that surface approvals.
 func (s *session) Respond(context.Context, string, string) error { return nil }
 
+// Probe implements agent.Prober. For the generic CLI adapter a turn IS a subprocess: it is busy for
+// exactly as long as that process runs, and the process exiting closes the turn. So `running` is
+// authoritative and needs no round-trip.
+//
+// It reports (false, nil) — idle — rather than an error when no turn is in flight, which lets the
+// hub's reconciler recover a turn whose completion event was lost instead of skipping this provider
+// entirely (before this existed, any session that wasn't a Prober was left to heartbeat forever).
+func (s *session) Probe(context.Context) (bool, error) {
+	select {
+	case <-s.done:
+		return false, fmt.Errorf("%s: session is closed", s.cfg.Name)
+	default:
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.running, nil
+}
+
 // Stop cancels the in-flight turn but keeps the session alive for follow-ups.
 func (s *session) Stop(context.Context) error {
 	s.mu.Lock()

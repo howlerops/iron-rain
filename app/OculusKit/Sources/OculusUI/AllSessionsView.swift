@@ -48,6 +48,7 @@ public struct AllSessionsView: View {
         switch s.status {
         case SessionStatusValue.running,
              SessionStatusValue.awaitingApproval,
+             SessionStatusValue.needsYou, // stuck and waiting on a person — the last thing to hide
              SessionStatusValue.error, "errored":
             return true
         default:
@@ -539,7 +540,7 @@ public struct AllSessionsView: View {
     private func statusColor(_ status: String) -> Color {
         switch status {
         case SessionStatusValue.running: return palette.success
-        case SessionStatusValue.awaitingApproval: return palette.warning
+        case SessionStatusValue.awaitingApproval, SessionStatusValue.needsYou: return palette.warning
         case SessionStatusValue.error, "errored": return palette.destructive
         case SessionStatusValue.stopped: return palette.mutedForeground
         default: return palette.mutedForeground
@@ -550,6 +551,7 @@ public struct AllSessionsView: View {
         switch status {
         case SessionStatusValue.running: return "circle.fill"
         case SessionStatusValue.awaitingApproval: return "exclamationmark.triangle.fill"
+        case SessionStatusValue.needsYou: return "pause.circle.fill"
         case SessionStatusValue.error, "errored": return "xmark.octagon.fill"
         case SessionStatusValue.stopped: return "pause.circle"
         case SessionStatusValue.done: return "checkmark.circle.fill"
@@ -562,6 +564,7 @@ public struct AllSessionsView: View {
         case SessionStatusValue.idle: return "idle"
         case SessionStatusValue.done: return "done"
         case SessionStatusValue.awaitingApproval: return "needs you"
+        case SessionStatusValue.needsYou: return "stuck"
         case SessionStatusValue.error, "errored": return "error"
         case SessionStatusValue.stopped: return "stopped"
         default: return status

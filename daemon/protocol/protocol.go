@@ -202,6 +202,17 @@ const (
 	StatusDone             = "done"
 	StatusError            = "error"
 	StatusStopped          = "stopped" // persisted but not live: the provider couldn't re-attach after a daemon restart; restartable
+
+	// StatusStalled is an OPEN, still-recoverable turn the daemon believes is wedged: the provider
+	// insists it is busy, but nothing has actually progressed. It is not an error and not terminal —
+	// the daemon nudges a stalled turn to get it moving again (see StatusNeedsYou).
+	StatusStalled = "stalled"
+	// StatusNeedsYou is the terminal state for a turn that stayed stuck after the daemon spent its
+	// nudges. It pages a human, but it is deliberately NOT an error: the agent didn't fail, it got
+	// stuck, and "the agent errored" was the wrong story to tell about it. StatusError and
+	// "abandoned" keep their old, narrower meanings — a provider that reported a failure, and a
+	// provider proven unreachable.
+	StatusNeedsYou = "needs_you"
 )
 
 // Approval decisions.
@@ -536,10 +547,29 @@ type FanoutResolved struct {
 }
 
 // TurnChild is one sub-agent's state within a parent turn.
+//
+// LastEventAt is the child's OWN liveness clock. The parent turn's clock is bumped by any event from
+// any child, so a single chatty sub-agent used to mask nine stalled ones — a fan-out could sit with
+// one worker alive and the rest dead and still look perfectly healthy. Stall detection reads this.
 type TurnChild struct {
-	ID    string `json:"id"`
-	State string `json:"state"` // running | done | error
-	Title string `json:"title,omitempty"`
+	ID          string `json:"id"`
+	State       string `json:"state"` // running | done | error
+	Title       string `json:"title,omitempty"`
+	StartedAt   int64  `json:"started_at,omitempty"`    // unix seconds
+	LastEventAt int64  `json:"last_event_at,omitempty"` // unix seconds of this child's last event
+}
+
+// TurnTool is one tool call still outstanding in a turn. Tool cards were previously fire-and-forget
+// (a `running` event, then a `completed` one that might never arrive), so a tool whose completion was
+// lost rendered as "running" forever — the single most-reported hang. The turn now knows what is
+// outstanding, which makes two things possible: sealing them when the turn ends, and telling a
+// wedged-vs-working turn apart (a turn where no tool has started or finished in minutes is stuck,
+// even when the provider still swears it is busy).
+type TurnTool struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`            // bash, read, glob, task, …
+	Title     string `json:"title,omitempty"` // human summary of the invocation
+	StartedAt int64  `json:"started_at,omitempty"`
 }
 
 // TurnState is the daemon-owned truth about a session's current turn: pushed on every transition and
@@ -549,12 +579,14 @@ type TurnChild struct {
 type TurnState struct {
 	SessionID   string      `json:"session_id"`
 	TurnID      string      `json:"turn_id"`
-	State       string      `json:"state"`                   // running | awaiting_approval | idle | error | abandoned
+	State       string      `json:"state"`                   // running | awaiting_approval | stalled | idle | error | needs_you | abandoned
 	StartedAt   int64       `json:"started_at,omitempty"`    // unix seconds
 	LastEventAt int64       `json:"last_event_at,omitempty"` // unix seconds of the last provider event
 	Detail      string      `json:"detail,omitempty"`        // e.g. "running bash"
-	Reason      string      `json:"reason,omitempty"`        // for error/abandoned
+	Reason      string      `json:"reason,omitempty"`        // for stalled/error/needs_you/abandoned
 	Children    []TurnChild `json:"children,omitempty"`      // sub-agents of this turn
+	Tools       []TurnTool  `json:"tools,omitempty"`         // tool calls still outstanding
+	Nudges      int         `json:"nudges,omitempty"`        // nudges spent on THIS turn (see StatusStalled)
 }
 
 // NotifyPref is one toggleable push-notification type. NotifyPrefs is the full labeled catalog with
@@ -1368,6 +1400,12 @@ type SessionTool struct {
 	Title     string `json:"title,omitempty"`  // human summary of the invocation (opencode's tool title)
 	Output    string `json:"output,omitempty"` // result text (or error), shown on expand
 	Status    string `json:"status"`           // running | completed | error
+	// Additions/Deletions are the line counts of an edit's diff, when the harness gave us one to
+	// count. BOTH zero means "we couldn't tell" — not "nothing changed" — and the client renders no
+	// badge at all rather than a confident "+0 −0". They're computed daemon-side because the diff
+	// often arrives in provider metadata the client never sees.
+	Additions int `json:"additions,omitempty"`
+	Deletions int `json:"deletions,omitempty"`
 }
 
 // SubAgent announces the lifecycle of a sub-agent a session delegates to (e.g. opencode's `task`

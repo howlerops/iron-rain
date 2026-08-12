@@ -112,13 +112,34 @@ type managedSession struct {
 
 	// Turn Engine state (see turn.go) — guarded by m.mu. turnPhase "" = no open turn.
 	turnID         string
-	turnPhase      string // running | awaiting_approval while open
+	turnPhase      string // running | awaiting_approval | stalled while open
 	turnStarted    time.Time
 	turnLastEvent  time.Time
 	turnDetail     string
 	turnKids       map[string]*protocol.TurnChild
 	turnStopLoop   chan struct{}
 	turnProbeFails int
+
+	// turnTools is the set of tool calls the provider has STARTED and not yet finished. A tool card
+	// used to be fire-and-forget, so one whose completion event was lost span forever; knowing what is
+	// outstanding is what lets closeTurn seal them.
+	turnTools map[string]*protocol.TurnTool
+	// turnToolAt is the last time any tool STARTED or FINISHED. It is the turn's real progress signal:
+	// a provider can report "busy" indefinitely while wedged inside a single tool call (opencode's
+	// probe reads an incomplete assistant message, which is exactly what a hung tool looks like), so
+	// "busy" alone can never distinguish working from stuck. Movement here can.
+	turnToolAt time.Time
+	// turnStallReason is why we called this turn stalled, kept so the ~10s heartbeat can re-state it.
+	// Heartbeats emit with an empty reason, which would otherwise blank the explanation seconds after
+	// it appeared and leave a "stuck" chip with nothing behind it.
+	turnStallReason string
+	// turnNudges counts the nudges spent on the CURRENT turn (reset per turn, unlike the session-wide
+	// heartbeat nudgeCount) — the budget before a stalled turn escalates to needs_you.
+	turnNudges int
+	// userInterrupted marks a turn the user themselves interrupted, so its close is reported as a
+	// plain idle instead of paging them about an "error" they caused. Distinct from userStopped,
+	// which means the whole SESSION is going away.
+	userInterrupted bool
 
 	// Durable-transcript state (touched ONLY by the run() goroutine, so no lock needed): a per-session
 	// sequence for ordering persisted events (seeded past any restored rows), the accumulated assistant
@@ -135,6 +156,8 @@ type managedSession struct {
 	quietAfter     time.Duration
 	reconcileTick  time.Duration
 	probeFailLimit int
+	noProgressFor  time.Duration // provider says busy but nothing progressed this long → stalled
+	nudgeLimit     int           // nudges a stalled turn gets before escalating to needs_you
 
 	txMu  sync.Mutex
 	txSeq int64
@@ -207,6 +230,19 @@ type managedSession struct {
 func (m *managedSession) markUserStopped() {
 	m.mu.Lock()
 	m.userStopped = true
+	m.mu.Unlock()
+}
+
+// markUserInterrupted records that the CURRENT TURN is ending because the user interrupted it — as
+// opposed to the session going away (markUserStopped) or the agent failing on its own.
+//
+// Without this, an interrupt was indistinguishable from a spontaneous death: publishVerdict saw a
+// turn end in error or abandonment, filed a "stopped responding" item and sent a push. Pressing stop
+// on your own agent and then being paged about it is the kind of thing that makes people stop
+// trusting the notifications entirely. Cleared when the next turn opens.
+func (m *managedSession) markUserInterrupted() {
+	m.mu.Lock()
+	m.userInterrupted = true
 	m.mu.Unlock()
 }
 
@@ -343,7 +379,8 @@ func newManagedSession(h *Hub, sess agent.Session, meta sessionMeta) *managedSes
 	return &managedSession{hub: h, sess: sess, meta: meta, subs: map[*transport.Conn]*subscriber{},
 		lastActivity: now, createdAt: now,
 		hbEvery: turnHeartbeatEvery, quietAfter: turnQuietAfter,
-		reconcileTick: turnReconcileTick, probeFailLimit: turnProbeFailLimit}
+		reconcileTick: turnReconcileTick, probeFailLimit: turnProbeFailLimit,
+		noProgressFor: turnNoProgressFor, nudgeLimit: turnNudgeLimit}
 }
 
 // pushLabel is the session's name as a LOCK SCREEN has to read it: the user's label, and — when the
@@ -1017,6 +1054,16 @@ func (m *managedSession) run() {
 		m.noteTurnEvent() // every provider event = liveness for the Turn Engine
 		if sa, ok := ev.Payload.(protocol.SubAgent); ok && ev.Type == protocol.TypeSessionSubAgent && sa.ParentID == m.sess.ID() {
 			m.turnOnChild(sa) // sub-agents are children of the turn
+		}
+		// Tool calls are turn state too: what's outstanding (so it can be sealed) and when anything
+		// last moved (so a wedged turn is distinguishable from a slow one).
+		if t, ok := ev.Payload.(protocol.SessionTool); ok && ev.Type == protocol.TypeSessionTool && t.SessionID == m.sess.ID() {
+			m.turnOnTool(t)
+		}
+		// Anything tagged with a DIFFERENT session id came from a sub-agent — credit that child's own
+		// liveness clock, not just the parent's.
+		if childID := eventSessionID(ev); childID != "" && childID != m.sess.ID() {
+			m.turnOnChildEvent(childID)
 		}
 		// The turn is alive: any event back from the provider clears the no-response watchdog. A
 		// wrong-directory send produces NO events, so it never reaches here and the watchdog fires.

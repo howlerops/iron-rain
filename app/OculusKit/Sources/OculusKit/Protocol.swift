@@ -183,6 +183,12 @@ public enum SessionStatusValue {
     public static let done = "done"
     public static let error = "error"
     public static let stopped = "stopped" // persisted but not live after a daemon restart; restartable
+    /// An OPEN turn the daemon believes is wedged — the provider claims to be busy but nothing has
+    /// progressed. Still recoverable: the daemon is nudging it. Not an error, and not terminal.
+    public static let stalled = "stalled"
+    /// A turn that stayed stuck after the daemon spent its nudges. Terminal, and it wants a human —
+    /// but it is deliberately NOT an error: the agent didn't fail, it got stuck.
+    public static let needsYou = "needs_you"
 }
 
 public enum Decision {
@@ -599,7 +605,12 @@ public struct SessionTool: Codable, Equatable {
     public var title: String?
     public var output: String?
     public var status: String  // running | completed | error
-    enum CodingKeys: String, CodingKey { case sessionID = "session_id", id, name, title, output, status }
+    /// Lines added/removed by an edit, counted daemon-side. Both zero = unknown, render no badge.
+    public var additions: Int?
+    public var deletions: Int?
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id", id, name, title, output, status, additions, deletions
+    }
 }
 
 /// Announces a sub-agent's lifecycle under a parent session (e.g. opencode's `task` tool). The app
@@ -1275,12 +1286,30 @@ public struct FanoutResolved: Codable {
     enum CodingKeys: String, CodingKey { case group; case kept; case removed; case failed }
 }
 
-/// One sub-agent's state within a parent turn (turn.state children).
+/// One sub-agent's state within a parent turn (turn.state children). `lastEventAt` is the child's
+/// OWN clock: the parent turn's is bumped by any child, so it can't say whether a particular one is
+/// still alive — which is how a fan-out with one chatty worker hid nine stalled ones.
 public struct TurnChild: Codable, Identifiable, Equatable {
     public var id: String
-    public var state: String // running | done | error
+    public var state: String // running | stalled | done | error
     public var title: String?
-    enum CodingKeys: String, CodingKey { case id; case state; case title }
+    public var startedAt: Int?
+    public var lastEventAt: Int?
+    enum CodingKeys: String, CodingKey {
+        case id; case state; case title
+        case startedAt = "started_at"; case lastEventAt = "last_event_at"
+    }
+}
+
+/// A tool call the turn has started and not yet finished (turn.state tools). The daemon tracks these
+/// so it can seal them when the turn ends — and so "busy but nothing has progressed in four minutes"
+/// is answerable at all.
+public struct TurnTool: Codable, Identifiable, Equatable {
+    public var id: String
+    public var name: String
+    public var title: String?
+    public var startedAt: Int?
+    enum CodingKeys: String, CodingKey { case id; case name; case title; case startedAt = "started_at" }
 }
 
 /// The daemon's authoritative truth about a session's current turn — pushed on every transition and
@@ -1289,16 +1318,19 @@ public struct TurnChild: Codable, Identifiable, Equatable {
 public struct TurnState: Codable, Equatable {
     public var sessionID: String
     public var turnID: String
-    public var state: String // running | awaiting_approval | idle | error | abandoned
+    public var state: String // running | awaiting_approval | stalled | idle | error | needs_you | abandoned
     public var startedAt: Int?
     public var lastEventAt: Int?
     public var detail: String?
     public var reason: String?
     public var children: [TurnChild]?
+    public var tools: [TurnTool]?
+    /// Nudges the daemon has spent trying to get THIS turn moving again (stalled turns only).
+    public var nudges: Int?
     enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"; case turnID = "turn_id"; case state
         case startedAt = "started_at"; case lastEventAt = "last_event_at"
-        case detail; case reason; case children
+        case detail; case reason; case children; case tools; case nudges
     }
 }
 

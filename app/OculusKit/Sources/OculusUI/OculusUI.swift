@@ -1324,6 +1324,24 @@ public final class Model: ObservableObject {
             busy = true
         case SessionStatusValue.awaitingApproval:
             busy = false
+        case SessionStatusValue.stalled:
+            // STILL WORKING, as far as anyone can prove — the daemon has decided nothing is
+            // progressing and is nudging the agent to continue. Deliberately not an error and not a
+            // dead end: keep the composer in its busy state so an accidental send can't race the
+            // nudge, and say plainly what's happening instead of either lying ("working…") or
+            // crying wolf ("no response").
+            busy = true
+            status = (ts.nudges ?? 0) > 0 ? "Stuck — nudged \(ts.nudges!)×" : "Stuck — nudging"
+        case SessionStatusValue.needsYou:
+            busy = false
+            activity = nil
+            finalizeStreaming()
+            let reason = (ts.reason?.isEmpty == false) ? ts.reason! : "It stopped making progress."
+            let note = "⏸ The agent is stuck and needs you — \(reason)"
+            if messages.last?.text != note { messages.append(ChatMessage(role: .system, text: note)) }
+            status = "Needs you"
+            // NOT setError: nothing failed. This is a turn that stopped moving and didn't respond to
+            // being nudged, and dressing it as an error is how the error banner became noise.
         case "abandoned":
             busy = false
             activity = nil
@@ -1341,8 +1359,17 @@ public final class Model: ObservableObject {
         // close path too; this is the client-side backstop for an OLDER daemon (and for any seal
         // event lost in transit), because a card that spins forever is the failure users actually
         // saw — dozens of "Searching…" badges with no way to recover short of restarting the app.
-        if ts.state != SessionStatusValue.running && ts.state != SessionStatusValue.awaitingApproval {
-            let sealed = (ts.state == "abandoned" || ts.state == SessionStatusValue.error) ? "error" : "done"
+        //
+        // `stalled` is explicitly NOT terminal: the turn is still open and the children may still
+        // come back, so sealing here would be a lie that the nudge is about to contradict.
+        let stillOpen = ts.state == SessionStatusValue.running
+            || ts.state == SessionStatusValue.awaitingApproval
+            || ts.state == SessionStatusValue.stalled
+        if !stillOpen {
+            let failed = ts.state == "abandoned"
+                || ts.state == SessionStatusValue.error
+                || ts.state == SessionStatusValue.needsYou
+            let sealed = failed ? "error" : "done"
             for (id, status) in subAgentStatus where status != "done" && status != "error" {
                 subAgentStatus[id] = sealed
             }
@@ -1850,11 +1877,17 @@ public final class Model: ObservableObject {
     /// with a new prompt (mid-run steering).
     public func interrupt() async {
         guard let client, let sid = sessionID else { return }
-        stopStallLoop()
-        busy = false
-        activity = nil
+        // Seal whatever text was mid-stream so it doesn't merge into the next turn, and say we're
+        // asking — but do NOT declare the turn over. That is the daemon's to report.
+        //
+        // This used to set busy = false and status = "Interrupted" immediately, which meant the UI
+        // claimed the agent had stopped whether or not it actually had: if the send failed, or the
+        // provider ignored the abort (the wedged turn people press Stop for in the first place), the
+        // agent kept working behind a UI that insisted it hadn't. The daemon closes the turn on
+        // interrupt now and broadcasts it, so the honest thing is to wait the one round-trip.
         finalizeStreaming()
-        status = "Interrupted"
+        activity = nil
+        status = "Interrupting…"
         if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.sessionInterrupt,
                                           payload: SessionRef(sessionID: sid)) {
             try? await client.send(env)
@@ -3718,7 +3751,11 @@ public final class Model: ObservableObject {
                      title: (st.title?.isEmpty ?? true) ? (old?.title ?? "") : st.title!,
                      output: (st.output?.isEmpty ?? true) ? (old?.output ?? "") : st.output!,
                      status: st.status.isEmpty ? (old?.status ?? "running") : st.status,
-                     startedAt: old?.startedAt ?? Date()) // keep the original clock across merges
+                     startedAt: old?.startedAt ?? Date(), // keep the original clock across merges
+                     // Only the terminal frame carries a diff (the running one has no result yet),
+                     // so a later frame without counts must not wipe the ones we already have.
+                     additions: (st.additions ?? 0) > 0 ? st.additions! : (old?.additions ?? 0),
+                     deletions: (st.deletions ?? 0) > 0 ? st.deletions! : (old?.deletions ?? 0))
         }
         if st.sessionID == sessionID {
             noteActivity()
@@ -4023,6 +4060,12 @@ public final class Model: ObservableObject {
                     pendingApproval = nil; busy = false; activity = nil; finalizeStreaming()
                 case SessionStatusValue.awaitingApproval:
                     busy = false
+                case SessionStatusValue.needsYou:
+                    // A stuck turn the daemon gave up nudging. The transcript note comes from
+                    // turn.state (applyTurnState) — here we only make sure the spinner stops.
+                    // Without this case it fell to `default`, which sets busy = true: the one status
+                    // that means "this needs a human" would have rendered as "working".
+                    busy = false; pendingApproval = nil; activity = nil; finalizeStreaming()
                 case SessionStatusValue.error, "errored":
                     // An errored session isn't "working": stop the spinner, keep the reason
                     // (statusDetail) AND put it in the transcript so it's actually readable —

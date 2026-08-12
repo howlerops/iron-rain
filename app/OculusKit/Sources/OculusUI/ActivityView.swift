@@ -196,6 +196,9 @@ struct ActivityView: View {
     private func state(_ e: ActivityEvent) -> AgentState {
         switch e.kind {
         case "needs_input": return .needsYou
+        // A stuck agent wants a person just as much as an unanswered question does — and it is
+        // deliberately not .failed: nothing errored, it stopped moving and wouldn't be nudged.
+        case "stalled":     return .needsYou
         case "error":       return .failed
         case "loop_run", "loop_pr": return .loop
         case "finished":    return .idle

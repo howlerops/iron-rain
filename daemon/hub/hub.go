@@ -415,7 +415,7 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 			text = firstTurnPrefix + text
 			firstTurnPrefix = ""
 		}
-		_ = promptSession(ctx, sess, text, req.Images)
+		_ = promptSession(ctx, sess, text, req.Images, false) // brand-new session: there is no prior turn to unstick
 	}
 	if req.Model != "" {
 		if setter, ok := sess.(agent.ModelSetter); ok {
@@ -547,10 +547,23 @@ func (h *Hub) writeBackPR(provider, issueID, prURL string) {
 
 // promptSession sends text (+ optional images) to a session, using the multimodal path
 // when images are present and the session supports it, else falling back to text.
-func promptSession(ctx context.Context, sess agent.Session, text string, images []protocol.ImageAttachment) error {
+// promptSession delivers a user turn. unstick means the turn engine has JUDGED the session's current
+// turn to be wedged, so a provider that runs turns serially (opencode) may kill it first — otherwise
+// this message would queue behind the hang and never run.
+//
+// That kill used to happen unconditionally inside the opencode adapter on a flag that merely meant
+// "the last turn hasn't reported idle", which is equally true of a healthy three-hour migration.
+// Deciding it here, from probes and a tool-progress clock, is the difference between rescuing a
+// stuck agent and destroying a working one.
+func promptSession(ctx context.Context, sess agent.Session, text string, images []protocol.ImageAttachment, unstick bool) error {
 	if len(images) > 0 {
 		if ip, ok := sess.(agent.ImagePrompter); ok {
 			return ip.PromptImages(ctx, text, images)
+		}
+	}
+	if unstick {
+		if u, ok := sess.(agent.Unsticker); ok {
+			return u.PromptUnsticking(ctx, text)
 		}
 	}
 	return sess.Prompt(ctx, text)
@@ -4029,6 +4042,12 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		// and recoverable — it can never vaporize the way it did in the 6-hour-loss incident.
 		author := h.clientName(conn)
 		_ = h.tr().Append(req.SessionID, transcript.Entry{Kind: "user", Text: text, Author: author})
+		// Ask the turn engine — the only thing here with actual evidence — whether the turn this
+		// prompt is landing on is wedged, and clear the stall bookkeeping so the new turn starts fresh.
+		unstick := m.resumeStalledTurn()
+		if unstick {
+			log.Printf("session %s: prompt arriving on a STALLED turn — unsticking it first", req.SessionID)
+		}
 		m.openTurn("") // Turn Engine: a turn is now in flight (heartbeats + reconciler start)
 		// Echo the prompt back to EVERY subscriber attributed to its sender. Without this a second
 		// device shows the message with no indication of who sent it.
@@ -4040,7 +4059,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		// raised immediately) can emit their first event before Prompt returns; arming afterwards races
 		// that event and can later surface a false "No response" while the session is awaiting approval.
 		m.armResponseWatchdog()
-		if err := promptSession(ctx, m.sess, text, req.Images); err != nil {
+		if err := promptSession(ctx, m.sess, text, req.Images, unstick); err != nil {
 			m.disarmResponseWatchdog()
 			log.Printf("session %s: prompt send FAILED: %v", req.SessionID, err)
 			if t := h.tel(); t != nil {
@@ -4089,10 +4108,11 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 				return
 			}
 			_ = h.tr().Append(req.SessionID, transcript.Entry{Kind: "user", Text: text})
+			unstick := m.resumeStalledTurn() // a UI action is a user turn like any other
 			m.openTurn("")
 			log.Printf("session %s (%s): ui.action %q -> prompt (%d chars)", req.SessionID, m.sess.Provider(), req.ActionID, len(text))
 			m.armResponseWatchdog()
-			if err := promptSession(ctx, m.sess, text, nil); err != nil {
+			if err := promptSession(ctx, m.sess, text, nil, unstick); err != nil {
 				m.disarmResponseWatchdog()
 				h.sendErr(conn, env.ID, err.Error())
 				return
@@ -4409,7 +4429,16 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			return
 		}
 		if m := h.managed(req.SessionID); m != nil {
+			// Mark it BEFORE the abort: the provider's terminal event can come back on the pump
+			// goroutine before Stop even returns, and a verdict published in that window would page
+			// the user about their own interrupt.
+			m.markUserInterrupted()
 			_ = m.sess.Stop(ctx) // interrupt the current turn; the session stays open for a redirect
+			// Close the turn ourselves rather than waiting for the provider to say something. Some
+			// providers answer an abort with an error status, some with idle, and some (a wedged one —
+			// the very case people hit Stop for) with nothing at all, which left the UI spinning on a
+			// turn the user had already killed.
+			m.closeTurn(protocol.StatusIdle, "interrupted by you")
 		}
 		h.sendOK(conn, env.ID, nil)
 
