@@ -39,14 +39,16 @@ def signing_xcargs(build_number)
   ].join(" ")
 end
 
-# signing_xcargs plus the distribution identity, for an ARCHIVE headed to TestFlight.
+# The archive's xcargs. Just signing_xcargs — do NOT add CODE_SIGN_IDENTITY here.
 #
-# project.yml sets CODE_SIGN_IDENTITY: Apple Development, which is right for the local
-# device builds it is written for and wrong for an app-store archive — Xcode then hunts for
-# an "iOS App Development" profile (exactly what the CI failure named) instead of a
-# distribution one. Overriding it here keeps the project file honest about the common case.
+# Pinning the identity (to force a distribution cert for an app-store archive) looks right
+# and fails the build outright: the targets are CODE_SIGN_STYLE: Automatic, and Xcode
+# rejects the combination — "automatically signed for development, but a conflicting code
+# signing identity Apple Distribution has been manually specified". Under automatic signing
+# Xcode picks the identity from the archive's configuration itself, and its choice is the
+# one that works.
 def archive_xcargs(build_number)
-  "#{signing_xcargs(build_number)} CODE_SIGN_IDENTITY=#{'Apple Distribution'.shellescape}"
+  signing_xcargs(build_number)
 end
 
 platform :ios do
