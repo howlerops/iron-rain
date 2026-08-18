@@ -112,7 +112,17 @@ func commonDirRoot(dir string) (string, bool) {
 
 // DefaultBase is where worktrees are created (~/.oculus/worktrees, or ./oculus-worktrees
 // if the home dir is unavailable).
+//
+// OCULUS_WORKTREE_BASE overrides it, and exists so TESTS cannot write into the developer's real
+// home. Any test that creates a worktree without passing an explicit base used to land in
+// ~/.oculus/worktrees and stay there: the repo it belonged to was a t.TempDir() that Go cleaned up,
+// but the worktree outside that dir was nobody's job to remove. One machine had accumulated 1133 of
+// them — 967 fanout variants and 166 checkpoints — every one pointing at a long-deleted temp repo.
+// An env override contains the whole class, including tests that forget to pass a base.
 func DefaultBase() string {
+	if base := os.Getenv("OCULUS_WORKTREE_BASE"); base != "" {
+		return base
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "oculus-worktrees"
