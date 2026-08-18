@@ -2,9 +2,9 @@ package store
 
 import "time"
 
-// maxTranscriptRows caps how many finalized events we keep per session in the durable transcript, so
-// a runaway session can't grow the DB without bound. Generous — this is finalized messages/tools, not
-// per-token deltas, so a very long conversation still fits.
+// maxTranscriptRows caps how many events a single Transcript() read returns — a bound on the READ,
+// not on what is kept. Older history lives on in compressed archive chunks and is paged back in on
+// demand (see archive.go); nothing is deleted for being old.
 const maxTranscriptRows = 5000
 
 // AppendTranscript persists one finalized transcript event (raw encoded protocol-event bytes) for a
@@ -28,7 +28,11 @@ func (s *Store) AppendTranscript(sessionID string, seq int64, msgID string, raw 
 	}
 	n, _ := res.RowsAffected()
 	if n > 0 {
-		s.pruneTranscript(sessionID) // keep each session's transcript bounded to the most recent rows
+		// ARCHIVE the overflow rather than deleting it. This used to call pruneTranscript, which
+		// DELETEd everything past the cap — so a long session permanently lost its own beginning,
+		// and the durable transcript (the fallback for when a provider can't answer) was bounded
+		// while the conversation it backs up was not.
+		s.archiveOldTranscript(sessionID)
 	}
 	return n > 0, nil
 }
@@ -72,20 +76,16 @@ func (s *Store) MaxTranscriptSeq(sessionID string) (int64, error) {
 	return seq, err
 }
 
-// pruneTranscript trims a session's transcript to the most recent maxTranscriptRows (called after
-// appends so the table stays bounded).
-func (s *Store) pruneTranscript(sessionID string) {
-	if s == nil || s.db == nil {
-		return
+// OldestTranscriptSeq reports the lowest seq still LIVE for a session (anything below it is either
+// archived or was never written). Written into *out so a session with no live rows reports 0 rather
+// than forcing every caller to special-case an error.
+func (s *Store) OldestTranscriptSeq(sessionID string, out *int64) error {
+	if s == nil || s.db == nil || out == nil {
+		return nil
 	}
-	_, _ = s.db.Exec(
-		`DELETE FROM transcript_events WHERE session_id = ? AND seq <= (
-			SELECT COALESCE(MIN(seq), 0) FROM (
-				SELECT seq FROM transcript_events WHERE session_id = ? ORDER BY seq DESC LIMIT ?
-			)
-		) - 1`,
-		sessionID, sessionID, maxTranscriptRows,
-	)
+	return s.db.QueryRow(
+		`SELECT COALESCE(MIN(seq), 0) FROM transcript_events WHERE session_id = ?`, sessionID,
+	).Scan(out)
 }
 
 // DeleteTranscript removes a session's durable transcript (called when the session is permanently
@@ -95,6 +95,9 @@ func (s *Store) DeleteTranscript(sessionID string) error {
 		return nil
 	}
 	_, err := s.db.Exec(`DELETE FROM transcript_events WHERE session_id = ?`, sessionID)
+	// The archive holds most of a long session's history, so a "permanent delete" that skipped it
+	// would leave the bulk of the conversation on disk after the user asked for it to be gone.
+	_, _ = s.db.Exec(`DELETE FROM transcript_archive WHERE session_id = ?`, sessionID)
 	return err
 }
 

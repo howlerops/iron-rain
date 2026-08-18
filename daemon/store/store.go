@@ -106,6 +106,22 @@ func (s *Store) migrate() error {
 	if _, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS transcript_msgid ON transcript_events(session_id, msg_id) WHERE msg_id IS NOT NULL`); err != nil {
 		return err
 	}
+	// Cold storage for a session's older events: contiguous runs of frames, gzipped into one blob
+	// per chunk. This replaces deleting them. Chunks are addressed by their seq range so a page
+	// request decompresses only what it overlaps, which is what makes archived history reopenable
+	// rather than merely retained.
+	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS transcript_archive (
+		session_id TEXT NOT NULL,
+		from_seq   INTEGER NOT NULL,
+		to_seq     INTEGER NOT NULL,
+		rows       INTEGER NOT NULL,
+		raw_bytes  INTEGER NOT NULL,
+		blob       BLOB NOT NULL,
+		created_at INTEGER NOT NULL,
+		PRIMARY KEY(session_id, from_seq)
+	)`); err != nil {
+		return err
+	}
 	return s.initUsage()
 }
 
@@ -244,6 +260,9 @@ func (s *Store) PruneSessions(cutoff int64) (int, error) {
 	// session has a `sessions` row (ephemeral scratch sessions never write a transcript), so "not in
 	// sessions" is exactly the orphan set.
 	_, _ = s.db.Exec(`DELETE FROM transcript_events WHERE session_id NOT IN (SELECT id FROM sessions)`)
+	// Archived chunks are the same orphan set and by far the larger one — a session's cold history
+	// outweighs its live tail. Missing them here would make the TTL stop reclaiming anything real.
+	_, _ = s.db.Exec(`DELETE FROM transcript_archive WHERE session_id NOT IN (SELECT id FROM sessions)`)
 	if n > 0 {
 		_, _ = s.db.Exec(`PRAGMA incremental_vacuum`) // reclaim freed pages to disk
 	}

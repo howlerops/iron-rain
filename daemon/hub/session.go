@@ -1012,14 +1012,52 @@ func (m *managedSession) fullHistory() [][]byte {
 func (m *managedSession) historyPage(loaded, limit int) (page [][]byte, more bool) {
 	all := m.fullHistory()
 	end := len(all) - loaded
-	if end <= 0 {
-		return nil, false
+	if end > 0 {
+		start := end - limit
+		if start < 0 {
+			start = 0
+		}
+		if start > 0 {
+			return all[start:end], true
+		}
+		// Reached the start of what's live. Keep going into the archive below rather than reporting
+		// "no more" — the rest of the conversation is compressed, not gone.
+		page = all[start:end]
+		limit -= len(page)
+		if limit <= 0 {
+			return page, m.hasArchived()
+		}
 	}
-	start := end - limit
-	if start < 0 {
-		start = 0
+	// Past the live window: page back through the compressed chunks. This is the half that makes a
+	// long session's beginning reachable again — it used to have been deleted outright.
+	older, err := m.archivedBefore(limit)
+	if err != nil || len(older) == 0 {
+		return page, false
 	}
-	return all[start:end], start > 0
+	return append(older, page...), true
+}
+
+// archivedBefore fetches the newest `limit` events that sit BEFORE everything currently live.
+func (m *managedSession) archivedBefore(limit int) ([][]byte, error) {
+	db := m.hub.db
+	if db == nil {
+		return nil, nil
+	}
+	var oldestLive int64
+	if err := db.OldestTranscriptSeq(m.sess.ID(), &oldestLive); err != nil {
+		return nil, err
+	}
+	return db.ArchivedBefore(m.sess.ID(), oldestLive, limit)
+}
+
+// hasArchived reports whether any compressed history exists before the live window.
+func (m *managedSession) hasArchived() bool {
+	db := m.hub.db
+	if db == nil {
+		return false
+	}
+	st, err := db.ArchiveStatsFor(m.sess.ID())
+	return err == nil && st.ArchivedRows > 0
 }
 
 // trimTranscript enforces the retention cap (by event count and total bytes), dropping
