@@ -249,6 +249,30 @@ func (s *Store) Sessions() ([]SessionRecord, error) {
 
 // PruneSessions deletes session records not updated since `cutoff` (unix seconds) and, if
 // anything was removed, reclaims the freed pages via incremental_vacuum. Returns the count.
+// ExpiringSessions lists the records PruneSessions would delete at this cutoff, WITHOUT deleting
+// them. It exists so the caller can reclaim each one's off-database resources first — a worktree
+// lives on the filesystem, and once its record is gone nothing remembers the directory existed, so
+// the only chance to clean it up is before the row disappears.
+func (s *Store) ExpiringSessions(cutoff int64) ([]SessionRecord, error) {
+	if s == nil || s.db == nil {
+		return nil, nil
+	}
+	rows, err := s.db.Query(`SELECT id, provider, cwd, COALESCE(meta,'') FROM sessions WHERE updated_at < ?`, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SessionRecord
+	for rows.Next() {
+		var r SessionRecord
+		if err := rows.Scan(&r.ID, &r.Provider, &r.Cwd, &r.Meta); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) PruneSessions(cutoff int64) (int, error) {
 	res, err := s.db.Exec(`DELETE FROM sessions WHERE updated_at < ?`, cutoff)
 	if err != nil {

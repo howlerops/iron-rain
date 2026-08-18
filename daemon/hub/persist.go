@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"github.com/howlerops/oculus/daemon/agent"
@@ -140,8 +141,12 @@ func (h *Hub) RestoreSessions(ctx context.Context, ttl time.Duration) {
 		return
 	}
 	// Drop stale records before we try to attach them (nothing is live yet at startup, so
-	// this is a pure age-based prune).
-	if n, err := db.PruneSessions(time.Now().Unix() - int64(ttl.Seconds())); err == nil && n > 0 {
+	// this is a pure age-based prune). Reclaim their worktrees FIRST, for the same reason as the
+	// periodic prune: the record is the only thing that remembers the directory, so once it is gone
+	// the worktree is orphaned permanently.
+	cutoff := time.Now().Unix() - int64(ttl.Seconds())
+	h.reclaimExpiredWorktrees(db, cutoff)
+	if n, err := db.PruneSessions(cutoff); err == nil && n > 0 {
 		log.Printf("restore: pruned %d expired session record(s)", n)
 	}
 	recs, err := db.Sessions()
@@ -556,9 +561,50 @@ func (h *Hub) touchAndPrune(ttl time.Duration) {
 	for _, m := range live {
 		h.persistSessionAt(m, m.lastActive())
 	}
-	if n, err := db.PruneSessions(time.Now().Unix() - int64(ttl.Seconds())); err != nil {
+	cutoff := time.Now().Unix() - int64(ttl.Seconds())
+	// Reclaim worktrees BEFORE the records go, because the record is the only thing that remembers
+	// the directory exists. Prune first and the worktree is orphaned permanently: the session
+	// vanishes from every UI while its checkout stays on disk forever — invisible AND undeletable
+	// through the app. An abandoned fanout is the common way to get there, since nothing else ever
+	// tears its variants down.
+	h.reclaimExpiredWorktrees(db, cutoff)
+	if n, err := db.PruneSessions(cutoff); err != nil {
 		log.Printf("prune: %v", err)
 	} else if n > 0 {
 		log.Printf("prune: removed %d stale session record(s)", n)
+	}
+}
+
+// reclaimExpiredWorktrees removes the worktrees of sessions that are about to be pruned — but ONLY
+// the ones holding nothing a human would miss.
+//
+// Age is not evidence that work was abandoned. A worktree untouched for a week may still hold an
+// afternoon of uncommitted changes, so the decision is made on CONTENT (clean tree, no unmerged
+// commits) rather than on the clock, and anything else is deliberately left behind with a log line.
+// Leaving a stale directory is annoying; deleting someone's unpushed work is not recoverable.
+func (h *Hub) reclaimExpiredWorktrees(db *store.Store, cutoff int64) {
+	recs, err := db.ExpiringSessions(cutoff)
+	if err != nil || len(recs) == 0 {
+		return
+	}
+	for _, r := range recs {
+		if r.Meta == "" {
+			continue
+		}
+		var pm persistedMeta
+		if json.Unmarshal([]byte(r.Meta), &pm) != nil || pm.WorktreePath == "" {
+			continue
+		}
+		// Only ever touch a worktree this daemon created and recorded. A path we didn't put there is
+		// not ours to reason about, let alone delete.
+		if _, err := os.Stat(pm.WorktreePath); err != nil {
+			continue // already gone
+		}
+		removed, why, _ := worktree.RemoveIfUnchanged(pm.RepoRoot, pm.WorktreePath, pm.BaseCommit)
+		if removed {
+			log.Printf("prune: reclaimed the worktree of expired session %s (%s)", r.ID, pm.WorktreePath)
+			continue
+		}
+		log.Printf("prune: KEEPING the worktree of expired session %s — %s (%s)", r.ID, why, pm.WorktreePath)
 	}
 }
