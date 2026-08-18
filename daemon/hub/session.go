@@ -371,6 +371,11 @@ type sessionMeta struct {
 	// shared id and fanoutVariant its 0-based index.
 	fanoutGroup   string
 	fanoutVariant int
+	// fanoutSynth marks the variant that COMBINED the others rather than attempting the task from
+	// scratch. It competes in the same comparison and is kept the same way; the flag exists so the
+	// UI can label it, since "this one read the others" is the single most useful thing to know
+	// when judging its diff.
+	fanoutSynth bool
 
 	// loopName is set when this session is a run of a recurring autonomous loop — used to fire the
 	// "loop run finished" push once the run completes.

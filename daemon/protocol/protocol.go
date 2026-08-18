@@ -157,6 +157,10 @@ const (
 	TypeActivityMarkRead = "activity.markread" // mark activity items read (clears the needs-you badge)
 	TypeFanoutCreate     = "fanout.create"     // spawn N agents on the SAME prompt in isolated worktrees (compare + merge winner)
 	TypeFanoutResolve    = "fanout.resolve"    // tear down a fan-out group (keep the winner, discard the rest + worktrees)
+	// TypeFanoutSynthesize spawns an agent that reads the variants' diffs and writes the best
+	// COMBINED implementation — as an additional variant in the same group, never as a replacement.
+	// It is the alternative to diffing two branches and grafting one into the other by hand.
+	TypeFanoutSynthesize = "fanout.synthesize"
 	TypeTurnState        = "turn.state"        // daemon-authoritative turn lifecycle + heartbeat (the client renders, never infers)
 	TypeNotifyPrefsGet   = "notify.prefs.get"  // list toggleable push-notification types + their on/off state
 	TypeNotifyPrefsSet   = "notify.prefs.set"  // enable/disable one push-notification type

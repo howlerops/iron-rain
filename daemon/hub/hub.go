@@ -2220,6 +2220,7 @@ func asyncDispatch(typ string) bool {
 	case protocol.TypeSessionCreate, // worktree.Create + Bootstrap (setup hooks) + provider Create
 		protocol.TypeFanoutCreate,          // N× worktree.Create + provider Create (fan-out)
 		protocol.TypeFanoutResolve,         // N× provider Stop/Delete + git worktree remove/prune
+		protocol.TypeFanoutSynthesize,      // N× git diff + worktree create + provider Create
 		protocol.TypeCheckpointCreate,      // git snapshot (blocking)
 		protocol.TypeCheckpointRestore,     // git checkout (blocking)
 		protocol.TypeRemoteList,            // ssh probe per host (network)
@@ -2523,6 +2524,23 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		}
 		h.sendOK(conn, env.ID, h.resolveFanout(ctx, req))
 		h.broadcastSessionList() // the discarded variants are gone → refresh every client's list
+
+	case protocol.TypeFanoutSynthesize:
+		if !h.requireCapability(conn, env.ID, capSteer, "synthesize fanout variants") {
+			return
+		}
+		var req protocol.FanoutResolve // same shape: it only needs the group
+		if err := env.Unmarshal(&req); err != nil || req.Group == "" {
+			h.sendErr(conn, env.ID, "bad fanout.synthesize")
+			return
+		}
+		id, err := h.synthesizeFanout(ctx, req.Group)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, protocol.FanoutResult{Group: req.Group, SessionIDs: []string{id}})
+		h.broadcastSessionList()
 
 	case protocol.TypeNotifyPrefsGet:
 		h.sendOK(conn, env.ID, h.notifyPrefs())
