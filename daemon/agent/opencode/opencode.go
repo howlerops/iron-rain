@@ -409,7 +409,19 @@ func (s *session) Probe(ctx context.Context) (bool, error) {
 	}
 	resp, err := s.p.unary.Do(req)
 	if err != nil {
-		return false, err // the server process is genuinely not answering — the outage clock starts
+		// HTTP timed out. That is NOT proof the agent is gone — opencode is a single-threaded JS
+		// server, and a turn whose sub-agents are streaming test-suite output can stall its event
+		// loop long enough for every request, even this one, to miss an 8s deadline. Liveness that
+		// depends on the app being responsive fails exactly when the agent is busiest.
+		//
+		// So fall back to the question the event loop cannot lie about: is something still LISTENING
+		// on that port? A successful dial proves the process is alive and merely saturated;
+		// connection-refused proves it is gone. This is the check that separates "working hard" from
+		// "dead", and no amount of application-level slowness can confuse it.
+		if s.p.listening(ctx) {
+			return true, nil
+		}
+		return false, err // nothing is listening — the outage clock starts
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
@@ -471,6 +483,33 @@ func (s *session) Recover(ctx context.Context) { s.resyncLast(ctx) }
 //
 // It returns an error when the session cannot be served — which the caller treats as "not repaired"
 // and eventually reports, rather than retrying a session that no longer exists.
+// listening reports whether anything still accepts TCP connections at the server's address.
+//
+// This is deliberately below the HTTP layer. It answers "is the process there" without asking the
+// process to do any work, so it stays true while opencode is too busy to serve a request — which is
+// precisely the state a liveness check keeps getting wrong.
+func (p *Provider) listening(ctx context.Context) bool {
+	u, err := url.Parse(p.baseURL)
+	if err != nil {
+		return false
+	}
+	host := u.Host
+	if u.Port() == "" {
+		if u.Scheme == "https" {
+			host = net.JoinHostPort(u.Hostname(), "443")
+		} else {
+			host = net.JoinHostPort(u.Hostname(), "80")
+		}
+	}
+	d := net.Dialer{Timeout: 3 * time.Second}
+	conn, err := d.DialContext(ctx, "tcp", host)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
 func (s *session) Revive(ctx context.Context) error {
 	// Deliberately UNSCOPED, and deliberately not the same request Probe just failed.
 	//
@@ -488,6 +527,10 @@ func (s *session) Revive(ctx context.Context) error {
 	}
 	resp, err := s.p.unary.Do(req)
 	if err != nil {
+		// Same reasoning as Probe: a saturated event loop is not a dead server.
+		if s.p.listening(ctx) {
+			return nil
+		}
 		return err
 	}
 	defer resp.Body.Close()

@@ -93,3 +93,59 @@ func TestProbeReportsUnreachableWhenTheServerIsActuallyDown(t *testing.T) {
 		t.Fatal("a dead server probed clean — nothing would ever declare the turn abandoned")
 	}
 }
+
+// TestProbeSurvivesASaturatedServer: opencode is a single-threaded JS server, so a turn whose
+// sub-agents are streaming test-suite output can stall its event loop past any HTTP deadline —
+// including the unscoped one. Liveness that depends on the app being RESPONSIVE fails exactly when
+// the agent is busiest, which is the worst possible time to declare it dead.
+//
+// A TCP dial asks a question the event loop cannot lie about: is something still listening. That
+// separates "working hard" from "gone" without asking the process to do any work.
+func TestProbeSurvivesASaturatedServer(t *testing.T) {
+	// The event stream stays connected (it is a long-lived socket, unaffected by a busy event loop),
+	// but every request/response API call hangs — the signature of a stalled single-threaded server.
+	done := make(chan struct{})
+	defer close(done)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/session" && r.Method == http.MethodPost:
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "ses_x"})
+		case r.URL.Path == "/event":
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			select {
+			case <-r.Context().Done():
+			case <-done:
+			}
+		default:
+			select { // saturated: the API never answers
+			case <-r.Context().Done():
+			case <-done:
+			}
+		}
+	}))
+	defer srv.Close()
+
+	sess, err := New(srv.URL).Create(context.Background(), "/repo", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	p := sess.(interface {
+		Probe(context.Context) (bool, error)
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	busy, err := p.Probe(ctx)
+	if err != nil {
+		t.Fatalf("a saturated-but-listening server was reported unreachable (%v) — this abandons a "+
+			"turn precisely because its sub-agents are producing a lot of output", err)
+	}
+	if !busy {
+		t.Fatal("a saturated server was reported idle; the turn would be closed early")
+	}
+}

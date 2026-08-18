@@ -100,6 +100,16 @@ func (m *managedSession) noteTurnEvent() {
 	if m.turnPhase != "" {
 		m.turnLastEvent = time.Now()
 		m.turnProbeFails = 0
+		// An event is the STRONGEST possible proof of reachability — stronger than any probe, because
+		// the agent just spoke to us. So it ends the outage outright.
+		//
+		// Leaving this set was a real bug: the clock started at the first failed probe and was cleared
+		// only by a successful revive, so intermittent probe failures across a long, busy turn
+		// accumulated for the life of the turn. A turn that streamed tool results for ten minutes was
+		// abandoned as "unreachable for 10m10s" — a duration measured from its first hiccup rather
+		// than from any continuous outage, while the agent was demonstrably working the whole time.
+		m.turnProbeSince = time.Time{}
+		m.turnRevives = 0
 	}
 	m.mu.Unlock()
 }
@@ -840,6 +850,11 @@ func (m *managedSession) turnLoops(stop chan struct{}) {
 			m.mu.Lock()
 			m.turnProbeFails = 0
 			m.turnLastEvent = time.Now() // provider vouched for itself — reset the quiet clock
+			// The provider answered, so whatever outage was being timed is over. An "unreachable for
+			// N minutes" verdict has to mean N minutes of CONTINUOUS failure; letting the clock
+			// survive a successful probe turns a series of unrelated hiccups into a death sentence.
+			m.turnProbeSince = time.Time{}
+			m.turnRevives = 0
 			stuckFor := time.Since(m.turnToolAt)
 			m.mu.Unlock()
 			// "Busy" is necessary but nowhere near sufficient. A provider reports busy for a turn

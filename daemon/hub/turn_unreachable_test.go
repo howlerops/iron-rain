@@ -123,3 +123,38 @@ func contains(s, sub string) bool {
 		return false
 	})()
 }
+
+// TestIntermittentProbeFailuresDoNotAccumulate is the regression for an abandonment that fired while
+// the agent was visibly working — 12 completed tool calls on screen, a sub-agent reported done, and
+// underneath it "agent unreachable for 10m10s".
+//
+// The outage clock was started on the first failed probe and cleared only by a successful REVIVE.
+// So unrelated hiccups spread across a long, busy turn accumulated for the life of that turn, and
+// "unreachable for 10m10s" was measured from the first hiccup rather than from any continuous
+// outage. An event, or a probe that answers, has to end the outage — otherwise the verdict is about
+// how LONG the turn ran, not whether the agent is there.
+func TestIntermittentProbeFailuresDoNotAccumulate(t *testing.T) {
+	m, _, _ := turnHarness(t, func(context.Context) (bool, error) { return false, errRefused })
+	m.unreachWindow, m.slowWindow = time.Hour, time.Hour
+
+	// A failure long ago starts the clock.
+	m.mu.Lock()
+	m.turnPhase = protocol.StatusRunning
+	m.turnProbeSince = time.Now().Add(-30 * time.Minute)
+	m.turnRevives = 2
+	m.mu.Unlock()
+
+	// The agent then speaks — proof it is there, stronger than any probe.
+	m.noteTurnEvent()
+
+	m.mu.Lock()
+	since, revives := m.turnProbeSince, m.turnRevives
+	m.mu.Unlock()
+	if !since.IsZero() {
+		t.Fatal("a real event did not end the outage — stale failures keep accumulating and will " +
+			"eventually abandon a turn that has been producing output the whole time")
+	}
+	if revives != 0 {
+		t.Fatal("the revive budget was not restored after the agent proved it was alive")
+	}
+}
