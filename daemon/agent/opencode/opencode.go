@@ -389,37 +389,43 @@ func (s *session) Probe(ctx context.Context) (bool, error) {
 	// reports "agent unreachable: context deadline exceeded" about a server that is answering
 	// perfectly well. The agent got declared dead for the crime of having been used a lot.
 	//
-	// /session/{id} is a fixed-size object, so this half stays fast no matter how long the
-	// conversation runs, and it is the ONLY half allowed to conclude "unreachable".
+	// The reachability check is UNSCOPED — no session id, no ?directory. That is the whole point.
+	//
+	// opencode runs a session SERIALLY, and the daemon holds POST /message open for the entire turn.
+	// Any request scoped to that same session queues behind the running turn, so a scoped probe times
+	// out precisely BECAUSE the agent is working — and the longer and healthier the turn, the more
+	// certainly it times out. A previous version probed GET /session/{id} and read those timeouts as
+	// evidence of absence, which killed working agents on long turns after ten minutes and is what
+	// made a busy session "basically unusable".
+	//
+	// GET /session answers from the server process itself (measured: ~7ms, and it answers fine even
+	// for a directory that does not exist), so it says exactly one thing: the server is alive. That
+	// is the only question a liveness probe should be asking.
 	rctx, rcancel := context.WithTimeout(ctx, 8*time.Second)
 	defer rcancel()
-	req, err := http.NewRequestWithContext(rctx, http.MethodGet, s.p.baseURL+withDir("/session/"+s.id, s.dir), nil)
+	req, err := http.NewRequestWithContext(rctx, http.MethodGet, s.p.baseURL+"/session", nil)
 	if err != nil {
 		return false, err
 	}
 	resp, err := s.p.unary.Do(req)
 	if err != nil {
-		return false, err // the server is genuinely not answering — the caller's outage clock starts
+		return false, err // the server process is genuinely not answering — the outage clock starts
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode == http.StatusNotFound {
-		// The server is up but has never heard of this session: a real, permanent condition (the
-		// session was deleted, or we are pointed at the wrong directory partition). Say so plainly
-		// rather than letting it read as a transient outage that might heal.
-		return false, fmt.Errorf("opencode: session %s not found (wrong directory partition, or deleted)", s.id)
-	}
 
-	// The server is reachable. From here on, ANY failure means "we could not determine the turn's
-	// state", which is not the same as "the agent is gone" — so report busy and let the caller keep
-	// waiting. Being patient about a live-but-slow agent is always cheaper than killing a live one.
-	req, err = http.NewRequestWithContext(ctx, http.MethodGet, s.p.baseURL+withDir("/session/"+s.id+"/message", s.dir), nil)
+	// The server is alive. Now ask whether THIS session's turn has finished — and from here on, any
+	// failure means "could not determine", never "gone". A scoped request that blocks is the
+	// signature of a turn still running, so a timeout here is evidence FOR busy, not against it.
+	mctx, mcancel := context.WithTimeout(ctx, 20*time.Second)
+	defer mcancel()
+	req, err = http.NewRequestWithContext(mctx, http.MethodGet, s.p.baseURL+withDir("/session/"+s.id+"/message", s.dir), nil)
 	if err != nil {
 		return true, nil
 	}
 	resp, err = s.p.unary.Do(req)
 	if err != nil {
-		return true, nil // slow history read; the server answered a moment ago, so it is alive
+		return true, nil // blocked behind the session's own turn, or a slow history read: still alive
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -466,9 +472,17 @@ func (s *session) Recover(ctx context.Context) { s.resyncLast(ctx) }
 // It returns an error when the session cannot be served — which the caller treats as "not repaired"
 // and eventually reports, rather than retrying a session that no longer exists.
 func (s *session) Revive(ctx context.Context) error {
+	// Deliberately UNSCOPED, and deliberately not the same request Probe just failed.
+	//
+	// An earlier version re-issued Probe's exact scoped GET. Retrying an identical failing request
+	// repairs nothing, and reporting it as "reconnected 3×" claimed a recovery that never happened —
+	// the log said the daemon had reconnected three times when it had simply timed out three times.
+	// A repair step that cannot repair anything should not exist; this one at least answers a
+	// DIFFERENT question than the probe did, so a success here is real information: the server
+	// process is back, whatever the session's own state turns out to be.
 	rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(rctx, http.MethodGet, s.p.baseURL+withDir("/session/"+s.id, s.dir), nil)
+	req, err := http.NewRequestWithContext(rctx, http.MethodGet, s.p.baseURL+"/session", nil)
 	if err != nil {
 		return err
 	}
@@ -479,7 +493,7 @@ func (s *session) Revive(ctx context.Context) error {
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("opencode: session %s not served (%s)", s.id, resp.Status)
+		return fmt.Errorf("opencode: server not answering (%s)", resp.Status)
 	}
 	return nil
 }
