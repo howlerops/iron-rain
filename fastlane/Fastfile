@@ -182,7 +182,15 @@ platform :ios do
       # fails next and says so far more precisely than we could here.
       UI.important("Could not verify the Push capability on #{APP_ID} (#{e.message}) — continuing.")
     end
-    get_certificates(api_key: key, output_path: "fastlane/build/certs")
+    # On CI the distribution identity arrives as an imported .p12 in a throwaway keychain, so
+    # point cert at it explicitly rather than trusting the search-list order. cert REUSES an
+    # already-installed identity when it finds one ("Found the certificate … which is installed
+    # on the local machine"); it only tries to create one when it finds none — and creating one
+    # is what hits Apple's two-certificate cap and fails the build. Locally SIGNING_KEYCHAIN is
+    # unset and this is exactly the call it always was.
+    cert_opts = { api_key: key, output_path: "fastlane/build/certs" }
+    cert_opts[:keychain_path] = ENV["SIGNING_KEYCHAIN"] if ENV["SIGNING_KEYCHAIN"].to_s != ""
+    get_certificates(**cert_opts)
     get_provisioning_profile(api_key: key, app_identifier: APP_ID, output_path: "fastlane/build/profiles")
     get_provisioning_profile(api_key: key, app_identifier: WIDGET_ID, output_path: "fastlane/build/profiles")
     {

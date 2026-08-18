@@ -60,13 +60,60 @@ fastlane ios beta_internal
 (app-store export, managed signing), uploads, and submits for external beta review with
 the External Testers group notified.
 
-### CI (optional)
+### TestFlight from CI
 `.github/workflows/testflight.yml` runs the same lane on a macOS runner on manual dispatch.
-Add these repository secrets (Settings → Secrets → Actions):
+It needs **two** kinds of secret, and both are required:
+
+**1. The App Store Connect API key** — authenticates you to Apple.
 - `ASC_KEY_ID`, `ASC_ISSUER_ID`
 - `ASC_KEY_P8_BASE64` — `base64 -i ~/.appstoreconnect/private_keys/AuthKey_<KEY_ID>.p8 | pbcopy`
 
-The workflow decodes the key, writes `fastlane/.env`, and runs `fastlane ios beta`.
+**2. The Apple Distribution certificate** — actually signs the binary.
+- `IOS_CERT_P12_BASE64`, `IOS_CERT_PASSWORD`
+
+The API key is *not* a signing identity, and this distinction is the whole reason this
+workflow failed every run for its first month. A distribution certificate's private key
+exists only on the machine that created it — Apple will never re-issue it — so it has to be
+carried into CI as a `.p12`. Without it fastlane finds no key on the runner, tries to create
+a *third* distribution certificate, and hits Apple's cap of two before anything compiles.
+
+Export it once (Keychain Access can do this too — this is the scriptable version):
+
+```sh
+# 1. Confirm the identity exists locally.
+security find-identity -v -p codesigning | grep "Apple Distribution"
+
+# 2. Export it WITH its private key. -P sets the .p12 password; pick a strong one and keep
+#    it — it becomes IOS_CERT_PASSWORD. macOS will prompt to allow keychain access.
+security export -k login.keychain-db -t identities -f pkcs12 \
+  -P '<choose-a-password>' -o ~/Desktop/ios-distribution.p12
+
+# 3. Base64 it for the secret, then destroy the plaintext .p12.
+base64 -i ~/Desktop/ios-distribution.p12 | pbcopy   # → paste as IOS_CERT_P12_BASE64
+rm ~/Desktop/ios-distribution.p12
+```
+
+`security export` emits every identity in the keychain, so if you hold several, export the
+one you want from Keychain Access instead (right-click the *Apple Distribution* row →
+Export) rather than shipping the others to CI.
+
+The workflow imports the `.p12` into a throwaway keychain scoped to the job, sets the key
+partition list (or `codesign` blocks on a prompt nobody can answer), and exports
+`SIGNING_KEYCHAIN` so `provision()` points `cert` at it. This is the same approach the macOS
+release job has always used for its Developer ID certificate — see `release.yml`.
+
+Certificates expire (~1 year). When yours does, re-export and update the two secrets; the
+symptom is a signing failure in CI while local builds keep working, because the local
+keychain has the renewed identity and CI still holds the old one.
+
+### Checking signing without building
+```sh
+fastlane ios check      # auth, app record, Push capability, active/invalid profile counts
+fastlane ios signing    # resolves profiles READONLY — proves a build will reuse, not re-cut
+```
+The profile count from `check` should stay flat. If it climbs by one per build, something is
+changing the App ID's capabilities each run and invalidating every profile — see the note in
+`provision()`, which is where a 99-profile pile came from.
 
 ## Secrets hygiene
 - `*.p8`, `.env`, `.env.*` are gitignored (only `fastlane/.env.example` is tracked).
