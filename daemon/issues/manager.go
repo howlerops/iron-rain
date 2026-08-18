@@ -28,6 +28,37 @@ type Config struct {
 }
 
 // Manager owns the connected trackers, a merged issue cache, and the poll loop.
+// pollState is one provider's consecutive-failure record, used to space out retries and to stop
+// logging the same failure over and over.
+type pollState struct {
+	lastErr   string    // the message we last logged, so a CHANGED error is never suppressed
+	repeats   int       // identical failures since we last logged
+	skipUntil time.Time // don't poll this provider again before here
+	permanent bool      // a human must reconnect; polling is pointless until they do
+}
+
+// permanentAuthFailure reports whether an error means "this will never succeed until a human
+// reconnects", as opposed to "try again later".
+//
+// The distinction is the whole point: retrying a revoked grant is guaranteed waste, while backing
+// off a network blip would make a healthy tracker feel broken. OAuth says which is which — an
+// invalid_grant or unauthorized_client from the token endpoint is terminal by specification.
+func permanentAuthFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"invalid_grant", "unauthorized_client", "invalid_client",
+		"refresh_token is invalid", "authorization expired",
+	} {
+		if strings.Contains(s, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 type Manager struct {
 	mu         sync.Mutex
 	path       string
@@ -37,6 +68,13 @@ type Manager struct {
 	onUpdate   func([]Issue)
 	pending    map[string]string // oauth state -> provider
 	authErrors map[string]string // provider -> last token-refresh error (drives the "reconnect" pill)
+	// pollFail tracks each provider's CONSECUTIVE poll failures, so a tracker that is down stops
+	// shouting. A revoked refresh token never recovers on its own, and the poll used to retry it
+	// every 60s forever — one identical log line per minute, which buries the incident an operator
+	// is actually trying to read, plus two pointless round-trips per cycle (the API call that 401s,
+	// then the token refresh that 403s). Nothing is gained by asking a provider that has already
+	// said no, permanently.
+	pollFail map[string]*pollState
 	// jiraSiteAmbiguous records that the Jira token reaches more than one Atlassian site, so the
 	// cloud id currently in use is a guess. See protocol.IntegrationStatus.JiraSiteAmbiguous.
 	jiraSiteAmbiguous bool
@@ -127,6 +165,10 @@ func (m *Manager) Connect(ctx context.Context, name, token string) error {
 	if err != nil {
 		return err
 	}
+	// Reconnecting is the human action a suspended provider was waiting for, so let it poll again.
+	// Without this the tracker would stay silently parked until the daemon restarted — the fix for
+	// the flood would have become a new "I reconnected and nothing happened" bug.
+	m.ResumePolling(name)
 	m.mu.Lock()
 	m.providers[name] = p
 	switch name {
@@ -385,6 +427,11 @@ func (m *Manager) Refresh(ctx context.Context) error {
 	var wg sync.WaitGroup
 	var rmu sync.Mutex
 	for _, np := range provs {
+		// Skip a provider that is backing off, and one whose failure only a human can clear. Asking
+		// a revoked grant again cannot succeed; it just costs two round-trips and a log line.
+		if !m.pollDue(np.name) {
+			continue
+		}
 		wg.Add(1)
 		go func(name string, p Provider) {
 			defer wg.Done()
@@ -395,13 +442,18 @@ func (m *Manager) Refresh(ctx context.Context) error {
 				// Surface the failure so a "connected but nothing loading" tracker shows WHY
 				// (e.g. an expired token or a bad cloud id) via the reconnect pill, instead of
 				// silently swallowing it here — the poll discards Refresh's returned error.
-				log.Printf("issues: %s ListAssigned FAILED: %v", name, err)
+				//
+				// Logged only when it CHANGES, with a count of what was suppressed. The reconnect
+				// pill already carries the state permanently; repeating the same line every minute
+				// adds nothing and costs the operator the log.
+				m.notePollFailure(name, err)
 				errs[name] = name + ": " + err.Error()
 				if firstErr == nil {
 					firstErr = err
 				}
 				return
 			}
+			m.notePollSuccess(name)
 			log.Printf("issues: %s fetched %d issue(s)", name, len(got))
 			merged = append(merged, got...)
 		}(np.name, np.p)
@@ -423,6 +475,93 @@ func (m *Manager) Refresh(ctx context.Context) error {
 		cb(merged)
 	}
 	return firstErr
+}
+
+// pollBackoffMax caps how far a failing tracker's retries are spaced out. Long enough that a dead
+// provider is quiet, short enough that a recovered one comes back without a restart.
+const pollBackoffMax = 15 * time.Minute
+
+// notePollFailure records a failed poll: logs it only if the message changed (or enough have piled
+// up to be worth a count), spaces out the next attempt, and stops polling entirely when the failure
+// is one only a human can clear.
+func (m *Manager) notePollFailure(name string, err error) {
+	msg := err.Error()
+	m.mu.Lock()
+	if m.pollFail == nil {
+		m.pollFail = map[string]*pollState{}
+	}
+	st := m.pollFail[name]
+	if st == nil {
+		st = &pollState{}
+		m.pollFail[name] = st
+	}
+	changed := st.lastErr != msg
+	if changed {
+		st.repeats, st.lastErr = 0, msg
+	} else {
+		st.repeats++
+	}
+	st.permanent = permanentAuthFailure(err)
+	// Back off geometrically on the repeat count, capped. A permanent failure is suspended outright
+	// below, so this schedule only ever paces genuinely transient trouble.
+	delay := time.Duration(1<<min(st.repeats, 4)) * time.Minute
+	if delay > pollBackoffMax {
+		delay = pollBackoffMax
+	}
+	st.skipUntil = time.Now().Add(delay)
+	permanent, repeats := st.permanent, st.repeats
+	m.mu.Unlock()
+
+	switch {
+	case changed && permanent:
+		log.Printf("issues: %s FAILED and will not retry until you reconnect it: %v", name, err)
+	case changed:
+		log.Printf("issues: %s ListAssigned FAILED: %v", name, err)
+	case repeats%30 == 0: // a periodic heartbeat so a long outage is not invisible either
+		log.Printf("issues: %s still failing (same error, %d more since last logged)", name, repeats)
+	}
+}
+
+// notePollSuccess clears a provider's failure record — the next failure is news again.
+func (m *Manager) notePollSuccess(name string) {
+	m.mu.Lock()
+	if st := m.pollFail[name]; st != nil {
+		if st.lastErr != "" {
+			log.Printf("issues: %s recovered", name)
+		}
+		delete(m.pollFail, name)
+	}
+	m.mu.Unlock()
+}
+
+// pollDue reports whether a provider should be polled now. False while it is backing off, and
+// always false once its failure needs a human — see permanentAuthFailure.
+func (m *Manager) pollDue(name string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st := m.pollFail[name]
+	if st == nil {
+		return true
+	}
+	if st.permanent {
+		return false
+	}
+	return time.Now().After(st.skipUntil)
+}
+
+// ResumePolling clears a provider's suspension, so reconnecting actually retries rather than
+// leaving it silently parked until the daemon restarts.
+func (m *Manager) ResumePolling(name string) {
+	m.mu.Lock()
+	delete(m.pollFail, name)
+	m.mu.Unlock()
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // StartPolling refreshes on a ticker until ctx is done (call once).

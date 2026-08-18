@@ -256,3 +256,62 @@ func TestInterruptDoesNotPageTheUser(t *testing.T) {
 		}
 	}
 }
+
+// TestDelegatedWorkIsNotAStall is the regression for a false stall reported with a screenshot: a
+// sub-agent visibly running `pnpm test` and browser suites, while underneath it the parent read
+// "stalled (no progress for 4m0s), nudged 1/3".
+//
+// turnToolAt is the progress clock, and it was stamped only by the parent's OWN tool boundaries and
+// by child start/finish. A child merely producing output did not count. So the moment a parent
+// delegated, its clock froze — and a parent that looks idle is exactly what delegation LOOKS like.
+// Nudging there interrupts a working fan-out and trains people to ignore the warning.
+func TestDelegatedWorkIsNotAStall(t *testing.T) {
+	m, _, _ := turnHarness(t, func(context.Context) (bool, error) { return true, nil })
+	m.openTurn("")
+	m.turnOnChild(protocol.SubAgent{ParentID: m.sess.ID(), ID: "kid", Title: "typescript-pro", Status: "started"})
+
+	// Pretend the parent has done nothing itself for a long time — the child owns the work now.
+	m.mu.Lock()
+	m.turnToolAt = time.Now().Add(-time.Hour)
+	m.mu.Unlock()
+
+	// The child streams output, as a test run does.
+	m.turnOnChildEvent("kid")
+
+	m.mu.Lock()
+	stuckFor := time.Since(m.turnToolAt)
+	m.mu.Unlock()
+	if stuckFor > time.Minute {
+		t.Fatalf("a child's output did not count as progress for the parent (clock still %s stale) — "+
+			"the parent would be declared stalled and nudged while its sub-agent works", stuckFor.Round(time.Second))
+	}
+	m.closeTurn(protocol.StatusIdle, "")
+}
+
+// TestNewTurnDoesNotInheritAnOldOutage: outage state is per-outage and cannot outlive its turn.
+// Left set, the first transient hiccup on a BRAND NEW turn computes its duration from the previous
+// turn's timestamp, sails past every window and abandons instantly — reporting something absurd
+// like "unreachable for 30m30s" about a turn thirty seconds old.
+func TestNewTurnDoesNotInheritAnOldOutage(t *testing.T) {
+	m, _, _ := turnHarness(t, func(context.Context) (bool, error) { return true, nil })
+
+	// A previous turn ended while an outage was being timed.
+	m.mu.Lock()
+	m.turnProbeSince = time.Now().Add(-30 * time.Minute)
+	m.turnRevives = 3
+	m.mu.Unlock()
+
+	m.openTurn("")
+
+	m.mu.Lock()
+	since, revives := m.turnProbeSince, m.turnRevives
+	m.mu.Unlock()
+	if !since.IsZero() {
+		t.Fatal("a new turn inherited the previous turn's outage clock — its first probe hiccup " +
+			"would abandon it instantly with an inflated duration")
+	}
+	if revives != 0 {
+		t.Fatal("a new turn inherited a depleted repair budget")
+	}
+	m.closeTurn(protocol.StatusIdle, "")
+}

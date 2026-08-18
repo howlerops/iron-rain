@@ -25,7 +25,14 @@ import (
 // surfaces a "no response" error. A wrong-directory opencode send is accepted (2xx) yet yields no
 // events; without this the user waits on the 30-minute POST timeout. Short enough to catch a dead
 // send fast, long enough that a model simply thinking before its first token isn't falsely flagged.
-const responseTimeout = 25 * time.Second
+// responseTimeout bounds how long a prompt may produce NOTHING before we tell the user it may not
+// have arrived. It has to clear the slowest legitimate first-token latency, or it cries wolf.
+//
+// 25s did not. Extended thinking regularly runs past it before the first token, so a hard prompt
+// produced "No response from the agent — your message may not have reached it" while the model was
+// simply thinking. The banner then vanished when output arrived, but it had already been written to
+// the durable transcript, so the conversation kept a permanent scary note about a turn that worked.
+const responseTimeout = 90 * time.Second
 
 // replayGrace is how long after a session binding is created a self-replaying provider is assumed to
 // still be re-streaming its history. Inside it the durable transcript is withheld (the provider is

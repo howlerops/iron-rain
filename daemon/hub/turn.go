@@ -28,10 +28,14 @@ var (
 	turnReconcileTick  = 5 * time.Second  // reconciler poll granularity
 	turnProbeFailLimit = 4                // consecutive probe FAILURES (not "busy") before abandoning
 	// turnNoProgressFor is how long a turn may claim to be busy while NOTHING actually progresses
-	// before we call it stalled. It is deliberately generous: a model can legitimately think for
-	// minutes, and the cost of nudging a healthy turn is real (it lands as a user message). Every
-	// hang we've been able to reproduce sat here for far longer than this.
-	turnNoProgressFor = 4 * time.Minute
+	// before we call it stalled.
+	//
+	// Four minutes was too tight and produced false stalls on ordinary work: a full `pnpm test`, a
+	// browser suite, a large build and a slow inference call all routinely exceed it without a
+	// single tool boundary in between. The cost of being wrong is asymmetric — a nudge lands as a
+	// user message in someone's conversation, and a false page teaches people to ignore real ones —
+	// so this errs long. A genuinely wedged turn takes longer to report; that is the better trade.
+	turnNoProgressFor = 10 * time.Minute
 	// turnNudgeLimit is how many nudges a stalled turn gets before we stop guessing and page a human.
 	turnNudgeLimit = 3
 	// turnUnreachableWindow is how long an agent must be unreachable — REFUSING connections, not
@@ -70,6 +74,16 @@ func (m *managedSession) openTurn(detail string) {
 	m.turnProbeFails = 0
 	m.turnNudges = 0
 	m.userInterrupted = false
+	// Clear the OUTAGE state too, not just the counters.
+	//
+	// These are per-outage, and an outage cannot outlive the turn it happened in. Left set, a new
+	// turn inherits an outage clock from an old one: the first transient probe hiccup then computes
+	// `down` from the PREVIOUS turn's timestamp, blows straight past both windows, and abandons a
+	// brand-new turn instantly while reporting an absurd duration ("unreachable for 30m30s" on a
+	// turn thirty seconds old). Same class as the accumulating clock in noteTurnEvent — the reset
+	// was applied there and missed here.
+	m.turnProbeSince = time.Time{}
+	m.turnRevives = 0
 	stop := make(chan struct{})
 	m.turnStopLoop = stop
 	m.mu.Unlock()
@@ -209,6 +223,14 @@ func (m *managedSession) turnOnChildEvent(childID string) {
 	if kid := m.turnKids[childID]; kid != nil {
 		kid.LastEventAt = now.Unix()
 	}
+	// A child producing ANYTHING is forward motion for the parent turn.
+	//
+	// Without this the parent's progress clock froze the moment its sub-agents were spawned — the
+	// only later stamps are the parent's own tool boundaries and child START/FINISH — so a fan-out
+	// whose children ran a ten-minute test suite was declared "stalled (no progress for 4m0s)" and
+	// nudged, while every child was working and streaming output the whole time. Delegated work is
+	// still work; the parent looking idle is what delegation LOOKS like.
+	m.turnToolAt = now
 	m.mu.Unlock()
 }
 
@@ -813,6 +835,9 @@ func (m *managedSession) turnLoops(stop chan struct{}) {
 	tick := time.NewTicker(reconcileTick)
 	defer tick.Stop()
 	lastHB := time.Now()
+	// Probe pacing lives HERE rather than by bumping turnLastEvent, so that clock keeps meaning
+	// "the provider last sent us something" — the only thing that makes it usable as evidence.
+	var lastProbe time.Time
 	for {
 		select {
 		case <-stop:
@@ -831,9 +856,13 @@ func (m *managedSession) turnLoops(stop chan struct{}) {
 			m.emitTurn("")
 			lastHB = time.Now()
 		}
-		if time.Since(lastEv) <= quietAfter {
+		// Probe only when the provider has gone quiet AND we haven't just asked. The second half is
+		// what the busy branch used to achieve by bumping turnLastEvent — done here so that clock
+		// stays honest about what the AGENT did.
+		if time.Since(lastEv) <= quietAfter || time.Since(lastProbe) < quietAfter {
 			continue
 		}
+		lastProbe = time.Now()
 		prober, ok := m.sess.(agent.Prober)
 		if !ok {
 			continue // subprocess providers: stream-end is authoritative; heartbeats keep the client patient
@@ -849,7 +878,10 @@ func (m *managedSession) turnLoops(stop chan struct{}) {
 		case busy:
 			m.mu.Lock()
 			m.turnProbeFails = 0
-			m.turnLastEvent = time.Now() // provider vouched for itself — reset the quiet clock
+			// Deliberately does NOT touch turnLastEvent. That clock means "the provider last SENT us
+			// something", and a probe answering is us asking, not the agent speaking. Conflating them
+			// made turnLastEvent permanently fresh on any busy session, so it could never contribute to a
+			// stall verdict. Probe pacing is handled by lastProbe below instead.
 			// The provider answered, so whatever outage was being timed is over. An "unreachable for
 			// N minutes" verdict has to mean N minutes of CONTINUOUS failure; letting the clock
 			// survive a successful probe turns a series of unrelated hiccups into a death sentence.
@@ -862,7 +894,14 @@ func (m *managedSession) turnLoops(stop chan struct{}) {
 			// opencode's probe reads an incomplete assistant message, which is precisely what a hung
 			// glob looks like. So a turn that is busy AND has had no tool start, no tool finish and no
 			// sub-agent movement for minutes is the hang, and it used to heartbeat here forever.
-			if stuckFor > noProgress {
+			// Both clocks must be stale. turnToolAt tracks tool/child BOUNDARIES, so a single
+			// long-running tool streaming output for ten minutes leaves it frozen while the agent is
+			// plainly alive — requiring turnLastEvent to be quiet too means "nothing has happened at
+			// all", which is what stalled was always supposed to mean.
+			m.mu.Lock()
+			quietFor := time.Since(m.turnLastEvent)
+			m.mu.Unlock()
+			if stuckFor > noProgress && quietFor > quietAfter {
 				if !m.escalateStalled(stuckFor) {
 					return // escalated all the way to needs_you; the turn is closed
 				}

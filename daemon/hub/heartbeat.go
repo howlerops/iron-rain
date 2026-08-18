@@ -302,6 +302,19 @@ func deriveState(m *managedSession, now time.Time) string {
 	if m.lastStatus == protocol.StatusError {
 		return hbErrored
 	}
+	// A turn is OPEN: the turn engine owns this session's liveness, so stay out of it.
+	//
+	// These are two independent supervisors that could not see each other. This one judges from
+	// lastActivity alone, so a running turn that went quiet for a minute — an agent mid-test-run —
+	// was classified idle-and-incomplete and sent a "continue with your plan" prompt into a
+	// conversation that was already working. The turn engine has far better evidence for the same
+	// question (provider probes, tool progress, per-child clocks) and its own gentler ladder.
+	//
+	// Once the turn engine has itself declared the turn stalled, it has already spent that ladder,
+	// so this supervisor is free to act again.
+	if m.turnPhase != "" && m.turnPhase != protocol.StatusStalled {
+		return hbWorking
+	}
 	if m.pendingApprovals > 0 || m.lastStatus == protocol.StatusAwaitingApproval {
 		return hbAwaitingInput
 	}
