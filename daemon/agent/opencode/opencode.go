@@ -362,17 +362,49 @@ func (s *session) replayHistory(ctx context.Context) {
 // session's message tail: a final assistant message with time.completed set means the turn is done;
 // a trailing user message (or an incomplete assistant one) means opencode is still working.
 func (s *session) Probe(ctx context.Context) (bool, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.p.baseURL+withDir("/session/"+s.id+"/message", s.dir), nil)
+	// Reachability FIRST, and cheaply.
+	//
+	// This used to go straight to /message, which returns the session's ENTIRE history — hundreds of
+	// messages with full tool output on a long agentic session. That is megabytes to serialise, so
+	// the probe's cost grows with the conversation until it exceeds its own timeout, and the daemon
+	// reports "agent unreachable: context deadline exceeded" about a server that is answering
+	// perfectly well. The agent got declared dead for the crime of having been used a lot.
+	//
+	// /session/{id} is a fixed-size object, so this half stays fast no matter how long the
+	// conversation runs, and it is the ONLY half allowed to conclude "unreachable".
+	rctx, rcancel := context.WithTimeout(ctx, 8*time.Second)
+	defer rcancel()
+	req, err := http.NewRequestWithContext(rctx, http.MethodGet, s.p.baseURL+withDir("/session/"+s.id, s.dir), nil)
 	if err != nil {
 		return false, err
 	}
 	resp, err := s.p.unary.Do(req)
 	if err != nil {
-		return false, err
+		return false, err // the server is genuinely not answering — the caller's outage clock starts
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		// The server is up but has never heard of this session: a real, permanent condition (the
+		// session was deleted, or we are pointed at the wrong directory partition). Say so plainly
+		// rather than letting it read as a transient outage that might heal.
+		return false, fmt.Errorf("opencode: session %s not found (wrong directory partition, or deleted)", s.id)
+	}
+
+	// The server is reachable. From here on, ANY failure means "we could not determine the turn's
+	// state", which is not the same as "the agent is gone" — so report busy and let the caller keep
+	// waiting. Being patient about a live-but-slow agent is always cheaper than killing a live one.
+	req, err = http.NewRequestWithContext(ctx, http.MethodGet, s.p.baseURL+withDir("/session/"+s.id+"/message", s.dir), nil)
+	if err != nil {
+		return true, nil
+	}
+	resp, err = s.p.unary.Do(req)
+	if err != nil {
+		return true, nil // slow history read; the server answered a moment ago, so it is alive
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("opencode probe: %s", resp.Status)
+		return true, nil // reachable but couldn't read the tail — assume still working, never abandon
 	}
 	var msgs []struct {
 		Info struct {
@@ -383,7 +415,7 @@ func (s *session) Probe(ctx context.Context) (bool, error) {
 		} `json:"info"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&msgs); err != nil {
-		return false, err
+		return true, nil // a truncated/slow body is not evidence the turn finished
 	}
 	if len(msgs) == 0 {
 		return false, nil // nothing ever sent — idle
@@ -402,6 +434,36 @@ func (s *session) SelfReplaying() bool { return true }
 // Recover implements agent.Recoverer: re-fetch + re-emit the last assistant message (the turn's
 // result) when its streamed completion was lost.
 func (s *session) Recover(ctx context.Context) { s.resyncLast(ctx) }
+
+// Revive implements agent.Reviver: prove the session is usable again, without disturbing it.
+//
+// opencode's conversation lives SERVER-SIDE, which makes recovery unusually safe here — there is no
+// local process to restart and no history to rebuild. If the server is answering for this session
+// id, the session is genuinely fine and the outage was in transit (a slept laptop, a wifi handover,
+// a server briefly too busy to answer). The SSE stream repairs itself on its own read-deadline, so
+// this deliberately does NOT tear anything down: reconnecting a stream that was about to recover is
+// how you turn a blip into lost events.
+//
+// It returns an error when the session cannot be served — which the caller treats as "not repaired"
+// and eventually reports, rather than retrying a session that no longer exists.
+func (s *session) Revive(ctx context.Context) error {
+	rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(rctx, http.MethodGet, s.p.baseURL+withDir("/session/"+s.id, s.dir), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := s.p.unary.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("opencode: session %s not served (%s)", s.id, resp.Status)
+	}
+	return nil
+}
 
 // resyncLast fetches the session's LAST assistant message and emits its full text, so a turn whose
 // streaming deltas were missed (the SSE stream dropped/stalled while opencode kept working) still

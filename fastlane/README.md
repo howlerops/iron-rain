@@ -23,6 +23,14 @@ For _fastlane_ installation instructions, see [Installing _fastlane_](https://do
 
 Verify the App Store Connect API key authenticates and whether the app exists.
 
+### ios signing
+
+```sh
+[bundle exec] fastlane ios signing
+```
+
+Resolve signing WITHOUT building or uploading — proves a build would reuse existing profiles.
+
 ### ios bootstrap_app
 
 ```sh

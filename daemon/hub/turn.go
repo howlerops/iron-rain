@@ -2,8 +2,11 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"net"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -31,6 +34,17 @@ var (
 	turnNoProgressFor = 4 * time.Minute
 	// turnNudgeLimit is how many nudges a stalled turn gets before we stop guessing and page a human.
 	turnNudgeLimit = 3
+	// turnUnreachableWindow is how long an agent must be unreachable — REFUSING connections, not
+	// merely slow — before we call the turn dead. Judged in elapsed time rather than failed attempts
+	// so the verdict can't ride on the tick rate: the old count-based rule declared an agent dead
+	// after four failures, which at a 5s tick is twenty seconds, less than a MacBook takes to wake.
+	turnUnreachableWindow = 2 * time.Minute
+	// turnSlowWindow is the same budget for an agent that is merely SLOW (timeouts rather than
+	// refusals). It is far more generous because a timeout is not evidence of absence — a long
+	// session's own history read can outrun a probe deadline while the agent works perfectly.
+	turnSlowWindow = 10 * time.Minute
+	// turnReviveLimit bounds in-place repair attempts per outage.
+	turnReviveLimit = 3
 )
 
 // openTurn starts (or refreshes) the session's turn. Called on prompt-send and on the provider's own
@@ -474,6 +488,97 @@ func (m *managedSession) emitTurn2(state, reason string) {
 	m.sendTurn(ts)
 }
 
+// handleUnreachable runs the recovery ladder for a probe that failed. It reports whether the turn is
+// still alive (false = we gave up and said so).
+//
+// A failed probe is NOT evidence that the agent is gone, and treating it that way is what produced
+// "agent unreachable: … context deadline exceeded" on a session whose server was answering fine —
+// the probe simply took longer than its timeout, and four of those in twenty seconds killed the
+// turn. So this does three things the old code didn't:
+//
+//  1. Tells a TIMEOUT apart from a refusal. A deadline means slow; only the transport actively
+//     saying "nothing is listening" is evidence of absence.
+//  2. Judges on ELAPSED TIME, not attempt count, so the verdict doesn't depend on the tick rate and
+//     a laptop waking from sleep is not a dead agent.
+//  3. Tries to REPAIR the connection (agent.Reviver) before reporting anything, because most of
+//     these are a transport that can simply be rebuilt.
+func (m *managedSession) handleUnreachable(probeErr error, fails, failLimit int) bool {
+	now := time.Now()
+	m.mu.Lock()
+	if m.turnProbeSince.IsZero() {
+		m.turnProbeSince = now
+	}
+	since := m.turnProbeSince
+	m.turnProbeFails = fails + 1
+	attempts := m.turnProbeFails
+	revives := m.turnRevives
+	m.mu.Unlock()
+	down := now.Sub(since)
+
+	// A timeout gets a longer rope than a refusal: a slow answer is still an answer trying to happen.
+	window, slow, reviveCap := m.unreachWindow, m.slowWindow, m.reviveLimit
+	if window <= 0 { // zero-valued managedSession (constructed directly in a test)
+		window, slow, reviveCap = turnUnreachableWindow, turnSlowWindow, turnReviveLimit
+	}
+	if isTimeout(probeErr) {
+		window = slow
+	}
+
+	// Try to repair in place, on a schedule of its own so a flapping connection isn't hammered.
+	if reviver, ok := m.sess.(agent.Reviver); ok && attempts >= 2 && revives < reviveCap {
+		m.mu.Lock()
+		m.turnRevives = revives + 1
+		m.turnPhase = protocol.StatusRecovering
+		m.mu.Unlock()
+		m.emitTurn("reconnecting to the agent")
+		rctx, rcancel := context.WithTimeout(context.Background(), 20*time.Second)
+		rerr := reviver.Revive(rctx)
+		rcancel()
+		if rerr == nil {
+			// Repaired. Clear the outage and let the NEXT tick re-probe: Revive promises the session
+			// is usable, not that the turn survived, and the probe is what actually knows.
+			m.mu.Lock()
+			m.turnProbeFails, m.turnProbeSince = 0, time.Time{}
+			m.turnPhase = protocol.StatusRunning
+			m.turnLastEvent = time.Now()
+			m.mu.Unlock()
+			m.emitTurn("")
+			log.Printf("turn: session %s reconnected to its agent after %s down (attempt %d)", m.sess.ID(), down.Round(time.Second), revives+1)
+			return true
+		}
+		log.Printf("turn: session %s revive attempt %d failed: %v", m.sess.ID(), revives+1, rerr)
+	}
+
+	if down < window {
+		return true // still inside the grace window — keep trying, say nothing
+	}
+	// Out of rope. Report it honestly, and say what we tried so the reason is actionable rather
+	// than a bare stack of transport noise.
+	reason := fmt.Sprintf("agent unreachable for %s", down.Round(time.Second))
+	if revives > 0 {
+		reason += fmt.Sprintf(" (reconnected %d×, still failing)", revives)
+	}
+	reason += ": " + probeErr.Error()
+	m.closeTurn("abandoned", reason)
+	return false
+}
+
+// isTimeout reports whether an error is "too slow" rather than "not there". A deadline says the
+// agent may well be alive and working; a refused connection says it is not.
+func isTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	var ne net.Error
+	if errors.As(err, &ne) {
+		return ne.Timeout()
+	}
+	return false
+}
+
 // resumeStalledTurn is called just before a NEW user prompt is delivered. It reports whether the
 // open turn was stalled (so the caller may unstick it) and resets the stall bookkeeping — the
 // progress clock, the spent nudges and the phase — because a user turn is, by definition, forward
@@ -728,13 +833,8 @@ func (m *managedSession) turnLoops(stop chan struct{}) {
 		cancel()
 		switch {
 		case err != nil:
-			m.mu.Lock()
-			m.turnProbeFails = fails + 1
-			exceeded := m.turnProbeFails >= failLimit
-			m.mu.Unlock()
-			if exceeded {
-				m.closeTurn("abandoned", "agent unreachable: "+err.Error())
-				return
+			if !m.handleUnreachable(err, fails, failLimit) {
+				return // proven unrecoverable and reported
 			}
 		case busy:
 			m.mu.Lock()

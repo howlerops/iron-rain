@@ -1324,6 +1324,13 @@ public final class Model: ObservableObject {
             busy = true
         case SessionStatusValue.awaitingApproval:
             busy = false
+        case SessionStatusValue.recovering:
+            // The agent stopped answering and the daemon is rebuilding the connection. Stay busy —
+            // the turn is still open and the work is very likely still running on the other side.
+            // Nothing here is actionable, so it deliberately does NOT set an error: the old
+            // behaviour turned every wifi handover into "No response from the agent".
+            busy = true
+            status = "Reconnecting…"
         case SessionStatusValue.stalled:
             // STILL WORKING, as far as anyone can prove — the daemon has decided nothing is
             // progressing and is nudging the agent to continue. Deliberately not an error and not a
@@ -1365,6 +1372,7 @@ public final class Model: ObservableObject {
         let stillOpen = ts.state == SessionStatusValue.running
             || ts.state == SessionStatusValue.awaitingApproval
             || ts.state == SessionStatusValue.stalled
+            || ts.state == SessionStatusValue.recovering
         if !stillOpen {
             let failed = ts.state == "abandoned"
                 || ts.state == SessionStatusValue.error

@@ -119,6 +119,15 @@ type managedSession struct {
 	turnKids       map[string]*protocol.TurnChild
 	turnStopLoop   chan struct{}
 	turnProbeFails int
+	// turnProbeSince is when the CURRENT run of failed probes began (zero = the agent is answering).
+	// Unreachability is judged on elapsed time, not on a count of attempts: counting made the verdict
+	// depend on the tick rate, and at a 5s tick four failures declared an agent dead in twenty
+	// seconds — less than a laptop takes to wake, a wifi handover to settle, or a busy opencode to
+	// answer one slow request.
+	turnProbeSince time.Time
+	// turnRevives counts in-place repair attempts made for this outage, so we escalate through them
+	// rather than retrying the same broken connection forever.
+	turnRevives int
 
 	// turnTools is the set of tool calls the provider has STARTED and not yet finished. A tool card
 	// used to be fire-and-forget, so one whose completion event was lost span forever; knowing what is
@@ -158,6 +167,9 @@ type managedSession struct {
 	probeFailLimit int
 	noProgressFor  time.Duration // provider says busy but nothing progressed this long → stalled
 	nudgeLimit     int           // nudges a stalled turn gets before escalating to needs_you
+	unreachWindow  time.Duration // agent refusing connections this long → abandoned
+	slowWindow     time.Duration // agent merely timing out this long → abandoned (far more generous)
+	reviveLimit    int           // in-place repair attempts per outage
 
 	txMu  sync.Mutex
 	txSeq int64
@@ -380,7 +392,8 @@ func newManagedSession(h *Hub, sess agent.Session, meta sessionMeta) *managedSes
 		lastActivity: now, createdAt: now,
 		hbEvery: turnHeartbeatEvery, quietAfter: turnQuietAfter,
 		reconcileTick: turnReconcileTick, probeFailLimit: turnProbeFailLimit,
-		noProgressFor: turnNoProgressFor, nudgeLimit: turnNudgeLimit}
+		noProgressFor: turnNoProgressFor, nudgeLimit: turnNudgeLimit,
+		unreachWindow: turnUnreachableWindow, slowWindow: turnSlowWindow, reviveLimit: turnReviveLimit}
 }
 
 // pushLabel is the session's name as a LOCK SCREEN has to read it: the user's label, and — when the

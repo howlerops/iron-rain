@@ -78,6 +78,7 @@ func sessionStatusWord(_ raw: String) -> String? {
     case SessionStatusValue.idle: return "idle"
     case SessionStatusValue.awaitingApproval: return "awaiting approval"
     case SessionStatusValue.done: return "done"
+    case SessionStatusValue.recovering: return "reconnecting…"
     case SessionStatusValue.stalled: return "stuck — nudging"
     case SessionStatusValue.needsYou: return "stuck — needs you"
     case SessionStatusValue.error, "errored": return "Error"
@@ -785,6 +786,12 @@ public struct ChatView: View {
                         // The daemon has judged this turn wedged and is nudging it to continue. Say
                         // that plainly: the turn is neither healthy (an ageless spinner) nor over (an
                         // error banner), and it's the daemon's verdict, not a client-side timer.
+                        if model.turn?.state == SessionStatusValue.recovering {
+                            Text("reconnecting…")
+                                .font(.caption.monospacedDigit()).foregroundStyle(palette.warning)
+                                .padding(.horizontal, 6).padding(.vertical, 1)
+                                .background(Capsule().fill(palette.warning.opacity(0.12)))
+                        }
                         if model.turn?.state == SessionStatusValue.stalled {
                             let n = model.turn?.nudges ?? 0
                             Text(n > 0 ? "stuck · nudged \(n)×" : "stuck · nudging")

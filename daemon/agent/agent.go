@@ -101,6 +101,32 @@ type Unsticker interface {
 	PromptUnsticking(ctx context.Context, text string) error
 }
 
+// Reviver is an optional Session capability: repair this session's own connection to its agent,
+// in place, keeping the session id and its history.
+//
+// It exists so an unreachable agent is something the daemon FIXES rather than something it reports.
+// Most "unreachable" is transient — a laptop slept, wifi dropped, the opencode server was restarted
+// out from under us — and the old behaviour (four failed probes, then abandon the turn and push
+// "the agent stopped responding") turned a blip the daemon could have healed silently into an
+// incident the user had to come back and clean up by hand.
+//
+// The contract:
+//   - Revive returns nil ONLY when the session is genuinely usable again — the caller immediately
+//     re-probes, so an optimistic nil costs a round-trip, not correctness.
+//   - It must preserve the session's identity and history. A Revive that silently starts a FRESH
+//     conversation under the same id is worse than failing: the turn would resume against an agent
+//     with no memory of it, and nothing downstream could tell.
+//   - It must be safe to call repeatedly, and safe to call on a session that turns out to be fine.
+//   - Returning an error means "not repaired"; the caller retries with backoff and eventually gives
+//     up honestly rather than pretending.
+//
+// A provider whose session cannot outlive its transport (the generic CLI adapter, where a turn IS
+// the process) must NOT implement this — for those, unreachable really is unrecoverable, and saying
+// so immediately is the useful answer.
+type Reviver interface {
+	Revive(ctx context.Context) error
+}
+
 // Provider creates and lists sessions for one agent backend.
 type Provider interface {
 	Name() string

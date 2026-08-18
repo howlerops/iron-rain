@@ -213,6 +213,11 @@ const (
 	// "abandoned" keep their old, narrower meanings — a provider that reported a failure, and a
 	// provider proven unreachable.
 	StatusNeedsYou = "needs_you"
+	// StatusRecovering is an OPEN turn whose agent stopped answering and which the daemon is
+	// actively repairing — reconnecting, re-resolving, retrying. It is not an error and needs
+	// nothing from the user; it exists so a blip is something they watch heal rather than something
+	// they get paged about. Only if recovery genuinely fails does the turn become abandoned.
+	StatusRecovering = "recovering"
 )
 
 // Approval decisions.

@@ -77,7 +77,8 @@ func unreadNeedsYou(h *Hub, sessionID string) int {
 // feed, no push goes out, and every client not subscribed to that session shows a working agent that
 // has been dead for minutes.
 func TestAbandonedTurnPublishesVerdict(t *testing.T) {
-	m, _, frames := turnHarness(t, func(context.Context) (bool, error) { return false, context.DeadlineExceeded })
+	m, _, frames := turnHarness(t, func(context.Context) (bool, error) { return false, errRefused })
+	m.unreachWindow, m.slowWindow = 60*time.Millisecond, 60*time.Millisecond
 	notes, hubFrames := wireVerdictHub(t, m.hub)
 
 	m.openTurn("")

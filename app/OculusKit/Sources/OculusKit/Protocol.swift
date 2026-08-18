@@ -189,6 +189,10 @@ public enum SessionStatusValue {
     /// A turn that stayed stuck after the daemon spent its nudges. Terminal, and it wants a human —
     /// but it is deliberately NOT an error: the agent didn't fail, it got stuck.
     public static let needsYou = "needs_you"
+    /// An open turn whose agent stopped answering and which the daemon is actively repairing.
+    /// Not an error and not actionable — it exists so a blip is something you watch heal rather
+    /// than something you get paged about.
+    public static let recovering = "recovering"
 }
 
 public enum Decision {

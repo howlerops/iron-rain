@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -10,6 +11,12 @@ import (
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/protocol"
 )
+
+// errRefused is a probe failure that means ABSENCE — nothing is listening — as opposed to a timeout,
+// which only means the answer was slow. The Turn Engine treats them very differently: a refusal
+// spends the (short) unreachable window, a timeout spends the far longer slow window, because a
+// long session's own history read can outrun a probe deadline while the agent works perfectly.
+var errRefused = errors.New("connect: connection refused")
 
 // turnFakeSess is a scriptable provider session for Turn Engine tests: Probe/Recover behavior is
 // injected per test.
@@ -141,10 +148,14 @@ func TestTurnReconcilerRecoversLostIdle(t *testing.T) {
 	}
 }
 
-// TestTurnReconcilerAbandonsUnreachable: consecutive probe FAILURES (provider gone) abandon the turn
-// with a reason — the only path to a "no response" UI, and it is the daemon's verdict.
+// TestTurnReconcilerAbandonsUnreachable: an agent that stays unreachable for the whole outage window
+// abandons the turn with a reason — the only path to a "no response" UI, and it is the daemon's
+// verdict. The window is what's under test now, not a count of attempts: judging by attempts made
+// the verdict depend on the tick rate, and at production timings four failures condemned an agent
+// in twenty seconds.
 func TestTurnReconcilerAbandonsUnreachable(t *testing.T) {
-	m, _, frames := turnHarness(t, func(context.Context) (bool, error) { return false, context.DeadlineExceeded })
+	m, _, frames := turnHarness(t, func(context.Context) (bool, error) { return false, errRefused })
+	m.unreachWindow, m.slowWindow = 60*time.Millisecond, 60*time.Millisecond
 	m.openTurn("")
 	ts := nextTurnState(t, frames, "abandoned", func(ts protocol.TurnState) bool { return ts.State == "abandoned" })
 	if ts.Reason == "" {
