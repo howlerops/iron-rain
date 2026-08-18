@@ -29,6 +29,12 @@ import (
 // ctx) indefinitely.
 const unaryTimeout = 30 * time.Second
 
+// historyReplayTimeout bounds the one request whose cost scales with the conversation: fetching a
+// session's whole message list on attach. It is deliberately far larger than unaryTimeout — a long
+// agentic session's history is megabytes, and timing it out produces an EMPTY transcript, which is
+// a much worse outcome than waiting.
+const historyReplayTimeout = 3 * time.Minute
+
 // sseIdleTimeout bounds how long the SSE /event stream may go SILENT before we treat the
 // connection as DEAD and force a reconnect. This is the fix for the "opencode gets stuck on long
 // tasks and never catches up" bug: a half-open TCP socket (laptop sleep/wake, Wi-Fi roam, NAT idle
@@ -299,12 +305,25 @@ func (p *Provider) resolveDir(ctx context.Context, sessionID string) string {
 // replayHistory fetches the session's messages and emits them as SessionMessage
 // events (oldest first) so the client can render the existing conversation.
 func (s *session) replayHistory(ctx context.Context) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.p.baseURL+withDir("/session/"+s.id+"/message", s.dir), nil)
+	// This request grows with the conversation — it returns EVERY message with full tool output —
+	// so it gets its own generous budget instead of the 30s unary client. A long session's history
+	// legitimately takes a while to serialise, and the old timeout turned that into an empty
+	// transcript: the failure below returned silently, emitting nothing and logging nothing, so
+	// "I restarted and lost all my history" arrived with no trace anywhere of what went wrong.
+	//
+	// The hub's durable transcript is the fallback and does not need us to do anything — but it can
+	// only cover what it has already recorded, so a failure here is still worth shouting about.
+	hctx, cancel := context.WithTimeout(ctx, historyReplayTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(hctx, http.MethodGet, s.p.baseURL+withDir("/session/"+s.id+"/message", s.dir), nil)
 	if err != nil {
+		log.Printf("opencode: sid=%s history replay could not be built: %v — the durable transcript is now the only history source", s.id, err)
 		return
 	}
-	resp, err := s.p.unary.Do(req)
+	resp, err := s.p.http.Do(req) // no client-level Timeout; hctx bounds it
 	if err != nil {
+		log.Printf("opencode: sid=%s HISTORY REPLAY FAILED after %s: %v — falling back to the daemon's durable transcript; "+
+			"anything older than that will not appear", s.id, historyReplayTimeout, err)
 		return
 	}
 	defer resp.Body.Close()
@@ -469,12 +488,18 @@ func (s *session) Revive(ctx context.Context) error {
 // streaming deltas were missed (the SSE stream dropped/stalled while opencode kept working) still
 // shows its result. The app replaces the partial streamed message with this authoritative text.
 func (s *session) resyncLast(ctx context.Context) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.p.baseURL+withDir("/session/"+s.id+"/message", s.dir), nil)
+	// Same scaling problem as replayHistory (this reads the whole message list to take its tail) and
+	// the same reason to be loud: this is the RECOVERY path for a turn whose result was lost in
+	// transit, so failing it silently loses the output twice and says nothing either time.
+	rctx, cancel := context.WithTimeout(ctx, historyReplayTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(rctx, http.MethodGet, s.p.baseURL+withDir("/session/"+s.id+"/message", s.dir), nil)
 	if err != nil {
 		return
 	}
-	resp, err := s.p.unary.Do(req)
+	resp, err := s.p.http.Do(req) // no client-level Timeout; rctx bounds it
 	if err != nil {
+		log.Printf("opencode: sid=%s could not re-fetch the turn's final output: %v — if its streaming was also missed, the result is not on screen", s.id, err)
 		return
 	}
 	defer resp.Body.Close()
