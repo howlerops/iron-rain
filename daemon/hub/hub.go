@@ -309,7 +309,16 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 		base := h.worktreeBase
 		h.mu.Unlock()
 		repoRoot, _ := worktree.RepoRoot(cwd)
-		wt, err := worktree.Create(base, cwd, name)
+		// Branch from the manifest's baseRef when it names one, so a worktree starts from a known
+		// point rather than inheriting whatever is checked out right now. Read before Create because
+		// the ref decides what the worktree IS, not how it's set up afterwards.
+		baseRef := ""
+		if repoRoot != "" {
+			if cfg, ok, _ := worktree.LoadConfig(repoRoot); ok {
+				baseRef = cfg.BaseRef
+			}
+		}
+		wt, err := worktree.CreateFrom(base, cwd, name, baseRef)
 		if err != nil {
 			return nil, err
 		}

@@ -9,7 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -36,6 +38,12 @@ type Config struct {
 	// install` there is a fast no-op/incremental instead of a full download.
 	Link       []string `json:"link"`
 	NoAutoLink bool     `json:"noAutoLink"`
+	// BaseRef is what a new worktree branches FROM. Empty means the repo's current HEAD, which is
+	// the historical behaviour and the surprising one: every worktree inherits whatever happens to
+	// be checked out at that moment, so a fanout's N variants all start from the same half-finished
+	// local state and their results aren't comparable to anything but each other. Set it to
+	// "origin/main" (or whatever your trunk is) to branch from a known-clean point instead.
+	BaseRef string `json:"baseRef"`
 }
 
 // Result reports what Bootstrap did.
@@ -126,9 +134,7 @@ func Bootstrap(ctx context.Context, repoRoot, worktreePath string, cfg Config, p
 	// in place before Setup, so a `pnpm/npm install` in the setup step becomes a fast incremental.
 	links := cfg.Link
 	if len(links) == 0 && !cfg.NoAutoLink {
-		if fi, err := os.Lstat(filepath.Join(repoRoot, "node_modules")); err == nil && fi.IsDir() {
-			links = []string{"node_modules"} // smart default: share the repo's node_modules
-		}
+		links = autoLinkDirs(repoRoot)
 	}
 	for _, rel := range links {
 		rel = filepath.Clean(rel)
@@ -305,4 +311,64 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	defer out.Close()
 	_, err = io.Copy(out, in)
 	return err
+}
+
+// autoLinkMaxDepth bounds how deep we look for dependency dirs to share. Workspace packages live
+// one or two levels down (packages/x, apps/y/…); going deeper mostly finds nested node_modules
+// INSIDE a node_modules, which must never be linked separately.
+const autoLinkMaxDepth = 3
+
+// autoLinkDirs finds the dependency directories worth sharing with a new worktree.
+//
+// The root node_modules alone is not enough for a workspace. pnpm/npm/yarn workspaces give every
+// package its OWN node_modules (mostly symlinks into the root store), all gitignored — so a fresh
+// worktree has none of them, the app can't resolve its imports, and the setup step has to do a real
+// install regardless of the root link. On a 20GB monorepo that is the difference between a worktree
+// that is ready instantly and one that costs minutes and gigabytes, per variant, per fanout.
+//
+// Returns paths relative to repoRoot, root-first so the shallowest link is made before any nested
+// one (the caller skips a destination that already exists, and a linked root would otherwise swallow
+// its own children).
+func autoLinkDirs(repoRoot string) []string {
+	var out []string
+	walk := func(dir string, depth int) {}
+	walk = func(dir string, depth int) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if name == ".git" {
+				continue
+			}
+			full := filepath.Join(dir, name)
+			if name == "node_modules" {
+				if rel, err := filepath.Rel(repoRoot, full); err == nil {
+					out = append(out, rel)
+				}
+				continue // never descend INTO a dependency dir: it is linked whole
+			}
+			// Skip other dot-dirs; they are rarely workspace roots and are cheap to get wrong.
+			if strings.HasPrefix(name, ".") {
+				continue
+			}
+			if depth < autoLinkMaxDepth {
+				walk(full, depth+1)
+			}
+		}
+	}
+	walk(repoRoot, 1)
+	// Shallowest first, so a parent link is created before any child of it is considered.
+	sort.Slice(out, func(i, j int) bool {
+		di, dj := strings.Count(out[i], string(filepath.Separator)), strings.Count(out[j], string(filepath.Separator))
+		if di != dj {
+			return di < dj
+		}
+		return out[i] < out[j]
+	})
+	return out
 }

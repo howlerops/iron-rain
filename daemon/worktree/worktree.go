@@ -149,19 +149,53 @@ func Create(base, repoDir, name string) (Worktree, error) {
 	return createAt(root, path, "oculus/"+slug)
 }
 
+// CreateFrom is Create with an explicit base ref to branch from ("" = the repo's current HEAD).
+//
+// Branching from HEAD is the historical default and the surprising one: the worktree inherits
+// whatever is checked out at that moment, so a fanout's N variants all start from the same
+// half-finished local state. Pinning a ref (origin/main, or one resolved commit shared by every
+// variant) is what makes their results comparable to the trunk rather than only to each other.
+func CreateFrom(base, repoDir, name, baseRef string) (Worktree, error) {
+	if baseRef == "" {
+		return Create(base, repoDir, name)
+	}
+	root, err := RepoRoot(repoDir)
+	if err != nil {
+		return Worktree{}, err
+	}
+	slug := Slug(name)
+	if slug == "" {
+		return Worktree{}, fmt.Errorf("worktree: empty name")
+	}
+	if base == "" {
+		base = DefaultBase()
+	}
+	path := filepath.Join(base, filepath.Base(root), slug)
+	return createAtFrom(root, path, "oculus/"+slug, baseRef)
+}
+
 // createAt adds a worktree for an already-resolved repo root at an explicit path on branch.
 // Shared by Create (single repo) and CreateWorkspace (one call per member repo).
 func createAt(root, path, branch string) (Worktree, error) {
+	return createAtFrom(root, path, branch, "")
+}
+
+// createAtFrom is createAt with an optional base ref ("" = current HEAD).
+func createAtFrom(root, path, branch, baseRef string) (Worktree, error) {
 	if _, err := os.Stat(path); err == nil {
 		return Worktree{}, fmt.Errorf("worktree path already exists: %s", path)
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return Worktree{}, err
 	}
-	// git worktree add <path> -b <branch> creates the branch from the current HEAD.
+	// git worktree add <path> -b <branch> [<base>] — with no base, the branch starts at HEAD.
+	args := []string{"-C", root, "worktree", "add", path, "-b", branch}
+	if baseRef != "" {
+		args = append(args, baseRef)
+	}
 	ctx, cancel := gitContext()
 	defer cancel()
-	if out, err := exec.CommandContext(ctx, "git", "-C", root, "worktree", "add", path, "-b", branch).CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(ctx, "git", args...).CombinedOutput(); err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return Worktree{}, fmt.Errorf("git worktree add timed out after %s for %s (branch %s) — repo may be locked or the checkout too large", GitOpTimeout, root, branch)
 		}
@@ -185,6 +219,108 @@ func Remove(repoDir, path string, force bool) error {
 		return fmt.Errorf("git worktree remove: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// RemoveIfUnchanged deletes a worktree ONLY when it holds nothing a human would miss: no
+// uncommitted changes, and no commits that aren't already on baseCommit. It reports whether it
+// removed anything, and why not when it didn't.
+//
+// This is the policy Claude Code uses for agent-isolated worktrees ("auto-cleaned if unchanged"),
+// and it is what makes automatic cleanup safe enough to run on a timer. The alternative — deciding
+// by age — cannot tell an abandoned scratch worktree from the one holding an afternoon of
+// uncommitted work, and gets it wrong in the direction you can't undo.
+//
+// Deliberately NOT force: `git worktree remove` refuses a dirty tree on its own, so git's check is
+// the backstop even if the explicit one below is ever wrong.
+func RemoveIfUnchanged(repoDir, path, baseCommit string) (removed bool, why string, err error) {
+	if dirty, derr := IsDirty(path); derr != nil {
+		return false, "could not inspect it: " + derr.Error(), derr
+	} else if dirty {
+		return false, "it has uncommitted changes", nil
+	}
+	if baseCommit != "" {
+		out, cerr := exec.Command("git", "-C", path, "rev-list", "--count", baseCommit+"..HEAD").Output()
+		if cerr != nil {
+			// Can't prove it's safe → don't touch it. Refusing to delete is always the recoverable
+			// side of this decision.
+			return false, "could not compare it to its base commit", nil
+		}
+		if n := strings.TrimSpace(string(out)); n != "" && n != "0" {
+			return false, "it has " + n + " commit(s) not on its base branch", nil
+		}
+	}
+	if rerr := Remove(repoDir, path, false); rerr != nil {
+		return false, "git refused: " + rerr.Error(), rerr
+	}
+	_ = Prune(repoDir)
+	return true, "", nil
+}
+
+// IsDirty reports whether a worktree has uncommitted changes (tracked or untracked).
+func IsDirty(path string) (bool, error) {
+	out, err := exec.Command("git", "-C", path, "status", "--porcelain").Output()
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(string(out)) != "", nil
+}
+
+// SweepOrphans removes worktree directories under base whose git admin dir no longer exists — the
+// residue of a repo that was deleted (or, in this codebase's case, of tests that created worktrees
+// against a t.TempDir() repo that Go then cleaned up, leaving the worktree behind forever).
+//
+// The gitdir check is what makes this safe: a LIVE worktree's .git file points at a directory that
+// resolves, so it can never match. Returns how many were removed.
+func SweepOrphans(base string) (int, error) {
+	repos, err := os.ReadDir(base)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	removed := 0
+	for _, repo := range repos {
+		if !repo.IsDir() {
+			continue
+		}
+		repoDir := filepath.Join(base, repo.Name())
+		entries, err := os.ReadDir(repoDir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			wt := filepath.Join(repoDir, e.Name())
+			if !isOrphanWorktree(wt) {
+				continue
+			}
+			if err := os.RemoveAll(wt); err == nil {
+				removed++
+			}
+		}
+		// Drop the per-repo dir once it's empty, so the base doesn't keep a tree of empty folders.
+		if rest, err := os.ReadDir(repoDir); err == nil && len(rest) == 0 {
+			_ = os.Remove(repoDir)
+		}
+	}
+	return removed, nil
+}
+
+// isOrphanWorktree reports whether a directory is a git worktree whose admin dir is gone. Anything
+// it cannot positively identify as an orphan is left alone.
+func isOrphanWorktree(dir string) bool {
+	data, err := os.ReadFile(filepath.Join(dir, ".git"))
+	if err != nil {
+		return false // no .git file: not a worktree we made, so not ours to delete
+	}
+	target := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(string(data)), "gitdir:"))
+	if target == "" {
+		return false
+	}
+	if _, err := os.Stat(target); err == nil {
+		return false // admin dir still there → the worktree is live
+	}
+	return true
 }
 
 // Prune cleans stale worktree admin records (after a worktree dir was deleted manually).

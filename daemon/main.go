@@ -54,6 +54,7 @@ import (
 	"github.com/howlerops/oculus/daemon/telemetry"
 	"github.com/howlerops/oculus/daemon/transcript"
 	"github.com/howlerops/oculus/daemon/wake"
+	"github.com/howlerops/oculus/daemon/worktree"
 )
 
 // version is stamped at build time via -ldflags "-X main.version=<tag>" (see .github/workflows/
@@ -303,8 +304,16 @@ func serve(args []string) error {
 	go h.RestoreSessions(context.Background(), sessionTTL)
 	h.StartSessionPruning(context.Background(), 6*time.Hour, sessionTTL)
 	h.StartConflictSweep(context.Background(), 45*time.Second) // passive merge-conflict badge for worktree sessions
-	h.StartHeartbeat(context.Background())                     // supervise autonomous sessions (nudge/checkpoint/escalate)
-	h.StartCredentialSweep(context.Background())               // expire pairing codes + lapsed invites on time, not on next use
+	// Reclaim worktrees whose repo no longer exists. These accumulate silently — one machine held
+	// 1133 — and each one also leaves a stale registration that every `git worktree` command walks.
+	// Only worktrees whose git admin dir is GONE are touched, so a live one can never match.
+	go func() {
+		if n, err := worktree.SweepOrphans(worktree.DefaultBase()); err == nil && n > 0 {
+			log.Printf("worktrees: swept %d orphaned worktree(s) whose repo no longer exists", n)
+		}
+	}()
+	h.StartHeartbeat(context.Background())       // supervise autonomous sessions (nudge/checkpoint/escalate)
+	h.StartCredentialSweep(context.Background()) // expire pairing codes + lapsed invites on time, not on next use
 
 	// A long-running daemon (e.g. a launchd agent on a server) would otherwise never pick up a new
 	// release until it happened to restart. Re-check periodically so it stays current on its own;
