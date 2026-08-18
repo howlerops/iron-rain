@@ -16,20 +16,77 @@ struct FanoutCompareView: View {
     var onClose: () -> Void
 
     @State private var keeping: String? = nil
+    @State private var combining = false
 
-    private var succeeded: [FanoutVariantResult] { summary.results.filter { $0.failed != true } }
+    /// The comparison as it stands NOW, not as it was when this sheet opened.
+    ///
+    /// `summary` is a value captured at presentation time, which was fine while a group's results
+    /// were final the moment they appeared. Combining changes that: it adds an attempt to a group
+    /// whose comparison is already on screen, and the daemon rebroadcasts the summary when it lands.
+    /// Reading the frozen copy would leave the user watching a screen that can never show the thing
+    /// they just asked for.
+    private var live: FanoutSummary {
+        if let s = model.fanoutSummary, s.group == summary.group { return s }
+        return summary
+    }
+
+    private var succeeded: [FanoutVariantResult] { live.results.filter { $0.failed != true } }
+    /// Ordered so the combined attempt leads: it read the others, so it is the first alternative
+    /// worth considering. Sorting it by diffstat would place it wherever the merge happened to land.
+    private var ordered: [FanoutVariantResult] {
+        live.results.sorted { a, b in (a.isSynthesis == true ? 0 : 1) < (b.isSynthesis == true ? 0 : 1) }
+    }
 
     var body: some View {
         OculusSheet(
-            title: "Compare \(summary.results.count) attempts",
-            subtitle: (summary.prompt?.isEmpty == false)
-                ? summary.prompt
+            title: "Compare \(live.results.count) attempts",
+            subtitle: (live.prompt?.isEmpty == false)
+                ? live.prompt
                 : "Keep one — the rest are discarded along with their worktrees.",
             palette: palette,
             onClose: onClose
         ) {
             VStack(spacing: OculusSpace.sm) {
-                ForEach(summary.results) { r in card(r) }
+                ForEach(ordered) { r in card(r) }
+                combineFooter
+            }
+        }
+    }
+
+    /// The combine affordance acts on the SET, so it sits below the cards rather than inside one —
+    /// every control in a card is about that attempt alone. Quieter than the variant cards on
+    /// purpose: this is an escape hatch for "none of these is quite right", not a fourth attempt.
+    @ViewBuilder private var combineFooter: some View {
+        // Mirror the daemon's own `len(peers) < 2` guard so the button can't produce a server error.
+        if succeeded.count >= 2 && !succeeded.contains(where: { $0.isSynthesis == true }) {
+            SheetCard(palette: palette) {
+                HStack(alignment: .top, spacing: OculusSpace.sm) {
+                    Image(systemName: "arrow.triangle.merge").foregroundStyle(palette.mutedForeground)
+                    VStack(alignment: .leading, spacing: OculusSpace.xxs) {
+                        Text(combining ? "Combining…" : "Not sure? Combine the best of these.")
+                            .font(.footnote.weight(.medium)).foregroundStyle(palette.foreground)
+                        // The time cost is always-visible text, not a tooltip: it spends a full
+                        // agent turn, and iOS has no hover to discover a `.help()` in.
+                        Text(combining
+                             ? "A fresh agent is reading all \(succeeded.count) attempts. It'll appear above as another attempt when it's done."
+                             : "A fresh agent reads all \(succeeded.count) attempts and writes one merged version as a new attempt — a few minutes, and a full turn. The others aren't touched.")
+                            .font(.caption).foregroundStyle(palette.mutedForeground)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: OculusSpace.sm)
+                    if combining {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Button("Combine") {
+                            combining = true
+                            Task {
+                                if await model.synthesizeFanout(group: live.group) == false { combining = false }
+                            }
+                        }
+                        .buttonStyle(.bordered).controlSize(.small)
+                        .disabled(keeping != nil)
+                    }
+                }
             }
         }
     }
@@ -44,12 +101,29 @@ struct FanoutCompareView: View {
                 if let m = r.model, !m.isEmpty {
                     Text(m).font(.system(.caption, design: .monospaced)).foregroundStyle(palette.mutedForeground)
                 }
+                if r.isSynthesis == true {
+                    // Named, not merely tinted: a colour alone competes with the failed treatment
+                    // and the model badge already in this row, and this is the one fact that
+                    // changes how you read the diff below it.
+                    Label("combined", systemImage: "arrow.triangle.merge")
+                        .font(.system(.caption, design: .monospaced).weight(.semibold))
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(palette.accent).foregroundStyle(palette.accentForeground)
+                        .clipShape(OculusShape.rounded(4))
+                }
                 if r.failed == true {
                     Label("failed", systemImage: "exclamationmark.triangle.fill")
                         .font(.caption).foregroundStyle(palette.destructive)
                 }
                 Spacer()
                 diffStat(r)
+            }
+
+            // WHICH attempts it read. A combination of 2 of 6 is a different object from one of all
+            // 6, and the diffstat above can't tell them apart.
+            if r.isSynthesis == true, let src = r.sourceVariants, !src.isEmpty {
+                Text("Combined #" + src.map(String.init).joined(separator: ", #"))
+                    .font(.caption).foregroundStyle(palette.mutedForeground)
             }
 
             // The agent's own words about what it did.

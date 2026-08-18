@@ -54,6 +54,9 @@ public enum MessageType {
     public static let activityMarkRead = "activity.markread"
     public static let fanoutCreate = "fanout.create"
     public static let fanoutResolve = "fanout.resolve"
+    /// Spawn an agent that reads every variant's diff and writes one combined implementation — as an
+    /// ADDITIONAL attempt in the same group, never replacing the others.
+    public static let fanoutSynthesize = "fanout.synthesize"
     public static let notifyPrefsGet = "notify.prefs.get"
     public static let notifyPrefsSet = "notify.prefs.set"
     public static let approvalRulesList = "approval.rules.list"
@@ -1993,11 +1996,19 @@ public struct FanoutVariantResult: Codable, Equatable, Identifiable {
     public var durationSec: Int?
     public var branch: String?
     public var failed: Bool?
+    /// True for the variant that READ the others and wrote a combined implementation. A diff
+    /// written with knowledge of its competitors isn't comparable to one written blind, so the
+    /// comparison has to say so rather than showing it as just another attempt.
+    public var isSynthesis: Bool?
+    /// The 1-based variant numbers whose diffs it actually read. A combination of 2 of 6 attempts
+    /// is a different object from one of all 6, and nothing else on the card reveals which it is.
+    public var sourceVariants: [Int]?
     public var id: String { sessionID }
     enum CodingKeys: String, CodingKey {
         case sessionID = "session_id", variant, model, status, title, summary
         case filesChanged = "files_changed", insertions, deletions
         case durationSec = "duration_sec", branch, failed
+        case isSynthesis = "is_synthesis", sourceVariants = "source_variants"
     }
 }
 

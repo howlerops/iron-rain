@@ -318,6 +318,9 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 				baseRef = cfg.BaseRef
 			}
 		}
+		if meta.baseRefOverride != "" {
+			baseRef = meta.baseRefOverride // an explicit base (fan-out synthesis) beats the manifest
+		}
 		wt, err := worktree.CreateFrom(base, cwd, name, baseRef)
 		if err != nil {
 			return nil, err
@@ -339,7 +342,14 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 				// run is a trust decision, not a config read. decideWorktreeSetup makes it; Bootstrap
 				// obeys it and reports back what it skipped.
 				trust, askable := h.decideWorktreeSetup(ctx, repoRoot, cfg)
-				res, berr := worktree.Bootstrap(ctx, repoRoot, wt.Path, cfg, port, trust)
+				// A fan-out variant gets its OWN dependencies. Sharing them across concurrent
+				// variants corrupts build caches, lockfile/node_modules agreement and .bin links —
+				// see the note in worktree.bootstrap.
+				bootstrap := worktree.Bootstrap
+				if meta.fanoutGroup != "" {
+					bootstrap = worktree.BootstrapIsolated
+				}
+				res, berr := bootstrap(ctx, repoRoot, wt.Path, cfg, port, trust)
 				if berr != nil {
 					_ = worktree.Remove(repoRoot, wt.Path, true)
 					h.releasePort(port) // don't leak the reserved port on a failed bootstrap

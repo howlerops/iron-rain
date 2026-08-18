@@ -376,6 +376,14 @@ type sessionMeta struct {
 	// UI can label it, since "this one read the others" is the single most useful thing to know
 	// when judging its diff.
 	fanoutSynth bool
+	// fanoutSources are the 1-based variant numbers whose diffs the synthesis actually read. Some
+	// may have been too large to include, and a synthesis of 2 of 6 attempts must not be presented
+	// as though it weighed all six.
+	fanoutSources []int
+	// baseRefOverride pins a new worktree's starting commit instead of taking the repo's current
+	// HEAD. Set for a synthesis variant, which is created long after its siblings and must branch
+	// from the same place they did or its diff isn't comparable to theirs.
+	baseRefOverride string
 
 	// loopName is set when this session is a run of a recurring autonomous loop — used to fire the
 	// "loop run finished" push once the run completes.

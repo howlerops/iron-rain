@@ -2449,6 +2449,22 @@ public final class Model: ObservableObject {
     /// Ends a fan-out group: keep `winner` (nil = discard all), tear down the rest + their worktrees.
     /// Force removes even worktrees with uncommitted changes. Returns the count actually removed.
     @discardableResult
+    /// Asks a fresh agent to combine the finished attempts into one. It joins the SAME comparison as
+    /// an extra attempt, so nothing here clears `fanoutSummary` — the existing cards stay on screen
+    /// and stay pickable while it works, and the daemon rebroadcasts the summary when it lands.
+    public func synthesizeFanout(group: String) async -> Bool {
+        guard client != nil else { return false }
+        do {
+            _ = try await request(MessageType.fanoutSynthesize, payload: FanoutResolve(group: group, keep: nil, force: nil))
+            return true
+        } catch {
+            // Surfaced inline on the comparison rather than as a modal: the user is mid-review of
+            // the other attempts, and this is an optional extra that failed, not a blocked workflow.
+            setError("Couldn’t combine the attempts", "\(error)")
+            return false
+        }
+    }
+
     public func resolveFanout(group: String, keep winner: String?, force: Bool = false) async -> Int {
         if fanoutSummary?.group == group { fanoutSummary = nil } // the comparison is answered
         guard client != nil else { return 0 }

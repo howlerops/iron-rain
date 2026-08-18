@@ -12,12 +12,13 @@ import (
 )
 
 // synthPeer builds a managedSession stub carrying just the worktree metadata synthPrompt reads.
-func synthPeer(t *testing.T, name, wtPath, base string) *managedSession {
+func synthPeer(t *testing.T, name, wtPath, base string, variant int) *managedSession {
 	t.Helper()
 	m := &managedSession{}
 	m.meta.workspaceName = name
 	m.meta.worktreePath = wtPath
 	m.meta.baseCommit = base
+	m.meta.fanoutVariant = variant
 	return m
 }
 
@@ -28,11 +29,11 @@ func TestSynthPromptCarriesEachVariantsDiff(t *testing.T) {
 	a := makeVariant(t, root, head, "variant-a", "func A() {}\n")
 	b := makeVariant(t, root, head, "variant-b", "func B() {}\n")
 
-	prompt, included := synthPrompt(context.Background(), "add a function",
-		[]*managedSession{synthPeer(t, "variant-a", a, head), synthPeer(t, "variant-b", b, head)})
+	prompt, sources := synthPrompt(context.Background(), "add a function",
+		[]*managedSession{synthPeer(t, "variant-a", a, head, 0), synthPeer(t, "variant-b", b, head, 1)}, nil)
 
-	if included != 2 {
-		t.Fatalf("included %d diffs, want 2", included)
+	if len(sources) != 2 {
+		t.Fatalf("included %d diffs, want 2", len(sources))
 	}
 	for _, want := range []string{"func A()", "func B()", "add a function"} {
 		if !strings.Contains(prompt, want) {
@@ -49,14 +50,19 @@ func TestSynthPromptSaysWhatItOmitted(t *testing.T) {
 	big := makeVariant(t, root, head, "variant-big", strings.Repeat("// filler line\n", maxSynthDiffBytes/15+500))
 	small := makeVariant(t, root, head, "variant-small", "func S() {}\n")
 
-	prompt, included := synthPrompt(context.Background(), "task",
-		[]*managedSession{synthPeer(t, "variant-big", big, head), synthPeer(t, "variant-small", small, head)})
+	prompt, sources := synthPrompt(context.Background(), "task",
+		[]*managedSession{synthPeer(t, "variant-big", big, head, 0), synthPeer(t, "variant-small", small, head, 1)}, nil)
 
-	if included != 1 {
-		t.Fatalf("included %d diffs, want 1 (the oversized one must be skipped)", included)
+	if len(sources) != 1 {
+		t.Fatalf("included %d diffs, want 1 (the oversized one must be skipped)", len(sources))
 	}
-	if !strings.Contains(prompt, "variant-big") || !strings.Contains(prompt, "omitted") {
+	if !strings.Contains(prompt, "variant-big") || !strings.Contains(prompt, "too large") {
 		t.Fatal("the oversized variant was dropped without saying so in the prompt")
+	}
+	// It must still carry the SHAPE of what was skipped — a diffstat — so the synthesiser knows an
+	// attempt exists and roughly what it did, rather than only that something is missing.
+	if !strings.Contains(prompt, "files, +") {
+		t.Fatal("an omitted variant carried no diffstat; the agent learns nothing about what it missed")
 	}
 	// And it must be skipped whole — a half-diff looks complete and silently loses the rest.
 	if strings.Contains(prompt, "filler line") {
@@ -72,7 +78,7 @@ func TestSynthPromptWarnsAgainstBlindConcatenation(t *testing.T) {
 	a := makeVariant(t, root, head, "va", "func A() {}\n")
 	b := makeVariant(t, root, head, "vb", "func B() {}\n")
 	prompt, _ := synthPrompt(context.Background(), "t",
-		[]*managedSession{synthPeer(t, "va", a, head), synthPeer(t, "vb", b, head)})
+		[]*managedSession{synthPeer(t, "va", a, head, 0), synthPeer(t, "vb", b, head, 1)}, nil)
 
 	for _, want := range []string{"incompatible", "pick the better one"} {
 		if !strings.Contains(prompt, want) {
@@ -126,5 +132,30 @@ func writeFile(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestSynthesisReArmsTheDoneLatch is the regression for the bug that made this feature invisible.
+//
+// checkFanoutDone fires ONCE per group (hub.go's fanoutNotified guard), and it has already fired by
+// the time anyone can tap Combine — the comparison screen only exists because the originals
+// finished. Adding the synthesis to that group without clearing the latch meant its completion hit
+// the guard and returned: no summary rebroadcast, no judge, no card. The agent did a full turn of
+// real work in a real worktree and the result went nowhere, silently, which is worse than not
+// offering the feature at all.
+func TestSynthesisReArmsTheDoneLatch(t *testing.T) {
+	h := New()
+	h.fanoutNotified["g1"] = true // the originals finished; the comparison has been shown
+
+	// What synthesizeFanout does after successfully starting the variant.
+	h.mu.Lock()
+	delete(h.fanoutNotified, "g1")
+	h.mu.Unlock()
+
+	h.mu.Lock()
+	latched := h.fanoutNotified["g1"]
+	h.mu.Unlock()
+	if latched {
+		t.Fatal("the done-latch is still set, so the synthesis result would never be broadcast")
 	}
 }

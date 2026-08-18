@@ -38,18 +38,21 @@ func (h *Hub) buildFanoutSummary(group string) protocol.FanoutSummary {
 	for _, m := range members {
 		m.mu.Lock()
 		variant := m.meta.fanoutVariant
+		isSynth, synthSources := m.meta.fanoutSynth, append([]int(nil), m.meta.fanoutSources...)
 		worktreePath, baseCommit, branch := m.meta.worktreePath, m.meta.baseCommit, m.meta.branch
 		status, model := m.lastStatus, m.model
 		started := m.turnStarted
 		m.mu.Unlock()
 
 		r := protocol.FanoutVariantResult{
-			SessionID: m.sess.ID(),
-			Variant:   variant,
-			Model:     model,
-			Status:    status,
-			Branch:    branch,
-			Failed:    status == protocol.StatusError,
+			SessionID:      m.sess.ID(),
+			Variant:        variant,
+			Model:          model,
+			Status:         status,
+			Branch:         branch,
+			Failed:         status == protocol.StatusError,
+			IsSynthesis:    isSynth,
+			SourceVariants: synthSources,
 		}
 		// The agent's OWN account of what it did — no extra inference, no second model call.
 		if db != nil {

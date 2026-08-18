@@ -1805,6 +1805,15 @@ type FanoutVariantResult struct {
 	DurationSec  int    `json:"duration_sec,omitempty"`
 	Branch       string `json:"branch,omitempty"`
 	Failed       bool   `json:"failed,omitempty"` // ended in error rather than completing
+	// IsSynthesis marks the variant that READ the others and wrote a combined implementation, rather
+	// than attempting the task independently. It is the single most decision-relevant fact about a
+	// row — a diff written with knowledge of its competitors is not comparable to one written blind
+	// — so the comparison must be able to say so rather than showing it as just another attempt.
+	IsSynthesis bool `json:"is_synthesis,omitempty"`
+	// SourceVariants are the 1-based variant numbers whose diffs it actually read. A synthesis built
+	// from 2 of 6 attempts is a different object from one built from all of them, and the user
+	// cannot tell them apart without this.
+	SourceVariants []int `json:"source_variants,omitempty"`
 }
 
 // FanoutSummary is the comparison payload broadcast when every variant in a group has finished.

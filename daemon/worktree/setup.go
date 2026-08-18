@@ -108,7 +108,19 @@ func LoadConfig(repoRoot string) (Config, bool, error) {
 // hook-disabling move data around inside a directory the caller already chose. `cfg.Setup` is
 // different in kind — it is a string handed to `sh -c` as the daemon's user — so it is the one step
 // gated on trust. See SetupTrust for why the decision is a parameter and not a config field.
+// BootstrapIsolated is Bootstrap for a worktree that must NOT share mutable state with its siblings
+// — a fan-out variant. See the note at the link step for what sharing actually breaks.
+func BootstrapIsolated(ctx context.Context, repoRoot, worktreePath string, cfg Config, port int, trust SetupTrust) (Result, error) {
+	return bootstrap(ctx, repoRoot, worktreePath, cfg, port, trust, true)
+}
+
 func Bootstrap(ctx context.Context, repoRoot, worktreePath string, cfg Config, port int, trust SetupTrust) (Result, error) {
+	return bootstrap(ctx, repoRoot, worktreePath, cfg, port, trust, false)
+}
+
+// isolated is a DAEMON-set argument, deliberately not a Config field: Config is decoded from a file
+// a non-owner client can write, so a flag living there could be forged to turn isolation off.
+func bootstrap(ctx context.Context, repoRoot, worktreePath string, cfg Config, port int, trust SetupTrust, isolated bool) (Result, error) {
 	res := Result{Port: port}
 
 	for _, pat := range cfg.Copy {
@@ -132,9 +144,31 @@ func Bootstrap(ctx context.Context, repoRoot, worktreePath string, cfg Config, p
 	// Share heavy dependency dirs (node_modules, …) by SYMLINKING them from the repo root, so every
 	// worktree reuses ONE install instead of downloading a fresh node_modules each time. The link is
 	// in place before Setup, so a `pnpm/npm install` in the setup step becomes a fast incremental.
+	// Sharing dependency dirs is safe for ONE worktree and unsafe for several at once, so the
+	// decision belongs here rather than in the manifest: the daemon knows which case it is, and a
+	// user writing project.json would have to already understand the hazard to configure around it.
+	//
+	// What goes wrong when N variants share a node_modules is not limited to `pnpm add` racing.
+	// Build tools write INTO the tree — Vite's .vite/deps, webpack's .cache, esbuild metafiles — so
+	// two variants building at once corrupt each other through the symlink. A variant that changes
+	// dependencies leaves every sibling's lockfile disagreeing with the node_modules it sees. Dev
+	// servers watching node_modules cross-fire on each other's writes. .bin symlinks interleave.
+	// Every one of those is a data-corruption bug that presents as a confusing build failure.
+	//
+	// So a fan-out variant installs its own. With pnpm that is cheap and cross-platform for the same
+	// reason sharing looked attractive: the global content-addressable store means a warm install is
+	// hardlinks, not downloads — no copy-on-write filesystem required.
 	links := cfg.Link
-	if len(links) == 0 && !cfg.NoAutoLink {
+	if isolated {
+		links = nil
+	} else if len(links) == 0 && !cfg.NoAutoLink {
 		links = autoLinkDirs(repoRoot)
+	}
+	if isolated && cfg.Setup == "" {
+		// Nothing will install them and we refuse to share them: say so, rather than handing the
+		// agent a worktree whose imports silently don't resolve.
+		res.SetupSkipped = true
+		res.SetupReason = "this variant needs its own dependencies, but the project has no setup command to install them"
 	}
 	for _, rel := range links {
 		rel = filepath.Clean(rel)
