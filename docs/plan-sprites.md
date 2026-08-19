@@ -39,6 +39,23 @@ to the daemon — which is local to the work.
 The Mac daemon **stays**. It keeps running local sessions. A sprite session is
 owned by that sprite's daemon instance, and the app talks to both.
 
+### A sprite is just another Desktop — the fleet model already exists
+
+`app/OculusKit/Sources/OculusUI/DesktopStore.swift:49` already owns every paired
+desktop at once and connects to all of them concurrently (`connectAll`, line 138);
+the switcher is built (`DesktopViews.swift:880`). A `Desktop` is
+`(id: pubkey, name, wsURL, secret, relay)` and `wsURL` already accepts arbitrary
+`wss://`. So a sprite running `oculusd` needs **no new multi-daemon merging code**
+— the app pairs with it exactly as it pairs with a second Mac.
+
+The one difference: a sprite has no terminal to show a QR in. The Mac daemon
+creates the sprite, generates its pairing secret, starts
+`oculusd serve --secret <secret>` inside it, and hands the app an `oculus://pair`
+payload to add automatically.
+
+This is the single biggest simplification in the design, and it is why the app
+side is small.
+
 ### Run X on Y
 
 | | Mac daemon | Sprite daemon |
@@ -142,22 +159,38 @@ has the same shape — detect a reconciler tick where elapsed ≫ the tick inter
 treat it as "we were frozen", and reset `turnLastEvent`, `turnToolAt` and
 `turnProbeSince`. Small, and it must exist before the first real cloud session.
 
-### Approvals are the experience risk
+### Approvals — smaller than first thought
 
-Sprites idle-pause at ~30s. A human reading a diff takes 60–120s. So the sprite
-sleeps mid-approval; waking it adds 3–5s to every tap; and APNs push comes from
-the **Mac** daemon, which knows nothing about a sprite session — so nobody is
-told an approval is waiting.
+The app already holds a WebSocket to every desktop, so a sprite's approvals
+arrive over that connection like any other desktop's. Opening the app wakes a
+paused sprite on the inbound connection and the pending approval is delivered.
+**No approval relay is needed to ship**, which removes what looked like the
+largest piece of new code.
 
-The Mac daemon therefore keeps a role even though it is not in the data path: it
-holds a connection to each sprite, forwards approval requests, pushes them via
-APNs, and keeps the sprite awake while one is pending. This is the piece most
-likely to make the feature feel broken if skipped.
+What is genuinely lost without a relay: APNs push comes from the **Mac** daemon,
+which knows nothing about sprite sessions. So "agent hit an approval while your
+app was closed" is silent — the approval waits until you next open the app.
+Acceptable for a first version, and the reason to keep a Mac-side push relay on
+the roadmap rather than in the critical path.
 
-Open question: what happens when the Mac is asleep *and* an approval is pending.
-Either cloud sessions run in an autonomous mode with no interactive approvals
-(and a tighter credential scope to match), or approvals must be pushed from
-somewhere that is always up. Decide before building.
+### Prerequisite: approval rules have no execution-location dimension
+
+**This is a live bug today, not a sprites problem.** `ApprovalRuleInfo`
+(`protocol.go:1748`) matches on `Provider, Tool, Pattern, PathPrefix, ProjectID`
+— and `ProjectID` identifies the *repo*, not the *machine*. `matches()` in
+`approval_rules.go` has no exec-location term at all, and `authorizeMCPTool`
+behaves the same way.
+
+So an "always allow `git push`" granted while looking at a local session already
+silently auto-allows the identical call on an SSH `remote.run` session
+(`ExecKindSSH`, `hub.go:1619`) in the same project, with nothing telling the user
+the machine changed. A global rule (no ProjectID) is worse.
+
+Sprites raise the stakes — the same rule would authorize a tool call on rented
+infrastructure — but the fix belongs to today's codebase: add an exec-location
+dimension to the rule and to `matches()`, and **show where the action will run at
+the moment the user grants "always allow"**. Granting a rule while looking at a
+local session must not silently extend to a Fly VM.
 
 ## Provisioning blockers
 
@@ -186,28 +219,73 @@ while the Mac is off. Persistent-filesystem billing is by bytes written, so the
 first clone + install is the expensive part and subsequent runs reuse it; that is
 better than ephemeral VMs, not worse.
 
+## Session creation only — not movable mid-flight
+
+You choose local-or-cloud when the session starts, and it stays there. `ExecKind`
+is structural: set at creation, persisted (`persist.go:46`), read back on restore.
+`attacherFor` binds a session to its own agent server, and neither opencode nor
+claude-code can serialise a live turn's state for transfer. Claude Code and Codex
+don't offer mid-session migration either.
+
+"Continue this work in the cloud" is therefore: push the branch, start a cloud
+session on the same project. The code transfers; the conversation doesn't.
+
+**Uncommitted local work** doesn't come along — the sprite clones from the remote.
+Default to saying so plainly at session creation, with a one-tap "commit & push
+current work" that reuses the existing `CommitAll` + `Push`. Do **not** build
+working-tree sync: it introduces a non-git exchange and leaves the sprite holding
+changes that exist on no branch.
+
+Note the delivery path needs no new code — `worktree/finish.go`'s
+`CommitAll` → `Push` → `CreatePR` are pure git/`gh` operations on a local
+directory, and inside a sprite that directory is simply the sprite's. But there
+is **no `git clone` codepath in the daemon today** (worktrees are always
+`git worktree add` off an existing checkout), so cloning is new code.
+
 ## Staged plan
 
-1. **GitHub App + per-repo installation tokens**, replacing ambient `gh`. Highest
-   value, useful for local sessions too, and a hard prerequisite for cloud.
-2. **Freeze/thaw clock reset** in the turn engine. Small; must precede any real
+1. **Approval-rule exec-location dimension.** A live bug, independent of sprites,
+   and a hard prerequisite before any rule can authorise a tool on rented
+   infrastructure.
+2. **GitHub App + per-repo installation tokens**, replacing ambient `gh`. Minted
+   by the Mac at session start, injected as env, never written to sprite disk.
+   Useful for local sessions too.
+3. **Freeze/thaw clock reset** in the turn engine. Small; must precede any real
    cloud session.
-3. **Sprite image + lifecycle service** (`daemon/sprites`), mirroring
+4. **Sprite image + lifecycle service** (`daemon/sprites`), mirroring
    `daemon/sshremote`'s shape: injectable exec so it is testable without hitting
-   Fly.
-4. **`ExecKindSprite`** end-to-end — create, session, teardown.
-5. **Mac-side approval relay + push forwarding.**
-6. Cost metering and lifecycle UI.
+   Fly. Includes auto-pairing (Mac mints the secret, app adds the desktop).
+5. **`ExecKindSprite`** end-to-end — create, clone, session, teardown.
+6. Mac-side approval push relay; cost metering; lifecycle UI.
+
+Rough size, given the fleet model already exists: ~800 lines daemon-side, ~200
+app-side, plus the base image (ops work, and the gate on whether any of it runs).
+
+## Mac-mediated *auth*, not Mac-mediated *execution*
+
+The reconciliation that makes both halves work: the Mac must be online to
+**start** a cloud session — it provisions the sprite, mints the scoped
+credentials, and hands off. It does **not** need to stay online for the session
+to keep working.
+
+That distinction is what preserves "close the laptop, the cloud session keeps
+going" without a per-call phone-home. Brokering every LLM call back through the
+Mac would defeat the entire feature — that isn't a cloud session, it's
+`remote.run` with extra steps.
+
+Consequence for credentials: mint **once, at session start**, scoped and
+short-TTL. A short TTL — hours, matched to expected session length — is the real
+mitigation for the checkpoint problem, because "delete my data" is a vendor
+promise we cannot verify. Checkpoint purge is defence in depth, not the control.
 
 ## The road not taken
 
 If "runs while the Mac is asleep" is ever dropped, a materially safer design
-becomes available: keep the daemon, identity key and all standing credentials on
-the Mac, use the sprite as disposable compute, and broker every credentialed
-action back through the existing encrypted channel with ephemeral, single-use,
-task-scoped tokens. A compromised sprite would then yield nothing beyond whatever
-was in flight for one already-approved call, and the E2EE/self-hosted claim would
-survive intact. It is recorded here because it is the better design on every axis
+becomes available: keep all standing credentials on the Mac, use the sprite as
+disposable compute, and broker every credentialed action back through the
+existing encrypted channel with ephemeral, single-use, task-scoped tokens. A
+compromised sprite would then yield nothing beyond whatever was in flight for one
+already-approved call. It is recorded here because it is safer on every axis
 except the one that was chosen — and that one axis is most of the point.
 
 ## Unverified assumptions
