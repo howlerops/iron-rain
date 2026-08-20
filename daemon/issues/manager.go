@@ -453,8 +453,12 @@ func (m *Manager) Refresh(ctx context.Context) error {
 				}
 				return
 			}
+			// Deliberately NOT logged. A successful poll is the expected case and it happens every
+			// 60s per provider, so logging it wrote a line a minute that said only "things are
+			// normal" — pure noise in the one file an operator reads when they are not. Failures
+			// (and recoveries) still log, via notePollSuccess/notePollFailure, which is the part
+			// that carries information.
 			m.notePollSuccess(name)
-			log.Printf("issues: %s fetched %d issue(s)", name, len(got))
 			merged = append(merged, got...)
 		}(np.name, np.p)
 	}

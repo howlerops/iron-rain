@@ -35,6 +35,11 @@ const unaryTimeout = 30 * time.Second
 // a much worse outcome than waiting.
 const historyReplayTimeout = 3 * time.Minute
 
+// sessionCreateTimeout bounds POST /session. Generous for the same reason as historyReplayTimeout:
+// opening a directory opencode hasn't seen before costs whatever that directory costs, and failing
+// a legitimate slow start leaves the user with no session at all.
+const sessionCreateTimeout = 2 * time.Minute
+
 // sseIdleTimeout bounds how long the SSE /event stream may go SILENT before we treat the
 // connection as DEAD and force a reconnect. This is the fix for the "opencode gets stuck on long
 // tasks and never catches up" bug: a half-open TCP socket (laptop sleep/wake, Wi-Fi roam, NAT idle
@@ -203,7 +208,20 @@ func (p *Provider) create(ctx context.Context, cwd, prompt, agentName string) (a
 		ID    string `json:"id"`
 		Title string `json:"title"`
 	}
-	if err := p.postJSON(ctx, withDir("/session", cwd), map[string]any{}, &created); err != nil {
+	// Session creation is NOT an ordinary unary call, so it does not get the ordinary 30s bound.
+	//
+	// Creating a session in a directory opencode has never seen makes it initialise that directory's
+	// partition — reading config, walking the tree. The cost therefore scales with the WORKTREE, not
+	// with anything about the request, and on a large repo (especially one whose node_modules are
+	// symlinked in, so the walk crosses into a big dependency graph) it comfortably outruns 30s. The
+	// user sees "Couldn't start opencode … context deadline exceeded" and a session that never opens,
+	// while opencode is still busy doing exactly what was asked of it.
+	//
+	// Same shape as the history-replay fix: a call whose cost is O(repo) must not be bounded like a
+	// call whose cost is O(1). The ctx below still bounds it, generously.
+	cctx, cancel := context.WithTimeout(ctx, sessionCreateTimeout)
+	defer cancel()
+	if err := p.postJSONLong(cctx, withDir("/session", cwd), map[string]any{}, &created); err != nil {
 		return nil, err
 	}
 	if created.ID == "" {
