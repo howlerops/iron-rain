@@ -900,7 +900,20 @@ func (m *managedSession) turnLoops(stop chan struct{}) {
 			// all", which is what stalled was always supposed to mean.
 			m.mu.Lock()
 			quietFor := time.Since(m.turnLastEvent)
+			// An agent waiting on a HUMAN is not stalled — it is doing exactly the right thing.
+			//
+			// This invariant is written on the field itself ("never nudge while > 0") and the older
+			// heartbeat supervisor honours it; this ladder did not, and the result was the worst
+			// loop in the system. A turn parked on an approval goes quiet by definition, so it trips
+			// the no-progress rule, gets declared stalled, and is sent a message telling it that "if
+			// you are blocked on something only a human can decide, say so explicitly and stop" —
+			// which is precisely what it had already done. The nudges then queue up behind the
+			// approval, and answering one only reveals the next.
+			blocked := m.pendingApprovals > 0 || m.turnPhase == protocol.StatusAwaitingApproval
 			m.mu.Unlock()
+			if blocked {
+				continue
+			}
 			if stuckFor > noProgress && quietFor > quietAfter {
 				if !m.escalateStalled(stuckFor) {
 					return // escalated all the way to needs_you; the turn is closed

@@ -4182,6 +4182,12 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		if m.pendingApprovals > 0 {
 			m.pendingApprovals--
 		}
+		// The time the agent spent parked on this question is not time it failed to make progress —
+		// it was waiting on a person, which is the system working. Restart the progress clock as the
+		// answer goes down, or a turn that waited ten minutes for a human trips the no-progress rule
+		// the instant it is unblocked and gets nudged for the crime of having been approved slowly.
+		m.turnToolAt = time.Now()
+		m.turnLastEvent = time.Now()
 		m.mu.Unlock()
 		// An MCP approval is the daemon's own question (a blocked gateway call), not something the
 		// provider is waiting on — deliver it to the waiter instead of down to the harness.

@@ -315,3 +315,62 @@ func TestNewTurnDoesNotInheritAnOldOutage(t *testing.T) {
 	}
 	m.closeTurn(protocol.StatusIdle, "")
 }
+
+// TestApprovalWaitIsNotAStall is the regression for the loop in the reported screenshot: an agent
+// parked on an approval was declared "Stalled — Nudging" and sent, of all things, a message saying
+// "if you are blocked on something only a human can decide, say so explicitly and stop" — which is
+// exactly what it had already done.
+//
+// A turn waiting on a person goes quiet BY DEFINITION, so it trips the no-progress rule every time.
+// The invariant is written on the field itself ("never nudge while > 0") and the older heartbeat
+// supervisor honours it; this ladder did not. The nudges then queue behind the approval, and
+// answering one only surfaces the next.
+func TestApprovalWaitIsNotAStall(t *testing.T) {
+	m, fake, _ := stallHarness(t, true)
+	m.openTurn("")
+
+	// Parked on a human: nothing has progressed for a long time, because it is waiting.
+	m.mu.Lock()
+	m.pendingApprovals = 1
+	m.turnToolAt = time.Now().Add(-time.Hour)
+	m.turnLastEvent = time.Now().Add(-time.Hour)
+	m.mu.Unlock()
+
+	select {
+	case text := <-fake.nudges:
+		t.Fatalf("nudged an agent that is waiting for an approval: %q", text)
+	case <-time.After(500 * time.Millisecond): // many reconcile ticks at harness timings
+	}
+
+	m.mu.Lock()
+	phase := m.turnPhase
+	m.mu.Unlock()
+	if phase == protocol.StatusStalled {
+		t.Fatal("a turn waiting on a human was marked stalled — the UI shows 'Stalled — Nudging' " +
+			"while the only thing missing is the user's answer")
+	}
+	m.closeTurn(protocol.StatusIdle, "")
+}
+
+// TestAnsweringAnApprovalRestartsTheProgressClock: the time an agent spends parked on a question is
+// not time it failed to progress. Without this, a turn that waited ten minutes for a human trips the
+// no-progress rule the instant it is unblocked — nudged for having been approved slowly.
+func TestAnsweringAnApprovalRestartsTheProgressClock(t *testing.T) {
+	m, _, _ := stallHarness(t, true)
+	m.openTurn("")
+	m.mu.Lock()
+	m.turnToolAt = time.Now().Add(-time.Hour)
+	m.mu.Unlock()
+
+	// What the approval-respond handler does once the decision is sent down.
+	m.mu.Lock()
+	m.turnToolAt = time.Now()
+	m.turnLastEvent = time.Now()
+	stale := time.Since(m.turnToolAt)
+	m.mu.Unlock()
+
+	if stale > time.Minute {
+		t.Fatalf("progress clock still %s stale after an approval was answered", stale.Round(time.Second))
+	}
+	m.closeTurn(protocol.StatusIdle, "")
+}
