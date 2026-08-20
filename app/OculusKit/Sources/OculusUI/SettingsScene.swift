@@ -237,6 +237,16 @@ private struct DaemonPrefsSections: View {
                         .font(.caption).foregroundStyle(palette.destructive)
                         .textSelection(.enabled)
                 }
+                // launchd cannot keep the daemon alive. Distinct from lastError, which reports a
+                // failed ACTION the user just took; this is a standing condition they never asked
+                // about and would otherwise never learn — the app quietly runs its own copy, so
+                // everything looks fine until a reboot leaves them with nothing.
+                if let bad = loginItem.agentFailure {
+                    Label(bad, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundStyle(palette.destructive)
+                        .textSelection(.enabled) // the remedy is a command; it has to be copyable
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .onAppear { loginItem.refresh() }
         }
