@@ -31,12 +31,26 @@ tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 say "Downloading the Iron Rain daemon ($os/$arch)…"
 if curl -fsSL "$REL/oculusd_${os}_${arch}.tar.gz" -o "$tmp/o.tgz" 2>/dev/null; then
   tar -xzf "$tmp/o.tgz" -C "$tmp"; mkdir -p "$BIN"; install -m 0755 "$tmp/oculusd" "$BIN/oculusd"
-  # The release binary is cross-compiled on Linux → UNSIGNED. On Apple Silicon an unsigned Mach-O is
-  # killed at exec by AMFI, so the launchd agent below would crash-loop it (.ips reports). Ad-hoc
-  # re-sign + drop quarantine so it's valid on this machine.
+  # Release binaries are now SIGNED in CI, so this is a repair path rather than the norm: it fixes a
+  # binary whose signature didn't survive the trip (quarantine xattr, an older unsigned release).
+  #
+  # On Apple Silicon an unsigned or invalid Mach-O is SIGKILLed by AMFI at exec, before any of the
+  # daemon's own code runs — which surfaces as a launchd crash-loop with no panic and nothing in any
+  # log. So a signature that will not verify is a HARD FAILURE here, not a warning. This previously
+  # printed a warning and installed the binary anyway, which handed the user something that could not
+  # start and no way to find out why.
   if [ "$os" = "darwin" ]; then
     xattr -c "$BIN/oculusd" 2>/dev/null || true
-    codesign --force --sign - "$BIN/oculusd" 2>/dev/null || say "warning: could not ad-hoc sign oculusd (it may not launch on Apple Silicon)"
+    if ! codesign --verify --strict "$BIN/oculusd" 2>/dev/null; then
+      say "signing the daemon for this machine…"
+      codesign --force --sign - "$BIN/oculusd" 2>/dev/null || true
+    fi
+    if ! codesign --verify --strict "$BIN/oculusd" 2>/dev/null; then
+      echo "error: $BIN/oculusd has no valid code signature, so macOS will refuse to run it." >&2
+      echo "       (Apple Silicon kills unsigned binaries at exec — the daemon would crash-loop.)" >&2
+      echo "       Try: codesign --force --sign - \"$BIN/oculusd\"" >&2
+      exit 1
+    fi
   fi
   ok "installed $BIN/oculusd"
 else

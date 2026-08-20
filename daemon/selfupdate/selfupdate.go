@@ -191,22 +191,45 @@ func downloadBinary(ctx context.Context, url, dir string) (string, error) {
 		// subsequent launch) died, so on arm64 the update silently aborted and the daemon never moved
 		// off its stale version. Ad-hoc re-sign locally (and drop any quarantine xattr) so the freshly
 		// written binary is valid on this machine before we sanity-run and swap it in.
-		adhocSign(out.Name())
+		if !ensureSigned(out.Name()) {
+			os.Remove(out.Name())
+			return "", fmt.Errorf("downloaded binary has no valid code signature")
+		}
 		return out.Name(), nil
 	}
 }
 
-// adhocSign gives a Mach-O a valid local (ad-hoc) code signature and strips quarantine so Apple
-// Silicon will actually exec it. No-op off macOS. Best-effort: if codesign is missing we proceed and
-// let the sanity run catch a genuinely broken binary.
-func adhocSign(path string) {
+// ensureSigned makes sure a freshly downloaded Mach-O carries a signature macOS will accept, and
+// reports whether it does. No-op (true) off macOS.
+//
+// Releases are signed in CI now, so the common path is "already valid" and this only strips the
+// quarantine xattr. It still repairs an unsigned binary (an older release, or a signature lost in
+// transit) — but it now VERIFIES the result and refuses to swap in a binary that won't validate.
+//
+// The old version signed and moved on. If codesign failed, the update proceeded and installed a
+// binary that Apple Silicon SIGKILLs at exec: the daemon then crash-loops under launchd with no
+// panic and nothing in any log, because the process never reaches Go. Keeping a working old binary
+// is always better than swapping in one that cannot start.
+func ensureSigned(path string) bool {
 	if runtime.GOOS != "darwin" {
-		return
+		return true
 	}
-	exec.Command("/usr/bin/xattr", "-c", path).Run()
+	_ = exec.Command("/usr/bin/xattr", "-c", path).Run()
+	verify := func() bool {
+		return exec.Command("/usr/bin/codesign", "--verify", "--strict", path).Run() == nil
+	}
+	if verify() {
+		return true
+	}
 	if err := exec.Command("/usr/bin/codesign", "--force", "--sign", "-", path).Run(); err != nil {
-		log.Printf("selfupdate: ad-hoc codesign failed (%v) — the binary may not launch on Apple Silicon", err)
+		log.Printf("selfupdate: could not sign the downloaded binary (%v) — keeping the current one", err)
+		return false
 	}
+	if !verify() {
+		log.Printf("selfupdate: downloaded binary has no valid signature after signing — keeping the current one")
+		return false
+	}
+	return true
 }
 
 // runsOK sanity-checks the freshly downloaded binary by running `--version` (which prints + exits 0).

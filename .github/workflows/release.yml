@@ -16,17 +16,63 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    # macOS, not ubuntu, because the darwin binaries must be SIGNED and `codesign` only exists here.
+    #
+    # Cross-compiled darwin binaries ship unsigned, and Apple Silicon's AMFI SIGKILLs an unsigned
+    # Mach-O at exec — the process dies before any of our code runs, so there is no panic and nothing
+    # in any log, just "EXC_CRASH (SIGKILL (Code Signature Invalid))" and a launchd restart loop.
+    # Until now the only thing standing between a user and that was best-effort ad-hoc signing on
+    # THEIR machine, by the installer or the self-updater, either of which could quietly fail and
+    # leave behind a daemon that cannot start. Signing here fixes it once, for everyone, instead of
+    # asking every client to repair the artifact after downloading it.
+    #
+    # Go cross-compiles the linux binaries from here just as well (CGO_ENABLED=0), so keeping all
+    # four builds in one job also keeps checksums.txt honest — it is generated after signing, over
+    # exactly the bytes that ship.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: daemon/go.mod
 
+      - name: Import Developer ID certificate (falls back to ad-hoc)
+        id: signing
+        env:
+          CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          if [ -z "$CERT_P12_BASE64" ]; then
+            # Ad-hoc is still a VALID signature — enough for AMFI to exec the binary, which is the
+            # bug being fixed. A Developer ID identity additionally gets Gatekeeper off the user's
+            # back; its absence must not break the release.
+            echo "no MACOS_CERT_P12_BASE64 — darwin binaries will be ad-hoc signed"
+            echo "identity=-" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          KC="$RUNNER_TEMP/daemon-signing.keychain-db"
+          KC_PASS="$(uuidgen)"
+          security create-keychain -p "$KC_PASS" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KC_PASS" "$KC"
+          echo "$CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PASS" "$KC" >/dev/null
+          security list-keychain -d user -s "$KC" login.keychain-db
+          rm -f "$RUNNER_TEMP/cert.p12"
+          ID="$(security find-identity -v -p codesigning "$KC" | awk '/Developer ID Application/ {print $2; exit}')"
+          if [ -z "$ID" ]; then
+            echo "::warning::certificate imported but no Developer ID Application identity found — ad-hoc signing"
+            ID="-"
+          fi
+          echo "identity=$ID" >> "$GITHUB_OUTPUT"
+
       - name: Build binaries
         working-directory: daemon
         env:
           TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          IDENTITY: ${{ steps.signing.outputs.identity }}
         run: |
           mkdir -p ../dist
           # Stamp the real version so the daemon knows it (self-update comparison + version reporting).
@@ -37,6 +83,18 @@ jobs:
             os="${pair%/*}"; arch="${pair#*/}"
             echo "building $os/$arch @ $VERSION"
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o oculusd .
+            if [ "$os" = "darwin" ]; then
+              # Sign, then VERIFY, then fail the release if it didn't take.
+              #
+              # Signing failures used to be swallowed (`2>/dev/null || warn`) at both client-side
+              # sites, which is the worst possible handling: the artifact still ships, and the
+              # symptom lands on the user as a daemon that is SIGKILLed at exec with no log line
+              # anywhere. An unsigned darwin binary is not a degraded release, it is an unusable
+              # one, so it must break the build here rather than someone's machine later.
+              codesign --force --timestamp --options runtime --sign "$IDENTITY" oculusd
+              codesign --verify --strict --verbose=2 oculusd
+              echo "signed $os/$arch with identity: $IDENTITY"
+            fi
             tar -czf "../dist/oculusd_${os}_${arch}.tar.gz" oculusd
             rm oculusd
           done
