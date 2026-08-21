@@ -129,3 +129,47 @@ func (s *Store) DedupeRenderables() (int, error) {
 	n, _ := res.RowsAffected()
 	return int(n), nil
 }
+
+// MoveTranscript re-keys a session's stored history onto a new session id, and reports how many rows
+// moved.
+//
+// Restart is why this exists. It cannot reuse the old id — the provider mints a new one — so it
+// creates a fresh session and deletes the old record. Everything a user would notice was carried
+// across (name, model, mode) EXCEPT the conversation itself, which is keyed by session id: the
+// history stayed behind under a record that had just been deleted, so a restarted session came back
+// completely empty and its rows were orphaned in the database.
+//
+// The archive is moved too, or history older than the retention window would survive the restart
+// while recent history did not — the opposite of what anyone would expect.
+func (s *Store) MoveTranscript(oldID, newID string) (int, error) {
+	if oldID == "" || newID == "" || oldID == newID {
+		return 0, nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// The destination is a brand-new session id, so it holds no rows and the (session_id, seq)
+	// primary key cannot collide. Guarded anyway: a partially-completed earlier move would otherwise
+	// abort the whole transaction and strand the history in two places.
+	if _, err := tx.Exec(`DELETE FROM transcript_events WHERE session_id = ?`, newID); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(`DELETE FROM transcript_archive WHERE session_id = ?`, newID); err != nil {
+		return 0, err
+	}
+	res, err := tx.Exec(`UPDATE transcript_events SET session_id = ? WHERE session_id = ?`, newID, oldID)
+	if err != nil {
+		return 0, err
+	}
+	moved, _ := res.RowsAffected()
+	if _, err := tx.Exec(`UPDATE transcript_archive SET session_id = ? WHERE session_id = ?`, newID, oldID); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return int(moved), nil
+}

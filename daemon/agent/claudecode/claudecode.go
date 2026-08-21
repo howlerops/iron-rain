@@ -44,6 +44,7 @@ import (
 	"github.com/howlerops/oculus/daemon/mcp"
 	"github.com/howlerops/oculus/daemon/procutil"
 	"github.com/howlerops/oculus/daemon/protocol"
+	"github.com/howlerops/oculus/daemon/textutil"
 )
 
 // Provider spawns claude-code sessions via the sidecar.
@@ -693,6 +694,10 @@ type imgAtt struct {
 	Mime string `json:"mime"`
 	Data string `json:"data"`
 }
+
+// maxLoggedBadFrames caps the unparseable-frame log per session.
+const maxLoggedBadFrames = 5
+
 type outMsg struct {
 	T            string        `json:"t"`
 	ID           string        `json:"id,omitempty"`
@@ -895,9 +900,20 @@ func (s *session) readLoop(stdout io.ReadCloser) {
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	idle := false
+	badFrames := 0
 	for sc.Scan() {
 		var m outMsg
-		if json.Unmarshal(sc.Bytes(), &m) != nil {
+		if err := json.Unmarshal(sc.Bytes(), &m); err != nil {
+			// Skipping a malformed frame is right — one bad line must not kill the stream — but doing
+			// it silently is not. The pi adapter had the identical pattern and a field typed too
+			// narrowly (string where the agent sent an object), so every assistant delta failed to
+			// decode and was dropped here without a trace: the agent accepted prompts, closed its
+			// turns idle, and never said a word. Rate-limited so a systematically bad frame shows up
+			// without flooding the log.
+			if badFrames < maxLoggedBadFrames {
+				badFrames++
+				log.Printf("claude-code: dropping an unparseable frame: %v (%s)", err, textutil.FirstLine(string(sc.Bytes()), 160))
+			}
 			continue
 		}
 		switch m.T {

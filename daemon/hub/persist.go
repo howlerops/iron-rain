@@ -328,6 +328,16 @@ func (h *Hub) restartSession(ctx context.Context, oldID string) (*managedSession
 	m.mu.Unlock()
 	h.persistSession(m)
 	if sess.ID() != oldID {
+		// Move the conversation onto the new id BEFORE dropping the old record. Name, model and mode
+		// were already carried across; the transcript is keyed by session id and was not, so a
+		// restarted session came back with its whole history missing and those rows were orphaned
+		// under a record about to be deleted. Failing to move it is not fatal — a restarted session
+		// with no history still works — but it is the thing the user actually notices, so say so.
+		if moved, err := db.MoveTranscript(oldID, sess.ID()); err != nil {
+			log.Printf("session.restart %s: could not carry history to %s: %v", oldID, sess.ID(), err)
+		} else if moved > 0 {
+			log.Printf("session.restart %s: carried %d transcript row(s) to %s", oldID, moved, sess.ID())
+		}
 		_ = db.DeleteSession(oldID) // the stopped record is replaced by the new live one
 	}
 	return m, nil
