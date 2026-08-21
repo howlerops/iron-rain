@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,6 +41,9 @@ import (
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/textutil"
 )
+
+// maxLoggedBadFrames caps the unparseable-frame log per session.
+const maxLoggedBadFrames = 5
 
 // Provider spawns pi RPC sessions.
 type Provider struct {
@@ -335,19 +339,41 @@ func (s *session) emit(ev agent.Event) {
 }
 
 type piEvent struct {
-	Type     string         `json:"type"`
-	Command  string         `json:"command"` // set on {"type":"response"} frames — which command answered
-	Method   string         `json:"method"`
-	ID       string         `json:"id"`
-	ToolName string         `json:"toolName"`
-	Title    string         `json:"title"`
-	Message  string         `json:"message"`
-	Output   string         `json:"output"`
-	Args     map[string]any `json:"args"`
-	Asst     struct {
+	Type     string `json:"type"`
+	Command  string `json:"command"` // set on {"type":"response"} frames — which command answered
+	Method   string `json:"method"`
+	ID       string `json:"id"`
+	ToolName string `json:"toolName"`
+	Title    string `json:"title"`
+	// RawMessage, NOT string. pi reuses the "message" key with two different types: a plain string on
+	// a confirm request, but an OBJECT on message_start/message_update/message_end. Typed as a string
+	// it failed to decode every object-carrying frame — and because readLoop skips any line that
+	// fails to unmarshal, EVERY assistant text_delta was silently dropped. The visible result was an
+	// agent that accepted prompts, ended its turns idle, and never said a word.
+	//
+	// json.RawMessage accepts either shape; messageText pulls the string back out where one is
+	// actually expected.
+	Message json.RawMessage `json:"message"`
+	Output  string          `json:"output"`
+	Args    map[string]any  `json:"args"`
+	Asst    struct {
 		Type  string `json:"type"`
 		Delta string `json:"delta"`
 	} `json:"assistantMessageEvent"`
+}
+
+// messageText returns the "message" field when it is a plain string (a confirm/select prompt), and
+// "" when it is an object or absent. Callers want human-readable text; an object here is a different
+// frame shape, not a message to show.
+func (e piEvent) messageText() string {
+	if len(e.Message) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(e.Message, &s) != nil {
+		return ""
+	}
+	return s
 }
 
 // piToolSummary renders a short command line from a tool's args (command → path → pattern), so a
@@ -444,10 +470,21 @@ func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool) {
 	sc := bufio.NewScanner(stdout) // \n framing only — pi-rpc-compliant
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	idle := false
+	badFrames := 0
 	for sc.Scan() {
 		line := sc.Bytes()
 		var e piEvent
-		if json.Unmarshal(line, &e) != nil {
+		if err := json.Unmarshal(line, &e); err != nil {
+			// Log it. This skip is correct — one malformed frame must not kill the stream — but doing
+			// it SILENTLY is how a decode bug hid in plain sight: piEvent.Message was typed string
+			// while pi sends an object on message_* frames, so every assistant text_delta failed to
+			// parse and was dropped here without a trace. The agent looked alive and mute.
+			// Rate-limited to the first few per session so a systematically bad frame is visible
+			// without flooding the log.
+			if badFrames < maxLoggedBadFrames {
+				badFrames++
+				log.Printf("pi: dropping an unparseable frame: %v (%s)", err, textutil.FirstLine(string(line), 160))
+			}
 			continue
 		}
 		switch e.Type {
@@ -510,10 +547,26 @@ func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool) {
 			s.emit(agent.Event{Type: protocol.TypeSessionTool, Payload: protocol.SessionTool{
 				SessionID: s.id, ID: e.ID, Name: e.ToolName, Title: title, Status: "running"}})
 		case "extension_ui_request":
+			// EVERY request must be answered, not just the ones that gate an action. pi blocks the
+			// run until it receives an extension_ui_response for each request it sends, and its
+			// extensions open a turn by registering UI surfaces — setWidget ("autoresearch", "goal",
+			// "subagent-async") and setStatus. Those are not questions for the user, but ignoring
+			// them wedged the agent before it produced a single token: the prompt was accepted
+			// ({"type":"response","command":"prompt","success":true}) and then nothing ever arrived,
+			// so the turn closed idle with an empty reply and the session looked dead.
+			//
+			// Acknowledged immediately here. Only confirm/select are real questions and reach the
+			// user; a non-gating request answered by a human would be a prompt about nothing.
+			if e.Method != "confirm" && e.Method != "select" {
+				if err := s.send(map[string]any{"type": "extension_ui_response", "id": e.ID, "confirmed": true}); err != nil {
+					log.Printf("pi: failed to ack %s ui request: %v", e.Method, err)
+				}
+				continue
+			}
 			// confirm (yes/no) and select (options) both gate an action — a plan-mode
 			// extension surfaces its plan through here, reusing the approval channel.
-			if e.Method == "confirm" || e.Method == "select" {
-				detail := e.Message
+			{
+				detail := e.messageText()
 				if detail == "" {
 					detail = e.Title
 				}
