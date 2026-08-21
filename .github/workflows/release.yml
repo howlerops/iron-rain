@@ -91,7 +91,25 @@ jobs:
               # symptom lands on the user as a daemon that is SIGKILLed at exec with no log line
               # anywhere. An unsigned darwin binary is not a degraded release, it is an unusable
               # one, so it must break the build here rather than someone's machine later.
-              codesign --force --timestamp --options runtime --sign "$IDENTITY" oculusd
+              # Retried, because --timestamp is a NETWORK call to Apple's timestamp service and it
+              # fails transiently ("A timestamp was expected but was not found"). One such blip took
+              # down a release whose code was fine. Retrying costs seconds; not retrying costs a
+              # half-published release, since the daemon tarballs and the app zip are produced by
+              # different jobs and only one of them dies.
+              #
+              # The retry is around SIGNING only. The verify below stays a hard, single check: a
+              # signature that didn't take is never something to paper over with another attempt.
+              for attempt in 1 2 3; do
+                if codesign --force --timestamp --options runtime --sign "$IDENTITY" oculusd; then
+                  break
+                fi
+                if [ "$attempt" = "3" ]; then
+                  echo "::error::codesign failed 3 times for $os/$arch — not shipping an unsigned binary."
+                  exit 1
+                fi
+                echo "codesign attempt $attempt failed (likely the timestamp service) — retrying in $((attempt * 15))s"
+                sleep $((attempt * 15))
+              done
               codesign --verify --strict --verbose=2 oculusd
               echo "signed $os/$arch with identity: $IDENTITY"
             fi
@@ -177,14 +195,34 @@ jobs:
           VERSION="${TAG#v}"   # stamp the release version so the app knows it (update check)
           xcodegen generate --spec app/project.yml
           if [ "$SIGNED" = "true" ]; then
-            xcodebuild -project app/Oculus.xcodeproj -scheme Oculus-macOS -configuration Release \
-              -derivedDataPath build/mac -destination 'platform=macOS' build \
-              MARKETING_VERSION="$VERSION" \
-              CODE_SIGN_STYLE=Manual \
-              CODE_SIGN_IDENTITY="Developer ID Application" \
-              DEVELOPMENT_TEAM="$TEAM_ID" \
-              OTHER_CODE_SIGN_FLAGS="--timestamp --options=runtime" \
-              CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO
+            # Retried for the same reason the daemon signing is: the codesign invocations xcodebuild
+            # makes carry --timestamp, which is a network call to Apple, and a single transient
+            # failure ("A timestamp was expected but was not found") killed a release whose code was
+            # fine. Because the daemon binaries are built by a SEPARATE job that succeeded, the
+            # result was a half-published release — every tarball present, no app zip — which is
+            # worse than a clean failure: the installer had a daemon with no matching app.
+            #
+            # A rebuild reuses derivedDataPath, so a retry re-signs rather than recompiling from
+            # scratch. Only the outcome is retried; nothing about signing correctness is relaxed,
+            # and the entitlement + signature checks below still run exactly once on the result.
+            for attempt in 1 2 3; do
+              if xcodebuild -project app/Oculus.xcodeproj -scheme Oculus-macOS -configuration Release \
+                -derivedDataPath build/mac -destination 'platform=macOS' build \
+                MARKETING_VERSION="$VERSION" \
+                CODE_SIGN_STYLE=Manual \
+                CODE_SIGN_IDENTITY="Developer ID Application" \
+                DEVELOPMENT_TEAM="$TEAM_ID" \
+                OTHER_CODE_SIGN_FLAGS="--timestamp --options=runtime" \
+                CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO; then
+                break
+              fi
+              if [ "$attempt" = "3" ]; then
+                echo "::error::xcodebuild failed 3 times — see the log above for the real cause."
+                exit 1
+              fi
+              echo "build/sign attempt $attempt failed — retrying in $((attempt * 20))s"
+              sleep $((attempt * 20))
+            done
           else
             xcodebuild -project app/Oculus.xcodeproj -scheme Oculus-macOS -configuration Release \
               -derivedDataPath build/mac -destination 'platform=macOS' build \
