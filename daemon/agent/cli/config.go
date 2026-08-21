@@ -41,7 +41,21 @@ type builtin struct {
 // can change under us.)
 var builtinAgents = []builtin{
 	{cfg: Config{Name: "codex", Command: "codex", Args: []string{"exec", "{prompt}"}}},
-	{cfg: Config{Name: "gemini", Command: "gemini", Args: []string{"-p", "{prompt}"}}},
+	// --skip-trust is REQUIRED, not a preference. Headless gemini refuses to run in a directory it
+	// hasn't been told to trust:
+	//
+	//   "Gemini CLI is not running in a trusted directory. To proceed, either use `--skip-trust`,
+	//    set the GEMINI_CLI_TRUST_WORKSPACE=true environment variable, or trust this directory in
+	//    interactive mode."
+	//
+	// Trusting interactively is impossible behind the daemon's pipe, and every Iron Rain session runs
+	// in a project directory rather than gemini's own, so without this gemini failed for every user
+	// in every repo — independent of authentication.
+	//
+	// The tradeoff, stated plainly: the trust gate exists so a repo can't have its workspace-level
+	// gemini config honoured automatically. We accept that because the user explicitly chose the
+	// directory the session runs in, and because the alternative is a provider that cannot run at all.
+	{cfg: Config{Name: "gemini", Command: "gemini", Args: []string{"--skip-trust", "-p", "{prompt}"}}},
 	{cfg: Config{Name: "cursor-agent", Command: "cursor-agent", Args: []string{"-p", "{prompt}"}}},
 	{cfg: Config{Name: "aider", Command: "aider", Args: []string{"--yes-always", "--no-auto-commits", "--message", "{prompt}"}}},
 	// Collision-prone names: each must identify itself before we route prompts to it.
