@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/howlerops/oculus/daemon/agent/agui"
 	"github.com/howlerops/oculus/daemon/agent/claudecode"
 	"github.com/howlerops/oculus/daemon/agent/cli"
 	"github.com/howlerops/oculus/daemon/agent/opencode"
@@ -74,6 +75,11 @@ func enableProviders(ctx context.Context, h *hub.Hub, opencodeURL, claudeSidecar
 	userAgents, _ := cli.Load(agentsPath())
 	for _, cfg := range cli.Merge(cli.Detect(), userAgents) {
 		if native[cfg.Name] {
+			continue
+		}
+		if cfg.IsAGUI() {
+			h.Register(agui.New(agui.Config{Name: cfg.Name, Endpoint: cfg.Endpoint, Headers: cfg.Headers}))
+			enabled = append(enabled, "ag-ui         -> "+cfg.Name+" ("+cfg.Endpoint+")")
 			continue
 		}
 		h.Register(cli.NewProvider(cfg))

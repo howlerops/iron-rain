@@ -40,7 +40,19 @@ type Config struct {
 	// substitute the chosen one (e.g. "--model {model}"). Model is the default selection.
 	Models []string `json:"models,omitempty"`
 	Model  string   `json:"model,omitempty"`
+	// Endpoint marks this entry as an AG-UI BACKEND rather than a subprocess: the daemon POSTs runs
+	// to this URL instead of spawning Command, and the agui adapter handles it. Mutually exclusive
+	// with Command.
+	//
+	// It lives on this struct rather than in a second registry because ~/.oculus/agents.json is the
+	// one file `agent.upsert` writes and the app's "manage agents" screen edits. Splitting custom
+	// agents across two formats by transport would make "add an agent" mean two different things.
+	Endpoint string            `json:"endpoint,omitempty"`
+	Headers  map[string]string `json:"headers,omitempty"`
 }
+
+// IsAGUI reports whether this config describes an AG-UI backend rather than a subprocess.
+func (c Config) IsAGUI() bool { return c.Endpoint != "" }
 
 // Provider adapts one Config to the agent.Provider interface.
 type Provider struct {
