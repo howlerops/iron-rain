@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -389,5 +390,127 @@ func TestRestartOfAVirginSessionIsNotMarkedResumed(t *testing.T) {
 	t.Cleanup(func() { _ = m.sess.Close() })
 	if p.last != nil && p.last.resumed {
 		t.Fatal("a session with no history was restarted in resume mode")
+	}
+}
+
+// errAttachUnavailable stands in for the live opencode case: the server that owned the session is
+// gone, so it cannot be re-attached.
+var errAttachUnavailable = errors.New("server no longer holds this session")
+
+// attachResumeProvider can genuinely CONTINUE a conversation (pi, claude-code, opencode all can), and
+// records which path restart chose.
+type attachResumeProvider struct {
+	canResume  bool
+	attachErr  error
+	attachedID string
+	created    bool
+}
+
+func (p *attachResumeProvider) Name() string { return "opencode" }
+func (p *attachResumeProvider) Create(_ context.Context, cwd, prompt string) (agent.Session, error) {
+	p.created = true
+	return &fakeAttachedSess{id: "opencode_new", provider: "opencode", events: make(chan agent.Event)}, nil
+}
+func (p *attachResumeProvider) List(context.Context) ([]protocol.Session, error) { return nil, nil }
+func (p *attachResumeProvider) CanResume(string) bool                            { return p.canResume }
+func (p *attachResumeProvider) Attach(_ context.Context, id, cwd string) (agent.Session, error) {
+	if p.attachErr != nil {
+		return nil, p.attachErr
+	}
+	p.attachedID = id
+	// A real resume keeps the ORIGINAL id — that is what leaves the transcript, name and record all
+	// still matching.
+	return &fakeAttachedSess{id: id, provider: "opencode", events: make(chan agent.Event)}, nil
+}
+
+// Restart must prefer a real resume over a fresh session. Before this, restart always called Create
+// and leaned on an untyped MarkResumed assertion that only the generic cli adapter implements — so
+// opencode, claude-code and pi silently restarted cold, giving the user an agent with no memory of
+// the conversation displayed above it.
+func TestRestartPrefersResumeOverAFreshSession(t *testing.T) {
+	h, db := restoreHub(t)
+	p := &attachResumeProvider{canResume: true}
+	h.Register(p)
+	saveRecord(t, db, "oc_old", "opencode", persistedMeta{Cwd: t.TempDir()})
+	if _, err := db.AppendTranscript("oc_old", 1, "m1", []byte(`{"type":"session.message"}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := h.restartSession(context.Background(), "oc_old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.sess.Close() })
+
+	if p.created {
+		t.Fatal("restart created a fresh session even though the conversation was resumable")
+	}
+	if p.attachedID != "oc_old" {
+		t.Fatalf("attached %q, want the original id", p.attachedID)
+	}
+	if m.sess.ID() != "oc_old" {
+		t.Fatalf("resumed session id = %q, want the original — history is keyed by it", m.sess.ID())
+	}
+}
+
+// When the provider says the conversation is NOT recoverable, restart must not attach: doing so
+// would produce a brand-new conversation wearing the old id.
+func TestRestartDoesNotAttachWhenNotResumable(t *testing.T) {
+	h, db := restoreHub(t)
+	p := &attachResumeProvider{canResume: false}
+	h.Register(p)
+	saveRecord(t, db, "oc_gone", "opencode", persistedMeta{Cwd: t.TempDir()})
+	if _, err := db.AppendTranscript("oc_gone", 1, "m1", []byte(`{"type":"session.message"}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := h.restartSession(context.Background(), "oc_gone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.sess.Close() })
+	if !p.created {
+		t.Fatal("expected a fresh session when the provider reports the conversation unrecoverable")
+	}
+	if p.attachedID != "" {
+		t.Fatal("attached despite CanResume being false")
+	}
+}
+
+// A failing Attach — the live opencode case, where the server that owned the session is gone — must
+// fall back to a fresh session rather than failing the restart outright.
+func TestRestartFallsBackWhenAttachFails(t *testing.T) {
+	h, db := restoreHub(t)
+	p := &attachResumeProvider{canResume: true, attachErr: errAttachUnavailable}
+	h.Register(p)
+	saveRecord(t, db, "oc_dead", "opencode", persistedMeta{Cwd: t.TempDir()})
+	if _, err := db.AppendTranscript("oc_dead", 1, "m1", []byte(`{"type":"session.message"}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := h.restartSession(context.Background(), "oc_dead")
+	if err != nil {
+		t.Fatalf("restart must survive an attach failure: %v", err)
+	}
+	t.Cleanup(func() { _ = m.sess.Close() })
+	if !p.created {
+		t.Fatal("attach failed but no fresh session was created — the user would be left with nothing")
+	}
+}
+
+// A session that never produced a turn has nothing to resume, so restart must not attach.
+func TestRestartOfAVirginSessionDoesNotAttach(t *testing.T) {
+	h, db := restoreHub(t)
+	p := &attachResumeProvider{canResume: true}
+	h.Register(p)
+	saveRecord(t, db, "oc_virgin", "opencode", persistedMeta{Cwd: t.TempDir()})
+
+	m, err := h.restartSession(context.Background(), "oc_virgin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.sess.Close() })
+	if p.attachedID != "" {
+		t.Fatal("attached a session that had no prior turns")
 	}
 }

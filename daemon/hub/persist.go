@@ -297,19 +297,55 @@ func (h *Hub) restartSession(ctx context.Context, oldID string) (*managedSession
 	if cwd == "" {
 		cwd = rec.Cwd
 	}
-	sess, err := p.Create(ctx, cwd, "")
-	if err != nil {
-		return nil, err
-	}
-	// Restart amnesia: a CLI/pi agent keeps continuity in the process we just lost, so a fresh
-	// session would re-run the agent's COLD invocation — a new conversation shown under the old
-	// session's history. Durable transcript rows are the daemon's own proof this conversation had
-	// turns; when it did, tell the new session to resume (the adapter no-ops if its agent declares
-	// no resume invocation, where cold really is the only option).
+	// Prefer a REAL resume over a fresh session.
+	//
+	// Every provider that can continue a conversation already knows how — pi restarts onto its own
+	// JSONL with `--session`, claude-code replays its transcript, opencode re-attaches server-side —
+	// and each exposes it as agent.Attacher. Restart simply never asked, so it always created a cold
+	// session. The only prior nod to this was an untyped `interface{ MarkResumed() }` assertion, and
+	// exactly one adapter (generic cli) implements that method, so for opencode, claude-code and pi it
+	// failed silently and the user got an agent with no memory of the conversation shown above it.
+	//
+	// A resumed session keeps its ORIGINAL id, which is what makes this clean: the transcript, the
+	// name and the persisted record all still match, and nothing needs re-keying.
+	var sess agent.Session
+	hadTurns := false
 	if seq, err := db.MaxTranscriptSeq(oldID); err == nil && seq > 0 {
-		if r, ok := sess.(interface{ MarkResumed() }); ok {
-			r.MarkResumed()
-			log.Printf("session.restart %s: prior turns found — resuming rather than starting cold", oldID)
+		hadTurns = true
+	}
+	if at, ok := p.(agent.Attacher); ok && hadTurns {
+		// CanResume, where offered, is the provider's own check that the conversation is genuinely
+		// recoverable (pi: its file is still on disk). Attaching without it risks a NEW conversation
+		// wearing the old id — the empty-session-that-claims-to-be-yours failure.
+		resumable := true
+		if rc, ok := p.(agent.ResumeChecker); ok {
+			resumable = rc.CanResume(oldID)
+		}
+		if resumable {
+			if s, err := at.Attach(ctx, oldID, cwd); err == nil {
+				sess = s
+				log.Printf("session.restart %s: resumed the existing conversation", oldID)
+			} else {
+				// Expected for opencode when the server that owned the session is gone. Logged rather
+				// than swallowed: a cold restart is a materially different outcome and the user is
+				// about to notice the agent has forgotten everything.
+				log.Printf("session.restart %s: cannot resume (%v) — starting a fresh conversation", oldID, err)
+			}
+		}
+	}
+	if sess == nil {
+		s, err := p.Create(ctx, cwd, "")
+		if err != nil {
+			return nil, err
+		}
+		sess = s
+		// Last resort for an agent with no attach path: ask it to use its own resume invocation if it
+		// has one. Only the generic cli adapter implements this.
+		if hadTurns {
+			if r, ok := sess.(interface{ MarkResumed() }); ok {
+				r.MarkResumed()
+				log.Printf("session.restart %s: prior turns found — using the agent's resume invocation", oldID)
+			}
 		}
 	}
 	if pm.Model != "" {
