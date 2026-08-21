@@ -222,6 +222,14 @@ const (
 	// nothing from the user; it exists so a blip is something they watch heal rather than something
 	// they get paged about. Only if recovery genuinely fails does the turn become abandoned.
 	StatusRecovering = "recovering"
+	// StatusAbandoned is a turn the daemon gave up on: the provider was proven unreachable, or the
+	// stream died with the turn still open. Terminal, and the only state that renders as "no
+	// response". It may be declared ONLY by the daemon (see hub/turn.go), never inferred client-side.
+	//
+	// Late addition: this was the one status of the eight carried as a bare string literal at every
+	// use, so it alone got no compiler help against a typo and never appeared in a search for the
+	// constant. Nothing depended on the literal — the wire value is unchanged.
+	StatusAbandoned = "abandoned"
 )
 
 // Approval decisions.
@@ -1428,15 +1436,15 @@ type SubAgent struct {
 }
 
 // UIComponent is a normalized generative-UI element the daemon parses out of a harness's assistant
-// text — a fenced ```iron:ui``` block (or a bare one-line component JSON). Projecting components from
-// structured tool events (todos→checklist, changed-files→diff) is planned but NOT implemented; the
-// fence path is the only source today. The model emits typed intent (a catalog component +
+// text — a fenced ```iron:ui``` block (or a bare one-line component JSON). Components are also PROJECTED from
+// structured tool events (todos→checklist, see genui.ProjectTodos); the fence is the main source but
+// no longer the only one. The model emits typed intent (a catalog component +
 // inert props); the CLIENT owns the native view. Props is opaque at transport and validated
 // daemon-side against the per-component schema; the client decodes it per (Component, SchemaV).
 // FallbackText is mandatory markdown so an unknown component or a newer schema degrades visibly.
 type UIComponent struct {
 	SessionID    string          `json:"session_id"`
-	MessageID    string          `json:"message_id,omitempty"` // groups the component under a message turn
+	MessageID    string          `json:"message_id,omitempty"` // RESERVED: no emitter populates this yet
 	ID           string          `json:"id"`                   // stable per message — enables in-place update
 	Component    string          `json:"component"`            // table | checklist | plan | callout | diff | choice | confirm
 	SchemaV      int             `json:"schema_v"`             // per-component schema version (forward-compatible)

@@ -319,7 +319,7 @@ func (m *managedSession) closeTurnFrom(state, reason string, providerDriven bool
 	// be running, whatever state we last heard for it; this is the one choke point every close path
 	// shares, so the invariant lives here.
 	sealed := "done"
-	if state == protocol.StatusError || state == "abandoned" || state == protocol.StatusNeedsYou {
+	if state == protocol.StatusError || state == protocol.StatusAbandoned || state == protocol.StatusNeedsYou {
 		sealed = "error" // don't dress a dead turn's children as cleanly finished
 	}
 	var toSeal []protocol.SubAgent
@@ -365,7 +365,7 @@ func (m *managedSession) closeTurnFrom(state, reason string, providerDriven bool
 	}
 	m.emitTurn2(state, reason)
 	m.publishVerdict(state, reason, providerDriven)
-	if state == protocol.StatusError || state == "abandoned" {
+	if state == protocol.StatusError || state == protocol.StatusAbandoned {
 		log.Printf("turn: session %s closed %s: %s", m.sess.ID(), state, reason)
 	}
 }
@@ -393,7 +393,7 @@ func (m *managedSession) publishVerdict(state, reason string, providerDriven boo
 		m.publishSessionState(status, reason)
 		return
 	}
-	failed := state == protocol.StatusError || state == "abandoned"
+	failed := state == protocol.StatusError || state == protocol.StatusAbandoned
 	stuck := state == protocol.StatusNeedsYou
 	status := protocol.StatusIdle
 	switch {
@@ -591,7 +591,7 @@ func (m *managedSession) handleUnreachable(probeErr error, fails, failLimit int)
 		reason += fmt.Sprintf(" (reconnected %d×, still failing)", revives)
 	}
 	reason += ": " + probeErr.Error()
-	m.closeTurn("abandoned", reason)
+	m.closeTurn(protocol.StatusAbandoned, reason)
 	return false
 }
 
