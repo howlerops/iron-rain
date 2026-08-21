@@ -26,6 +26,18 @@ import (
 // users already understand): explicit deny > explicit allow > ask. Within a class the first matching
 // rule in file order wins, so a user can put a narrow exception above a broad rule.
 
+// Execution scopes for ApprovalRule.ExecScope — WHERE a rule's standing answer applies.
+//
+// This is a separate vocabulary from protocol.ExecKind* rather than a reuse of it, because
+// ExecKindLocal is the EMPTY STRING. Storing an ExecKind directly would make a zero-valued field
+// mean "local" and "unset" simultaneously, and the whole point of this dimension is that those two
+// must be distinguishable.
+const (
+	ExecScopeLocal  = "local"  // only when the agent runs on this Mac
+	ExecScopeRemote = "remote" // only when it runs somewhere else (ssh, and later sprites)
+	ExecScopeAny    = "any"    // anywhere — must be chosen deliberately, never inferred
+)
+
 // ApprovalRule is one persisted decision. Zero-valued fields match anything.
 type ApprovalRule struct {
 	Provider   string `json:"provider,omitempty"`    // "" = any harness
@@ -33,7 +45,10 @@ type ApprovalRule struct {
 	Pattern    string `json:"pattern,omitempty"`     // glob over the request's Detail (command / URL / path)
 	PathPrefix string `json:"path_prefix,omitempty"` // filesystem subtree the request must stay inside
 	ProjectID  string `json:"project_id,omitempty"`  // "" = global, else only this project's sessions
-	Action     string `json:"action"`                // allow | deny
+	// ExecScope limits the rule to where the agent actually executes. "" means local, NOT any — see
+	// matchesLocation for why that asymmetry is deliberate.
+	ExecScope string `json:"exec_scope,omitempty"` // "" (legacy) | local | remote | any
+	Action    string `json:"action"`               // allow | deny
 }
 
 // approvalRuleKey is the legacy provider|tool identity, kept because the on-disk v1 format was a bare
@@ -193,11 +208,44 @@ func (r ApprovalRule) describe() string {
 	if r.ProjectID != "" {
 		b.WriteString(" in project " + r.ProjectID)
 	}
+	// Always stated, including for the "" default. A rule whose location scope is invisible is one a
+	// user can't audit — and since an absent scope means LOCAL rather than "any", staying silent
+	// about it would leave people assuming the broader reading.
+	switch r.ExecScope {
+	case ExecScopeAny:
+		b.WriteString(" anywhere")
+	case ExecScopeRemote:
+		b.WriteString(" on remote hosts")
+	default:
+		b.WriteString(" on this Mac")
+	}
 	return b.String()
 }
 
+// matchesLocation reports whether the rule's execution scope covers a session running at execKind.
+//
+// The default for an unset scope is LOCAL, not "any" — the one place in this type where an empty
+// field is restrictive rather than permissive. Every rule persisted before this field existed was
+// created by a user answering a prompt about work happening somewhere specific, and treating those
+// as "anywhere" would silently hand a remote host standing permission the user never granted:
+// "always allow `rm -rf build`" answered for this Mac would auto-approve it over ssh on a build box.
+//
+// The failure mode of guessing wrong in this direction is an extra prompt. In the other direction it
+// is an unattended destructive command on a machine the user wasn't thinking about.
+func (r ApprovalRule) matchesLocation(execKind string) bool {
+	remote := execKind != protocol.ExecKindLocal
+	switch r.ExecScope {
+	case ExecScopeAny:
+		return true
+	case ExecScopeRemote:
+		return remote
+	default: // ExecScopeLocal and "" (legacy rules)
+		return !remote
+	}
+}
+
 // matches reports whether this rule covers a specific approval request.
-func (r ApprovalRule) matches(provider, projectID string, ar protocol.ApprovalRequest) bool {
+func (r ApprovalRule) matches(provider, projectID, execKind string, ar protocol.ApprovalRequest) bool {
 	if r.Provider != "" && r.Provider != provider {
 		return false
 	}
@@ -205,6 +253,9 @@ func (r ApprovalRule) matches(provider, projectID string, ar protocol.ApprovalRe
 		return false
 	}
 	if r.ProjectID != "" && r.ProjectID != projectID {
+		return false
+	}
+	if !r.matchesLocation(execKind) {
 		return false
 	}
 	if r.Pattern != "" && !globMatch(r.Pattern, ar.Detail) {
@@ -219,18 +270,18 @@ func (r ApprovalRule) matches(provider, projectID string, ar protocol.ApprovalRe
 // evaluateApproval resolves a request against the rule set. It returns the decision to apply and
 // whether any rule matched. Deny is checked before allow so a narrow "never touch .env" beats a broad
 // "always allow edit", regardless of file order.
-func (h *Hub) evaluateApproval(provider, projectID string, ar protocol.ApprovalRequest) (string, bool) {
+func (h *Hub) evaluateApproval(provider, projectID, execKind string, ar protocol.ApprovalRequest) (string, bool) {
 	h.mu.Lock()
 	rules := make([]ApprovalRule, len(h.approvalRules))
 	copy(rules, h.approvalRules)
 	h.mu.Unlock()
 	for _, r := range rules {
-		if r.Action == "deny" && r.matches(provider, projectID, ar) {
+		if r.Action == "deny" && r.matches(provider, projectID, execKind, ar) {
 			return "deny", true
 		}
 	}
 	for _, r := range rules {
-		if r.Action == protocol.DecisionAllow && r.matches(provider, projectID, ar) {
+		if r.Action == protocol.DecisionAllow && r.matches(provider, projectID, execKind, ar) {
 			return protocol.DecisionAllow, true
 		}
 	}
@@ -243,8 +294,9 @@ func (h *Hub) evaluateApproval(provider, projectID string, ar protocol.ApprovalR
 func (h *Hub) autoAllowApproval(m *managedSession, ar protocol.ApprovalRequest) bool {
 	m.mu.Lock()
 	projectID := m.meta.projectID
+	execKind := m.meta.execKind
 	m.mu.Unlock()
-	decision, ok := h.evaluateApproval(m.sess.Provider(), projectID, ar)
+	decision, ok := h.evaluateApproval(m.sess.Provider(), projectID, execKind, ar)
 	if !ok {
 		return false
 	}
@@ -303,7 +355,13 @@ func withinPrefix(prefix, detail string) bool {
 // ruleFromDecision turns an answered approval into the rule to persist. A nil scope reproduces the
 // original behavior (this provider + this tool, everywhere), so an older client keeps working.
 func ruleFromDecision(p pendingApproval, scope *protocol.ApprovalScope) ApprovalRule {
-	r := ApprovalRule{Provider: p.provider, Tool: p.req.Tool, Action: protocol.DecisionAllow}
+	// The rule inherits the location the user was actually answering about. Granting "always" while
+	// watching a local session must not also grant it on a build box; widening to ExecScopeAny is a
+	// deliberate act, not something a yes-to-this-prompt should imply.
+	r := ApprovalRule{
+		Provider: p.provider, Tool: p.req.Tool, Action: protocol.DecisionAllow,
+		ExecScope: execScopeFor(p.execKind),
+	}
 	if scope == nil {
 		return r
 	}
@@ -316,6 +374,14 @@ func ruleFromDecision(p pendingApproval, scope *protocol.ApprovalScope) Approval
 		r.ProjectID = p.projectID
 	}
 	return r
+}
+
+// execScopeFor maps a session's execution kind to the scope a new rule should carry.
+func execScopeFor(execKind string) string {
+	if execKind == protocol.ExecKindLocal {
+		return ExecScopeLocal
+	}
+	return ExecScopeRemote
 }
 
 // suggestScopes proposes the ALWAYS scopes for one request, narrowest first, so the client's menu is

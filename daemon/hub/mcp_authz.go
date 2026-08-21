@@ -113,8 +113,9 @@ func (h *Hub) authorizeMCPTool(ctx context.Context, token, server, tool string) 
 
 	m.mu.Lock()
 	projectID := m.meta.projectID
+	execKind := m.meta.execKind
 	m.mu.Unlock()
-	if decision, matched := h.evaluateApproval(m.sess.Provider(), projectID, ar); matched {
+	if decision, matched := h.evaluateApproval(m.sess.Provider(), projectID, execKind, ar); matched {
 		if decision == protocol.DecisionAllow {
 			return nil
 		}

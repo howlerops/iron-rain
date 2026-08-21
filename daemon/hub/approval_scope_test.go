@@ -67,10 +67,10 @@ func TestRulePrecedenceDenyBeatsAllow(t *testing.T) {
 	h.addApprovalRule(ApprovalRule{Provider: "opencode", Tool: "bash", Action: protocol.DecisionAllow})
 	h.addApprovalRule(ApprovalRule{Tool: "bash", Pattern: "git push *", Action: "deny"})
 
-	if d, ok := h.evaluateApproval("opencode", "", protocol.ApprovalRequest{Tool: "bash", Detail: "git status"}); !ok || d != protocol.DecisionAllow {
+	if d, ok := h.evaluateApproval("opencode", "", protocol.ExecKindLocal, protocol.ApprovalRequest{Tool: "bash", Detail: "git status"}); !ok || d != protocol.DecisionAllow {
 		t.Errorf("ordinary bash should be allowed, got %q/%v", d, ok)
 	}
-	if d, ok := h.evaluateApproval("opencode", "", protocol.ApprovalRequest{Tool: "bash", Detail: "git push origin main"}); !ok || d != "deny" {
+	if d, ok := h.evaluateApproval("opencode", "", protocol.ExecKindLocal, protocol.ApprovalRequest{Tool: "bash", Detail: "git push origin main"}); !ok || d != "deny" {
 		t.Errorf("deny rule must beat the broad allow, got %q/%v", d, ok)
 	}
 }
@@ -80,16 +80,16 @@ func TestRuleScoping(t *testing.T) {
 	h.SetApprovalRulesPath(filepath.Join(t.TempDir(), "rules.json"))
 	h.addApprovalRule(ApprovalRule{Tool: "bash", Pattern: "npm *", ProjectID: "proj-a", Action: protocol.DecisionAllow})
 
-	if _, ok := h.evaluateApproval("opencode", "proj-a", protocol.ApprovalRequest{Tool: "bash", Detail: "npm test"}); !ok {
+	if _, ok := h.evaluateApproval("opencode", "proj-a", protocol.ExecKindLocal, protocol.ApprovalRequest{Tool: "bash", Detail: "npm test"}); !ok {
 		t.Error("matching project + pattern should match")
 	}
-	if _, ok := h.evaluateApproval("opencode", "proj-b", protocol.ApprovalRequest{Tool: "bash", Detail: "npm test"}); ok {
+	if _, ok := h.evaluateApproval("opencode", "proj-b", protocol.ExecKindLocal, protocol.ApprovalRequest{Tool: "bash", Detail: "npm test"}); ok {
 		t.Error("a project-scoped rule must not leak into another project")
 	}
-	if _, ok := h.evaluateApproval("opencode", "proj-a", protocol.ApprovalRequest{Tool: "bash", Detail: "rm -rf /"}); ok {
+	if _, ok := h.evaluateApproval("opencode", "proj-a", protocol.ExecKindLocal, protocol.ApprovalRequest{Tool: "bash", Detail: "rm -rf /"}); ok {
 		t.Error("pattern must gate the command")
 	}
-	if _, ok := h.evaluateApproval("opencode", "proj-a", protocol.ApprovalRequest{Tool: "edit", Detail: "npm test"}); ok {
+	if _, ok := h.evaluateApproval("opencode", "proj-a", protocol.ExecKindLocal, protocol.ApprovalRequest{Tool: "edit", Detail: "npm test"}); ok {
 		t.Error("tool must be gated")
 	}
 }
@@ -103,10 +103,10 @@ func TestLegacyRulesMigrate(t *testing.T) {
 	h := New()
 	h.SetApprovalRulesPath(path)
 
-	if d, ok := h.evaluateApproval("opencode", "", protocol.ApprovalRequest{Tool: "bash", Detail: "anything"}); !ok || d != protocol.DecisionAllow {
+	if d, ok := h.evaluateApproval("opencode", "", protocol.ExecKindLocal, protocol.ApprovalRequest{Tool: "bash", Detail: "anything"}); !ok || d != protocol.DecisionAllow {
 		t.Fatal("legacy rule stopped working after migration")
 	}
-	if _, ok := h.evaluateApproval("opencode", "", protocol.ApprovalRequest{Tool: "Edit"}); ok {
+	if _, ok := h.evaluateApproval("opencode", "", protocol.ExecKindLocal, protocol.ApprovalRequest{Tool: "Edit"}); ok {
 		t.Error("legacy rule must stay scoped to its own provider")
 	}
 	// The file must now be the structured format.
@@ -158,5 +158,82 @@ func TestSuggestScopesPrefersHarnessPatterns(t *testing.T) {
 	}
 	if !hasTool {
 		t.Error("the plain per-tool scope must always be offered")
+	}
+}
+
+// A rule persisted while working LOCALLY must not authorize the same action on a remote host.
+//
+// This is the asymmetry that makes an unset ExecScope mean "local" rather than "any": every rule
+// written before the field existed was a user answering a prompt about a specific machine, and
+// reading those as "anywhere" would hand a build box standing permission nobody granted.
+func TestLegacyRuleDoesNotAuthorizeRemote(t *testing.T) {
+	h := New()
+	h.approvalRules = []ApprovalRule{
+		{Provider: "opencode", Tool: "bash", Pattern: "rm *", Action: protocol.DecisionAllow}, // no ExecScope: legacy
+	}
+	ar := protocol.ApprovalRequest{Tool: "bash", Detail: "rm -rf build"}
+
+	if d, ok := h.evaluateApproval("opencode", "", protocol.ExecKindLocal, ar); !ok || d != protocol.DecisionAllow {
+		t.Fatalf("local should still auto-allow: decision=%q matched=%v", d, ok)
+	}
+	if _, ok := h.evaluateApproval("opencode", "", protocol.ExecKindSSH, ar); ok {
+		t.Fatal("a legacy local rule must NOT auto-approve over ssh — the user is re-asked instead")
+	}
+}
+
+// The three explicit scopes each mean what they say.
+func TestExecScopeMatching(t *testing.T) {
+	ar := protocol.ApprovalRequest{Tool: "bash", Detail: "npm test"}
+	for _, tc := range []struct {
+		scope              string
+		wantLocal, wantSSH bool
+	}{
+		{ExecScopeLocal, true, false},
+		{ExecScopeRemote, false, true},
+		{ExecScopeAny, true, true},
+		{"", true, false}, // legacy
+	} {
+		h := New()
+		h.approvalRules = []ApprovalRule{
+			{Provider: "opencode", Tool: "bash", Pattern: "npm *", ExecScope: tc.scope, Action: protocol.DecisionAllow},
+		}
+		if _, ok := h.evaluateApproval("opencode", "", protocol.ExecKindLocal, ar); ok != tc.wantLocal {
+			t.Errorf("scope %q local: matched=%v want %v", tc.scope, ok, tc.wantLocal)
+		}
+		if _, ok := h.evaluateApproval("opencode", "", protocol.ExecKindSSH, ar); ok != tc.wantSSH {
+			t.Errorf("scope %q ssh: matched=%v want %v", tc.scope, ok, tc.wantSSH)
+		}
+	}
+}
+
+// A DENY must not be narrowed by the same defaulting — a legacy deny that stopped applying the
+// moment work moved to a remote host would be a security regression, not a convenience.
+func TestDenyStillAppliesRemotely(t *testing.T) {
+	h := New()
+	h.approvalRules = []ApprovalRule{
+		{Provider: "opencode", Tool: "bash", Pattern: "git push *", ExecScope: ExecScopeAny, Action: "deny"},
+	}
+	ar := protocol.ApprovalRequest{Tool: "bash", Detail: "git push origin main"}
+	for _, kind := range []string{protocol.ExecKindLocal, protocol.ExecKindSSH} {
+		if d, ok := h.evaluateApproval("opencode", "", kind, ar); !ok || d != "deny" {
+			t.Errorf("exec kind %q: decision=%q matched=%v, want a deny", kind, d, ok)
+		}
+	}
+}
+
+// A rule minted from a user's ALWAYS answer inherits the location they were answering about.
+func TestRuleFromDecisionInheritsLocation(t *testing.T) {
+	for kind, want := range map[string]string{
+		protocol.ExecKindLocal: ExecScopeLocal,
+		protocol.ExecKindSSH:   ExecScopeRemote,
+	} {
+		p := pendingApproval{
+			req:      protocol.ApprovalRequest{Tool: "bash", Detail: "npm test"},
+			provider: "opencode",
+			execKind: kind,
+		}
+		if got := ruleFromDecision(p, nil); got.ExecScope != want {
+			t.Errorf("exec kind %q produced scope %q, want %q", kind, got.ExecScope, want)
+		}
 	}
 }
