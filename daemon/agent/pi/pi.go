@@ -38,6 +38,7 @@ import (
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/procutil"
 	"github.com/howlerops/oculus/daemon/protocol"
+	"github.com/howlerops/oculus/daemon/textutil"
 )
 
 // Provider spawns pi RPC sessions.
@@ -354,10 +355,7 @@ type piEvent struct {
 func piToolSummary(args map[string]any) string {
 	for _, k := range []string{"command", "file_path", "path", "pattern", "url", "query"} {
 		if v, ok := args[k].(string); ok && v != "" {
-			if len(v) > 200 {
-				return v[:200] + "…"
-			}
-			return v
+			return textutil.Trunc(v, 200)
 		}
 	}
 	return ""

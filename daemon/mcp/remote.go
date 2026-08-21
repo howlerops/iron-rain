@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/howlerops/oculus/daemon/textutil"
 )
 
 // Remote (streamable-HTTP) MCP servers.
@@ -176,12 +178,5 @@ func firstSSEData(b []byte) []byte {
 }
 
 func firstLine(s string) string {
-	s = strings.TrimSpace(s)
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		s = s[:i]
-	}
-	if len(s) > 200 {
-		s = s[:200] + "…"
-	}
-	return s
+	return textutil.FirstLine(s, 200)
 }

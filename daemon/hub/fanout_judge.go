@@ -65,10 +65,9 @@ attempts are close, say what distinguishes them rather than hedging.`)
 }
 
 func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
+	// Delegates so there is ONE truncation rule in this package. Its own byte-slice implementation
+	// cut multi-byte characters in half; see truncRunes in heartbeat.go.
+	return truncRunes(s, n)
 }
 
 // judgeFanout asks a fresh agent to recommend a winner, and broadcasts its answer as a gen-UI

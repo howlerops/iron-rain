@@ -602,6 +602,10 @@ struct IssueMarkdownView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private func bulletGlyph(_ depth: Int) -> String {
+        ["•", "◦", "▪", "–"][min(max(depth, 0), 3)]
+    }
+
     @ViewBuilder private func blockView(_ b: MarkdownBlock) -> some View {
         switch b {
         case .heading(let level, let t):
@@ -609,13 +613,33 @@ struct IssueMarkdownView: View {
         case .paragraph(let t):
             inline(t).font(.callout).foregroundStyle(palette.foreground.opacity(0.92))
                 .fixedSize(horizontal: false, vertical: true)
+        case .table(let props):
+            // Issue bodies carry tables as often as chat does — same view, same reason.
+            TableView(props: props, palette: palette)
+        case .quote(let lines):
+            HStack(alignment: .top, spacing: 8) {
+                OculusShape.rounded(1.5).fill(palette.border).frame(width: 3)
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(lines.enumerated()), id: \.offset) { _, l in
+                        inline(l).font(.callout).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .foregroundStyle(palette.mutedForeground)
+            }
         case .bullet(let items):
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, it in
                     HStack(alignment: .top, spacing: 8) {
-                        Text("•").foregroundStyle(palette.mutedForeground)
-                        inline(it).font(.callout).fixedSize(horizontal: false, vertical: true)
+                        if let checked = it.checked {
+                            Image(systemName: checked ? "checkmark.square.fill" : "square")
+                                .font(.callout)
+                                .foregroundStyle(checked ? palette.primary : palette.mutedForeground)
+                        } else {
+                            Text(bulletGlyph(it.depth)).foregroundStyle(palette.mutedForeground)
+                        }
+                        inline(it.text).font(.callout).fixedSize(horizontal: false, vertical: true)
                     }
+                    .padding(.leading, CGFloat(it.depth) * 14)
                 }
             }
         case .ordered(let items):
@@ -695,21 +719,46 @@ struct TrackerImage: View {
 
 // MARK: - Parser
 
+/// One bullet-list row: its text, how deeply it is nested, and — for a GFM task item — whether the
+/// box is ticked. `checked == nil` means an ordinary bullet, which is why it is an Optional rather
+/// than a Bool defaulting to false.
+struct ListItem {
+    var depth: Int
+    var text: String
+    var checked: Bool?
+}
+
 enum MarkdownBlock {
     case heading(level: Int, text: String)
     case paragraph(String)
-    case bullet([String])
+    case bullet([ListItem])
     case ordered([(num: Int, text: String)])
     case code(language: String?, text: String)
     case image(alt: String, url: String)
     case rule
+    /// A GitHub-flavoured pipe table, carried as the SAME props the generative-UI layer uses so it
+    /// renders through the existing `TableView` rather than a second, divergent table renderer.
+    case table(TableProps)
+    case quote([String])
 }
 
 enum MarkdownParser {
     static func parse(_ text: String) -> [MarkdownBlock] {
         var blocks: [MarkdownBlock] = []
-        let lines = separateJammedBold(text.replacingOccurrences(of: "\r\n", with: "\n"))
-            .components(separatedBy: "\n")
+        // Bold repair is applied PER LINE and only OUTSIDE fences. Run across the whole document it
+        // also rewrote source code: `def f(**kwargs)` in a ```python block picked up an injected
+        // newline, and a literal `****` became `**\n\n**` — silently corrupting displayed code, the
+        // one place a renderer must reproduce input exactly.
+        var lines: [String] = []
+        var inFence = false
+        for ln in text.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n") {
+            if ln.trimmingCharacters(in: .whitespaces).hasPrefix("```") {
+                inFence.toggle(); lines.append(ln); continue
+            }
+            if inFence { lines.append(ln); continue }
+            // The repair INSERTS newlines, so its output is re-split back into lines.
+            lines.append(contentsOf: separateJammedBold(ln).components(separatedBy: "\n"))
+        }
         var i = 0
         var para: [String] = []
         func flush() {
@@ -723,19 +772,59 @@ enum MarkdownParser {
                 let language = fenceLanguage(t)
                 var code: [String] = []; i += 1
                 while i < lines.count, !lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("```") { code.append(lines[i]); i += 1 }
-                blocks.append(.code(language: language, text: code.joined(separator: "\n"))); i += 1; continue
+                // An unterminated fence deliberately runs to EOF (that is what GFM asks for, and it
+                // keeps an interrupted answer's tail readable). But text ending exactly at "```swift"
+                // yielded an EMPTY code block — a bordered box with nothing in it.
+                if !code.isEmpty {
+                    blocks.append(.code(language: language, text: code.joined(separator: "\n")))
+                }
+                i += 1; continue
             }
             if t.isEmpty { flush(); i += 1; continue }
             if let h = heading(t) { flush(); blocks.append(.heading(level: h.0, text: h.1)); i += 1; continue }
-            if t == "---" || t == "***" || t == "___" { flush(); blocks.append(.rule); i += 1; continue }
-            if let it = bullet(t) {
+            // Setext headings, BEFORE the thematic-break check. "Title" followed by "---" is an H2 in
+            // CommonMark; treating the underline as a rule demoted the heading to body text AND drew
+            // a spurious divider under it. A non-empty `para` is exactly the disambiguator the spec
+            // uses: attached to text it underlines, after a blank line it stays a thematic break.
+            if !para.isEmpty, let lvl = setextLevel(t) {
+                let title = para.removeLast()
+                flush()
+                blocks.append(.heading(level: lvl, text: title)); i += 1; continue
+            }
+            if isThematicBreak(t) { flush(); blocks.append(.rule); i += 1; continue }
+            // Tables are checked BEFORE the rule/bullet cases: a table's delimiter row ("|---|---|")
+            // starts with a pipe so it never reaches them, but the header must be claimed here or a
+            // one-column table would be indistinguishable from a paragraph.
+            if let (tbl, next) = table(lines, from: i) {
+                flush(); blocks.append(.table(tbl)); i = next; continue
+            }
+            if t.hasPrefix(">") {
+                flush(); var quoted: [String] = []
+                while i < lines.count {
+                    let q = lines[i].trimmingCharacters(in: .whitespaces)
+                    guard q.hasPrefix(">") else { break }
+                    quoted.append(String(q.dropFirst()).trimmingCharacters(in: .whitespaces))
+                    i += 1
+                }
+                blocks.append(.quote(quoted)); continue
+            }
+            // Lists pass the RAW line so the matcher can measure indent for nesting.
+            if let it = bullet(line) {
                 flush(); var items = [it]; i += 1
-                while i < lines.count, let x = bullet(lines[i].trimmingCharacters(in: .whitespaces)) { items.append(x); i += 1 }
+                while i < lines.count {
+                    if let x = bullet(lines[i]) { items.append(x); i += 1; continue }
+                    guard let cont = lazyContinuation(lines[i]) else { break }
+                    items[items.count - 1].text += " " + cont; i += 1
+                }
                 blocks.append(.bullet(items)); continue
             }
             if let it = ordered(t) {
                 flush(); var items = [it]; i += 1
-                while i < lines.count, let x = ordered(lines[i].trimmingCharacters(in: .whitespaces)) { items.append(x); i += 1 }
+                while i < lines.count {
+                    if let x = ordered(lines[i].trimmingCharacters(in: .whitespaces)) { items.append(x); i += 1; continue }
+                    guard let cont = lazyContinuation(lines[i]) else { break }
+                    items[items.count - 1].text += " " + cont; i += 1
+                }
                 blocks.append(.ordered(items)); continue
             }
             para.append(line); i += 1
@@ -744,6 +833,99 @@ enum MarkdownParser {
         return blocks
     }
 
+
+    /// Parses a GitHub-flavoured pipe table starting at `from`, returning it plus the index to
+    /// resume at. Returns nil when the lines aren't a table, which is the common case.
+    ///
+    /// Tables were the single largest gap in this renderer: with no case for them they fell through
+    /// to `.paragraph` and rendered as raw `| col | col |` pipe soup, and agents emit tables
+    /// constantly. Rather than grow a second table renderer here, this decodes into `TableProps` so
+    /// the result goes through the generative-UI `TableView` that already handles alignment, zebra
+    /// striping, column sizing and horizontal overflow.
+    ///
+    /// A table is only recognised with BOTH a header row and the `|---|:--:|` delimiter beneath it.
+    /// Requiring the delimiter is what keeps ordinary prose containing a pipe — a shell command, a
+    /// regex alternation — from being swallowed as a one-row table.
+    static func table(_ lines: [String], from: Int) -> (TableProps, Int)? {
+        guard from + 1 < lines.count else { return nil }
+        let head = lines[from].trimmingCharacters(in: .whitespaces)
+        let delim = lines[from + 1].trimmingCharacters(in: .whitespaces)
+        guard head.contains("|"), isDelimiterRow(delim) else { return nil }
+
+        let labels = splitRow(head)
+        let aligns = splitRow(delim).map { cell -> String in
+            let l = cell.hasPrefix(":"), r = cell.hasSuffix(":")
+            if l && r { return "center" }
+            return r ? "right" : "left"
+        }
+        guard !labels.isEmpty else { return nil }
+        let columns = labels.enumerated().map { idx, label in
+            TableProps.Column(key: nil, label: label, align: idx < aligns.count ? aligns[idx] : "left")
+        }
+
+        // Whether the header opted into GFM's outer pipes. Body rows must agree: without this the
+        // loop accepted ANY following line containing a pipe, so prose like "run `cat x | grep y`"
+        // after a table was silently swallowed as a row and vanished into the grid.
+        let outerPiped = head.hasPrefix("|")
+        var rows: [[JSONValue]] = []
+        var i = from + 2
+        while i < lines.count {
+            let r = lines[i].trimmingCharacters(in: .whitespaces)
+            guard !r.isEmpty, r.contains("|") else { break }
+            guard outerPiped ? r.hasPrefix("|") : splitRow(r).count >= columns.count else { break }
+            var cells = splitRow(r).map { JSONValue.string($0) }
+            // Ragged rows are common in hand-written and model-written tables alike. Pad or trim to
+            // the header width so the Grid stays rectangular instead of dropping cells out of line.
+            while cells.count < columns.count { cells.append(.string("")) }
+            rows.append(Array(cells.prefix(columns.count)))
+            i += 1
+        }
+        return (TableProps(columns: columns, rows: rows, caption: nil), i)
+    }
+
+    /// The heading level a setext underline implies: `===` is H1, `---` is H2. Any run length counts,
+    /// which is why "Title" over "--------" used to render its dashes literally.
+    private static func setextLevel(_ s: String) -> Int? {
+        guard !s.isEmpty else { return nil }
+        if s.allSatisfy({ $0 == "=" }) { return 1 }
+        if s.allSatisfy({ $0 == "-" }) { return 2 }
+        return nil
+    }
+
+    /// A thematic break: three or more of the same marker, spaces allowed between them.
+    ///
+    /// This was an equality test against exactly "---", "***" and "___", so every other spelling the
+    /// spec allows fell through to prose — "----" rendered as literal dashes, and "* * *" was matched
+    /// by the BULLET rule below it and drew a bullet reading "* *".
+    private static func isThematicBreak(_ s: String) -> Bool {
+        let bare = s.filter { $0 != " " }
+        guard bare.count >= 3, let first = bare.first, "-*_".contains(first) else { return false }
+        return bare.allSatisfy { $0 == first }
+    }
+
+    /// True for `|---|---|`, `| :--- | ---: |` and friends — at least one dash per cell, and nothing
+    /// but dashes, colons, pipes and spaces overall.
+    private static func isDelimiterRow(_ s: String) -> Bool {
+        guard s.contains("-"), s.contains("|") else { return false }
+        guard s.allSatisfy({ $0 == "-" || $0 == ":" || $0 == "|" || $0 == " " }) else { return false }
+        let cells = splitRow(s)
+        return !cells.isEmpty && cells.allSatisfy { $0.contains("-") }
+    }
+
+    /// Splits one table row into trimmed cells, dropping the leading/trailing pipes that GFM allows
+    /// but does not require. Escaped `\|` is preserved as a literal pipe rather than splitting.
+    private static func splitRow(_ s: String) -> [String] {
+        var t = s
+        if t.hasPrefix("|") { t.removeFirst() }
+        if t.hasSuffix("|") { t.removeLast() }
+        let sentinel = "\u{0}"
+        return t.replacingOccurrences(of: "\\|", with: sentinel)
+            .components(separatedBy: "|")
+            .map {
+                $0.replacingOccurrences(of: sentinel, with: "|")
+                    .trimmingCharacters(in: .whitespaces)
+            }
+    }
 
     /// Restores line breaks that were lost between a bold run and what follows it.
     ///
@@ -769,6 +951,26 @@ enum MarkdownParser {
         // Tracks whether we're inside a bold run, so a CLOSING `**` can be told from an opening one.
         var inBold = false
         while i < chars.count {
+            // Reset parity at every line break. This toggle used to run over the WHOLE document, so
+            // a single unpaired `**` anywhere — a glob like `**/*.swift`, a Python `**kwargs` —
+            // inverted the sense of every `**` after it: the OPENING marker of a later `**Title**`
+            // was read as a close, and the repair inserted its newline in the middle of the bold run,
+            // destroying it. A genuinely jammed title is always within one line, so line-local parity
+            // is both sufficient and self-correcting.
+            if chars[i] == "\n" {
+                inBold = false
+                out.append(chars[i])
+                i += 1
+                continue
+            }
+            // A `**` fused to `/` or `*` is a glob, not emphasis — never a lost line break.
+            if chars[i] == "*", i + 1 < chars.count, chars[i + 1] == "*",
+               (i + 2 < chars.count && (chars[i + 2] == "/" || chars[i + 2] == ".")) ||
+               (i > 0 && chars[i - 1] == "/") {
+                out += "**"
+                i += 2
+                continue
+            }
             if chars[i] == "*", i + 1 < chars.count, chars[i + 1] == "*" {
                 // Four in a row: two bold runs collided. Break between them.
                 if i + 3 < chars.count, chars[i + 2] == "*", chars[i + 3] == "*" {
@@ -807,9 +1009,54 @@ enum MarkdownParser {
         return raw.components(separatedBy: .whitespaces).first
     }
 
-    private static func bullet(_ s: String) -> String? {
-        for p in ["- ", "* ", "+ "] where s.hasPrefix(p) { return String(s.dropFirst(2)) }
+    /// Matches a bullet marker, carrying the nesting depth from the line's leading indent and the
+    /// checkbox state of a `- [ ]` / `- [x]` task item.
+    ///
+    /// `s` must be the RAW line — the parse loop used to hand this a trimmed one, which threw the
+    /// indent away before it could be measured and so flattened every nested list into siblings.
+    private static func bullet(_ raw: String) -> ListItem? {
+        let indent = leadingIndent(raw)
+        let s = raw.trimmingCharacters(in: .whitespaces)
+        for p in ["- ", "* ", "+ "] where s.hasPrefix(p) {
+            var text = String(s.dropFirst(2))
+            // GFM task list. Rendered as literal "[ ] foo" before this, and agents emit checklists
+            // constantly, so it was one of the most frequently visible defects.
+            var checked: Bool? = nil
+            for (box, on) in [("[ ] ", false), ("[x] ", true), ("[X] ", true)] where text.hasPrefix(box) {
+                checked = on
+                text = String(text.dropFirst(box.count))
+                break
+            }
+            // Two spaces per level is the common convention; four is also standard, so integer
+            // division handles both. Capped so a deeply/erratically indented list stays on screen.
+            return ListItem(depth: min(indent / 2, 3), text: text, checked: checked)
+        }
         return nil
+    }
+
+    /// The text of a lazy continuation line — a wrapped list item whose second line carries no
+    /// marker — or nil if the line ends the list.
+    ///
+    /// Without this the collection loop broke on the first unmarked line, so a wrapped bullet became
+    /// a detached full-width paragraph wedged between two list items, still carrying its raw leading
+    /// spaces and given the wider inter-block gap. It read as a formatting glitch, which it was.
+    private static func lazyContinuation(_ raw: String) -> String? {
+        let t = raw.trimmingCharacters(in: .whitespaces)
+        // A blank line ends the list; so does anything that opens a different block. Checking these
+        // explicitly is what keeps a fence or table immediately after a list from being glued onto
+        // the previous item.
+        guard !t.isEmpty, !t.hasPrefix("```"), !t.hasPrefix(">"), !t.hasPrefix("|"),
+              heading(t) == nil, setextLevel(t) == nil, !isThematicBreak(t) else { return nil }
+        return t
+    }
+
+    /// Leading indent in columns, counting a tab as four.
+    private static func leadingIndent(_ s: String) -> Int {
+        var n = 0
+        for ch in s {
+            if ch == " " { n += 1 } else if ch == "\t" { n += 4 } else { break }
+        }
+        return n
     }
 
     private static func ordered(_ s: String) -> (num: Int, text: String)? {

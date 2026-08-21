@@ -109,7 +109,9 @@ struct TableProps: Decodable {
     let caption: String?
 }
 
-private struct TableView: View {
+/// Internal, not private: the markdown renderer routes GFM pipe tables through this same view so
+/// there is one table implementation rather than two that drift apart.
+struct TableView: View {
     let props: TableProps
     let palette: OculusPalette
     private static let maxRows = 500, maxCols = 20

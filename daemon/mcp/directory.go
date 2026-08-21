@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/howlerops/oculus/daemon/textutil"
 )
 
 // Browsing the public MCP registry.
@@ -155,9 +157,5 @@ func hasVersionSuffix(identifier string) bool {
 }
 
 func clip(s string, n int) string {
-	s = strings.TrimSpace(s)
-	if len(s) > n {
-		return s[:n] + "…"
-	}
-	return s
+	return textutil.Clip(s, n)
 }

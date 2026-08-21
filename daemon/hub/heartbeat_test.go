@@ -87,3 +87,22 @@ func TestDeriveState(t *testing.T) {
 		})
 	}
 }
+
+// parseHandoff previously used strings.TrimLeft(t, "#> -") — a CHARACTER SET, not a prefix — and
+// joined the body lines with a bare space, so structured handoffs came back mangled.
+func TestParseHandoffKeepsTextIntact(t *testing.T) {
+	title, summary := parseHandoff("# Fixed the parser\n- --- separator kept\n- -3 degrees offset\n- #1 priority\n")
+	if title != "Fixed the parser" {
+		t.Errorf("title = %q", title)
+	}
+	// The cutset stripped leading -, # and > repeatedly: "---" vanished, "-3" became "3".
+	for _, want := range []string{"--- separator kept", "-3 degrees offset", "#1 priority"} {
+		if !strings.Contains(summary, want) {
+			t.Errorf("summary %q lost %q", summary, want)
+		}
+	}
+	// List items must stay distinguishable rather than running together as one sentence.
+	if !strings.Contains(summary, " · ") {
+		t.Errorf("summary %q collapsed its list items", summary)
+	}
+}
