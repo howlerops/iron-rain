@@ -45,12 +45,15 @@ func TestLive_CLIAgentProducesOutput(t *testing.T) {
 	//
 	// So: if the agent cannot answer when we invoke it directly, SKIP. If it can, any failure that
 	// follows is ours, and the test is worth believing.
-	pre, preErr := exec.Command("gemini", "-p", "Reply with exactly: OK").CombinedOutput()
+	// Same argv the built-in entry uses. A preflight that omitted --skip-trust would fail on the
+	// trusted-directory gate and skip for a reason that has nothing to do with whether the agent
+	// works — a test that lies about why it opted out is worse than no test.
+	pre, preErr := exec.Command("gemini", "--skip-trust", "-p", "Reply with exactly: OK").CombinedOutput()
 	if preErr != nil {
 		t.Skipf("gemini cannot run on this machine (%v): %s", preErr, firstLineOf(string(pre)))
 	}
 	p := NewProvider(Config{
-		Name: "gemini", Command: "gemini", Args: []string{"-p", "{prompt}"},
+		Name: "gemini", Command: "gemini", Args: []string{"--skip-trust", "-p", "{prompt}"},
 	})
 	sess, err := p.Create(context.Background(), t.TempDir(), "Reply with exactly: OK")
 	if err != nil {
