@@ -102,3 +102,59 @@ func TestTranscriptOrphanEviction(t *testing.T) {
 		t.Fatalf("live session's transcript should survive, got %d rows", len(got))
 	}
 }
+
+// Restart mints a NEW session id, so the conversation has to be re-keyed or it is left behind under
+// a record that restart then deletes — which is exactly how a restarted session came back empty.
+func TestMoveTranscriptCarriesHistory(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for i := 1; i <= 3; i++ {
+		if _, err := s.AppendTranscript("old", int64(i), "", []byte(`{"t":`+string(rune('0'+i))+`}`)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	moved, err := s.MoveTranscript("old", "new")
+	if err != nil {
+		t.Fatalf("move: %v", err)
+	}
+	if moved != 3 {
+		t.Fatalf("moved %d rows, want 3", moved)
+	}
+	got, err := s.Transcript("new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("new id has %d rows, want the full history", len(got))
+	}
+	old, err := s.Transcript("old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(old) != 0 {
+		t.Fatalf("old id still holds %d rows — history would exist twice", len(old))
+	}
+}
+
+// A no-op move must not disturb anything: restart calls this unconditionally, and some providers
+// legitimately hand back the same id.
+func TestMoveTranscriptSameIDIsNoop(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.AppendTranscript("x", 1, "", []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if moved, mErr := s.MoveTranscript("x", "x"); mErr != nil || moved != 0 {
+		t.Fatalf("same-id move = (%d, %v), want (0, nil)", moved, mErr)
+	}
+	got, _ := s.Transcript("x")
+	if len(got) != 1 {
+		t.Fatalf("same-id move disturbed the history: %d rows", len(got))
+	}
+}
