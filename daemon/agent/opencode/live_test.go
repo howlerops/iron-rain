@@ -3,6 +3,7 @@ package opencode_test
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -111,6 +112,65 @@ func TestLive_RealOpenCode(t *testing.T) {
 			}
 		case <-deadline:
 			t.Fatalf("timeout (delta=%v idle=%v)", gotDelta, gotIdle)
+		}
+	}
+}
+
+// TestLive_RealOpenCodeProducesOutput asserts a turn actually STREAMS TEXT, not merely that it opens
+// and closes.
+//
+// The distinction is not academic. The pi adapter passed every unit test and the turn-state smoke
+// test while dropping every assistant delta on a decode error — turns opened, ran, and closed idle,
+// and the user saw nothing. State transitions are not evidence that the agent spoke, so the primary
+// provider gets the same text-level check the others now have.
+//
+//	OCULUS_OPENCODE_URL=http://127.0.0.1:PORT go test ./agent/opencode/ -run TestLive_RealOpenCodeProducesOutput -v
+func TestLive_RealOpenCodeProducesOutput(t *testing.T) {
+	base := os.Getenv("OCULUS_OPENCODE_URL")
+	if base == "" {
+		t.Skip("set OCULUS_OPENCODE_URL to run")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	p := opencode.New(base)
+	sess, err := p.Create(ctx, t.TempDir(), "Reply with exactly: OK — nothing else.")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	defer sess.Close()
+
+	var text strings.Builder
+	deadline := time.After(120 * time.Second)
+	for {
+		select {
+		case ev, ok := <-sess.Events():
+			if !ok {
+				if strings.TrimSpace(text.String()) == "" {
+					t.Fatal("stream ended with no assistant text")
+				}
+				return
+			}
+			switch pl := ev.Payload.(type) {
+			case protocol.OutputDelta:
+				text.WriteString(pl.Text)
+			case protocol.SessionMessage:
+				if pl.Role == "assistant" {
+					text.WriteString(pl.Text)
+				}
+			case protocol.SessionStatus:
+				if pl.Status == protocol.StatusError {
+					t.Fatalf("turn errored: %s", pl.Detail)
+				}
+				if pl.Status == protocol.StatusIdle {
+					if strings.TrimSpace(text.String()) == "" {
+						t.Fatal("turn closed idle but streamed no assistant text")
+					}
+					return
+				}
+			}
+		case <-deadline:
+			t.Fatalf("no completed turn; text so far = %q", text.String())
 		}
 	}
 }
