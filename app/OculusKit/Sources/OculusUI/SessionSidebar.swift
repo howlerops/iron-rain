@@ -1062,6 +1062,7 @@ private struct SessionRow: View {
                         .foregroundStyle(palette.foreground)
                         .lineLimit(1)
                         .minimumScaleFactor(0.85) // a long name must shrink, not disappear, at large type
+                        .help(item.title) // the row is the only place the full name appears
                 }
                 if let sub = secondary {
                     Text(sub)
@@ -1069,18 +1070,25 @@ private struct SessionRow: View {
                         .foregroundStyle(palette.mutedForeground)
                         .lineLimit(1)
                         .minimumScaleFactor(0.85) // "project · provider · 4m ago" — the time is the tail
+                        .help(sub)
                 }
             }
+            // The name is what identifies the row; the chips are qualifiers on it. Unprioritised,
+            // SwiftUI split the squeeze evenly and cut the title to "standar…" to keep space for a
+            // branch chip reading "o…" — losing the more important text to preserve the less.
+            .layoutPriority(1)
             Spacer(minLength: 6)
             // Where this agent is EDITING FILES. Only remote sessions carry it: "on this Mac" is the
             // assumption a user already makes, so stamping it on every row would be noise, while a
             // remote session with nothing to mark it is a genuine trap — the row looks identical to a
             // local one, and the difference is which machine the next commit comes from.
             if let host = item.execHost, !host.isEmpty {
-                chip(icon: "server.rack", text: host, tint: palette.mutedForeground)
+                chip(icon: "server.rack", text: host, tint: palette.mutedForeground,
+                     help: "Editing files on \(host)")
             }
             if let b = item.branch, !b.isEmpty {
-                chip(icon: "arrow.triangle.branch", text: b, tint: palette.mutedForeground)
+                chip(icon: "arrow.triangle.branch", text: b, tint: palette.mutedForeground,
+                     help: "Branch \(b)")
             }
             // A solid chip to distinguish lifecycle at a glance: running (gold, live), or a
             // terminal glyph for sessions started outside the app (discovered — clicking
@@ -1110,11 +1118,36 @@ private struct SessionRow: View {
         .contentShape(Rectangle())
     }
 
-    private func chip(icon: String, text: String?, tint: Color, filled: Bool = false) -> some View {
+    /// A capsule badge. `text` is dropped rather than truncated when the row runs out of width.
+    ///
+    /// Truncation is the wrong failure mode for something this small. At sidebar widths the row was
+    /// squeezing every chip proportionally, so a branch came out as "o…" and the status word "Live"
+    /// as "Li…" — a one-letter stub is unreadable AND wider than the bare glyph it replaced, so the
+    /// truncation bought nothing and cost the icon its clarity. ViewThatFits picks the labelled chip
+    /// when it fits and falls back to icon-only when it doesn't, which degrades to a form that still
+    /// means something. The full value stays reachable through `help` on hover and VoiceOver.
+    private func chip(icon: String, text: String?, tint: Color, filled: Bool = false,
+                      help: String? = nil) -> some View {
+        ViewThatFits(in: .horizontal) {
+            chipBody(icon: icon, text: text, tint: tint, filled: filled)
+            chipBody(icon: icon, text: nil, tint: tint, filled: filled)
+        }
+        // Hover reveals what the row had to drop. Sized-down chips are otherwise a dead end: the
+        // user can see there IS a branch but not which one, with no affordance to find out.
+        .help(help ?? text ?? "")
+        .accessibilityLabel(help ?? text ?? "")
+    }
+
+    private func chipBody(icon: String, text: String?, tint: Color, filled: Bool) -> some View {
         HStack(spacing: 3) {
             Image(systemName: icon).font(filled ? .system(size: pipSize) : .caption2)
-            if let text { Text(text).font(.caption2.weight(.semibold)).lineLimit(1) }
+            if let text {
+                Text(text).font(.caption2.weight(.semibold)).lineLimit(1)
+            }
         }
+        // Without this the HStack is still individually compressible, so ViewThatFits sees the
+        // labelled variant "fit" at any width by shrinking the Text — and we are back to "Li…".
+        .fixedSize()
         .foregroundStyle(filled ? tint : palette.mutedForeground)
         .padding(.horizontal, text == nil ? 5 : 6).padding(.vertical, 2)
         .background(Capsule().fill(tint.opacity(filled ? 0.16 : 0.12)))

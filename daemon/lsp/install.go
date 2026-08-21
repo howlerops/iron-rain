@@ -24,8 +24,14 @@ func recipeFor(langID string) (installRecipe, bool) {
 		return installRecipe{Binary: "gopls", Prereq: "go",
 			Command: []string{"go", "install", "golang.org/x/tools/gopls@latest"}, Label: "gopls"}, true
 	case "typescript", "javascript":
+		// typescript is PINNED TO 6.x deliberately. TypeScript 7 is the native (Go) port: its package
+		// ships no lib/tsserver.js and its only bin is `tsc`. typescript-language-server drives
+		// tsserver, so an unpinned `npm install -g typescript` now resolves to 7.x and produces an
+		// install that fails at initialize with "Could not find a valid TypeScript installation" —
+		// the install button appearing to succeed while leaving the language silently broken.
+		// 6.x is the newest line that still ships tsserver.js.
 		return installRecipe{Binary: "typescript-language-server", Prereq: "npm",
-			Command: []string{"npm", "install", "-g", "typescript-language-server", "typescript"},
+			Command: []string{"npm", "install", "-g", "typescript-language-server", "typescript@6"},
 			Label:   "typescript-language-server"}, true
 	case "python":
 		return installRecipe{Binary: "pyright-langserver", Prereq: "npm",

@@ -152,9 +152,13 @@ func Load(path string) ([]Config, error) {
 	}
 	out := cfgs[:0]
 	for _, c := range cfgs {
-		if c.Name != "" && c.Command != "" {
-			out = append(out, c)
+		// Either transport qualifies: a subprocess needs a Command, an AG-UI backend needs an
+		// Endpoint. An entry with neither is unusable and an entry with both is ambiguous about which
+		// one to run, so both are dropped rather than guessed at.
+		if c.Name == "" || (c.Command == "") == (c.Endpoint == "") {
+			continue
 		}
+		out = append(out, c)
 	}
 	return out, nil
 }

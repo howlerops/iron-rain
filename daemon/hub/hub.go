@@ -1741,18 +1741,23 @@ type pendingApproval struct {
 	req       protocol.ApprovalRequest
 	provider  string
 	projectID string
+	// Where the agent was running when this was asked. Captured at ASK time, not at answer time: the
+	// user is consenting to what they were shown, and a session that moves between the prompt and the
+	// answer must not silently widen the rule that answer creates.
+	execKind string
 }
 
 func (h *Hub) recordApproval(ar protocol.ApprovalRequest, m *managedSession) {
 	m.mu.Lock()
 	projectID := m.meta.projectID
+	execKind := m.meta.execKind
 	m.mu.Unlock()
 	h.mu.Lock()
 	h.approvals[ar.ApprovalID] = m
 	if h.approvalReqs == nil {
 		h.approvalReqs = map[string]pendingApproval{}
 	}
-	h.approvalReqs[ar.ApprovalID] = pendingApproval{req: ar, provider: m.sess.Provider(), projectID: projectID}
+	h.approvalReqs[ar.ApprovalID] = pendingApproval{req: ar, provider: m.sess.Provider(), projectID: projectID, execKind: execKind}
 	h.mu.Unlock()
 }
 

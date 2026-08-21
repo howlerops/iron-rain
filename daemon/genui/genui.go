@@ -20,6 +20,7 @@ package genui
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 
 	"github.com/howlerops/oculus/daemon/protocol"
@@ -104,6 +105,23 @@ func knownComponent(name string) bool {
 	return ok
 }
 
+// announceable reports whether a component may be announced as `running` before its body is complete.
+//
+// Only components with NO props validator qualify. A streaming placeholder has to be sent before the
+// props exist, so it necessarily bypasses validation — and for the capped components that would
+// defeat the caps' purpose: an over-cap table is meant to be dropped SILENTLY and left as plain text,
+// but a placeholder would put it on screen and then have to retract it, reporting one failure twice
+// (once as the skeleton's error, once as the recovered code block).
+//
+// The components that pass — callout, checklist, plan, diff — are exactly the ones with nothing to
+// validate, so announcing them early promises nothing that validation could later refuse. That
+// includes checklist and plan, which are the ones a coding agent builds incrementally and where
+// watching them fill in is actually worth something.
+func announceable(name string) bool {
+	sp, ok := catalog[name]
+	return ok && sp.validate == nil
+}
+
 // validateTable enforces the row/column caps so a hallucinated payload can't overwhelm the client.
 func validateTable(props json.RawMessage) bool {
 	var p struct {
@@ -132,6 +150,15 @@ type Segmenter struct {
 	line     strings.Builder // the current, not-yet-newline-terminated line
 	inFence  bool
 	fenceBuf strings.Builder // accumulated body while inside an iron:ui fence
+	// id of the "running" placeholder announced for the CURRENT fence, empty if none was sent.
+	// Tracked so the fence's terminal frame — ready or error — reuses the same id and replaces the
+	// skeleton in place instead of leaving it on screen forever.
+	placeholderID string
+	// Set on a Segmenter driven by FINALIZED text (Extract) rather than a live stream. A "running"
+	// placeholder only means something while the user is watching the model type; replaying history
+	// through the same code would emit running+ready back to back for every stored component, which
+	// is noise at best and a double-render at worst.
+	noPlaceholders bool
 }
 
 // Feed consumes a chunk of assistant text and returns the text to forward downstream (fenced iron:ui
@@ -173,6 +200,16 @@ func (s *Segmenter) Flush() (forward string, comps []protocol.UIComponent) {
 		out.WriteString(s.fenceBuf.String())
 		s.inFence = false
 		s.fenceBuf.Reset()
+		// The turn ended mid-component. Whatever skeleton we announced has to be resolved here or it
+		// outlives the turn that created it — an interrupted or truncated answer would leave a
+		// permanently spinning placeholder in the transcript.
+		if s.placeholderID != "" {
+			comps = append(comps, protocol.UIComponent{
+				ID: s.placeholderID, Component: "callout", SchemaV: 1, Status: "error",
+				FallbackText: "*(the agent stopped before finishing this component)*",
+			})
+			s.placeholderID = ""
+		}
 	}
 	// `comps`, not nil. The final partial line is parsed above and any component appended — and then
 	// the return threw it away, so a payload that happened to be the LAST thing in a message, with
@@ -195,18 +232,45 @@ func (s *Segmenter) consumeLine(line string) (string, protocol.UIComponent, bool
 			body := s.fenceBuf.String()
 			s.inFence = false
 			s.fenceBuf.Reset()
+			ph := s.placeholderID
+			s.placeholderID = ""
 			if comp, ok := parseComponent(body); ok {
 				return "", comp, true
 			}
 			// Invalid: fall back to a visible code block so nothing is hidden or broken.
-			return "```" + fenceInfo + "\n" + body + "```\n", protocol.UIComponent{}, false
+			out := "```" + fenceInfo + "\n" + body + "```\n"
+			if ph != "" {
+				// A skeleton was already on screen for this fence and no valid component is coming.
+				// Resolve it to `error` under the same id — without this the placeholder would sit
+				// there spinning forever, which is worse than never having shown it.
+				return out, protocol.UIComponent{
+					ID: ph, Component: "callout", SchemaV: 1, Status: "error",
+					FallbackText: "*(the agent's UI block was malformed)*",
+				}, true
+			}
+			return out, protocol.UIComponent{}, false
 		}
 		s.fenceBuf.WriteString(line)
+		// Announce the component as soon as it can be identified, so the client's existing skeleton
+		// renders while the model is still writing the props. Everything downstream already supports
+		// this: `status` is declared running|ready|error, the id is documented as stable to enable
+		// in-place update, and the client has had a skeleton view for `running` all along — the
+		// daemon simply never emitted anything but "ready", so that view was dead code.
+		if s.placeholderID == "" && !s.noPlaceholders {
+			if comp, id, ok := sniffHeader(s.fenceBuf.String()); ok {
+				s.placeholderID = id
+				return "", protocol.UIComponent{
+					ID: id, Component: comp, SchemaV: 1, Status: "running",
+					FallbackText: "*(building " + comp + "…)*",
+				}, true
+			}
+		}
 		return "", protocol.UIComponent{}, false
 	}
 	if isFenceOpener(fence) {
 		s.inFence = true
 		s.fenceBuf.Reset()
+		s.placeholderID = ""
 		return "", protocol.UIComponent{}, false
 	}
 	// Lenient catch: a BARE one-line component JSON outside any fence. Models sometimes emit the
@@ -219,6 +283,44 @@ func (s *Segmenter) consumeLine(line string) (string, protocol.UIComponent, bool
 		}
 	}
 	return line, protocol.UIComponent{}, false
+}
+
+// headerKeyRe matches a top-level-looking `"component": "x"` / `"id": "y"` pair.
+var headerKeyRe = regexp.MustCompile(`"(component|id)"\s*:\s*"([^"]*)"`)
+
+// sniffHeader pulls the component name and id out of a PARTIALLY streamed fence body so a skeleton
+// can be shown before the props finish arriving.
+//
+// Deliberately conservative, because the cost of guessing wrong is asymmetric: an id that doesn't
+// match the one the finished component carries leaves a skeleton on screen that nothing ever
+// replaces. So it gives up rather than guess whenever it isn't confident:
+//   - it only reads the region BEFORE the first `"props"` key, since a nested `"id"` inside props
+//     (an option, a checklist item, a table cell) would otherwise be mistaken for the component's;
+//   - it requires the component name to be in the catalog, which rejects a half-written value like
+//     `"tab` that will become `"table"` a few bytes later;
+//   - it requires both keys, so an object that leads with props simply gets no placeholder and
+//     falls back to the previous all-at-once behaviour.
+func sniffHeader(body string) (component, id string, ok bool) {
+	head := body
+	if i := strings.Index(head, `"props"`); i >= 0 {
+		head = head[:i]
+	}
+	for _, m := range headerKeyRe.FindAllStringSubmatch(head, -1) {
+		switch m[1] {
+		case "component":
+			if component == "" {
+				component = m[2]
+			}
+		case "id":
+			if id == "" {
+				id = m[2]
+			}
+		}
+	}
+	if component == "" || id == "" || !announceable(component) {
+		return "", "", false
+	}
+	return component, id, true
 }
 
 // isFenceOpener reports whether a trimmed line opens an iron:ui fence (```iron:ui, tolerating extra
@@ -239,7 +341,7 @@ func Extract(text string) (string, []protocol.UIComponent) {
 	if !strings.Contains(text, fenceInfo) && !strings.Contains(text, `{"component"`) {
 		return text, nil // fast path: nothing to extract
 	}
-	var s Segmenter
+	s := Segmenter{noPlaceholders: true}
 	fwd, comps := s.Feed(text)
 	tail, more := s.Flush()
 	fwd += tail

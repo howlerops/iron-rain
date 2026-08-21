@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/store"
@@ -271,19 +272,49 @@ func parseHandoff(md string) (title, summary string) {
 			continue
 		}
 		if title == "" {
-			title = strings.TrimLeft(t, "# ")
+			title = stripMarkdownPrefix(t)
 			continue
 		}
-		body = append(body, strings.TrimLeft(t, "#> -"))
+		body = append(body, stripMarkdownPrefix(t))
 		if len(body) >= 3 {
 			break
 		}
 	}
-	summary = strings.Join(body, " ")
-	if len(summary) > 240 {
-		summary = summary[:240] + "…"
-	}
+	// Joined with a separator, not a bare space. These lines are usually LIST ITEMS, and running
+	// them together produced summaries like "fixed the parser added tests updated docs" — three
+	// facts read as one sentence, which is where the comparison cards looked garbled.
+	summary = truncRunes(strings.Join(body, " · "), 240)
 	return title, summary
+}
+
+// stripMarkdownPrefix removes a leading markdown marker — heading, bullet, quote — and nothing else.
+//
+// This used to be strings.TrimLeft(t, "#> -"), which takes a CHARACTER SET rather than a prefix, so
+// it stripped every leading occurrence of any of those runes: "---" became "", "-3 items" became
+// "3 items", and "## #1 priority" lost the "#1". Matching real prefixes keeps the text intact.
+func stripMarkdownPrefix(s string) string {
+	for _, p := range []string{"- [ ] ", "- [x] ", "* ", "- ", "> ", "###### ", "##### ", "#### ", "### ", "## ", "# "} {
+		if strings.HasPrefix(s, p) {
+			return strings.TrimSpace(strings.TrimPrefix(s, p))
+		}
+	}
+	return s
+}
+
+// truncRunes caps s at n BYTES without splitting a rune.
+//
+// A plain s[:n] slices BYTES, so a multi-byte character straddling the limit is cut in half and the
+// invalid UTF-8 is rewritten to replacement characters when the event is encoded. Agent prose is
+// full of em-dashes, curly quotes and emoji, so the boundary lands mid-rune often — this is where
+// summaries picked up mojibake tails.
+func truncRunes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "…"
 }
 
 func toHandoffEntries(rs []store.HandoffRecord) []protocol.HandoffEntry {
