@@ -55,7 +55,12 @@ var builtinAgents = []builtin{
 	// The tradeoff, stated plainly: the trust gate exists so a repo can't have its workspace-level
 	// gemini config honoured automatically. We accept that because the user explicitly chose the
 	// directory the session runs in, and because the alternative is a provider that cannot run at all.
-	{cfg: Config{Name: "gemini", Command: "gemini", Args: []string{"--skip-trust", "-p", "{prompt}"}}},
+	{cfg: Config{
+		Name: "gemini", Command: "gemini", Args: []string{"--skip-trust", "-p", "{prompt}"},
+		// gemini writes startup instrumentation to stderr, which this adapter folds into the streamed
+		// output, so every answer arrived behind two lines of "[STARTUP] Phase 'cleanup_ops' …".
+		DropLinePrefixes: []string{"[STARTUP]"},
+	}},
 	{cfg: Config{Name: "cursor-agent", Command: "cursor-agent", Args: []string{"-p", "{prompt}"}}},
 	{cfg: Config{Name: "aider", Command: "aider", Args: []string{"--yes-always", "--no-auto-commits", "--message", "{prompt}"}}},
 	// Collision-prone names: each must identify itself before we route prompts to it.
@@ -67,6 +72,18 @@ var builtinAgents = []builtin{
 	{cfg: Config{Name: "amp", Command: "amp", Args: []string{"-x", "{prompt}"}}, identity: "amp"},
 	{cfg: Config{Name: "qwen", Command: "qwen", Args: []string{"-p", "{prompt}"}}, identity: "qwen"},
 	{cfg: Config{Name: "crush", Command: "crush", Args: []string{"run", "{prompt}"}}, identity: "crush"},
+}
+
+// builtinConfig returns the shipped configuration for a built-in agent, or a zero Config if there
+// is none. Tests use it so they exercise what users actually run rather than a local copy that
+// quietly drifts from it.
+func builtinConfig(name string) Config {
+	for _, b := range builtinAgents {
+		if b.cfg.Name == name {
+			return b.cfg
+		}
+	}
+	return Config{}
 }
 
 // identityTimeout bounds the probe. A tool that can't say what it is within this budget doesn't get

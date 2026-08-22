@@ -35,6 +35,15 @@ func TestLive_CLIAgentProducesOutput(t *testing.T) {
 	if _, err := exec.LookPath("gemini"); err != nil {
 		t.Skip("gemini not installed")
 	}
+	// The SHIPPED config, not a hand-written copy of it. A local Config drifts from the builtin and
+	// then the test proves nothing about what users run — which already happened here: the builtin
+	// gained DropLinePrefixes and this test, still constructing its own, kept reporting gemini's
+	// startup noise as though the filter did not work.
+	cfg := builtinConfig("gemini")
+	if cfg.Command == "" {
+		t.Fatal("no built-in gemini entry — this test must exercise the shipped configuration")
+	}
+
 	// Pre-flight the agent OUTSIDE our adapter first.
 	//
 	// Without this the test cannot tell "our adapter is broken" from "this third-party CLI won't
@@ -45,16 +54,15 @@ func TestLive_CLIAgentProducesOutput(t *testing.T) {
 	//
 	// So: if the agent cannot answer when we invoke it directly, SKIP. If it can, any failure that
 	// follows is ours, and the test is worth believing.
-	// Same argv the built-in entry uses. A preflight that omitted --skip-trust would fail on the
-	// trusted-directory gate and skip for a reason that has nothing to do with whether the agent
-	// works — a test that lies about why it opted out is worse than no test.
-	pre, preErr := exec.Command("gemini", "--skip-trust", "-p", "Reply with exactly: OK").CombinedOutput()
+	// The built-in argv, substituted. A preflight with different flags would fail for a reason that
+	// has nothing to do with whether the agent works — a test that lies about why it opted out is
+	// worse than no test.
+	preArgs := substitute(cfg.Args, "Reply with exactly: OK", "", cfg.Model, "")
+	pre, preErr := exec.Command(cfg.Command, preArgs...).CombinedOutput()
 	if preErr != nil {
 		t.Skipf("gemini cannot run on this machine (%v): %s", preErr, firstLineOf(string(pre)))
 	}
-	p := NewProvider(Config{
-		Name: "gemini", Command: "gemini", Args: []string{"--skip-trust", "-p", "{prompt}"},
-	})
+	p := NewProvider(cfg)
 	sess, err := p.Create(context.Background(), t.TempDir(), "Reply with exactly: OK")
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -93,4 +101,49 @@ done:
 		t.Fatal("turn completed but streamed no output — the same failure mode pi shipped with")
 	}
 	t.Logf("cli agent replied: %q", strings.TrimSpace(text.String()))
+}
+
+// The noise filter, exercised without needing a live agent: a prefix split across read boundaries
+// must still be recognised, and everything else must pass through byte-for-byte.
+func TestDropNoiseHandlesSplitLines(t *testing.T) {
+	s := &session{cfg: Config{DropLinePrefixes: []string{"[STARTUP]"}}}
+	var carry string
+	var out string
+	// "[STARTUP] noise\n" arrives in three pieces, straddling the prefix and the newline.
+	for _, chunk := range []string{"[STAR", "TUP] noise\nreal ", "answer\n"} {
+		out += s.dropNoise(chunk, &carry)
+	}
+	if out != "real answer\n" {
+		t.Fatalf("filtered output = %q, want %q", out, "real answer\n")
+	}
+}
+
+// With nothing declared the filter must be a pure pass-through — every other agent depends on that.
+func TestDropNoiseIsAPassThroughByDefault(t *testing.T) {
+	s := &session{cfg: Config{}}
+	var carry string
+	if got := s.dropNoise("[STARTUP] keep me\n", &carry); got != "[STARTUP] keep me\n" {
+		t.Fatalf("unfiltered agent lost output: %q", got)
+	}
+}
+
+// Output need not end with a newline. The carry buffer holds a trailing partial line so a prefix
+// split across reads is caught — which means the stream's end MUST flush it, or the agent's last
+// line vanishes. That is exactly how this filter first broke: a reply of "OK" with no trailing
+// newline produced an empty turn.
+func TestDropNoiseFinalFlushKeepsTheLastLine(t *testing.T) {
+	s := &session{cfg: Config{DropLinePrefixes: []string{"[STARTUP]"}}}
+	var carry string
+	if got := s.dropNoise("[STARTUP] noise\nOK", &carry); got != "" {
+		t.Fatalf("mid-stream output = %q, want the noise dropped and OK held back", got)
+	}
+	if carry != "OK" {
+		t.Fatalf("carry = %q, want the unterminated final line held", carry)
+	}
+	if got := s.dropNoiseFinal(carry); got != "OK" {
+		t.Fatalf("final flush = %q, want %q", got, "OK")
+	}
+	if got := s.dropNoiseFinal("[STARTUP] trailing noise"); got != "" {
+		t.Fatalf("final flush kept noise: %q", got)
+	}
 }

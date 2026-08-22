@@ -40,6 +40,15 @@ type Config struct {
 	// substitute the chosen one (e.g. "--model {model}"). Model is the default selection.
 	Models []string `json:"models,omitempty"`
 	Model  string   `json:"model,omitempty"`
+	// DropLinePrefixes hides output lines a specific agent emits as diagnostics rather than answer.
+	//
+	// stderr is deliberately folded into the streamed output (see runTurn) because many CLI agents
+	// report progress there, and dropping it would make a failing agent silent. The cost is that an
+	// agent which also logs startup chatter puts it in the user's chat: gemini prefixes every run
+	// with "[STARTUP] Phase 'cleanup_ops' was started but never ended…", so its answer arrived with
+	// two lines of noise in front of it. Per-agent and opt-in, so the generic path is unchanged and
+	// no agent's real output is filtered on a guess.
+	DropLinePrefixes []string `json:"drop_line_prefixes,omitempty"`
 	// Endpoint marks this entry as an AG-UI BACKEND rather than a subprocess: the daemon POSTs runs
 	// to this URL instead of spawning Command, and the agui adapter handles it. Mutually exclusive
 	// with Command.
@@ -277,6 +286,9 @@ func (s *session) runTurn(ctx context.Context, argv []string) {
 
 func (s *session) stream(r io.Reader, titles *osctitle.Scanner) {
 	buf := make([]byte, 4096)
+	// Holds a trailing partial line between reads, so a prefix split across two chunks is still
+	// recognised. Only used when the agent declares noise to drop.
+	var carry string
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
@@ -286,14 +298,78 @@ func (s *session) stream(r io.Reader, titles *osctitle.Scanner) {
 				titles.Write(buf[:n])
 			}
 			if txt := stripANSI(string(buf[:n])); txt != "" {
+				if txt = s.dropNoise(txt, &carry); txt == "" {
+					continue
+				}
 				s.emit(agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: s.id, Text: txt}})
 				s.detectRateLimit(txt)
 			}
 		}
 		if err != nil {
+			// Flush whatever is held back. dropNoise withholds a trailing partial line so a prefix
+			// split across reads is still recognised — but output need not end with a newline, and
+			// without this the agent's LAST line is silently discarded. That is how the filter first
+			// presented: gemini's "OK" arrived with no trailing newline and the turn came back empty.
+			if carry != "" {
+				if txt := s.dropNoiseFinal(carry); txt != "" {
+					s.emit(agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: s.id, Text: txt}})
+					s.detectRateLimit(txt)
+				}
+				carry = ""
+			}
 			return
 		}
 	}
+}
+
+// dropNoiseFinal judges the last, newline-less line at end of stream.
+func (s *session) dropNoiseFinal(line string) string {
+	for _, p := range s.cfg.DropLinePrefixes {
+		if strings.HasPrefix(strings.TrimSpace(line), p) {
+			return ""
+		}
+	}
+	return line
+}
+
+// dropNoise removes whole lines matching the agent's declared diagnostic prefixes.
+//
+// Line-oriented, but the stream arrives in arbitrary chunks, so an incomplete trailing line is held
+// in `carry` until its newline shows up — otherwise a prefix split across a read boundary would slip
+// through. Returns "" when everything in this chunk was filtered.
+//
+// A no-op (and allocation-free) for agents that declare nothing, which is all of them but gemini.
+func (s *session) dropNoise(txt string, carry *string) string {
+	if len(s.cfg.DropLinePrefixes) == 0 {
+		return txt
+	}
+	data := *carry + txt
+	*carry = ""
+	// Anything after the last newline is incomplete — hold it rather than judge it.
+	if i := strings.LastIndexByte(data, '\n'); i >= 0 {
+		*carry = data[i+1:]
+		data = data[:i+1]
+	} else {
+		*carry = data
+		return ""
+	}
+	var out strings.Builder
+	for _, line := range strings.SplitAfter(data, "\n") {
+		if line == "" {
+			continue
+		}
+		drop := false
+		for _, p := range s.cfg.DropLinePrefixes {
+			if strings.HasPrefix(strings.TrimSpace(line), p) {
+				drop = true
+				break
+			}
+		}
+		if !drop {
+			out.WriteString(line)
+		}
+	}
+	return out.String()
 }
 
 // detectRateLimit scans agent output for a rate-limit condition (from the agent's own message) and
