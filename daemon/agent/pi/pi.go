@@ -47,7 +47,8 @@ const maxLoggedBadFrames = 5
 
 // Provider spawns pi RPC sessions.
 type Provider struct {
-	cmd []string // command to run pi in rpc mode, e.g. ["pi","--mode","rpc"]
+	name string   // provider name shown in the UI; "" means pi
+	cmd  []string // command to run pi in rpc mode, e.g. ["pi","--mode","rpc"]
 
 	mu           sync.Mutex
 	resume       map[string]string // our session id (pi_…) -> the JSONL session file pi opened for it
@@ -57,10 +58,25 @@ type Provider struct {
 
 // New returns a Provider that runs the given pi rpc command (argv). For tests, point
 // it at a fake pi-rpc script speaking the JSONL protocol.
-func New(cmd []string) *Provider {
-	p := &Provider{cmd: cmd, resume: map[string]string{}}
+func New(cmd []string) *Provider { return NewNamed("pi", cmd, DefaultSessionsRoot()) }
+
+// NewNamed returns a Provider under a different name and session root, for another agent that
+// speaks the SAME JSONL RPC protocol.
+//
+// prime-agent (Prime Intellect) is the case this exists for. Its `--mode rpc` emits the identical
+// event vocabulary — agent_start, turn_start, message_update with an assistantMessageEvent
+// text_delta, message_end carrying usage, agent_end — and accepts the same
+// {"type":"prompt","message":...} on stdin. Verified by driving a real prime-agent through this
+// adapter unchanged. Reimplementing it would have meant a second copy of a protocol we already
+// parse, and the issue-inspector markdown renderer is a standing reminder of what a second copy
+// costs: it drifts, and only one of them gets fixed.
+//
+// The two differ in exactly two mechanical ways, both parameters here: the provider name, and where
+// sessions live (~/.pi/agent/sessions nested per project, ~/.prime/agent/sessions flat).
+func NewNamed(name string, cmd []string, sessionsRoot string) *Provider {
+	p := &Provider{name: name, cmd: cmd, resume: map[string]string{}, sessionsRoot: sessionsRoot}
 	if home, err := os.UserHomeDir(); err == nil {
-		p.resumeFile = filepath.Join(home, ".oculus", "pi-resume.json")
+		p.resumeFile = filepath.Join(home, ".oculus", name+"-resume.json")
 		if data, err := os.ReadFile(p.resumeFile); err == nil {
 			_ = json.Unmarshal(data, &p.resume)
 		}
@@ -68,7 +84,12 @@ func New(cmd []string) *Provider {
 	return p
 }
 
-func (p *Provider) Name() string { return "pi" }
+func (p *Provider) Name() string {
+	if p.name == "" {
+		return "pi"
+	}
+	return p.name
+}
 
 func (p *Provider) List(context.Context) ([]protocol.Session, error) { return nil, nil }
 

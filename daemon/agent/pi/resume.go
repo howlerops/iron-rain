@@ -57,7 +57,12 @@ func findSessionFile(root, id string) string {
 		}
 		return ""
 	}
+	// Two layouts, because two agents share this protocol: pi nests sessions under a per-project
+	// directory and prefixes the file with a timestamp, prime-agent writes them flat under the id.
 	matches, _ := filepath.Glob(filepath.Join(root, "*", "*_"+id+".jsonl"))
+	if len(matches) == 0 {
+		matches, _ = filepath.Glob(filepath.Join(root, id+".jsonl"))
+	}
 	if len(matches) == 0 {
 		return ""
 	}

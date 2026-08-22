@@ -1237,11 +1237,31 @@ enum AssistantContentParser {
         var cursor = text.startIndex
         var scan = text.startIndex
 
+        // Fence positions, computed ONCE. The old code asked isInsideFence per candidate brace, and
+        // that split the entire preceding text on every call — O(braces × length). On a realistic
+        // fenced-JSON answer (400 standalone-looking objects, 11.5KB) the scan cost 36ms and found
+        // nothing, and it re-ran on every body evaluation, including a theme or chat-font change.
+        let toggles = fenceToggleIndices(in: text)
+        var nextToggle = 0
+        var insideFence = false
+
         while let open = text[scan...].firstIndex(of: "{") {
+            // `open` only ever moves forward, so fence state can be carried along rather than
+            // recomputed: advance past any fence markers we have now passed.
+            while nextToggle < toggles.count, toggles[nextToggle] < open {
+                insideFence.toggle()
+                nextToggle += 1
+            }
+            // Checked BEFORE matchingBrace, which is the expensive part — it walks toward endIndex.
+            // Braces inside a code fence can never be components, and a fenced JSON block is exactly
+            // where they arrive in bulk, so skipping here is what removes the quadratic behaviour.
+            if insideFence {
+                scan = text.index(after: open)
+                continue
+            }
             guard let close = matchingBrace(in: text, from: open) else { break }
             let candidate = String(text[open...close])
             if isStandaloneObject(in: text, open: open, close: close),
-               !isInsideFence(text, at: open),
                let component = decodeComponent(candidate, sessionID: sessionID, messageID: messageID) {
                 appendMarkdown(String(text[cursor..<open]), to: &segments)
                 segments.append(AssistantContentSegment(id: segments.count, kind: .component(component)))
@@ -1297,14 +1317,23 @@ enum AssistantContentParser {
             && String(text[afterClose..<lineEnd]).trimmingCharacters(in: .whitespaces).isEmpty
     }
 
-    private static func isInsideFence(_ text: String, at index: String.Index) -> Bool {
-        var inside = false
-        for line in text[..<index].components(separatedBy: "\n") {
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("```") {
-                inside.toggle()
+    /// Indices where a ``` fence line begins, in order — each one toggles fence state.
+    ///
+    /// Replaces isInsideFence, which recomputed the answer from the start of the document for every
+    /// candidate brace. One pass, and because the scan only moves forward the caller can walk this
+    /// list alongside it instead of searching.
+    private static func fenceToggleIndices(in text: String) -> [String.Index] {
+        var out: [String.Index] = []
+        var lineStart = text.startIndex
+        while lineStart < text.endIndex {
+            let lineEnd = text[lineStart...].firstIndex(of: "\n") ?? text.endIndex
+            if text[lineStart..<lineEnd].trimmingCharacters(in: .whitespaces).hasPrefix("```") {
+                out.append(lineStart)
             }
+            if lineEnd == text.endIndex { break }
+            lineStart = text.index(after: lineEnd)
         }
-        return inside
+        return out
     }
 
     private static func decodeComponent(_ json: String, sessionID: String, messageID: String) -> UIComponent? {
@@ -2413,9 +2442,25 @@ struct SubAgentsStrip: View {
 struct ChatMarkdownView: View {
     let text: String
     let palette: OculusPalette
-    // User type preferences (Settings → Chat font). Reading them here re-renders + re-parses when the
-    // user changes the font, and they participate in the cache key so a restyle doesn't serve a stale
-    // AttributedString built with the old font.
+    /// How to render an `![alt](url)` image, when the caller needs something other than a link.
+    ///
+    /// This is the ONLY thing that differed between this renderer and the issue inspector's copy, and
+    /// it is a real difference: a tracker's images are auth-gated, so they load through the daemon
+    /// (which holds the API token) rather than by URL. Everything else was duplicated — and drifted.
+    /// The issue copy never gained inline-code chips, strikethrough, link styling, syntax-highlighted
+    /// code blocks, or the heading spacing rhythm, because each of those was fixed here and nobody
+    /// remembered there was a second renderer. Injecting the one genuine difference is what lets
+    /// there be one implementation.
+    var imageRenderer: ((_ alt: String, _ url: String) -> AnyView)? = nil
+    // User type preferences (Settings → Chat font). Reading them here re-renders and re-parses when
+    // the user changes the font.
+    //
+    // There is NO cache. This comment used to claim these values "participate in the cache key so a
+    // restyle doesn't serve a stale AttributedString" — describing a mechanism that was never
+    // written, which is worse than saying nothing: it invites the next reader to trust a guarantee
+    // that doesn't hold, and to look for a bug in a cache that isn't there. Correctness is fine
+    // without one (every render re-parses, so nothing can be stale); the cost is re-parsing on each
+    // body evaluation, which is now cheap enough not to matter — see fenceToggleIndices.
     @AppStorage("oculus.chatFontDesign") private var fontDesignRaw = ChatFontDesign.system.rawValue
     @AppStorage("oculus.chatFontScale") private var fontScaleRaw = ChatFontScale.standard.rawValue
     /// Response text, not UI: Claude's own web app renders its answers in serif while keeping UI and
@@ -2502,7 +2547,11 @@ struct ChatMarkdownView: View {
         case .code(let language, let code):
             ChatCodeBlockView(code: code, language: language, palette: palette, factor: factor)
         case .image(let alt, let url):
-            Text(linkText(alt: alt, url: url)).frame(maxWidth: .infinity, alignment: .leading)
+            if let imageRenderer {
+                imageRenderer(alt, url).frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                Text(linkText(alt: alt, url: url)).frame(maxWidth: .infinity, alignment: .leading)
+            }
         case .rule:
             Rectangle().fill(palette.border).frame(height: 1).padding(.vertical, 2)
         }
