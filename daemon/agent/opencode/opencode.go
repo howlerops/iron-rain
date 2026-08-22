@@ -1136,6 +1136,38 @@ func (s *session) handle(raw []byte) {
 		// covers, and they make far better "always allow …" suggestions than re-parsing the command.
 		s.emit(agent.Event{Type: protocol.TypeApprovalRequest, Payload: protocol.ApprovalRequest{ApprovalID: perm.ID, SessionID: s.id, Tool: tool, Detail: detail, Input: perm.Metadata, Patterns: perm.Patterns}})
 
+	case "session.error":
+		// A PROVIDER failure. opencode answers the POST with HTTP 200 and reports the real outcome
+		// here, then follows it with session.idle — so ignoring this event produced a turn that
+		// closed cleanly having streamed nothing and explained nothing. A model outage looked
+		// identical to the agent having no reply: the prompt simply vanished.
+		//
+		// Observed live: {"name":"APIError","data":{"message":"Error from provider (Console):
+		// Upstream request failed: Model is unavailable.","statusCode":400}} against
+		// opencode.ai/zen. The message is the provider's own words and is the only thing that tells
+		// the user this was an outage rather than their prompt being ignored, so it is surfaced
+		// verbatim rather than replaced with a generic failure string.
+		var se struct {
+			SessionID string `json:"sessionID"`
+			Error     struct {
+				Name string `json:"name"`
+				Data struct {
+					Message string `json:"message"`
+				} `json:"data"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(e.Properties, &se) != nil {
+			return
+		}
+		// opencode omits sessionID on some error frames; an unattributed error still belongs to this
+		// session, because this stream is scoped to it.
+		if se.SessionID != "" && se.SessionID != s.id && !s.childIDs[se.SessionID] {
+			return
+		}
+		msg := firstNonEmpty(se.Error.Data.Message, se.Error.Name, "the agent reported an error")
+		s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{
+			SessionID: s.id, Status: protocol.StatusError, Detail: "opencode: " + msg}})
+
 	case "session.idle":
 		var pr struct {
 			SessionID string `json:"sessionID"`
