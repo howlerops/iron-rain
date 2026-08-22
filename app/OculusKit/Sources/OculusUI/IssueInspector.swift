@@ -587,6 +587,16 @@ struct IssueInspectorPanel: View {
 /// headings, bullet/numbered lists, fenced code, horizontal rules, inline emphasis + links
 /// (via AttributedString), and — the reason this exists — inline images fetched through the
 /// daemon (SwiftUI's built-in markdown ignores images, and tracker CDNs are auth-gated).
+/// Markdown for an issue body or comment.
+///
+/// A thin wrapper over ChatMarkdownView rather than a renderer of its own. It used to be a full
+/// second implementation — ~90 lines duplicating every block case — and the copies drifted exactly
+/// as you would expect: chat gained inline-code chips, strikethrough, link styling, syntax-highlighted
+/// code blocks with a copy button, and a heading spacing rhythm, while issues silently kept none of
+/// them. Every markdown fix had to be written twice, and the second write kept being forgotten.
+///
+/// The one real difference is images: a tracker's are auth-gated and must load through the daemon,
+/// which holds the API token. That is injected, so there is one renderer again.
 struct IssueMarkdownView: View {
     let text: String
     @ObservedObject var model: Model
@@ -594,85 +604,11 @@ struct IssueMarkdownView: View {
     let palette: OculusPalette
 
     var body: some View {
-        let blocks = MarkdownParser.parse(text)
-        VStack(alignment: .leading, spacing: 10) {
-            ForEach(Array(blocks.enumerated()), id: \.offset) { _, b in blockView(b) }
+        ChatMarkdownView(text: text, palette: palette) { alt, url in
+            AnyView(TrackerImage(model: model, provider: provider, url: url, alt: alt, palette: palette))
         }
         .tint(palette.primary)
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func bulletGlyph(_ depth: Int) -> String {
-        ["•", "◦", "▪", "–"][min(max(depth, 0), 3)]
-    }
-
-    @ViewBuilder private func blockView(_ b: MarkdownBlock) -> some View {
-        switch b {
-        case .heading(let level, let t):
-            inline(t).font(headingFont(level)).bold().padding(.top, level <= 2 ? 4 : 0)
-        case .paragraph(let t):
-            inline(t).font(.callout).foregroundStyle(palette.foreground.opacity(0.92))
-                .fixedSize(horizontal: false, vertical: true)
-        case .table(let props):
-            // Issue bodies carry tables as often as chat does — same view, same reason.
-            TableView(props: props, palette: palette)
-        case .quote(let lines):
-            HStack(alignment: .top, spacing: 8) {
-                OculusShape.rounded(1.5).fill(palette.border).frame(width: 3)
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(Array(lines.enumerated()), id: \.offset) { _, l in
-                        inline(l).font(.callout).fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                .foregroundStyle(palette.mutedForeground)
-            }
-        case .bullet(let items):
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(Array(items.enumerated()), id: \.offset) { _, it in
-                    HStack(alignment: .top, spacing: 8) {
-                        if let checked = it.checked {
-                            Image(systemName: checked ? "checkmark.square.fill" : "square")
-                                .font(.callout)
-                                .foregroundStyle(checked ? palette.primary : palette.mutedForeground)
-                        } else {
-                            Text(bulletGlyph(it.depth)).foregroundStyle(palette.mutedForeground)
-                        }
-                        inline(it.text).font(.callout).fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding(.leading, CGFloat(it.depth) * 14)
-                }
-            }
-        case .ordered(let items):
-            VStack(alignment: .leading, spacing: 4) {
-                ForEach(Array(items.enumerated()), id: \.offset) { _, it in
-                    HStack(alignment: .top, spacing: 8) {
-                        Text("\(it.num).").foregroundStyle(palette.mutedForeground).monospacedDigit()
-                        inline(it.text).font(.callout).fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-        case .code(_, let c):
-            ScrollView(.horizontal, showsIndicators: false) {
-                Text(c).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
-                    .padding(10).frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .background(palette.muted.opacity(0.3)).clipShape(OculusShape.rounded(OculusRadius.sm))
-        case .image(let alt, let url):
-            TrackerImage(model: model, provider: provider, url: url, alt: alt, palette: palette)
-        case .rule:
-            Divider().overlay(palette.border)
-        }
-    }
-
-    private func inline(_ s: String) -> Text {
-        if let attr = try? AttributedString(markdown: s, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
-            return Text(attr)
-        }
-        return Text(s)
-    }
-
-    private func headingFont(_ l: Int) -> Font {
-        switch l { case 1: return .title2; case 2: return .title3; case 3: return .headline; default: return .subheadline }
     }
 }
 

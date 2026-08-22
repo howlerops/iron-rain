@@ -26,6 +26,16 @@ import (
 	"github.com/howlerops/oculus/daemon/procutil"
 )
 
+// primeSessionsRoot is where prime-agent keeps its conversation JSONL files. Same shape as pi's
+// (~/.pi/agent/sessions), one directory over.
+func primeSessionsRoot() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".prime", "agent", "sessions")
+}
+
 // setupMode controls whether a missing claude-code sidecar (node_modules) is installed.
 type setupMode int
 
@@ -62,6 +72,14 @@ func enableProviders(ctx context.Context, h *hub.Hub, opencodeURL, claudeSidecar
 			piBin = p
 		}
 	}
+	// prime-agent (Prime Intellect) speaks the SAME JSONL RPC protocol as pi, so it rides the same
+	// adapter rather than a second copy of a parser we already have — verified by driving a real
+	// prime-agent through it unchanged. It gets the full treatment as a result: streamed text,
+	// tool cards, usage/cost, and resume from its own session files.
+	if p, err := exec.LookPath("prime-agent"); err == nil {
+		h.Register(pi.NewNamed("prime-agent", []string{p, "--mode", "rpc"}, primeSessionsRoot()))
+		enabled = append(enabled, "prime-agent   -> "+p+" --mode rpc")
+	}
 	if piBin != "" {
 		h.Register(pi.New([]string{piBin, "--mode", "rpc"}))
 		enabled = append(enabled, "pi            -> "+piBin+" --mode rpc")
@@ -71,7 +89,7 @@ func enableProviders(ctx context.Context, h *hub.Hub, opencodeURL, claudeSidecar
 	// user defines in ~/.oculus/agents.json. Each becomes its own provider so it shows up in the
 	// app's agent picker. The native integrations above are richer, so a native name always wins a
 	// collision.
-	native := map[string]bool{"opencode": true, "claude-code": true, "pi": true}
+	native := map[string]bool{"opencode": true, "claude-code": true, "pi": true, "prime-agent": true}
 	userAgents, _ := cli.Load(agentsPath())
 	for _, cfg := range cli.Merge(cli.Detect(), userAgents) {
 		if native[cfg.Name] {
