@@ -95,7 +95,11 @@ func (p *Provider) List(context.Context) ([]protocol.Session, error) { return ni
 
 // Create starts a pi rpc session and sends the initial prompt.
 func (p *Provider) Create(ctx context.Context, cwd, prompt string) (agent.Session, error) {
-	s, err := p.spawn(ctx, cwd, "pi_"+randID(), nil)
+	// Prefix by PROVIDER, not a hardcoded "pi_". prime-agent shares this adapter, so its sessions
+	// were being minted as pi_… — the id is user-visible (it is the pill at the bottom of the
+	// session view and what appears in logs), so a prime-agent session claiming to be pi is a
+	// straightforward lie about which agent is running.
+	s, err := p.spawn(ctx, cwd, p.Name()+"_"+randID(), nil)
 	if err != nil {
 		return nil, err
 	}
