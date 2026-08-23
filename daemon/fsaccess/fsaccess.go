@@ -668,3 +668,33 @@ func NormalizePath(p string) string {
 	}
 	return filepath.Clean(resolveExisting(filepath.Clean(p)))
 }
+
+// VCSMetadataComponent returns the repository-metadata component ("​.git"/".hg") a path descends
+// into, ROOT-INDEPENDENTLY, or "" if it does not touch one.
+//
+// This is deliberately a different rule from vcsMetaComponent, which is root-RELATIVE so that a
+// project root living inside a .git subtree stays usable. Here there is no root to be relative to:
+// the caller is judging a path an AGENT asked to write, and the question is simply "does this reach
+// into repository metadata anywhere along the way".
+//
+// Why it exists: the daemon's own fs RPCs go through Resolve and are already refused, but a
+// provider's write tool bypasses all of that — it writes to disk itself, and the approval system
+// only ever decided "may this tool run", never "is this target safe". That gap is a deferred shell:
+// an agent writes .git/hooks/pre-commit into its worktree, the user approves what looks like an
+// ordinary file write, and the daemon's OWN `git commit`/`git merge` at finish time executes it as
+// the owner. The relay makes that reachable from anywhere, which is the same standard that got PTY
+// sessions parked.
+//
+// The path is normalized first, so "wt/subdir/../.git/config" and a symlink through an existing
+// ancestor are both judged on where they actually land.
+func VCSMetadataComponent(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return ""
+	}
+	for _, part := range strings.Split(NormalizePath(path), string(os.PathSeparator)) {
+		if vcsMetaDirs[part] {
+			return part
+		}
+	}
+	return ""
+}

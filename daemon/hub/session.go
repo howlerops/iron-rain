@@ -1153,6 +1153,17 @@ func (m *managedSession) run() {
 					m.emitTool("⊘ " + ar.Tool + " blocked — " + mode + " mode is read-only")
 					continue
 				}
+				// Repository metadata is refused before ANY rule is consulted, and before the user is
+				// asked. Ordering matters twice over: a standing "always allow write" must not reach
+				// .git/hooks, and this is deliberately not a question to put on a card, because the
+				// consequence is invisible when asked and arrives later from our own git commands.
+				// See guardApproval.
+				if g := guardApproval(ar); g.reason != "" {
+					log.Printf("session %s: denied %s — %s", m.sess.ID(), ar.Tool, g.reason)
+					go func(id string) { _ = m.sess.Respond(context.Background(), id, protocol.DecisionDeny) }(ar.ApprovalID)
+					m.emitTool("⊘ " + ar.Tool + " blocked — " + g.reason)
+					continue
+				}
 				// A persisted rule answers it silently — permissions are asked ONCE, ever, not once
 				// per session. The request never reaches a client.
 				if m.hub.autoAllowApproval(m, ar) {
