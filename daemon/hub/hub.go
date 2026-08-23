@@ -1657,7 +1657,26 @@ func (h *Hub) spawnChild(ctx context.Context, req protocol.SessionChild) (*manag
 	if db != nil {
 		handoff, _ = db.Handoff(req.ParentSessionID)
 	}
-	prompt := buildChildPrompt(req, handoffPath(cwd, req.ParentSessionID), handoff)
+	// An ISOLATED child must not be told to read a path in the PARENT's directory.
+	//
+	// Handoff seeding was written when children shared the parent's cwd, so pointing at
+	// <parent>/.oculus/handoff/<id>.md cost nothing. Give the child its own worktree and that same
+	// pointer becomes a read across a directory boundary — an `external_directory` approval, raised
+	// before the child has done anything, on a session nobody is looking at.
+	//
+	// Observed: every isolated child stalled on its first move. The transcript read "I'll review the
+	// shared handoff, then add the requested NOTES.md" and then nothing, because step one needed
+	// permission it could not get. Isolation and handoff-seeding were each correct and together they
+	// deadlocked.
+	//
+	// So an isolated child gets no file pointer. It still receives the objective and the current
+	// state inline (see buildChildPrompt), which is the part that actually seeds the work; what it
+	// loses is the full document, and the alternative was losing the whole turn.
+	handoffRef := handoffPath(cwd, req.ParentSessionID)
+	if req.Worktree {
+		handoffRef = ""
+	}
+	prompt := buildChildPrompt(req, handoffRef, handoff)
 
 	// Routed through startSession rather than calling p.Create directly.
 	//

@@ -52,3 +52,37 @@ func TestSessionChildCarriesModelAndIsolation(t *testing.T) {
 		t.Fatalf("child prompt lost the subtask: %q", prompt)
 	}
 }
+
+// An isolated child must not be pointed at a file in the PARENT's directory.
+//
+// The handoff pointer was written for children that share the parent's cwd. Once the child has its
+// own worktree, that same pointer is a read across a directory boundary — an external_directory
+// approval raised before the child has done anything, on a session nobody is watching.
+//
+// Observed live: every isolated child stalled on its first move. Its transcript read "I'll review
+// the shared handoff, then add the requested NOTES.md" and then stopped, because step one needed a
+// permission it could not get. Two individually-correct features deadlocked each other.
+func TestIsolatedChildPromptHasNoCrossBoundaryPath(t *testing.T) {
+	rec := store.HandoffRecord{Title: "Ship the limiter", Summary: "Design agreed; implementation left."}
+	parentHandoff := "/Users/x/parent-repo/.oculus/handoff/cc_parent.md"
+
+	isolated := buildChildPrompt(
+		protocol.SessionChild{Subtask: "write the docs", Worktree: true}, "", rec)
+	if strings.Contains(isolated, parentHandoff) || strings.Contains(isolated, "/.oculus/handoff/") {
+		t.Fatalf("isolated child was pointed outside its worktree:\n%s", isolated)
+	}
+	// It must still be seeded — dropping the pointer must not drop the context.
+	for _, want := range []string{"Ship the limiter", "Design agreed", "write the docs"} {
+		if !strings.Contains(isolated, want) {
+			t.Fatalf("isolated child lost its seed context %q:\n%s", want, isolated)
+		}
+	}
+
+	// A NON-isolated child shares the directory, so the pointer is a local read and still earns its
+	// place — the full document beats a summary when it can be had for free.
+	shared := buildChildPrompt(
+		protocol.SessionChild{Subtask: "write the docs"}, parentHandoff, rec)
+	if !strings.Contains(shared, parentHandoff) {
+		t.Fatalf("shared-directory child lost its handoff pointer:\n%s", shared)
+	}
+}
