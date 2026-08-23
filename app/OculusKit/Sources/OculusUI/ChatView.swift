@@ -233,8 +233,14 @@ public struct ChatView: View {
                 transcript
                 typingBar // pinned below the scroll so its flicker never shifts the transcript
             }
+            // Both of these are pinned between the transcript and the composer, so they take the same
+            // measure. Without it they ran full-bleed while everything above and below them was
+            // capped, and on a wide window the approval card — the one thing on screen actually
+            // asking you a question — was the widest element in the pane, with its Allow and Deny
+            // flung to the window edges, half a screen apart from the path they apply to.
             if model.showTests {
                 TestResultPanel(model: model, palette: palette)
+                    .readableColumn(chatMeasure)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
             if let ap = model.pendingApproval {
@@ -242,6 +248,7 @@ public struct ChatView: View {
                              onAllow: { Task { await model.respond(Decision.allow) } },
                              onAlways: { scope in Task { await model.respond(Decision.always, scope: scope) } },
                              onDeny: { Task { await model.respond(Decision.deny) } })
+                    .readableColumn(chatMeasure)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
             Group {
