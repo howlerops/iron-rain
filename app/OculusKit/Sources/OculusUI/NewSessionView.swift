@@ -110,6 +110,85 @@ enum TerminalTakeover {
     }
 }
 
+// MARK: - Working-directory validation
+
+/// Whether the folders picked in the sheet can actually become a session's working directory.
+///
+/// The daemon stays the authority — it re-checks, and only it can see the filesystem — but the rule
+/// that decides a MULTI-repo session (`session.create` in daemon/hub/hub.go) is pure prefix
+/// arithmetic on absolute paths, so it can be run here as well. Running it here is the whole point:
+/// an impossible combination used to be accepted in silence at selection time and refused only after
+/// the user had written a prompt and pressed Start — by an alert that blamed the agent ("check the
+/// agent is installed and running") for what was a choice of folders. A check costs one string
+/// comparison; the failure it prevents costs a written task. So it happens where the choice is made.
+///
+/// Deliberately NOT mirrored here: anything that needs the filesystem (does the folder still exist,
+/// is it really a git repo). Guessing at those from the client would produce confident wrong
+/// answers; they stay the daemon's to report.
+enum WorkingDirectoryPlan: Equatable {
+    /// The selection works. `runsIn` is the folder the agent will start in, or nil when it can't be
+    /// named from here (nothing selected → the daemon's default; an isolated workspace → a layout
+    /// directory the daemon has yet to create).
+    case ok(runsIn: String?)
+    /// Start cannot succeed with this selection. `summary` is a few words for tight spots (the
+    /// footer, a tooltip), `detail` says what is wrong with the FOLDERS, and `fix` is the way out.
+    /// None of the three mention the agent: the agent is fine.
+    case blocked(summary: String, detail: String, fix: String)
+
+    /// - Parameters:
+    ///   - paths: absolute paths of the selected projects, in display order.
+    ///   - isolate: the isolation flag AS SENT (`useWorktree && canIsolate`), not the toggle's value.
+    ///   - canIsolate: whether isolation is available for this selection, which decides whether the
+    ///     suggested fix can be "isolate them" or has to be "change the selection".
+    static func evaluate(paths: [String], isolate: Bool, canIsolate: Bool) -> WorkingDirectoryPlan {
+        switch paths.count {
+        case 0: return .ok(runsIn: nil)         // daemon default cwd
+        case 1: return .ok(runsIn: paths[0])
+        default: break
+        }
+        // An isolated multi-repo workspace doesn't need the repos to be related at all: each gets its
+        // own worktree under one layout folder the daemon creates (worktree.CreateWorkspace), so
+        // there is nothing for them to share. That's why it's the offered escape hatch below.
+        if isolate { return .ok(runsIn: nil) }
+        let ancestor = commonAncestor(paths)
+        if ancestor.isEmpty || ancestor == "/" {
+            return .blocked(
+                summary: "No shared parent folder",
+                detail: "These folders have no parent folder in common, so a shared session has nowhere to run.",
+                fix: canIsolate
+                    ? "Give each repo its own worktree below, or pick folders that live under one parent."
+                    : "Pick folders that live under one parent, or remove the odd one out.")
+        }
+        return .ok(runsIn: ancestor)
+    }
+
+    /// Deepest folder every path lives under, "/" when that's all they share, "" for no paths.
+    /// A port of `commonAncestor` in daemon/hub/hub.go — same component-prefix walk, so the sheet
+    /// and the daemon agree on which selections are startable and on which folder they run in.
+    static func commonAncestor(_ paths: [String]) -> String {
+        guard let first = paths.first else { return "" }
+        var parts = components(first)
+        for p in paths.dropFirst() {
+            let other = components(p)
+            let n = min(parts.count, other.count)
+            var i = 0
+            while i < n, parts[i] == other[i] { i += 1 }
+            parts = Array(parts.prefix(i))
+        }
+        let ancestor = parts.joined(separator: "/")
+        return ancestor.isEmpty ? "/" : ancestor
+    }
+
+    /// Path split the way Go's `filepath.Split(filepath.Clean(p))` splits it — the leading empty
+    /// component of an absolute path is KEPT, so "/a/b" is ["", "a", "b"] and two paths on different
+    /// roots still share that first component (which is what makes "/" the answer, not "").
+    /// `standardizedFileURL` resolves "." and ".." without touching symlinks, matching Clean.
+    private static func components(_ path: String) -> [String] {
+        URL(fileURLWithPath: path).standardizedFileURL.path
+            .split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+    }
+}
+
 /// Puts a string on the system pasteboard on either platform.
 func copyToPasteboard(_ text: String) {
     #if os(macOS)
@@ -135,7 +214,14 @@ struct NewSessionView: View {
     /// The first instruction, sent WITH the create so the agent works during bootstrap rather than
     /// idling until you come back to it. On a phone — where you open the app to start something and
     /// then put it away — that is the difference between one interaction and two.
-    @State private var firstPrompt = ""
+    ///
+    /// A DRAFT, not view state. Nothing in this sheet ever assigns "" to it, so the only way the
+    /// field could empty itself mid-edit — as it did when the agent picker was touched — is the
+    /// sheet's transient `@State` being torn down and rebuilt underneath the user. Storing the text
+    /// outside the view makes that unobservable, and buys the same protection against the other two
+    /// ways a written task used to evaporate: a backgrounded phone, and a sheet dismissed by mistake.
+    /// Cleared when the task is handed to a session, or when the user explicitly discards it.
+    @AppStorage("oculus.newSession.draftPrompt") private var firstPrompt = ""
     static let lastWorktreeKey = "oculus.newSession.worktree"
     static let lastProjectsKey = "oculus.newSession.projects"
     @State private var sessionMode = SessionMode.code
@@ -205,18 +291,39 @@ struct NewSessionView: View {
         }
     }
 
-    private var isMulti: Bool { selectedProjects.count > 1 }
+    /// The selection RESOLVED against the projects the daemon actually knows, in list order.
+    ///
+    /// Everything downstream counts this rather than the raw id set. Ids are restored from
+    /// UserDefaults and can outlive their project (folder removed, different daemon), and an id with
+    /// no project draws no row — so counting ids made the sheet claim "2 selected" with one row
+    /// ticked, and then fail the create with "multi-repo needs at least 2 valid projects".
+    private var chosenProjects: [Project] { model.projects.filter { selectedProjects.contains($0.id) } }
+    private var isMulti: Bool { chosenProjects.count > 1 }
     private var singleSelectedProject: Project? {
-        guard selectedProjects.count == 1, let id = selectedProjects.first else { return nil }
-        return model.projects.first { $0.id == id }
+        chosenProjects.count == 1 ? chosenProjects.first : nil
     }
     private var canWorktree: Bool { singleSelectedProject?.isGitRepo == true }
     /// Every selected repo is a git repo, so a multi-repo workspace (one worktree per repo) is
     /// possible. Single-repo isolation is canWorktree; canIsolate covers both.
-    private var canIsolateMulti: Bool {
-        isMulti && selectedProjects.allSatisfy { id in model.projects.first { $0.id == id }?.isGitRepo == true }
-    }
+    private var canIsolateMulti: Bool { isMulti && chosenProjects.allSatisfy(\.isGitRepo) }
     private var canIsolate: Bool { canWorktree || canIsolateMulti }
+    /// Isolation as the daemon will receive it — the toggle can stay on from a previous session
+    /// whose selection could isolate, while this one can't.
+    private var effectiveIsolate: Bool { useWorktree && canIsolate }
+    /// The verdict on the current folder selection, recomputed as it changes. See WorkingDirectoryPlan.
+    private var plan: WorkingDirectoryPlan {
+        .evaluate(paths: chosenProjects.map(\.path), isolate: effectiveIsolate, canIsolate: canIsolateMulti)
+    }
+    private var blocked: (summary: String, detail: String, fix: String)? {
+        if case .blocked(let s, let d, let f) = plan { return (s, d, f) }
+        return nil
+    }
+    /// Said in full on the Start button, because a disabled control with no explanation is its own
+    /// usability trap — and VoiceOver otherwise announces "Start, dimmed" and nothing else.
+    private var startHint: String {
+        guard let b = blocked else { return "" }
+        return "Unavailable. \(b.detail) \(b.fix)"
+    }
     private var isolationHelp: String {
         if isMulti {
             return canIsolateMulti
@@ -269,7 +376,7 @@ struct NewSessionView: View {
         // silently. Explicit close still works, and asks.
         .interactiveDismissDisabled(hasUnsavedInput)
         .confirmationDialog("Discard this session?", isPresented: $confirmDiscard, titleVisibility: .visible) {
-            Button("Discard", role: .destructive) { onStart() }
+            Button("Discard", role: .destructive) { firstPrompt = ""; onStart() }
             Button("Keep editing", role: .cancel) {}
         } message: {
             Text("You've written a task for the agent. Closing now throws it away.")
@@ -282,7 +389,15 @@ struct NewSessionView: View {
                 selectedProjects = Set(saved)
             }
             useWorktree = UserDefaults.standard.bool(forKey: Self.lastWorktreeKey)
-            await model.loadProjects(); await scan()
+            await model.loadProjects()
+            // Drop ids whose project is gone. They draw no row, so they'd sit in the count as
+            // phantoms and then fail the create for a reason nothing on screen could explain.
+            // Guarded on a non-empty list: an empty one means the load failed, not that every
+            // project vanished, and wiping the selection over a dropped socket would be worse.
+            if !model.projects.isEmpty {
+                selectedProjects.formIntersection(Set(model.projects.map(\.id)))
+            }
+            await scan()
         }
         // The prompt is placed first because it is the thing the user came to express — but it did
         // not actually receive focus, so every new session still began with a tap. The delay lets
@@ -335,8 +450,14 @@ struct NewSessionView: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
-            if mode == .new && isMulti {
-                Label("\(selectedProjects.count) repos", systemImage: "square.stack.3d.up")
+            if mode == .new, let b = blocked {
+                // The reason Start is dimmed, restated where the eye goes when a button doesn't
+                // respond. The selection itself carries the full explanation and the fix.
+                Label(b.summary, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(palette.warning)
+                    .lineLimit(1)
+            } else if mode == .new && isMulti {
+                Label("\(chosenProjects.count) repos", systemImage: "square.stack.3d.up")
                     .font(.caption).foregroundStyle(palette.mutedForeground)
             }
             Spacer()
@@ -344,25 +465,37 @@ struct NewSessionView: View {
                 .keyboardShortcut(.cancelAction)
             if mode == .new {
                 Button {
+                    // Read the draft and the resolved selection BEFORE clearing the draft below:
+                    // `firstPrompt` is backed by UserDefaults, so the Task would otherwise race the
+                    // clear and send an empty first turn.
+                    let prompt = firstPrompt
+                    let ids = chosenProjects.map(\.id)
+                    let isolate = effectiveIsolate
                     Task {
                         let chosen = models.first { $0.id == selectedModel }
                         await model.createSession(provider: provider,
-                                                  projectIDs: selectedProjects.isEmpty ? nil : Array(selectedProjects),
-                                                  worktree: useWorktree && canIsolate,
+                                                  projectIDs: ids.isEmpty ? nil : ids,
+                                                  worktree: isolate,
                                                   workspaceName: workspaceName.isEmpty ? nil : workspaceName,
                                                   mode: sessionMode,
                                                   autonomous: autonomous,
                                                   model: selectedModel.isEmpty ? nil : selectedModel,
                                                   modelProvider: chosen?.provider,
-                                                  prompt: firstPrompt)
+                                                  prompt: prompt)
                         // Remember the shape of this session so the next one opens ready to repeat it.
-                        UserDefaults.standard.set(useWorktree && canIsolate, forKey: Self.lastWorktreeKey)
-                        UserDefaults.standard.set(Array(selectedProjects), forKey: Self.lastProjectsKey)
+                        UserDefaults.standard.set(isolate, forKey: Self.lastWorktreeKey)
+                        UserDefaults.standard.set(ids, forKey: Self.lastProjectsKey)
                     }
+                    firstPrompt = "" // handed to the session; don't offer it again next time
                     onStart()
                 } label: { Text("Start").frame(minWidth: 52) }
                 .buttonStyle(.borderedProminent).tint(palette.primary)
                 .keyboardShortcut(.defaultAction)
+                // Refused HERE rather than by the daemon after the prompt is written — see
+                // WorkingDirectoryPlan for why the check lives on this side at all.
+                .disabled(blocked != nil)
+                .help(blocked?.summary ?? "Start the session")
+                .accessibilityHint(startHint)
             }
         }
         .padding(.horizontal, 20).padding(.vertical, 13)
@@ -466,16 +599,7 @@ struct NewSessionView: View {
                 }
             }
 
-            field(isMulti ? "Working directory · \(selectedProjects.count) selected" : "Working directory") {
-                VStack(spacing: 5) {
-                    ForEach(model.projects) { p in projectRow(p) }
-                    addFolderRow
-                }
-                Text(isMulti
-                     ? "Multi-repo: the agent runs in the shared parent folder, so it can work across all selected repos."
-                     : "Where the agent runs. Pick none for the daemon default, or select multiple folders for a multi-repo task.")
-                    .font(.caption).foregroundStyle(palette.mutedForeground)
-            }
+            workingDirectorySection
 
             field(isMulti ? "Workspace" : "Worktree") {
                 Toggle(isOn: $useWorktree) {
@@ -522,11 +646,121 @@ struct NewSessionView: View {
         }
     }
 
+    /// The folder list: a MULTI-select that used to look like a radio group.
+    ///
+    /// Round marks, a singular title and no way to deselect but "click the same row again" meant a
+    /// second pick read as "change my mind" when it means "add" — and the only feedback was a count
+    /// in the footer, two hundred points away. Four things carry it now: square marks (the platform's
+    /// multi-select glyph), a plural title with the count and a Clear beside it, one line that says
+    /// picking more is allowed and how to undo it, and the verdict on the current selection right
+    /// under the list — because some pairs of folders cannot start at all.
+    private var workingDirectorySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("Working directories").font(.footnote.weight(.semibold))
+                    .foregroundStyle(palette.mutedForeground)
+                if !chosenProjects.isEmpty {
+                    Text("\(chosenProjects.count) selected")
+                        .font(.caption2.weight(.semibold)).foregroundStyle(palette.primaryText)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Capsule().fill(palette.primary.opacity(0.16)))
+                }
+                Spacer(minLength: 0)
+                if !chosenProjects.isEmpty {
+                    // Deselecting one row at a time is discoverable only once you know the rows
+                    // toggle; this is the escape hatch for someone who doesn't yet.
+                    Button { selectedProjects.removeAll() } label: {
+                        Text("Clear").font(.caption.weight(.medium))
+                            .foregroundStyle(palette.primaryText)
+                            .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Clear selected folders")
+                }
+            }
+            Text("Pick one — or several for a multi-repo task. \(selectVerb) a selected folder again to remove it.")
+                .font(.caption).foregroundStyle(palette.mutedForeground)
+                .fixedSize(horizontal: false, vertical: true)
+            VStack(spacing: 5) {
+                ForEach(model.projects) { p in projectRow(p) }
+                addFolderRow
+            }
+            planNote
+        }
+    }
+
+    /// Phone taps, Mac clicks. The instruction is worthless if it names the wrong gesture.
+    private var selectVerb: String {
+        #if os(macOS)
+        return "Click"
+        #else
+        return "Tap"
+        #endif
+    }
+
+    /// What the current selection means — where the agent will run, or why it can't.
+    ///
+    /// Sits directly under the folders, not in the footer and not in an alert after Start: the
+    /// selection is what has to change, so this is the only place where reading it and fixing it are
+    /// the same motion.
+    @ViewBuilder private var planNote: some View {
+        switch plan {
+        case .blocked(_, let detail, let fix):
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(alignment: .top, spacing: 7) {
+                    // Icon + text, never colour alone — the warning tint is reinforcement here, not
+                    // the message, so it survives Differentiate Without Color untouched.
+                    Image(systemName: "exclamationmark.triangle.fill").font(.caption)
+                        .foregroundStyle(palette.warning).accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(detail).font(.caption).foregroundStyle(palette.foreground)
+                        Text(fix).font(.caption).foregroundStyle(palette.mutedForeground)
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                // One tap out of the dead end, when the repos are all git and isolation is therefore
+                // available. Isolated workspaces don't need a shared parent — each repo gets its own
+                // worktree under a folder the daemon creates.
+                if canIsolateMulti && !useWorktree {
+                    Button { useWorktree = true } label: {
+                        Text("Give each repo its own worktree").font(.caption.weight(.medium))
+                            .frame(minHeight: 30)
+                    }
+                    .buttonStyle(.bordered).controlSize(.small).tint(palette.primary)
+                }
+            }
+            .padding(9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(OculusShape.rounded(OculusRadius.sm).fill(palette.warning.opacity(0.12)))
+            .overlay(OculusShape.rounded(OculusRadius.sm).strokeBorder(palette.warning.opacity(0.35)))
+        case .ok(let runsIn):
+            Text(okHelp(runsIn))
+                .font(.caption).foregroundStyle(palette.mutedForeground)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Says which folder the agent starts in rather than only that one exists — for a multi-repo
+    /// session that folder is derived, and the derivation is exactly what surprises people.
+    private func okHelp(_ runsIn: String?) -> String {
+        guard isMulti else {
+            return "Where the agent runs. Pick none for the daemon default, or pick several folders for a multi-repo task."
+        }
+        if effectiveIsolate {
+            return "Isolated: each repo gets its own worktree under one workspace folder, so these \(chosenProjects.count) folders don't have to share a parent."
+        }
+        guard let runsIn else { return "" }
+        return "The agent runs in \((runsIn as NSString).abbreviatingWithTildeInPath) — the folder these \(chosenProjects.count) repos share — so it can work across all of them."
+    }
+
     private func projectRow(_ p: Project) -> some View {
         let sel = selectedProjects.contains(p.id)
         return Button { toggle(p.id) } label: {
             HStack(spacing: 10) {
-                Image(systemName: sel ? "checkmark.circle.fill" : "circle")
+                // Square, not round: a circle is the platform's one-of-N mark, and reading these as
+                // radio buttons is what made a second pick feel like a replacement.
+                Image(systemName: sel ? "checkmark.square.fill" : "square")
                     .font(.subheadline).foregroundStyle(sel ? palette.primary : palette.mutedForeground)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 1) {
@@ -553,6 +787,9 @@ struct NewSessionView: View {
         .accessibilityLabel(p.name)
         .accessibilityValue(sel ? "Selected" : "Not selected")
         .accessibilityAddTraits(sel ? [.isButton, .isSelected] : .isButton)
+        // The visual multi-select cue is a glyph shape; VoiceOver needs it said. The hint is where
+        // "these add up, and this is how you take one back" belongs.
+        .accessibilityHint(sel ? "Removes this folder from the session" : "Adds this folder to the session")
     }
 
     @ViewBuilder private var addFolderRow: some View {
@@ -900,7 +1137,9 @@ struct FolderBrowser: View {
             // the row's Button; the chevron stays a separate control for navigating deeper.
             Button { toggle(e.path) } label: {
                 HStack(spacing: 10) {
-                    Image(systemName: sel ? "checkmark.circle.fill" : "circle")
+                    // Square marks here too — this list is multi-select as well, and two shapes for
+                    // one meaning in the same flow is how "pick several" stops being believed.
+                    Image(systemName: sel ? "checkmark.square.fill" : "square")
                         .foregroundStyle(sel ? palette.primary : palette.mutedForeground)
                     Image(systemName: e.isGitRepo ? "arrow.triangle.branch" : "folder")
                         .font(.footnote).foregroundStyle(e.isGitRepo ? palette.primary : palette.mutedForeground)

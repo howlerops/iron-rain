@@ -215,6 +215,125 @@ struct ActivityView: View {
     }
 }
 
+/// What Activity's DETAIL column shows when no item has been picked.
+///
+/// It used to be a one-line hint on an otherwise empty canvas — a caption centred in ~1100 x 800pt of
+/// nothing, on the destination the app opens into. The instruction ("pick an item on the left") was
+/// also redundant: the list beside it is visibly a list of tappable rows.
+///
+/// So the pane answers the question the feed CAN'T. The feed is history — a log of turns that
+/// finished, questions that were asked, loops that ran, newest first. What it never shows is the
+/// present tense: how many agents are working right now, which ones, and how far through they are.
+/// That is the other half of "what did my agents just do, and which need me?", and it is worth a
+/// pane. Deliberately NOT a second copy of the approval controls: those live on the feed rows a few
+/// hundred points to the left, and one screen offering the same Approve button twice is a screen
+/// where answering one of them appears to leave the other unanswered.
+///
+/// macOS and iPad-at-full-width only — it is the split layout's detail column. The phone shows
+/// `ActivityView` as a whole tab and never renders this.
+struct ActivityOverview: View {
+    @ObservedObject var model: Model
+    let palette: OculusPalette
+    var onOpen: (String) -> Void
+
+    private var live: [Session] { model.sessions.filter { $0.ephemeral != true } }
+    private var working: [Session] {
+        live.filter { $0.status == SessionStatusValue.running }
+            .sorted { ($0.updatedAt ?? 0) > ($1.updatedAt ?? 0) }
+    }
+    private var failing: [Session] { live.filter { AgentState.of($0, model: model) == .failed } }
+    private var idleCount: Int { live.count - working.count - failing.count }
+    private var totalCost: Double { live.reduce(0) { $0 + ($1.costUSD ?? 0) } }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: OculusSpace.xl) {
+                VStack(alignment: .leading, spacing: OculusSpace.xxs) {
+                    Text("Right now").font(.title2.weight(.semibold)).foregroundStyle(palette.foreground)
+                    Text(live.isEmpty
+                         ? "No sessions yet."
+                         : "\(live.count) session\(live.count == 1 ? "" : "s")"
+                            + (totalCost > 0 ? String(format: " · $%.3f spent", totalCost) : ""))
+                        .font(.callout).foregroundStyle(palette.mutedForeground)
+                }
+                // Adaptive rather than a fixed HStack: four tiles side by side need ~600pt, and this
+                // pane is also the iPad's detail column, which can be half that in a split.
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150, maximum: 260), spacing: OculusSpace.md)],
+                          alignment: .leading, spacing: OculusSpace.md) {
+                    tile("Needs you", model.needsYouCount, palette.warning)
+                    tile("Working", working.count, palette.success)
+                    tile("Idle", max(idleCount, 0), palette.mutedForeground)
+                    tile("Errored", failing.count, palette.destructive)
+                }
+                if !working.isEmpty {
+                    VStack(alignment: .leading, spacing: OculusSpace.sm) {
+                        Text("Working now").font(.footnote.weight(.semibold))
+                            .foregroundStyle(palette.mutedForeground)
+                        ForEach(working) { s in workingRow(s) }
+                    }
+                }
+                Text(model.activityFeed.isEmpty
+                     ? "Finished turns, questions from your agents, errors, and loop runs will appear in the feed on the left."
+                     : "The feed on the left is the history — newest first, needs-you pinned to the top. Pick an item to jump to its session.")
+                    .font(.footnote).foregroundStyle(palette.mutedForeground)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(OculusSpace.xl)
+            // The same centred cap the transcript and the sessions table use: a summary set across a
+            // full pane spreads four tiles and a list over 1100pt of width for ~600pt of content.
+            .readableColumn()
+        }
+        .background(palette.background)
+    }
+
+    private func tile(_ label: String, _ value: Int, _ tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: OculusSpace.xxs) {
+            Text("\(value)")
+                .font(.system(.title, design: .rounded).weight(.semibold).monospacedDigit())
+                .foregroundStyle(value == 0 ? palette.mutedForeground : tint)
+            Text(label).font(.caption).foregroundStyle(palette.mutedForeground)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(OculusSpace.md)
+        .background(palette.secondary.opacity(0.35), in: OculusShape.rounded(OculusRadius.md))
+        .overlay(OculusShape.rounded(OculusRadius.md).strokeBorder(palette.border))
+        // One element, one sentence — otherwise VoiceOver reads a bare number and then a bare word.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(value) \(label)")
+    }
+
+    private func workingRow(_ s: Session) -> some View {
+        let hb = model.heartbeats[s.id]
+        let name = s.subtask ?? s.name ?? s.title ?? s.workspaceName ?? s.folderName ?? "session \(s.id.prefix(6))"
+        return Button { onOpen(s.id) } label: {
+            HStack(spacing: OculusSpace.sm) {
+                StatusChip(.running, palette: palette, showLabel: false)
+                VStack(alignment: .leading, spacing: OculusSpace.xxs) {
+                    Text(name).font(.footnote.weight(.medium)).foregroundStyle(palette.foreground)
+                        .lineLimit(1)
+                    HStack(spacing: OculusSpace.xs) {
+                        Text(s.provider).font(.caption)
+                        if let hb, hb.todosTotal > 0 {
+                            Text("· \(hb.todosDone)/\(hb.todosTotal) done").font(.caption.monospacedDigit())
+                        }
+                    }
+                    .foregroundStyle(palette.mutedForeground)
+                }
+                Spacer(minLength: OculusSpace.xs)
+                Image(systemName: "chevron.right").font(.caption2)
+                    .foregroundStyle(palette.mutedForeground.opacity(0.6))
+                    .accessibilityHidden(true) // the row's button trait already says it opens
+            }
+            .padding(.horizontal, OculusSpace.md).padding(.vertical, OculusSpace.sm)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(palette.secondary.opacity(0.25), in: OculusShape.rounded(OculusRadius.sm))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Opens this session")
+    }
+}
+
 /// Answer one pending approval from a list surface — an Activity row or a Fleet card — without
 /// opening its session.
 ///

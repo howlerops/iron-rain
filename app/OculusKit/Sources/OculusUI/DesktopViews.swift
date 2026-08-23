@@ -542,7 +542,18 @@ public struct RootView: View {
                     // Clamp the detail column to the window height (see original note): the split view
                     // sizes to its tallest column's ideal; a flexible detail measured as a runaway
                     // ideal and inflated the sidebar. Pinning decouples them.
+                    //
+                    // macOS ONLY. `proxy` measures the WHOLE split view, but on iPadOS the detail
+                    // column reserves a navigation bar at its top, so its real height is
+                    // proxy.size.height MINUS that bar. Handing the content the full height made it
+                    // taller than the space it was given, and an oversized child is CENTERED — so the
+                    // content slid up under the bar by half the bar's height and the system's large
+                    // `.navigationTitle` printed straight over each destination's own header row
+                    // ("Fleet" on "Agent fleet", the session name on "All sessions"). The Mac has no
+                    // such inset, which is why only the Designed-for-iPad build showed it.
+                    #if os(macOS)
                     .frame(height: proxy.size.height)
+                    #endif
                     // The window title belongs to the DETAIL, which is what macOS titles a window
                     // after. It used to hang off the sidebar column, which is why the sidebar had to
                     // know which session the detail had open.
@@ -831,8 +842,9 @@ public struct RootView: View {
                 if model.currentSession != nil {
                     ChatView(model: model)
                 } else {
-                    DestinationHint(palette: palette, symbol: "waveform.path.ecg", title: "Activity",
-                                    message: "Pick an item on the left to jump to that session. Needs-you items are pinned to the top.")
+                    // Not a hint. The feed on the left is history; this pane is the present tense —
+                    // how many agents are working right now and which ones. See ActivityOverview.
+                    ActivityOverview(model: model, palette: palette, onOpen: { sid in openSessionNav(sid, model) })
                 }
             }
         }

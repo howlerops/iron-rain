@@ -136,6 +136,9 @@ public struct AllSessionsView: View {
                 }
                 .buttonStyle(.plain).foregroundStyle(palette.primaryText)
             }
+            // Same cap as the rows beneath it, so Rescan stays over the list it rescans instead of
+            // being flung to the far edge of a 1400pt window by the Spacer above.
+            .frame(maxWidth: OculusSpace.rowMeasure, alignment: .leading)
             ForEach(terminalCandidates) { c in
                 Button {
                     guard let d = model.discovered.first(where: { $0.discoveryID == c.id }) else { return }
@@ -164,6 +167,11 @@ public struct AllSessionsView: View {
                         Text("Continue").font(.caption.weight(.medium))
                             .foregroundStyle(palette.primaryText)
                     }
+                    // The CONTENT is capped; the tap target is not. Everything from the icon to
+                    // "Continue" stays inside one glance, then the shape is re-taken at full width
+                    // below so the whole row is still clickable where it looks clickable.
+                    .frame(maxWidth: OculusSpace.rowMeasure, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 5).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -202,6 +210,14 @@ public struct AllSessionsView: View {
                 .scrollIndicators(.automatic)
             }
         }
+        // The whole slab — filters, column header, rows — capped together and centred in the pane.
+        // Only the NAME column is flexible, so every point of window past this went to it and nowhere
+        // else: on a maximised display a session's status ended up most of a screen away from its
+        // name, and the row stopped reading as one row. Centred, because the surplus belongs on both
+        // sides as margin — an earlier revision anchored it left and simply moved the whole gap into
+        // one slab at the trailing edge, which reads as a broken layout rather than as a column.
+        // Inert below 1040pt, so a phone, a sheet, and a narrow split view are untouched.
+        .readableColumn(OculusSpace.tableMeasure)
         .modifier(SheetSizing(embedded: embedded))
         .background(palette.background)
         .foregroundStyle(palette.foreground)

@@ -109,6 +109,12 @@ public struct ChatView: View {
     @State private var initialAnchorDeadline: Date = .distantPast
     @State private var isTranscriptBottomVisible = true
     @State private var transcriptViewportHeight: CGFloat = 0
+    /// Width of the pane this chat is laid out in, so the column can grow with the window instead of
+    /// being frozen at a phone-sized measure. Read once on the root and shared by the transcript, the
+    /// typing bar and the composer — measuring each separately is how the three fall out of line.
+    @State private var paneWidth: CGFloat = 0
+    /// The transcript column's width for the current pane. See `OculusSpace.chatMeasure`.
+    private var chatMeasure: CGFloat { OculusSpace.chatMeasure(in: paneWidth) }
     @State private var showWorktreePanel = false
     @State private var showHandoff = false
     @State private var showWorkspace = false
@@ -241,8 +247,21 @@ public struct ChatView: View {
             Group {
                 if isStopped { restartFooter } else { Composer(model: model, draft: draft, palette: palette) }
             }
-            .readableColumn() // the composer is the bottom of the same column the transcript sets
+            // The composer is the bottom of the same column the transcript sets — same measure, same
+            // centring. Any disagreement here steps the column out at the bottom of the window.
+            .readableColumn(chatMeasure)
         }
+        // Measured in a BACKGROUND: a background is handed the parent's size and never proposes one
+        // back, so this cannot influence the layout it is measuring. That matters here specifically —
+        // see the note below about a modifier on this VStack inflating the split view's ideal height.
+        .background(
+            GeometryReader { proxy in
+                // The single-closure onChange, not the macOS 14 two-parameter one: this package
+                // deploys to macOS 13 / iOS 16.
+                Color.clear.onAppear { paneWidth = proxy.size.width }
+                    .onChange(of: proxy.size.width) { w in paneWidth = w }
+            }
+        )
         // NOTE: was `.background(palette.background.ignoresSafeArea())`. In a NavigationSplitView
         // detail column on macOS 26, the ignoresSafeArea inflated ChatView's ideal height, which
         // drove the whole split view to ~1884pt and overflowed the sidebar — but ONLY on the
@@ -630,7 +649,13 @@ public struct ChatView: View {
                     .id("bottom")
                 }
                 .padding(16)
-                .readableColumn()
+                // Centred, and sized to the pane rather than pinned at a fixed 820pt. Both halves
+                // matter: a wide window should give the transcript more room — code blocks, diffs and
+                // generative-UI cards are what a narrow column costs you — and the room it doesn't use
+                // belongs on both sides as margins, not banked into one slab at the trailing edge.
+                // Inert on a phone, where the pane is narrower than the floor and the frame collapses
+                // to the full width either way.
+                .readableColumn(chatMeasure)
             }
             // Breathing room at the top edge. Without it a scrolled transcript butts straight into
             // the to-do bar above it, and the top line is sliced in half — it reads as a layout bug
@@ -830,7 +855,7 @@ public struct ChatView: View {
         }
         .frame(minHeight: 26, alignment: .leading) // reserve a line; grow for the reasoning tail
         .padding(.horizontal, 16)
-        .readableColumn() // stay in the transcript's column — it sits directly under it
+        .readableColumn(chatMeasure) // stay in the transcript's column — it sits directly under it
         .animation(.easeInOut(duration: 0.2), value: model.streamMaybeStalled)
     }
 

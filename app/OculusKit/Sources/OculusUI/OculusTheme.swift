@@ -158,19 +158,70 @@ public enum OculusSpace {
     /// monospaced output and a diff still have room (they scroll horizontally INSIDE the column
     /// rather than stretching it).
     public static let readableMeasure: CGFloat = 820
+
+    /// The widest a dense TABLE may get before its columns stop reading as one row.
+    ///
+    /// A table's metadata columns (provider, status, cost, age) are fixed-width, so every extra point
+    /// of window goes to the name column and nowhere else. On a maximised 27" display that puts a
+    /// session's status a hand's width from its name, and you lose the row on the way across. This is
+    /// `rowMeasure` of name plus the ~370pt of fixed columns and their gutters.
+    public static let tableMeasure: CGFloat = 1040
+
+    /// The measure a CHAT transcript should take in a pane of `available` width.
+    ///
+    /// A fixed 820pt cap answers only half the question. It keeps lines readable, but on a maximised
+    /// 27" display it also leaves most of the pane empty, and a transcript is not only prose: code
+    /// blocks, diffs, tables and generative-UI cards all have a natural width well past a paragraph's
+    /// and are the things that suffer first when the column is narrow. So the measure grows with the
+    /// pane instead of being frozen at the width of a phone-sized argument.
+    ///
+    /// Growth is proportional and clamped at both ends: never below `readableMeasure` (a pane that
+    /// small should just use what it has), never above `maxChatMeasure` (past which prose really does
+    /// run too long). The fraction leaves a visible margin on both sides at every size, so the column
+    /// still reads as a column rather than as text jammed against the window edges.
+    public static func chatMeasure(in available: CGFloat) -> CGFloat {
+        guard available > 0 else { return readableMeasure }
+        return min(max(readableMeasure, available * chatWidthFraction), maxChatMeasure)
+    }
+
+    /// How much of a wide pane the transcript takes. The remaining ~26% becomes the two margins.
+    private static let chatWidthFraction: CGFloat = 0.74
+
+    /// Where the transcript stops widening. Beyond this a paragraph exceeds ~110 characters a line
+    /// and the return sweep starts costing re-reads, which is the problem the measure exists to stop.
+    public static let maxChatMeasure: CGFloat = 1240
+
+    /// The widest a LIST ROW's content may get when the row ends in an action button.
+    ///
+    /// Distinct from `readableMeasure`, and much narrower, because the failure here is not line
+    /// length — it's association. A two-line row whose trailing "Continue" sits 1200pt from the name
+    /// it belongs to has no visible link between the two, and the eye has to travel the full width to
+    /// re-pair them. Capping the row's CONTENT (never its tap target, which stays full-bleed) keeps
+    /// the label and its button in one glance. Wider than any phone, so narrow layouts are untouched.
+    public static let rowMeasure: CGFloat = 560
 }
 
 public extension View {
-    /// Caps a view at the readable measure and centres it, so a maximised window gains margins
-    /// instead of longer lines. Inert below the cap — every phone and narrow split view lays out
-    /// exactly as it did before.
+    /// Caps a view at a measure and places it in the available width, so a maximised window gains
+    /// margins instead of longer lines. Inert below the cap — every phone and narrow split view lays
+    /// out exactly as it did before.
     ///
     /// Applied to the transcript CONTENT rather than the scroll view itself: the scroll view stays
     /// full-bleed so its background is continuous and its scrollbar sits at the window edge where
     /// people reach for it. Every sibling pinned under the transcript (the typing bar, the composer)
-    /// takes the same modifier, or the column visibly steps out at the bottom of the window.
-    func readableColumn() -> some View {
-        frame(maxWidth: OculusSpace.readableMeasure)
+    /// takes the same modifier AND the same measure, or the column visibly steps out at the bottom
+    /// of the window.
+    ///
+    /// CENTRED, always. An earlier revision anchored this to the leading edge, reasoning that the
+    /// sidebar already owns the left of the window so a centred column sits right of the window's
+    /// true centre. That is arithmetically true and completely wrong in practice: the pane is the
+    /// frame you read within, every chat surface people know centres inside it, and anchoring left
+    /// simply moved all the empty space into one conspicuous slab on the right — which reads as a
+    /// layout that failed rather than as a margin. The `alignment` parameter is kept for the few
+    /// surfaces that genuinely are leading-aligned lists, but content columns take the default.
+    func readableColumn(_ measure: CGFloat = OculusSpace.readableMeasure,
+                        alignment: Alignment = .center) -> some View {
+        frame(maxWidth: measure, alignment: alignment)
             .frame(maxWidth: .infinity, alignment: .center)
     }
 }

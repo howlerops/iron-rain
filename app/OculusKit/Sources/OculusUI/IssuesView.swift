@@ -534,7 +534,10 @@ public struct IssuesView: View {
 
     private var inlineHeader: some View {
         HStack(spacing: 10) {
-            Text("Issues").font(.headline)
+            // No "Issues" label. This header exists ONLY in the embedded (macOS detail) case, which
+            // is precisely the case where the enclosing split view already puts "Issues" in the
+            // window chrome directly above it — so the word appeared twice, two lines apart, and the
+            // second one bought nothing. The row stays for the controls it carries.
             Spacer()
             if !model.connectedTrackers.isEmpty {
                 Picker("", selection: $kanban) { Text("Board").tag(true); Text("List").tag(false) }

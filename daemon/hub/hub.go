@@ -4988,6 +4988,17 @@ func (h *Hub) dropAlreadyManaged(items []protocol.Discovered) []protocol.Discove
 
 // commonAncestor returns the deepest directory containing all the given absolute paths, or the
 // filesystem root ("/") if they share only that.
+// commonAncestor has a TWIN: WorkingDirectoryPlan.commonAncestor in
+// app/OculusKit/Sources/OculusUI/NewSessionView.swift.
+//
+// The sheet runs this rule client-side so an unstartable folder selection is refused where the
+// choice is made, rather than after the user has written a prompt. That means two implementations
+// of one rule, in two languages — the exact shape that let the issue-inspector markdown renderer
+// drift from the chat one for months. CHANGE BOTH, or the app will offer selections the daemon
+// then refuses (or worse, block ones it would have accepted).
+//
+// The daemon remains the authority: it re-checks, and it is the only side that can see the
+// filesystem. The client copy is an early warning, not a substitute.
 func commonAncestor(paths []string) string {
 	if len(paths) == 0 {
 		return ""

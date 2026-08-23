@@ -12,7 +12,14 @@ struct FleetView: View {
     /// Whether this destination is actually on screen — see the announcement below.
     @State private var onScreen = false
 
-    private let columns = [GridItem(.adaptive(minimum: 220, maximum: 320), spacing: 12)]
+    /// `.adaptive` packs as many columns as `minimum` allows and only then divides the width, so the
+    /// minimum is what the cards actually END UP at — the maximum is a ceiling for the leftovers, not
+    /// a target. At 220 a maximised window fitted five columns and every card sat at its floor width:
+    /// a name clipped to one line, a branch that never fit, and "budget $5.00" pushed to caption2.
+    /// 300 buys four columns at ~340pt on the same window, which is where the card's second and third
+    /// lines start reading. Unchanged on a phone and in a narrow split view — both were, and remain,
+    /// a single column, since neither has room for two at either figure.
+    private let columns = [GridItem(.adaptive(minimum: 300, maximum: 420), spacing: OculusSpace.md)]
 
     private var sessions: [Session] {
         // Running first, then most-recently active.
@@ -28,11 +35,13 @@ struct FleetView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Agent fleet").font(.headline)
-                    Text("\(model.sessions.count) sessions · \(runningCount) running" + (totalCost > 0 ? String(format: " · $%.3f total", totalCost) : ""))
-                        .font(.caption2).foregroundStyle(palette.mutedForeground)
-                }
+                // No "Agent fleet" heading here. Both call sites are navigation destinations that
+                // already carry `.navigationTitle("Fleet")`, so the window chrome said "Fleet" and the
+                // pane immediately said "Agent fleet" underneath it — the same label twice, two lines
+                // apart, with the actual information (how many, how many running, what it has cost)
+                // demoted to caption2 beneath them both. The counts ARE the header.
+                Text("\(model.sessions.count) sessions · \(runningCount) running" + (totalCost > 0 ? String(format: " · $%.3f total", totalCost) : ""))
+                    .font(.subheadline).foregroundStyle(palette.mutedForeground)
                 Spacer()
                 if let onFanout {
                     Button(action: onFanout) { Label("Fan out", systemImage: "square.grid.2x2") }
@@ -41,7 +50,7 @@ struct FleetView: View {
                     Button("Done", action: onClose).keyboardShortcut(.cancelAction)
                 }
             }
-            .padding(.horizontal, 16).padding(.vertical, 12)
+            .padding(.horizontal, OculusSpace.lg).padding(.vertical, OculusSpace.md)
             Divider()
             if sessions.isEmpty {
                 VStack(spacing: 8) {
@@ -51,7 +60,7 @@ struct FleetView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
-                    LazyVGrid(columns: columns, spacing: 12) {
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: OculusSpace.md) {
                         ForEach(sessions) { s in
                             FleetCard(session: s, hb: model.heartbeats[s.id],
                                       approval: model.pendingApprovals[s.id], palette: palette,
@@ -59,7 +68,7 @@ struct FleetView: View {
                                       onRespond: { decision in Task { await model.respond(decision, for: s.id) } })
                         }
                     }
-                    .padding(16)
+                    .padding(OculusSpace.lg)
                 }
             }
         }
@@ -95,10 +104,30 @@ private struct FleetCard: View {
     let onOpen: () -> Void
     let onRespond: (String) -> Void
 
+    /// Same fallback chain the sidebar and the sessions table use. It used to stop at
+    /// `workspaceName`, which is nil for every session that isn't a workspace — so a plain session
+    /// fell straight through to `"session \(id.prefix(6))"` and the card was headed "session pi_0c2".
+    /// That reads as a name that got truncated by a narrow card; it isn't, it's the id. `title` (the
+    /// agent's own summary of the turn) and `folderName` (folder · branch, derived from the working
+    /// tree) both name the work, and one of them is almost always there.
     private var title: String {
-        session.subtask ?? session.name ?? session.workspaceName ?? "session \(session.id.prefix(6))"
+        session.subtask ?? session.name ?? session.title ?? session.workspaceName
+            ?? session.folderName ?? "session \(session.id.prefix(6))"
     }
     private var isRunning: Bool { session.status == SessionStatusValue.running }
+
+    /// Compact relative age of the last activity — the one thing that separates "four agents working"
+    /// from "one working and three abandoned yesterday", and there is now width for it.
+    private var age: String? {
+        guard let ts = session.updatedAt, ts > 0 else { return nil }
+        let secs = max(0, Int(Date().timeIntervalSince1970) - ts)
+        switch secs {
+        case 0..<60: return "\(secs)s ago"
+        case 60..<3600: return "\(secs / 60)m ago"
+        case 3600..<86400: return "\(secs / 3600)h ago"
+        default: return "\(secs / 86400)d ago"
+        }
+    }
 
     var body: some View {
         // The card chrome (padding, fill, border) wraps BOTH the open-button and the approval
@@ -114,8 +143,11 @@ private struct FleetCard: View {
                     onRespond: onRespond, onOpen: onOpen)
             }
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(OculusSpace.md)
+        // A floor, not a fixed height: a card carrying approval controls still grows. Without it a
+        // grid of quiet sessions is a row of ~70pt slivers under an otherwise empty window, which is
+        // what made the fleet read as a strip of chips rather than as tiles.
+        .frame(maxWidth: .infinity, minHeight: 96, alignment: .topLeading)
         .background(palette.secondary.opacity(0.35), in: OculusShape.rounded(OculusRadius.md))
         .overlay(OculusShape.rounded(OculusRadius.md).strokeBorder(palette.border))
     }
@@ -128,7 +160,10 @@ private struct FleetCard: View {
             // The glyph now changes with the state and the label is always present.
             HStack(spacing: 6) {
                 Image(systemName: stateSymbol).font(.caption2).foregroundStyle(stateColor)
-                Text(title).font(.subheadline.bold()).lineLimit(1)
+                // Two lines now that the card is ~340pt rather than ~220pt wide. A subtask is a
+                // sentence ("Fix the sidebar overflow on macOS 26"), and one line of it at this width
+                // was an ellipsis in the middle of the only thing that says which agent this is.
+                Text(title).font(.subheadline.bold()).lineLimit(2).multilineTextAlignment(.leading)
                 Spacer(minLength: 4)
                 Text(stateLabel).font(.caption2.bold()).foregroundStyle(stateColor)
             }
@@ -154,17 +189,23 @@ private struct FleetCard: View {
                 Text("\(hb.todosDone)/\(hb.todosTotal) done")
                     .font(.caption2).foregroundStyle(palette.mutedForeground)
             }
-            HStack {
+            HStack(spacing: OculusSpace.xs) {
                 if let c = session.costUSD, c > 0 {
                     Text(String(format: "$%.3f", c)).font(.caption2.monospacedDigit())
                         .foregroundStyle(palette.mutedForeground)
                 }
-                Spacer()
                 if let hb, hb.budgetUSD > 0 {
-                    Text(String(format: "budget $%.2f", hb.budgetUSD)).font(.caption2)
+                    // "of $5.00", not "budget $5.00": beside the spend it reads as the pair it is,
+                    // and it stops being a second isolated number at the far corner of the card.
+                    Text(String(format: "of $%.2f", hb.budgetUSD)).font(.caption2)
                         .foregroundStyle(palette.mutedForeground)
                 }
+                Spacer(minLength: OculusSpace.xs)
+                if let age {
+                    Text(age).font(.caption2.monospacedDigit()).foregroundStyle(palette.mutedForeground)
+                }
             }
+            .accessibilityElement(children: .combine)
         }
         // The chrome moved to the wrapper, so the label no longer fills the card on its own — without
         // this the tappable area shrinks to the text and the card stops opening where it looks like
