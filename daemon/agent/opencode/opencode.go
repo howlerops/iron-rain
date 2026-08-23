@@ -708,6 +708,7 @@ type session struct {
 	msgRoles    map[string]string // messageID -> role (from message.updated)
 	emittedUser map[string]bool   // messageIDs already forwarded as a user turn
 	usageDone   map[string]bool   // messageIDs whose usage was already emitted (once per turn)
+	errDone     map[string]bool   // messageIDs whose provider error was already surfaced (dedupe)
 	childIDs    map[string]bool   // opencode sub-session ids whose parentID == s.id (sub-agents)
 	subStarted  map[string]bool   // sub-agent ids already announced (dedup the started card)
 }
@@ -902,6 +903,14 @@ func (s *session) handle(raw []byte) {
 				Time struct {
 					Completed int64 `json:"completed"`
 				} `json:"time"`
+				// A failed turn is reported HERE as well as via session.error, and the two do not
+				// always both fire. See the emit below.
+				Error struct {
+					Name string `json:"name"`
+					Data struct {
+						Message string `json:"message"`
+					} `json:"data"`
+				} `json:"error"`
 			} `json:"info"`
 		}
 		if json.Unmarshal(e.Properties, &mu) == nil && mu.Info.ID != "" {
@@ -909,6 +918,34 @@ func (s *session) handle(raw []byte) {
 				s.msgRoles = map[string]string{}
 			}
 			s.msgRoles[mu.Info.ID] = mu.Info.Role
+			// opencode has TWO ways of reporting a failed turn, and handling only one of them left
+			// the turn open forever.
+			//
+			// The session.error case below covers the event-level form. This is the other: the
+			// assistant message is completed with an `error` on its info and NO session.error and NO
+			// session.idle ever follow. Nothing closed the turn, so the daemon kept it `running`,
+			// heartbeats kept saying the session was alive — which it was — and the app sat on
+			// "working…" with an empty transcript.
+			//
+			// Observed live, one second into a turn that then showed as working for ten minutes:
+			// {"name":"APIError","data":{"message":"Error from provider (Console): Upstream request
+			// failed: Model is unavailable.","statusCode":400}} for model deepseek-v4-flash-free.
+			// The provider's own words are the only thing distinguishing an upstream outage from a
+			// prompt that was ignored, so they are surfaced verbatim.
+			//
+			// Deduped by message id: message.updated repeats for the same message, and a session.error
+			// may also arrive for the same failure. Emitting twice would show the user two errors for
+			// one outage.
+			if msg := firstNonEmpty(mu.Info.Error.Data.Message, mu.Info.Error.Name); msg != "" {
+				if s.errDone == nil {
+					s.errDone = map[string]bool{}
+				}
+				if !s.errDone[mu.Info.ID] {
+					s.errDone[mu.Info.ID] = true
+					s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{
+						SessionID: s.id, Status: protocol.StatusError, Detail: "opencode: " + msg}})
+				}
+			}
 			// One clean usage number per assistant turn, once the turn has completed. Guard
 			// against re-emitting for the same message id (message.updated fires repeatedly).
 			if mu.Info.Role == "assistant" && mu.Info.Time.Completed != 0 &&
