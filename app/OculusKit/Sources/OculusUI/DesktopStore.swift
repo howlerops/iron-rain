@@ -72,7 +72,7 @@ public final class DesktopStore: ObservableObject {
     /// Loads saved desktops (migrating a legacy single pairing and, on macOS, the local
     /// daemon's pairing.json), then connects to all of them at once.
     public func bootstrap() async {
-        var desks = loadDesktops()
+        var desks = await loadDesktopsWithCredentials()
         if desks.isEmpty {
             let ws = defaults.string(forKey: "oculus.ws") ?? ""
             let pub = defaults.string(forKey: "oculus.pub") ?? ""
@@ -286,17 +286,117 @@ public final class DesktopStore: ObservableObject {
         return m
     }
 
-    private func loadDesktops() -> [Desktop] {
+    /// How long the whole keychain read may take before the app gives up and shows its surface.
+    ///
+    /// SecItemCopyMatching is not merely slow — it can block INDEFINITELY on user authorisation. A
+    /// binary whose code identity changed (a re-signed build, a restored Mac, a migrated user) makes
+    /// the keychain demand approval before releasing an item, and until someone answers that prompt
+    /// the call never returns. This is generous enough that an unlocked keychain always wins the race.
+    private static let keychainReadBudget: Duration = .seconds(3)
+
+    /// Reads the stored credentials for `desktops` OFF the main actor, with a deadline.
+    ///
+    /// Previously bootstrap() called Keychain.get synchronously as its first act, on the main actor.
+    /// A blocked SecItemCopyMatching therefore froze the app before `didBootstrap` could flip — the
+    /// surface never appeared, no error was shown, and the only symptom was a spinner that never
+    /// stopped. Sampling a hung build put the whole main thread in SecItemCopyMatching, under
+    /// bootstrap() → loadDesktops(), confirming it.
+    ///
+    /// Note the neighbouring localPairing() already takes this care with its disk read ("synchronous
+    /// disk I/O must not block the UI"); the keychain call — which can block far longer than a file
+    /// read — did not.
+    ///
+    /// On timeout the app proceeds with whatever credentials the stored desktops already carry. That
+    /// degrades to "this desktop needs pairing again", which is recoverable in the UI, rather than an
+    /// app that cannot be used at all.
+    ///
+    /// `reachable` distinguishes "the Keychain answered and these are all the stored credentials"
+    /// from "we gave up waiting". Only the former licenses the legacy migration write below.
+    private struct StoredCredentials {
+        var byDesktop: [String: String] = [:]
+        var reachable = false
+    }
+
+    private func credentials(for desktops: [Desktop]) async -> StoredCredentials {
+        let ids = desktops.map(\.id)
+        return await withCheckedContinuation { cont in
+            // Resume-once guard. Both the read and the deadline race to answer, and resuming a
+            // continuation twice is a crash, not a warning.
+            let lock = NSLock()
+            var answered = false
+            func finish(_ value: StoredCredentials) {
+                lock.lock()
+                let first = !answered
+                answered = true
+                lock.unlock()
+                if first { cont.resume(returning: value) }
+            }
+
+            // ABANDONED on timeout, deliberately. An earlier attempt raced these inside a
+            // withTaskGroup, which cannot work: a task group awaits every child before its scope
+            // returns, and cancelAll() does not help because SecItemCopyMatching is not cancellable.
+            // The group could never drain, so the "timeout" never fired and the app still hung —
+            // the fix moved the block off the main actor without actually bounding it.
+            //
+            // The cost of abandoning is one background thread parked in the keychain until the user
+            // answers (or dismisses) the authorisation prompt. That is a bounded, invisible leak on a
+            // path that only runs at launch. The alternative is an app that never renders.
+            Task.detached(priority: .userInitiated) {
+                var out = StoredCredentials(reachable: true)
+                for id in ids {
+                    switch Keychain.read(Keychain.credentialAccount(daemonPub: id)) {
+                    case .found(let s): out.byDesktop[id] = s
+                    case .missing: break
+                    // One unreachable item taints the batch: we can no longer tell an absent
+                    // credential from a hidden one, which is exactly the distinction the migration
+                    // write depends on.
+                    case .timedOut: out.reachable = false
+                    }
+                }
+                finish(out)
+            }
+            Task { [budget = Self.keychainReadBudget] in
+                try? await Task.sleep(for: budget)
+                finish(StoredCredentials())
+            }
+        }
+    }
+
+    /// Decodes the saved desktops WITHOUT touching the keychain, so it cannot block.
+    ///
+    /// The credential merge moved to `loadDesktopsWithCredentials`, which reads the keychain off the
+    /// main actor under a deadline. Keeping this one pure makes the blocking work impossible to
+    /// reintroduce by accident from a synchronous caller.
+    private func loadDesktopsRaw() -> [Desktop] {
         guard let data = defaults.data(forKey: key),
               let list = try? decoder.decode([Desktop].self, from: data) else { return [] }
+        return list
+    }
+
+    /// Saved desktops with their stored credentials merged in.
+    ///
+    /// The keychain read is bounded (see `credentials(for:)`); when it times out each desktop keeps
+    /// whatever credential its persisted record already held, which is either a legacy plaintext one
+    /// or empty. Empty means the UI asks the user to pair that desktop again — recoverable — whereas
+    /// blocking here meant the app never rendered at all.
+    private func loadDesktopsWithCredentials() async -> [Desktop] {
+        let list = loadDesktopsRaw()
+        guard !list.isEmpty else { return [] }
+        let stored = await credentials(for: list)
         return list.map { d in
             var d = d
-            if let stored = Keychain.get(Keychain.credentialAccount(daemonPub: d.id)) {
-                d.secret = stored
-            } else if !d.secret.isEmpty {
+            if let s = stored.byDesktop[d.id] {
+                d.secret = s
+            } else if stored.reachable, !d.secret.isEmpty {
                 // An older build persisted the credential in the plist. Adopt it into the Keychain
-                // once; the next save() writes the blob back without it.
-                Keychain.set(d.secret, for: Keychain.credentialAccount(daemonPub: d.id))
+                // once; the next save() writes the blob back without it. Fire-and-forget and OFF the
+                // main actor — this is a keychain WRITE and can prompt exactly like the read.
+                //
+                // Gated on `reachable`: after a timeout we do not know this account is empty, and
+                // writing the plist copy over a Keychain credential that was since rotated would
+                // reinstate a stale secret the daemon no longer honours.
+                let secret = d.secret, account = Keychain.credentialAccount(daemonPub: d.id)
+                Task.detached(priority: .utility) { Keychain.set(secret, for: account) }
             }
             return d
         }

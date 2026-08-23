@@ -20,8 +20,33 @@ enum Keychain {
     /// The service every Iron Rain item is filed under, so `purge` can't touch anything else.
     private static let service = "com.howlerops.oculus"
 
+    /// Every mutation runs here, and this queue is SERIAL on purpose.
+    ///
+    /// Writes have to leave the calling thread (see `set`), but they must not lose their order while
+    /// doing it. Callers write in pairs that only make sense in sequence — `saveCredential` removes
+    /// then a later pairing sets; `DesktopStore.save` removes a desktop's credential then writes the
+    /// replacement. Dispatched to a *concurrent* queue those can land in either order, and the losing
+    /// order deletes the credential that was just stored: a device that appears paired and is then
+    /// refused forever. A serial queue costs nothing here (these are rare, launch- and pairing-time
+    /// operations) and makes the reordering impossible.
+    private static let writes = DispatchQueue(label: "com.howlerops.oculus.keychain-writes")
+
+    /// Writes a credential. The keychain work runs OFF the calling thread and this returns at once.
+    ///
+    /// Writes block exactly like reads — SecItemUpdate performs a lookup first, so it sits on the
+    /// same authorisation prompt. That is not hypothetical: after bounding `get`, the launch hang
+    /// simply moved here. `Model.loadCredential()` falls through to a legacy migration on a failed
+    /// read, so a timed-out read led straight into a blocking WRITE and the app froze again, one
+    /// stack frame further along.
+    ///
+    /// Fire-and-forget is safe for this call: no caller consumes a result, and every use is a
+    /// migration or a pairing — never a read-back-immediately sequence.
     static func set(_ value: String, for account: String) {
         guard let data = value.data(using: .utf8) else { return }
+        writes.async { performSet(data, account: account) }
+    }
+
+    private static func performSet(_ data: Data, account: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -58,7 +83,46 @@ enum Keychain {
         }
     }
 
-    static func get(_ account: String) -> String? {
+    /// Longest any single read may stall the caller.
+    ///
+    /// SecItemCopyMatching is not just slow-on-a-bad-day — it blocks INDEFINITELY waiting for user
+    /// authorisation whenever the calling binary's code identity no longer matches the one that
+    /// stored the item: a re-signed build, a restored or migrated Mac, a keychain the user has
+    /// locked. Until somebody answers that prompt, it never returns.
+    private static let readBudget: DispatchTimeInterval = .seconds(3)
+
+    /// Reads a credential, giving up after `readBudget`.
+    ///
+    /// The bound lives HERE, on the primitive, rather than at each call site, because the blocking
+    /// calls were scattered through synchronous initialisers — `Model.init()` reads a credential as
+    /// part of constructing itself, so there is no await to hang a timeout on. Fixing one caller
+    /// simply moved the hang to the next one: bounding DesktopStore's read surfaced an identical
+    /// stall inside Model.init a moment later.
+    ///
+    /// The symptom this removes: the app froze on its launch spinner forever, with no error and no
+    /// way forward, because `bootstrap()` blocked before it could reveal the surface. Sampling put
+    /// the entire main thread in SecItemCopyMatching.
+    ///
+    /// On timeout the query thread is ABANDONED, not cancelled — SecItemCopyMatching cannot be
+    /// interrupted. That parks one background thread until the prompt is answered or dismissed. It
+    /// is a real cost, accepted because the alternative is an unusable app; and it is bounded,
+    /// because these reads happen at launch and at pairing, not in a loop.
+    /// What a bounded read actually learned.
+    ///
+    /// `missing` and `timedOut` must not be conflated, because they license opposite actions. A
+    /// genuine `missing` means "nothing is stored, create it" — that is how a device key gets minted
+    /// on first use. A `timedOut` means "something may well be stored, we just couldn't see it", and
+    /// treating that as `missing` is DESTRUCTIVE: `clientKey()` would mint a fresh X25519 key and
+    /// write it straight over the real one, permanently breaking this device's identity with the
+    /// paired Mac. Collapsing both into `nil` turned a recoverable stall into data loss.
+    enum ReadResult {
+        case found(String)
+        case missing
+        case timedOut
+    }
+
+    /// Reads a credential, reporting whether it was absent or merely unreachable within the budget.
+    static func read(_ account: String) -> ReadResult {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -66,20 +130,50 @@ enum Keychain {
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
-        var out: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &out) == errSecSuccess,
-              let data = out as? Data, let s = String(data: data, encoding: .utf8), !s.isEmpty
-        else { return nil }
-        return s
+        let box = ResultBox()
+        let sem = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            var out: CFTypeRef?
+            let status = SecItemCopyMatching(query as CFDictionary, &out)
+            if status == errSecSuccess, let data = out as? Data,
+               let s = String(data: data, encoding: .utf8), !s.isEmpty {
+                box.set(s)
+            }
+            sem.signal()
+        }
+        guard sem.wait(timeout: .now() + readBudget) == .success else { return .timedOut }
+        if let s = box.value { return .found(s) }
+        return .missing
     }
 
+    /// Convenience for the callers that genuinely cannot act on the difference — both "absent" and
+    /// "unreachable" mean they have no value to work with. Anything that would WRITE in response to a
+    /// nil must use `read` instead.
+    static func get(_ account: String) -> String? {
+        if case .found(let s) = read(account) { return s }
+        return nil
+    }
+
+    /// Minimal box so the worker thread can hand a value back across the semaphore without tripping
+    /// Swift 6's concurrency checking on a captured `var`.
+    private final class ResultBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: String?
+        func set(_ s: String) { lock.lock(); stored = s; lock.unlock() }
+        var value: String? { lock.lock(); defer { lock.unlock() }; return stored }
+    }
+
+    /// Deletes a credential, off the calling thread for the same reason `set` is: SecItemDelete
+    /// takes the same locks and can stall on the same prompt.
     static func remove(_ account: String) {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
-        SecItemDelete(query as CFDictionary)
+        writes.async {
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: account,
+            ]
+            SecItemDelete(query as CFDictionary)
+        }
     }
 
     // MARK: accounts

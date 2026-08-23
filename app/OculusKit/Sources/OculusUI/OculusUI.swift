@@ -356,7 +356,17 @@ public final class Model: ObservableObject {
     /// Loads the stored credential for this daemon, migrating a legacy UserDefaults copy on the way.
     private func loadCredential() -> String {
         guard !daemonPubHex.isEmpty else { return "" }
-        if let c = Keychain.get(Keychain.credentialAccount(daemonPub: daemonPubHex)) { return c }
+        switch Keychain.read(Keychain.credentialAccount(daemonPub: daemonPubHex)) {
+        case .found(let c):
+            return c
+        case .timedOut:
+            // Unreachable, not absent. Migrating now would write the legacy plaintext over whatever
+            // the Keychain actually holds — including a credential that was rotated since. Report
+            // "not paired" for this launch instead; the stored value survives for the next one.
+            return ""
+        case .missing:
+            break
+        }
         // Pre-Keychain build: adopt the plaintext value once, then delete it.
         if let legacy = defaults.string(forKey: Keys.secret), !legacy.isEmpty {
             Keychain.set(legacy, for: Keychain.credentialAccount(daemonPub: daemonPubHex))
@@ -374,9 +384,26 @@ public final class Model: ObservableObject {
         if let k = cachedClientPrivate { return k }
         guard !daemonPubHex.isEmpty else { return OculusCrypto.generatePrivateKey() }
         let account = Keychain.deviceKeyAccount(daemonPub: daemonPubHex)
-        if let hex = Keychain.get(account), let data = Data(hexString: hex), !data.isEmpty {
-            cachedClientPrivate = data
-            return data
+        switch Keychain.read(account) {
+        case .found(let hex):
+            if let data = Data(hexString: hex), !data.isEmpty {
+                cachedClientPrivate = data
+                return data
+            }
+        case .timedOut:
+            // The stored key is unreachable, NOT absent — so do not mint over it. Minting here would
+            // overwrite this device's stable identity with a key the daemon has never seen, turning a
+            // stall that resolves on the next launch into a pairing destroyed for good. An ephemeral
+            // key fails authentication and surfaces as "needs pairing", which is recoverable; the
+            // real key is still there when the Keychain answers again.
+            //
+            // Deliberately NOT cached: caching would make the ephemeral key outlive the stall for the
+            // whole process, so a later read that succeeds could never take effect.
+            NSLog("Keychain: device key unreachable within budget — using an ephemeral key for this "
+                  + "attempt rather than overwriting the stored identity.")
+            return OculusCrypto.generatePrivateKey()
+        case .missing:
+            break
         }
         let fresh = OculusCrypto.generatePrivateKey()
         Keychain.set(fresh.map { String(format: "%02x", $0) }.joined(), for: account)
