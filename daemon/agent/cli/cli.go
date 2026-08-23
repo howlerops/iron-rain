@@ -24,6 +24,7 @@ import (
 	"github.com/howlerops/oculus/daemon/procutil"
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/ratelimit"
+	"github.com/howlerops/oculus/daemon/textutil"
 )
 
 // Config describes one CLI agent. Args (and ResumeArgs) are templates: the tokens {prompt} and
@@ -139,6 +140,11 @@ type session struct {
 
 	acctEnv       map[string]string // active account's env overrides, snapshotted at create
 	ratedThisTurn bool              // a rate-limit was already surfaced this turn (dedupe)
+
+	// tail holds the last few non-empty output lines of the CURRENT turn, so a non-zero exit can
+	// report WHY it failed instead of only that it did. Written by stream() and read by runTurn()
+	// on the same goroutine — stream() is called synchronously before cmd.Wait() — so no lock.
+	tail []string
 
 	mu        sync.Mutex
 	running   bool
@@ -275,12 +281,66 @@ func (s *session) runTurn(ctx context.Context, argv []string) {
 		turnErr = err
 		return
 	}
+	s.tail = nil
 	s.stream(stdout, s.newTitleScanner())
 	if err := cmd.Wait(); err != nil && ctx.Err() == nil {
 		// A non-zero exit that wasn't from our Stop(): keep the trailing line (preserves partial output)
 		// AND record it so the turn ends as an error rather than a silent success.
 		s.emit(agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: s.id, Text: "\n[" + s.cfg.Name + " exited: " + err.Error() + "]\n"}})
+		// Carry the agent's own last words into the turn's error, because an exit code alone sends
+		// people to debug the wrong thing. Both of these were real: gemini exits 41 having printed
+		// "you must specify the GEMINI_API_KEY environment variable", and codex exits 1 having
+		// printed an ENOENT for its own missing vendored binary. What reached the fleet card, the
+		// needs-you row and the push notification was "gemini: exit status 41" — an exit code the
+		// user cannot look up, attached to a session that looks broken for no stated reason, while
+		// the one sentence that explains it sat in the transcript.
 		turnErr = err
+		if why := s.exitHint(); why != "" {
+			turnErr = fmt.Errorf("%w — %s", err, why)
+		}
+	}
+}
+
+// exitHint is what the agent said before it died, or "" if it said nothing usable.
+//
+// It JOINS the surviving lines rather than picking one, because the useful message is often split
+// across two: gemini prints the diagnosis and the instruction separately, and taking only the last
+// line yields "Update your environment and try again" — which does not say which variable is
+// missing, i.e. the one fact the user needs. Bounded in length because this string ends up in a push
+// notification and on a fleet card; the full output is in the transcript, which is where someone
+// goes next.
+func (s *session) exitHint() string {
+	const maxHint = 160
+	var keep []string
+	for _, raw := range s.tail {
+		// An INDENTED line is a continuation or a stack frame — "at ChildProcess._handle.onexit
+		// (node:internal/child_process:286:19)", "errno: -2,". Those are what make a joined hint
+		// unreadable, and they never carry the diagnosis; the unindented line above them does.
+		if raw != strings.TrimLeft(raw, " \t") {
+			continue
+		}
+		line := strings.TrimSpace(raw)
+		// Too short to be a sentence (a bare "}"), or our own exit marker being read back.
+		if len(line) < 12 || strings.HasPrefix(line, "["+s.cfg.Name+" exited:") {
+			continue
+		}
+		keep = append(keep, line)
+	}
+	return textutil.Clip(strings.Join(keep, " "), maxHint)
+}
+
+// recordTail keeps the last few non-empty lines seen this turn. Deliberately small: this is a
+// diagnostic of last resort, not a second copy of the transcript.
+func (s *session) recordTail(txt string) {
+	const keep = 6
+	for _, line := range strings.Split(txt, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		s.tail = append(s.tail, line)
+	}
+	if len(s.tail) > keep {
+		s.tail = s.tail[len(s.tail)-keep:]
 	}
 }
 
@@ -303,6 +363,7 @@ func (s *session) stream(r io.Reader, titles *osctitle.Scanner) {
 				}
 				s.emit(agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: s.id, Text: txt}})
 				s.detectRateLimit(txt)
+				s.recordTail(txt)
 			}
 		}
 		if err != nil {
@@ -314,6 +375,7 @@ func (s *session) stream(r io.Reader, titles *osctitle.Scanner) {
 				if txt := s.dropNoiseFinal(carry); txt != "" {
 					s.emit(agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: s.id, Text: txt}})
 					s.detectRateLimit(txt)
+					s.recordTail(txt)
 				}
 				carry = ""
 			}
