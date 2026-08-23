@@ -2749,6 +2749,10 @@ struct DelegateSheet: View {
     /// own sub-agent can do — theirs are confined to their own process.
     @State private var provider = ""
     @State private var isolate = true
+    /// Models offered for the chosen agent. Empty when that harness doesn't expose a picker, in
+    /// which case the control is hidden rather than shown empty.
+    @State private var childModels: [ModelInfo] = []
+    @State private var selectedModel = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -2790,6 +2794,20 @@ struct DelegateSheet: View {
                     .font(.caption2).foregroundStyle(palette.mutedForeground)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            // Only rendered when the chosen harness actually offers a choice — an empty picker is a
+            // worse answer than no picker. This is the other half of routing: "delegate to Claude"
+            // and "delegate to Claude on a small model" are different asks, and a cheap model is
+            // usually the right one for a scoped subtask.
+            if !childModels.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Model").font(.caption).foregroundStyle(palette.mutedForeground)
+                    Picker("", selection: $selectedModel) {
+                        Text("Agent's default").tag("")
+                        ForEach(childModels) { m in Text(m.name).tag(m.id) }
+                    }
+                    .labelsHidden().pickerStyle(.menu)
+                }
+            }
             Toggle(isOn: $isolate) {
                 Text("Give it its own worktree").font(.footnote)
             }
@@ -2814,6 +2832,7 @@ struct DelegateSheet: View {
                         await model.delegateSubtask(subtask: subtask, files: files.isEmpty ? nil : files,
                                                     autonomous: autonomous,
                                                     provider: provider.isEmpty ? nil : provider,
+                                                    model: selectedModel.isEmpty ? nil : selectedModel,
                                                     worktree: isolate)
                     }
                     onClose()
@@ -2826,6 +2845,15 @@ struct DelegateSheet: View {
         .padding(18)
         .frame(minWidth: 440)
         .background(palette.background)
+        .task(id: provider) {
+            // "" means inherit the parent's agent, so ask about THAT one — otherwise picking
+            // "same as this session" would silently offer no models at all.
+            let target = provider.isEmpty ? (model.currentSession?.provider ?? "") : provider
+            selectedModel = ""
+            guard !target.isEmpty else { childModels = []; return }
+            let r = await model.providerModels(target)
+            childModels = r.editable ? r.models : []
+        }
     }
 }
 
