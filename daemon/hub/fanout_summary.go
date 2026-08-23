@@ -1,10 +1,13 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -94,7 +97,14 @@ func fanoutLess(a, b protocol.FanoutVariantResult) bool {
 }
 
 // diffStat returns files/insertions/deletions for a worktree against its base commit, including
-// uncommitted work (an agent that didn't commit still did the work).
+// uncommitted work (an agent that didn't commit still did the work) AND newly created files.
+//
+// The untracked half is not a refinement — without it the feature reports the opposite of the truth
+// for the commonest case there is. `git diff` only ever shows files git already knows about, so an
+// agent that CREATES a file (the usual outcome: write the doc, add the module, add the test) shows
+// as "0 files — this agent finished without touching the tree". Observed exactly that: two fan-out
+// variants each wrote a 2KB NOTES.md and the comparison offered them as two identical do-nothings,
+// which makes the whole compare-and-merge screen worse than useless — it is confidently wrong.
 func diffStat(worktreePath, baseRef string) (files, insertions, deletions int) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -106,6 +116,11 @@ func diffStat(worktreePath, baseRef string) (files, insertions, deletions int) {
 	if err != nil {
 		return 0, 0, 0
 	}
+	defer func() {
+		nf, ni := untrackedStat(ctx, worktreePath)
+		files += nf
+		insertions += ni
+	}()
 	// " 3 files changed, 42 insertions(+), 7 deletions(-)"
 	for _, part := range strings.Split(strings.TrimSpace(string(outBytes)), ",") {
 		part = strings.TrimSpace(part)
@@ -124,6 +139,54 @@ func diffStat(worktreePath, baseRef string) (files, insertions, deletions int) {
 		}
 	}
 	return files, insertions, deletions
+}
+
+// maxUntrackedCounted bounds the work this does. A worktree can contain a large untracked tree that
+// .gitignore doesn't cover (a build directory an agent created, a downloaded fixture), and the
+// summary is drawn while the user is waiting. Past this many files the count is reported as-is and
+// the line counting stops: a slightly low insertion count on a huge change set is a far better
+// failure than a comparison screen that takes ten seconds to appear.
+const maxUntrackedCounted = 500
+
+// maxUntrackedFileBytes skips line-counting for anything implausibly large for source (a binary an
+// agent produced, a lock file, a fixture dump). It still counts as a FILE — it was created — just
+// not as N insertions.
+const maxUntrackedFileBytes = 1 << 20
+
+// untrackedStat counts newly created files and their lines, respecting .gitignore.
+//
+// `--exclude-standard` is what makes this safe to include at all: without it every ignored build
+// artefact in the worktree would be reported as the agent's work.
+func untrackedStat(ctx context.Context, worktreePath string) (files, insertions int) {
+	out, err := exec.CommandContext(ctx, "git", "-C", worktreePath,
+		"ls-files", "--others", "--exclude-standard", "-z").Output()
+	if err != nil {
+		return 0, 0
+	}
+	for _, name := range strings.Split(strings.TrimRight(string(out), "\x00"), "\x00") {
+		if name == "" {
+			continue
+		}
+		files++
+		if files > maxUntrackedCounted {
+			continue
+		}
+		full := filepath.Join(worktreePath, name)
+		info, err := os.Stat(full)
+		if err != nil || info.IsDir() || info.Size() > maxUntrackedFileBytes {
+			continue
+		}
+		data, err := os.ReadFile(full)
+		if err != nil {
+			continue
+		}
+		insertions += bytes.Count(data, []byte{'\n'})
+		// A last line with no trailing newline is still a line.
+		if len(data) > 0 && data[len(data)-1] != '\n' {
+			insertions++
+		}
+	}
+	return files, insertions
 }
 
 // broadcastFanoutSummary assembles and sends the comparison. Called once per group, when the last
