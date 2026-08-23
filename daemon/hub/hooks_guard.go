@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"encoding/json"
 	"regexp"
 	"strings"
 
@@ -84,12 +85,15 @@ func isShellTool(tool string) bool {
 
 // approvalPaths returns the filesystem paths a request refers to.
 //
-// Detail is where every harness puts the target of a file operation, and Patterns is what opencode
-// sends for permission scoping. Both are checked: an entry in either that reaches into repository
-// metadata is enough to refuse, since we cannot tell which one the harness will actually act on.
+// All THREE sources are checked, and Input is the one that matters most: it is the tool's raw
+// arguments, i.e. the thing the harness will actually act on. Detail is a human-readable summary
+// whose content is up to each harness, and Patterns is opencode's permission scoping. A guard built
+// on Detail alone passes its unit tests and then fails in production, because the test feeds Detail
+// the path while the real harness puts it in Input — which is exactly what happened here: a live
+// attempt to write .git/hooks/pre-commit sailed through to the approval card.
 func approvalPaths(ar protocol.ApprovalRequest) []string {
-	out := make([]string, 0, len(ar.Patterns)+1)
-	if d := strings.TrimSpace(ar.Detail); d != "" && !strings.ContainsAny(d, "\n") {
+	out := make([]string, 0, len(ar.Patterns)+4)
+	if d := strings.TrimSpace(ar.Detail); d != "" && !strings.Contains(d, "\n") {
 		// A Detail that is a whole shell command is not a path; taking its first token would judge
 		// `git` rather than anything real. Only treat it as a path when it looks like one.
 		if looksLikePath(d) {
@@ -97,6 +101,49 @@ func approvalPaths(ar protocol.ApprovalRequest) []string {
 		}
 	}
 	out = append(out, ar.Patterns...)
+	out = append(out, inputPaths(ar.Input)...)
+	return out
+}
+
+// pathKeys are the argument names harnesses use for "the file this operates on". Kept as a list
+// rather than "any string that looks like a path" so a prompt or a commit message that happens to
+// mention .git does not refuse the operation.
+var pathKeys = []string{
+	"file_path", "filePath", "path", "notebook_path", "notebookPath",
+	"target_file", "targetFile", "old_path", "new_path", "destination", "dest", "source", "src",
+}
+
+// inputPaths pulls the filesystem targets out of a tool's raw arguments, including one level of
+// nesting (harnesses wrap edits in an "edits"/"files" array) so a batch edit cannot smuggle a path
+// past a top-level-only scan.
+func inputPaths(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var obj map[string]any
+	if json.Unmarshal(raw, &obj) != nil {
+		return nil
+	}
+	var out []string
+	collect := func(m map[string]any) {
+		for _, k := range pathKeys {
+			if s, ok := m[k].(string); ok && strings.TrimSpace(s) != "" {
+				out = append(out, s)
+			}
+		}
+	}
+	collect(obj)
+	for _, v := range obj {
+		nested, ok := v.([]any)
+		if !ok {
+			continue
+		}
+		for _, item := range nested {
+			if m, ok := item.(map[string]any); ok {
+				collect(m)
+			}
+		}
+	}
 	return out
 }
 

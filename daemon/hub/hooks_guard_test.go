@@ -123,3 +123,51 @@ func TestGuardReasonExplainsTheConsequence(t *testing.T) {
 func containsFold(haystack, needle string) bool {
 	return strings.Contains(strings.ToLower(haystack), strings.ToLower(needle))
 }
+
+// The regression that live testing caught and the unit tests missed.
+//
+// The first version of this guard checked only Detail and Patterns. Both unit tests passed, because
+// they fed Detail the path directly. The real claude-code harness puts the target in Input — the
+// tool's raw arguments — so an actual attempt to write .git/hooks/pre-commit went straight through
+// to the approval card. A guard is only as good as the field the harness actually uses.
+func TestGuardChecksTheToolsRawInput(t *testing.T) {
+	wt := t.TempDir()
+	ar := protocol.ApprovalRequest{
+		Tool:   "Write",
+		Detail: "Write", // a summary, NOT a path — this is the shape that defeated the first version
+		Input: []byte(`{"file_path":"` + filepath.Join(wt, ".git", "hooks", "pre-commit") +
+			`","content":"#!/bin/sh\necho pwned"}`),
+	}
+	if g := guardApproval(ar); g.reason == "" {
+		t.Fatal("allowed a hook write that arrived in Input — the live bypass")
+	}
+}
+
+// A batch edit must not smuggle a metadata path past a top-level-only scan.
+func TestGuardChecksNestedInputPaths(t *testing.T) {
+	wt := t.TempDir()
+	ar := protocol.ApprovalRequest{
+		Tool:   "MultiEdit",
+		Detail: "MultiEdit",
+		Input: []byte(`{"edits":[{"file_path":"` + filepath.Join(wt, "ok.go") + `"},` +
+			`{"file_path":"` + filepath.Join(wt, ".git", "config") + `"}]}`),
+	}
+	if g := guardApproval(ar); g.reason == "" {
+		t.Fatal("allowed a metadata path nested inside a batch edit")
+	}
+}
+
+// Ordinary tool input must still pass, including prompts that merely mention .git in prose.
+func TestGuardAllowsOrdinaryInput(t *testing.T) {
+	wt := t.TempDir()
+	for _, in := range []string{
+		`{"file_path":"` + filepath.Join(wt, "main.go") + `","content":"package main"}`,
+		`{"prompt":"explain how .git/hooks works in this repo"}`,
+		`{"command":"git status"}`,
+	} {
+		ar := protocol.ApprovalRequest{Tool: "Write", Detail: "Write", Input: []byte(in)}
+		if g := guardApproval(ar); g.reason != "" {
+			t.Fatalf("refused ordinary input %s: %s", in, g.reason)
+		}
+	}
+}
