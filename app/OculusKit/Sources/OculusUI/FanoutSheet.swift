@@ -153,12 +153,19 @@ struct FanoutSheet: View {
         if projectID.isEmpty { problem = "Pick the repo the agents should work in."; return }
         problem = nil
         Task {
-            let group = await model.fanout(prompt: prompt, provider: provider,
-                                           projectID: projectID.isEmpty ? nil : projectID,
-                                           count: count, plan: plan, judge: judge, subtasks: subtasks)
-            // `fanout` returns nil on failure (and raises its own alert). Closing regardless would
-            // throw away the prompt the user would have to retype to try again.
-            if group != nil { onClose() }
+            // The failure is shown INLINE, in the same place as the validation messages above, rather
+            // than raised as an alert: this sheet is presented, and a root-level alert cannot draw
+            // over a presented sheet — so the previous version's error was invisible and the button
+            // simply appeared dead. Staying open also keeps the typed task, which the user would
+            // otherwise have to write again to retry.
+            switch await model.fanout(prompt: prompt, provider: provider,
+                                      projectID: projectID.isEmpty ? nil : projectID,
+                                      count: count, plan: plan, judge: judge, subtasks: subtasks) {
+            case .started:
+                onClose()
+            case .failed(let why):
+                problem = why
+            }
         }
     }
 }

@@ -2446,13 +2446,38 @@ public final class Model: ObservableObject {
         } catch { setError("Couldn’t start chat", error.localizedDescription) }
     }
 
+    /// The result of asking for a fan-out. Named rather than an optional, because "nil" was exactly
+    /// the shape that let the failure disappear: the caller could not tell "didn't start" from
+    /// "didn't start, and here is why", so it showed nothing.
+    ///
+    /// Deliberately NOT `@discardableResult` any more either — the reason is the whole point now, and
+    /// silently dropping it is the bug this replaced.
+    public enum FanoutOutcome {
+        case started(group: String)
+        case failed(reason: String)
+    }
+
     /// Fan-out: spawn `count` agents on the SAME prompt, each in its own worktree, as one group —
-    /// race several approaches, then compare and merge the winner. Returns the group id on success.
-    @discardableResult
+    /// race several approaches, then compare and merge the winner.
+    ///
     /// - Parameter subtasks: when non-empty, each agent gets its OWN subtask (a division of labour)
     ///   instead of all of them racing the same prompt; `count` is then ignored.
-    public func fanout(prompt: String, provider: String, projectID: String?, count: Int, plan: Bool = false, judge: Bool = false, subtasks: [String] = []) async -> String? {
-        guard client != nil else { return nil }
+    ///
+    /// Returns the group id or the REASON it could not start.
+    ///
+    /// The reason is returned rather than raised as an alert because the only caller is a sheet, and
+    /// a root-level alert cannot draw over a presented sheet — so the failure was invisible. What the
+    /// user saw was a "Fan out 3 agents" button that did nothing at all, while the daemon had in fact
+    /// answered immediately and precisely:
+    ///
+    ///   fan-out: no variants started: …/scratchpad/ocproj: not a git repository: fatal: cannot
+    ///   change to '…/scratchpad/ocproj': No such file or directory
+    ///
+    /// i.e. the selected repo's folder no longer existed. Entirely actionable, and entirely swallowed.
+    /// A dead control is worse than an error: an error tells you to pick a different repo, whereas
+    /// nothing happening reads as the app being broken.
+    public func fanout(prompt: String, provider: String, projectID: String?, count: Int, plan: Bool = false, judge: Bool = false, subtasks: [String] = []) async -> FanoutOutcome {
+        guard client != nil else { return .failed(reason: "Not connected to the daemon.") }
         let n = subtasks.isEmpty ? count : subtasks.count
         busy = true; status = subtasks.isEmpty ? "Fanning out \(n) agents…" : "Splitting into \(n) subtasks…"
         defer { busy = false }
@@ -2466,11 +2491,25 @@ public final class Model: ObservableObject {
             let res = try env.payload(as: FanoutResult.self)
             status = "Fan-out: \(res.sessionIDs.count) agents running"
             await loadSessions()
-            return res.group
+            return .started(group: res.group)
         } catch {
-            setError("Couldn’t fan out", error.localizedDescription)
-            return nil
+            return .failed(reason: fanoutFailureText(error))
         }
+    }
+
+    /// Turns a fan-out failure into something a person can act on.
+    ///
+    /// The daemon's message is kept — it names the actual obstacle (a missing folder, a directory
+    /// that isn't a git repo, an agent that won't start) and replacing it with a generic string
+    /// would throw away the only useful part. A leading hint is added for the case that is both the
+    /// most common and the least self-evident: every variant needs its own git worktree, so a repo
+    /// that isn't a git repository can never fan out however many times you press the button.
+    private func fanoutFailureText(_ error: Error) -> String {
+        let raw = error.localizedDescription
+        if raw.contains("not a git repository") || raw.contains("No such file or directory") {
+            return "Fan-out gives each agent its own git worktree, so the repo has to be a git repository that still exists on disk. \(raw)"
+        }
+        return raw
     }
 
     /// Ends a fan-out group: keep `winner` (nil = discard all), tear down the rest + their worktrees.
