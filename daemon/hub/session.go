@@ -1169,6 +1169,34 @@ func (m *managedSession) run() {
 				m.mu.Lock()
 				m.pendingApprovals++
 				m.mu.Unlock()
+				// Tell EVERY client, not just this session's subscribers.
+				//
+				// A client subscribes to a session when it opens it, so a request raised by a session
+				// nobody is looking at reached nobody — and that is precisely the session you need to
+				// be told about. The Fleet renders approval controls per card so you can answer
+				// without opening anything; it could never show them for an unopened session, which
+				// is backwards, since triaging agents you are NOT watching is what the fleet is for.
+				//
+				// Observed: three fan-out agents sat blocked on a Write for thirteen minutes while
+				// their cards read "On track". Opening one made its approval appear instantly; the
+				// other two stayed silent.
+				//
+				// The asymmetry is what gives it away — RESOLUTION was already broadcast hub-wide
+				// (TypeApprovalResolved via h.broadcast), so clients were told an approval had been
+				// ANSWERED while never being told it had been ASKED.
+				//
+				// Subscribers of this session are SKIPPED: they already receive it through the
+				// per-session fan-out below, and delivering twice is not harmless. A client that
+				// merely stores the event is idempotent, but one that ACTS on it acts twice — the
+				// full-stack E2E test answers each approval it sees, and a duplicate made it respond
+				// twice, the second failing with "no such approval" about one run in three.
+				m.mu.Lock()
+				subscribed := make(map[*transport.Conn]bool, len(m.subs))
+				for c := range m.subs {
+					subscribed[c] = true
+				}
+				m.mu.Unlock()
+				m.hub.broadcastExcept(protocol.TypeApprovalRequest, ar, subscribed)
 				m.hub.pushApproval(ar)
 			}
 		}

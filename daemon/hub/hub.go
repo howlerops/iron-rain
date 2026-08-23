@@ -2319,6 +2319,18 @@ func asyncDispatch(typ string) bool {
 
 // broadcast sends an event to every connected client (used for cross-device sync).
 func (h *Hub) broadcast(typ string, payload any) {
+	h.broadcastExcept(typ, payload, nil)
+}
+
+// broadcastExcept is broadcast, skipping connections that will receive the same event by another
+// route — currently the session subscribers that already get it through the per-session fan-out.
+//
+// Delivering twice is NOT harmless, which is what makes this necessary rather than tidy. A client
+// that merely stores the event is idempotent, but one that ACTS on it acts twice: the full-stack E2E
+// test answers each approval it sees, so a duplicated approval.request made it respond twice and the
+// second response failed with "no such approval" — an intermittent failure, roughly one run in
+// three, in a test that had nothing to do with the change.
+func (h *Hub) broadcastExcept(typ string, payload any, skip map[*transport.Conn]bool) {
 	raw, err := protocol.Encode("", typ, payload)
 	if err != nil {
 		return
@@ -2326,6 +2338,9 @@ func (h *Hub) broadcast(typ string, payload any) {
 	h.mu.Lock()
 	clients := make([]*hubClient, 0, len(h.clients))
 	for _, c := range h.clients {
+		if skip[c.conn] {
+			continue
+		}
 		clients = append(clients, c)
 	}
 	h.mu.Unlock()
