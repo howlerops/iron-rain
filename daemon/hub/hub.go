@@ -1659,15 +1659,34 @@ func (h *Hub) spawnChild(ctx context.Context, req protocol.SessionChild) (*manag
 	}
 	prompt := buildChildPrompt(req, handoffPath(cwd, req.ParentSessionID), handoff)
 
-	sess, err := p.Create(ctx, cwd, prompt)
-	if err != nil {
-		return nil, err
+	// Routed through startSession rather than calling p.Create directly.
+	//
+	// The direct call was why a child could never have a worktree, a model, or any of the other
+	// per-session setup: every one of those lives in startSession, and this path went round it. The
+	// fan-out already does exactly this (see spawnFanout), so the child now takes the same road as
+	// every other session and inherits whatever startSession learns to do next.
+	create := protocol.SessionCreate{
+		Provider:      provider,
+		ProjectID:     projectID,
+		Cwd:           cwd,
+		Prompt:        prompt,
+		Model:         req.Model,
+		ModelProvider: req.ModelProvider,
+		Worktree:      req.Worktree,
+	}
+	if req.Worktree {
+		// A branch name that says what it is at a glance in `git worktree list` and in the branch
+		// picker — "subtask" alone would collide the moment a parent delegates twice.
+		create.WorkspaceName = fmt.Sprintf("subtask-%s", randToken()[:6])
 	}
 	meta := sessionMeta{
 		projectID: projectID, cwd: cwd, workspaceName: "subtask",
 		parentID: req.ParentSessionID, subtask: req.Subtask,
 	}
-	m := h.addSession(sess, meta)
+	m, err := h.startSession(ctx, create, meta, nil)
+	if err != nil {
+		return nil, err
+	}
 	if req.Autonomous {
 		m.mu.Lock()
 		m.autonomous = true

@@ -1737,14 +1737,18 @@ public final class Model: ObservableObject {
 
     /// Delegates a subtask to a scoped sub-agent seeded from the parent's handoff (not its
     /// transcript). On success the child becomes the active session (it arrives via the OK).
-    public func delegateSubtask(subtask: String, files: [String]? = nil, autonomous: Bool = false) async {
+    public func delegateSubtask(subtask: String, files: [String]? = nil, autonomous: Bool = false,
+                                provider: String? = nil, model: String? = nil,
+                                worktree: Bool = false) async {
         guard client != nil, let parent = sessionID else { return }
         let trimmed = subtask.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         do {
             let resp = try await request(MessageType.sessionChild,
                                          payload: SessionChild(parentSessionID: parent, subtask: trimmed,
-                                                               files: files, autonomous: autonomous))
+                                                               files: files, provider: provider,
+                                                               model: model, autonomous: autonomous,
+                                                               worktree: worktree))
             let child = try resp.payload(as: Session.self)
             // Only now replace the view — a failed delegate must not lose the parent conversation.
             // The daemon already subscribed this connection to the child, so its transcript replays

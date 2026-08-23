@@ -787,14 +787,29 @@ public struct SessionChild: Codable {
     public var parentSessionID: String
     public var subtask: String
     public var files: [String]?
+    /// The harness to run this subtask on. Nil inherits the parent's — the point of setting it is
+    /// to route a subtask to a DIFFERENT harness than the one you're talking to.
     public var provider: String?
+    /// The model within that harness. Distinct from `provider` because "delegate this to Claude"
+    /// and "delegate this to Claude on a small model" are different asks.
+    public var model: String?
+    public var modelProvider: String?
     public var autonomous: Bool?
-    public init(parentSessionID: String, subtask: String, files: [String]? = nil, provider: String? = nil, autonomous: Bool? = nil) {
-        self.parentSessionID = parentSessionID; self.subtask = subtask; self.files = files; self.provider = provider; self.autonomous = autonomous
+    /// Give the child its own git worktree instead of sharing the parent's directory. Required for
+    /// concurrent children: two agents in one tree edit the same files underneath each other, and
+    /// neither is told.
+    public var worktree: Bool?
+    public init(parentSessionID: String, subtask: String, files: [String]? = nil, provider: String? = nil,
+                model: String? = nil, modelProvider: String? = nil, autonomous: Bool? = nil,
+                worktree: Bool? = nil) {
+        self.parentSessionID = parentSessionID; self.subtask = subtask; self.files = files
+        self.provider = provider; self.model = model; self.modelProvider = modelProvider
+        self.autonomous = autonomous; self.worktree = worktree
     }
     enum CodingKeys: String, CodingKey {
         case parentSessionID = "parent_session_id"
-        case subtask, files, provider, autonomous
+        case modelProvider = "model_provider"
+        case subtask, files, provider, model, autonomous, worktree
     }
 }
 public struct HandoffEntry: Codable, Identifiable, Hashable {

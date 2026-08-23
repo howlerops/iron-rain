@@ -1505,9 +1505,23 @@ type SessionHeartbeat struct {
 type SessionChild struct {
 	ParentSessionID string   `json:"parent_session_id"`
 	Subtask         string   `json:"subtask"`
-	Files           []string `json:"files,omitempty"`      // allowlist the child should stay within (advisory)
-	Provider        string   `json:"provider,omitempty"`   // defaults to the parent's provider
-	Autonomous      bool     `json:"autonomous,omitempty"` // enroll the child in heartbeat supervision
+	Files           []string `json:"files,omitempty"`    // allowlist the child should stay within (advisory)
+	Provider        string   `json:"provider,omitempty"` // defaults to the parent's provider
+	// Model picks the model WITHIN the chosen provider, so a subtask can be routed to a cheaper or
+	// stronger model than the parent is using. Provider alone was not enough: "delegate this to
+	// Claude" and "delegate this to Claude but on a small model" are different asks, and only the
+	// first was expressible.
+	Model         string `json:"model,omitempty"`
+	ModelProvider string `json:"model_provider,omitempty"`
+	Autonomous    bool   `json:"autonomous,omitempty"` // enroll the child in heartbeat supervision
+	// Worktree gives the child its own git worktree and branch instead of sharing the parent's
+	// working directory.
+	//
+	// Sharing was safe only while delegation was strictly sequential. Two children in one directory
+	// edit the same files underneath each other, and the damage is silent — each agent sees a tree
+	// the other is mutating and neither is told. Now that the sheet can dispatch to several agents,
+	// this is what makes concurrency truthful rather than merely permitted.
+	Worktree bool `json:"worktree,omitempty"`
 }
 
 // HandoffEntry is one indexed agent-authored handoff file (progress externalized to disk so it

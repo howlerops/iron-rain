@@ -2744,6 +2744,11 @@ struct DelegateSheet: View {
     @State private var subtask = ""
     @State private var filesText = ""
     @State private var autonomous = false
+    /// Empty = inherit the parent's harness. The whole point of exposing this is the NON-empty case:
+    /// routing a subtask to a different harness than the one you are talking to, which no harness's
+    /// own sub-agent can do — theirs are confined to their own process.
+    @State private var provider = ""
+    @State private var isolate = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -2772,6 +2777,31 @@ struct DelegateSheet: View {
                     .plainInput() // paths + branch names: autocorrect turns these into nonsense
                     .overlay(OculusShape.rounded(6).strokeBorder(palette.border))
             }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Agent").font(.caption).foregroundStyle(palette.mutedForeground)
+                Picker("", selection: $provider) {
+                    Text("Same as this session").tag("")
+                    ForEach(model.providers, id: \.self) { p in Text(p).tag(p) }
+                }
+                .labelsHidden().pickerStyle(.menu)
+                // The cross-harness case is the reason this control exists, and it is not obvious
+                // from a dropdown that defaults to "same" — so it is said once, plainly.
+                Text("A subtask can run on a different agent than this session. Useful when one harness is better at the work than the one you started in.")
+                    .font(.caption2).foregroundStyle(palette.mutedForeground)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Toggle(isOn: $isolate) {
+                Text("Give it its own worktree").font(.footnote)
+            }
+            .toggleStyle(.switch).tint(palette.primary)
+            // On by default, and this explains why rather than leaving it as an unexplained switch:
+            // without a worktree, two subtasks running at once edit the same files underneath each
+            // other and neither agent is told.
+            Text(isolate
+                 ? "Runs on its own branch, so it can work at the same time as this session."
+                 : "Shares this session's folder. Only safe if nothing else is editing it right now.")
+                .font(.caption2).foregroundStyle(isolate ? palette.mutedForeground : palette.warning)
+                .fixedSize(horizontal: false, vertical: true)
             Toggle(isOn: $autonomous) {
                 Text("Run autonomously (heartbeat keeps it going)").font(.footnote)
             }
@@ -2780,7 +2810,12 @@ struct DelegateSheet: View {
                 Spacer()
                 Button {
                     let files = filesText.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-                    Task { await model.delegateSubtask(subtask: subtask, files: files.isEmpty ? nil : files, autonomous: autonomous) }
+                    Task {
+                        await model.delegateSubtask(subtask: subtask, files: files.isEmpty ? nil : files,
+                                                    autonomous: autonomous,
+                                                    provider: provider.isEmpty ? nil : provider,
+                                                    worktree: isolate)
+                    }
                     onClose()
                 } label: { Text("Delegate").frame(minWidth: 72) }
                 .buttonStyle(.borderedProminent).tint(palette.primary)
