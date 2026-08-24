@@ -2,8 +2,11 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,6 +26,52 @@ import (
 // mcpApprovalTimeout bounds how long an MCP tool call waits for a human. Long enough to walk to your
 // phone, short enough that a forgotten prompt doesn't pin an agent turn forever.
 const mcpApprovalTimeout = 10 * time.Minute
+
+// argSummaryMax bounds the rendered arguments on an approval card. A card is a one-line decision
+// surface and an argument object can carry a whole file's contents.
+const argSummaryMax = 160
+
+// argSummary renders a tool's arguments for the approval card, so a person can see WHAT is being
+// asked and not merely which tool is asking. "write" is not a decision anyone can make; "write
+// file_path=/repo/.git/hooks/pre-commit" is.
+//
+// Only what a HUMAN reads is truncated here — the full arguments still reach the guard and the rule
+// engine through ApprovalRequest.Input, so a path hidden past the cutoff is still inspected.
+func argSummary(args json.RawMessage) string {
+	var obj map[string]any
+	if len(args) == 0 || json.Unmarshal(args, &obj) != nil || len(obj) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(obj))
+	for k := range obj {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys) // the same call must render the same card text every time
+	var b strings.Builder
+	for _, k := range keys {
+		if b.Len() >= argSummaryMax {
+			b.WriteString(", …")
+			break
+		}
+		if b.Len() > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(k)
+		b.WriteString("=")
+		b.WriteString(oneLine(fmt.Sprint(obj[k])))
+	}
+	return " — " + b.String()
+}
+
+// oneLine flattens a value so a multi-line argument can't turn one card into a wall of text, and so
+// an argument containing newlines cannot visually forge additional card fields.
+func oneLine(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > 60 {
+		s = s[:60] + "…"
+	}
+	return s
+}
 
 // mcpSessionTokens maps a gateway token to the session it was minted for.
 type mcpSessionTokens struct {
@@ -83,7 +132,7 @@ func (t *mcpSessionTokens) revoke(sessionID string) string {
 // authorizeMCPTool is the gateway's Authorizer. It applies, in order: the session's MODE (a
 // read-only session must not be able to write via an MCP server), then persisted approval RULES,
 // then a real approval the user answers.
-func (h *Hub) authorizeMCPTool(ctx context.Context, token, server, tool string) error {
+func (h *Hub) authorizeMCPTool(ctx context.Context, token, server, tool string, args json.RawMessage) error {
 	sessionID, ok := h.mcpTokens.session(token)
 	if !ok {
 		// The machine-wide token (or an unbound one): no session context, so no rules can be applied
@@ -103,12 +152,28 @@ func (h *Hub) authorizeMCPTool(ctx context.Context, token, server, tool string) 
 		ApprovalID: "mcpap_" + randToken(),
 		SessionID:  sessionID,
 		Tool:       qualified,
-		Detail:     tool + " (via the " + server + " MCP server)",
+		Detail:     tool + " (via the " + server + " MCP server)" + argSummary(args),
+		// The arguments are what the tool will actually act on, so they must reach the guard and the
+		// rule engine — not just the log. Carrying only the name meant an approval card said "write"
+		// without saying WHAT, and the .git guard had nothing to inspect.
+		Input: args,
 	}
 
 	if mode := m.sessionMode(); modeDeniesTool(mode, tool) {
 		log.Printf("mcp: denied %s — session %s is in %s mode", qualified, sessionID, mode)
 		return fmt.Errorf("this session is in %s mode, which is read-only", mode)
+	}
+
+	// The same guard the native path runs (session.go), and for the same reason: a write into .git
+	// becomes code execution later, performed by Iron Rain's own commit/merge. Nothing about arriving
+	// over MCP makes that safer, and until now this path skipped the check entirely — an MCP server
+	// with file-write capability could place a pre-commit hook that the native path refuses.
+	//
+	// Placed after the mode gate and BEFORE the rules check, mirroring session.go exactly: a standing
+	// "always allow" must not be able to clear something a person would never be shown.
+	if g := guardApproval(ar); g.reason != "" {
+		log.Printf("mcp: refused %s for session %s — %s", qualified, sessionID, g.reason)
+		return fmt.Errorf("refused: %s", g.reason)
 	}
 
 	m.mu.Lock()

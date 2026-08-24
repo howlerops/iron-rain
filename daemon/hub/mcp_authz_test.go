@@ -55,7 +55,7 @@ func TestMCPToolDeniedByReadOnlyMode(t *testing.T) {
 	token := h.mcpTokens.mint()
 	h.mcpTokens.bind(token, fake.ID())
 
-	err := h.authorizeMCPTool(context.Background(), token, "github", "create_issue")
+	err := h.authorizeMCPTool(context.Background(), token, "github", "create_issue", nil)
 	if err == nil {
 		t.Fatal("a mutating MCP tool must be denied in read-only mode")
 	}
@@ -79,13 +79,13 @@ func TestMCPToolAllowedByStandingRule(t *testing.T) {
 	token := h.mcpTokens.mint()
 	h.mcpTokens.bind(token, fake.ID())
 
-	if err := h.authorizeMCPTool(context.Background(), token, "github", "create_issue"); err != nil {
+	if err := h.authorizeMCPTool(context.Background(), token, "github", "create_issue", nil); err != nil {
 		t.Fatalf("a standing allow rule should permit the call, got %v", err)
 	}
 	// A DIFFERENT tool on the same server is still gated (the rule is per-tool, not per-server).
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	if err := h.authorizeMCPTool(ctx, token, "github", "delete_repo"); err == nil {
+	if err := h.authorizeMCPTool(ctx, token, "github", "delete_repo", nil); err == nil {
 		t.Error("an unrelated tool must not inherit another tool's rule")
 	}
 }
@@ -104,7 +104,7 @@ func TestMCPToolDeniedByStandingDeny(t *testing.T) {
 	token := h.mcpTokens.mint()
 	h.mcpTokens.bind(token, fake.ID())
 
-	err := h.authorizeMCPTool(context.Background(), token, "github", "delete_repo")
+	err := h.authorizeMCPTool(context.Background(), token, "github", "delete_repo", nil)
 	if err == nil || !strings.Contains(err.Error(), "denies") {
 		t.Fatalf("a deny rule must block the call, got %v", err)
 	}
@@ -114,7 +114,7 @@ func TestMCPToolDeniedByStandingDeny(t *testing.T) {
 // attributed to it. That path must not be broken by the session gating.
 func TestMCPUnknownTokenIsAllowed(t *testing.T) {
 	h := New()
-	if err := h.authorizeMCPTool(context.Background(), "some-machine-token", "github", "anything"); err != nil {
+	if err := h.authorizeMCPTool(context.Background(), "some-machine-token", "github", "anything", nil); err != nil {
 		t.Fatalf("an unattributed token should pass through, got %v", err)
 	}
 }
@@ -132,7 +132,7 @@ func TestMCPApprovalResolvesWaiter(t *testing.T) {
 	h.mcpTokens.bind(token, fake.ID())
 
 	done := make(chan error, 1)
-	go func() { done <- h.authorizeMCPTool(context.Background(), token, "github", "read_issue") }()
+	go func() { done <- h.authorizeMCPTool(context.Background(), token, "github", "read_issue", nil) }()
 
 	// Wait for the approval to be registered, then answer it.
 	var id string

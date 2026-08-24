@@ -33,13 +33,20 @@ const requestTimeout = 120 * time.Second
 const maxRequestBytes = 8 << 20
 
 // Authorizer decides whether one tools/call may proceed. It receives the bearer token the caller
-// presented — which identifies the SESSION, not just the machine — plus the server and tool being
-// invoked. Returning an error blocks the call and the error text is returned to the agent.
+// presented — which identifies the SESSION, not just the machine — plus the server, the tool, and
+// the tool's raw arguments. Returning an error blocks the call and the error text is returned to
+// the agent.
 //
 // This is the seam that lets MCP tools obey the same approval rules and read-only modes as native
 // tools. Without a per-session token an MCP call arrives with no identity at all and can only be
 // allowed or refused wholesale.
-type Authorizer func(ctx context.Context, token, server, tool string) error
+//
+// `args` is load-bearing, not diagnostic. Without it the decision can only be made on a tool's NAME,
+// which means an approval card cannot say WHICH file a write touches or WHICH url a fetch requests,
+// the path/pattern scopes cannot apply, and the .git guard has nothing to inspect — the paths a
+// harness acts on live in the arguments, never in the name. An authorizer that sees only a name can
+// answer "may this session ever call write?" when the question that matters is "may it write THIS".
+type Authorizer func(ctx context.Context, token, server, tool string, args json.RawMessage) error
 
 // Gateway is an http.Handler serving /mcp/<server>.
 type Gateway struct {
@@ -143,7 +150,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Gate the call BEFORE connecting: a denied tool shouldn't even wake a sleeping server, and the
 	// user shouldn't wait on a spawn for a call that was never going to run.
 	if req.Method == "tools/call" && g.authorize != nil {
-		if err := g.authorize(ctx, bearer, name, toolNameFrom(req.Params)); err != nil {
+		if err := g.authorize(ctx, bearer, name, toolNameFrom(req.Params), toolArgsFrom(req.Params)); err != nil {
 			writeRPCError(w, req.ID, -32001, err.Error())
 			return
 		}
@@ -226,6 +233,22 @@ func toolNameFrom(params json.RawMessage) string {
 	}
 	_ = json.Unmarshal(params, &p)
 	return p.Name
+}
+
+// toolArgsFrom extracts the tool's arguments object, which is what the tool will actually act on.
+//
+// Returns nil rather than an error for a malformed or absent params: the authorizer must still run
+// on a call whose arguments could not be parsed. Failing open on the ARGUMENTS while still enforcing
+// on the NAME is the safe asymmetry — a call the guard cannot read is one it cannot clear either,
+// and it will fall through to a real approval rather than being silently allowed.
+func toolArgsFrom(params json.RawMessage) json.RawMessage {
+	var p struct {
+		Arguments json.RawMessage `json:"arguments"`
+	}
+	if json.Unmarshal(params, &p) != nil {
+		return nil
+	}
+	return p.Arguments
 }
 
 func writeRPCError(w http.ResponseWriter, id *json.RawMessage, code int, msg string) {
