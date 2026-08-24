@@ -716,8 +716,17 @@ public struct Session: Codable, Identifiable {
     /// Carried separately from `name` because a rename must not be able to erase where work runs.
     public var execKind: String?
     public var execHost: String?
+    /// The session's dev server as a stable NAME — "http://fix-login.localhost:7777" — rather than a
+    /// port that changes between runs.
+    ///
+    /// Distinct from `port`, which is only set when a setup hook allocated one. The daemon detects
+    /// whatever port the dev server actually chose and registers a name for it, so this is populated
+    /// for an ordinary `npm run dev` where `port` is nil. Prefer it over `port` wherever both could
+    /// serve: dropping it is what made Design Mode fall back to a hardcoded localhost:3000.
+    public var previewURL: String?
     enum CodingKeys: String, CodingKey {
         case id, provider, status, title, name, cwd, branch, port, model, mode, restartable, conflicted, ephemeral
+        case previewURL = "preview_url"
         case execKind = "exec_kind"
         case execHost = "exec_host"
         case fanoutGroup = "fanout_group"

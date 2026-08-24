@@ -649,9 +649,14 @@ public struct RootView: View {
         }
     }
 
-    /// The initial Design-Mode URL: the active session's dev-server port if a setup hook allocated
-    /// one, else a sensible localhost default.
+    /// The initial Design-Mode URL for the active session.
+    ///
+    /// The daemon's detected preview name comes FIRST. It is the only one of the three that is
+    /// populated for an ordinary `npm run dev`: `port` is set only when a setup hook allocated one,
+    /// so before this every auto-detected dev server fell through to the hardcoded guess below and
+    /// Design Mode opened on nothing.
     private func designURL(_ model: Model) -> String {
+        if let u = model.currentSession?.previewURL, !u.isEmpty { return u }
         if let p = model.currentSession?.port, p > 0 { return "http://localhost:\(p)" }
         return "http://localhost:3000"
     }
