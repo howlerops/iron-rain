@@ -67,7 +67,7 @@ type Manager struct {
 	cache      []Issue
 	onUpdate   func([]Issue)
 	pending    map[string]pendingOAuth // oauth state -> provider + expiry
-	authErrors map[string]string // provider -> last token-refresh error (drives the "reconnect" pill)
+	authErrors map[string]string       // provider -> last token-refresh error (drives the "reconnect" pill)
 	// pollFail tracks each provider's CONSECUTIVE poll failures, so a tracker that is down stops
 	// shouting. A revoked refresh token never recovers on its own, and the poll used to retry it
 	// every 60s forever — one identical log line per minute, which buries the incident an operator

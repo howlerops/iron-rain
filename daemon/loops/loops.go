@@ -75,7 +75,7 @@ type Engine struct {
 	loops    []Loop
 	runs     []Run
 	spawn    func(Loop, *Issue) (sessionID string, err error) // injected: starts the session (issue nil = task loop)
-	onChange func()                                            // injected: notify clients config/runs changed
+	onChange func()                                           // injected: notify clients config/runs changed
 	now      func() int64
 }
 

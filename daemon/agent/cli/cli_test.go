@@ -1,8 +1,8 @@
 package cli
 
 import (
-	"path/filepath"
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"

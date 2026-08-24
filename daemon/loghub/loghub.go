@@ -13,11 +13,11 @@ import (
 // Hub is an io.Writer for the standard logger: it splits writes into lines, keeps the last `max` in
 // a ring, and notifies the listener (set by the daemon hub) of each new line.
 type Hub struct {
-	mu       sync.Mutex
-	ring     []string
-	max      int
-	partial  []byte
-	onLine   func(string)
+	mu      sync.Mutex
+	ring    []string
+	max     int
+	partial []byte
+	onLine  func(string)
 }
 
 func New(max int) *Hub {

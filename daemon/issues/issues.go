@@ -7,16 +7,16 @@ import "context"
 
 // Issue is a normalized ticket across providers.
 type Issue struct {
-	ID         string `json:"id"`  // provider id (Linear UUID / Jira key)
-	Key        string `json:"key"` // human identifier ("ENG-42")
-	Title      string `json:"title"`
-	Body       string `json:"body,omitempty"`
-	Status     string `json:"status"`   // provider status name
-	Category   string `json:"category"` // normalized: todo | in_progress | done | other
-	Assignee   string `json:"assignee,omitempty"`
-	URL        string `json:"url,omitempty"`
-	Provider   string `json:"provider"`              // "linear" | "jira"
-	BranchName string `json:"branch_name,omitempty"` // git branch for a worktree
+	ID          string `json:"id"`  // provider id (Linear UUID / Jira key)
+	Key         string `json:"key"` // human identifier ("ENG-42")
+	Title       string `json:"title"`
+	Body        string `json:"body,omitempty"`
+	Status      string `json:"status"`   // provider status name
+	Category    string `json:"category"` // normalized: todo | in_progress | done | other
+	Assignee    string `json:"assignee,omitempty"`
+	URL         string `json:"url,omitempty"`
+	Provider    string `json:"provider"`              // "linear" | "jira"
+	BranchName  string `json:"branch_name,omitempty"` // git branch for a worktree
 	TeamID      string `json:"team_id,omitempty"`
 	TeamName    string `json:"team_name,omitempty"` // human name of the project/team
 	Priority    int    `json:"priority,omitempty"`
