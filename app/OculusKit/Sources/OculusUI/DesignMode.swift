@@ -62,16 +62,32 @@ public func designPromptBlock(_ el: PickedElement) -> String {
 /// alternative is mangling legitimate content, narrow is the right bias.
 public func scrubSecrets(_ s: String) -> String {
     var out = s
-    for pattern in secretPatterns {
+    // Structural first, and this pass matters more than every regex after it. In a rendered app the
+    // riskiest content is not a token in body text — it is hydration state. __NEXT_DATA__ and
+    // window.__INITIAL_STATE__ routinely carry access tokens and user records, and no
+    // credential-shaped pattern would recognise them.
+    for (pattern, label) in structuralPatterns {
+        guard let re = try? NSRegularExpression(
+            pattern: pattern, options: [.caseInsensitive, .dotMatchesLineSeparators]) else { continue }
+        out = re.stringByReplacingMatches(
+            in: out, range: NSRange(out.startIndex..., in: out), withTemplate: label)
+    }
+    for (pattern, label) in secretPatterns {
         guard let re = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
         out = re.stringByReplacingMatches(
-            in: out,
-            range: NSRange(out.startIndex..., in: out),
-            withTemplate: "«redacted»"
-        )
+            in: out, range: NSRange(out.startIndex..., in: out), withTemplate: label)
     }
     return out
 }
+
+/// Whole regions removed regardless of what they contain.
+///
+/// The replacement NAMES what was taken. A blank tells an agent something is missing without saying
+/// what, which invites it to treat an emptied attribute as a bug to fix.
+private let structuralPatterns: [(String, String)] = [
+    (#"<script\b[^>]*>.*?</script\s*>"#, "[removed: inline script, may carry app state and tokens]"),
+    (#"data:[a-z]+/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]{64,}"#, "[removed: inline data URI]"),
+]
 
 /// Whether a host is this machine — the dev server, in other words.
 ///
@@ -90,25 +106,42 @@ public func isLoopbackHost(_ host: String?) -> Bool {
     return false
 }
 
-/// Credential shapes, each distinctive enough to match on sight.
-private let secretPatterns: [String] = [
+/// Credential shapes, each distinctive enough to match on sight, paired with what to leave behind.
+///
+/// TYPED placeholders rather than one anonymous marker: an agent that sees `[redacted: JWT]` knows a
+/// token was there and can ask for it, where a generic blank reads as an empty attribute it might
+/// try to "fix". Structure and attribute NAMES always survive — redacting an id or a data-testid
+/// would defeat the capture this exists to protect.
+///
+/// The prefix-anchored ones carry near-zero false positives by construction: GitHub's format
+/// deliberately includes a checksum so scanners can be confident, and the others are equally
+/// distinctive. The last two are context-anchored and are where any false positive will come from.
+private let secretPatterns: [(String, String)] = [
     // JWT: three base64url segments, and the leading eyJ is a literal `{"` — near-unmistakable.
-    #"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"#,
+    (#"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"#, "[redacted: JWT]"),
     // Authorization headers and bearer tokens as they appear in inlined fetch code.
-    #"(?:bearer|authorization"?\s*[:=]\s*"?)\s+?[A-Za-z0-9._~+/=-]{16,}"#,
+    (#"(?:bearer|authorization"?\s*[:=]\s*"?)\s+?[A-Za-z0-9._~+/=-]{16,}"#, "[redacted: auth header]"),
     // Provider key formats with fixed prefixes.
-    #"sk-[A-Za-z0-9_-]{16,}"#,
-    #"(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}"#,
-    #"github_pat_[A-Za-z0-9_]{20,}"#,
-    #"xox[baprs]-[A-Za-z0-9-]{10,}"#,
-    #"AKIA[0-9A-Z]{16}"#,
-    #"AIza[0-9A-Za-z_-]{35}"#,
+    (#"sk-ant-[A-Za-z0-9_-]{20,}"#, "[redacted: Anthropic key]"),
+    (#"sk-(?:proj-)?[A-Za-z0-9_-]{16,}"#, "[redacted: API key]"),
+    (#"(?:sk|rk)_live_[A-Za-z0-9]{16,}"#, "[redacted: Stripe secret key]"),
+    (#"(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}"#, "[redacted: GitHub token]"),
+    (#"github_pat_[A-Za-z0-9_]{20,}"#, "[redacted: GitHub token]"),
+    (#"npm_[A-Za-z0-9]{36}"#, "[redacted: npm token]"),
+    (#"xox[baprs]-[A-Za-z0-9-]{10,}"#, "[redacted: Slack token]"),
+    (#"(?:A3T[A-Z0-9]|AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA)[A-Z0-9]{16}"#, "[redacted: AWS key id]"),
+    (#"AIza[0-9A-Za-z_-]{35}"#, "[redacted: Google API key]"),
+    (#"-----BEGIN (?:RSA |EC |OPENSSH |PGP )?PRIVATE KEY-----"#, "[redacted: private key]"),
+    // Signed-URL parameters: the signature IS the credential.
+    (#"(?:X-Amz-Signature|Signature|sig|access_token|token)=[A-Za-z0-9%._~+/-]{16,}"#, "[redacted: signed URL parameter]"),
     // A filled password field, whatever the attribute order.
-    #"<input[^>]*type\s*=\s*"?password"?[^>]*>"#,
+    (#"<input[^>]*type\s*=\s*"?password"?[^>]*>"#, "[redacted: password field]"),
+    // A CSRF meta tag, which is a credential in the same sense a session cookie is.
+    (#"<meta[^>]*name\s*=\s*"?csrf-token"?[^>]*>"#, "[redacted: CSRF token]"),
     // Cookie assignments in inlined script.
-    #"document\.cookie\s*=\s*[^;<]{8,}"#,
+    (#"document\.cookie\s*=\s*[^;<]{8,}"#, "[redacted: cookie assignment]"),
     // Attributes whose NAME says credential, regardless of the value's shape.
-    #"(?:token|secret|api[_-]?key|password|passwd|auth)"?\s*[:=]\s*"[^"]{8,}""#,
+    (#"(?:token|secret|api[_-]?key|password|passwd|auth)"?\s*[:=]\s*"[^"]{8,}""#, "[redacted: credential attribute]"),
 ]
 
 private func truncate(_ s: String, _ n: Int) -> String {
@@ -254,7 +287,18 @@ struct DesignWebView {
 
     private func makeWebView(_ coordinator: Coordinator) -> WKWebView {
         let cfg = WKWebViewConfiguration()
-        cfg.userContentController.add(coordinator, name: "oculusPick")
+        // Registered in an ISOLATED content world, not the page's.
+        //
+        // userContentController.add(_:name:) puts the handler in the PAGE world, where
+        // window.webkit.messageHandlers.oculusPick is reachable by any script the page runs. That is
+        // not prompt injection routed through a model — it is page JavaScript calling a native
+        // bridge directly, forging a "picked element" into the user's composer with no click and no
+        // model in between. The page here is a dev server rendering whatever an npm dependency, a
+        // database row or a third-party API put on it.
+        //
+        // DOM changes stay visible across worlds, so the picker still highlights and still reads the
+        // element it was pointed at; only the bridge stops being reachable from the page.
+        cfg.userContentController.add(coordinator, contentWorld: .defaultClient, name: "oculusPick")
         // Must be registered before the web view exists — a configuration is copied at init, so
         // installing the handler afterwards has no effect.
         if let tunnel {
@@ -268,7 +312,11 @@ struct DesignWebView {
     }
 
     private func inject(_ wv: WKWebView) {
-        if picking { wv.evaluateJavaScript(designPickerJS, completionHandler: nil) }
+        // Same world the handler lives in, or the postMessage call finds nothing. Running here also
+        // keeps the picker out of reach of a page that redefines the DOM functions it relies on.
+        if picking {
+            wv.evaluateJavaScript(designPickerJS, in: nil, in: .defaultClient, completionHandler: nil)
+        }
     }
 }
 

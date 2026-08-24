@@ -76,6 +76,15 @@ public final class PreviewDOMRegistry {
 public let previewSnapshotJS = """
 (function() {
   var MAX = 200;
+  // Every snapshot opens a new EPOCH, and the epoch is part of each ref.
+  //
+  // Without it, refs restart at e1 on every snapshot, so a ref held from an earlier snapshot can
+  // resolve to a completely different element after the page re-renders — the agent clicks "Save"
+  // and hits "Delete", with nothing anywhere reporting a problem. A silent mis-click is the most
+  // expensive failure this feature can have, and it is only detectable if the ref itself carries
+  // which snapshot it came from.
+  var epoch = (window.__irEpoch || 0) + 1;
+  window.__irEpoch = epoch;
   var sel = 'a,button,input,select,textarea,summary,label,[role],[onclick],h1,h2,h3,h4';
   var seen = 0, out = [];
   function visible(el) {
@@ -91,7 +100,7 @@ public let previewSnapshotJS = """
   document.querySelectorAll(sel).forEach(function(el) {
     if (seen >= MAX || !visible(el)) return;
     seen++;
-    var ref = 'e' + seen;
+    var ref = 's' + epoch + 'e' + seen;
     el.setAttribute('data-ir-ref', ref);
     var e = { ref: ref, tag: el.tagName.toLowerCase() };
     var role = el.getAttribute('role'); if (role) e.role = role;
@@ -123,10 +132,16 @@ public let previewSnapshotJS = """
 /// attribute in a loop removes the parser from the path entirely — bounded work, since a snapshot
 /// stamps at most a couple of hundred elements.
 private let previewFindByRefJS = """
+      var m = /^s(\\d+)e\\d+$/.exec(ref);
+      if (!m) return JSON.stringify({ error: 'Malformed ref ' + ref + '. Use a ref from preview_snapshot.' });
+      if (Number(m[1]) !== (window.__irEpoch || 0)) {
+        return JSON.stringify({ error: 'Stale ref ' + ref + ' — the page has been snapshotted again since. Take a fresh preview_snapshot and use its refs.' });
+      }
       var el = null, all = document.querySelectorAll('[data-ir-ref]');
       for (var i = 0; i < all.length; i++) {
         if (all[i].getAttribute('data-ir-ref') === ref) { el = all[i]; break; }
       }
+      if (el && !el.isConnected) el = null; // detached by a re-render since the snapshot
 """
 
 /// Clicks a previously-snapshotted element.

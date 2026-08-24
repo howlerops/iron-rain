@@ -99,6 +99,23 @@ final class PreviewDOMTests: XCTestCase {
         XCTAssertTrue(previewSnapshotJS.contains("JSON.stringify"))
     }
 
+    /// Refs carry the snapshot they came from. Without that they restart at e1 every snapshot, so a
+    /// ref held across a re-render resolves to a different element — the agent clicks "Save" and
+    /// hits "Delete", with nothing reporting a problem.
+    func testRefsCarryASnapshotEpoch() {
+        XCTAssertTrue(previewSnapshotJS.contains("__irEpoch"), "the snapshot must open a new epoch")
+        XCTAssertTrue(previewSnapshotJS.contains("'s' + epoch + 'e' + seen"), "refs must embed the epoch")
+    }
+
+    func testActionsRejectAStaleOrMalformedRef() {
+        for js in [previewClickJS(ref: "s1e5"), previewFillJS(ref: "s1e5", value: "x")] {
+            XCTAssertTrue(js.contains("Stale ref"), "a ref from an older snapshot must be refused")
+            XCTAssertTrue(js.contains("Malformed ref"), "a ref that is not from a snapshot must be refused")
+            XCTAssertTrue(js.contains("__irEpoch"), "the epoch must actually be compared")
+            XCTAssertTrue(js.contains("isConnected"), "an element detached by a re-render is not clickable")
+        }
+    }
+
     func testSnapshotScriptBoundsItsOutput() {
         // An unbounded walk of a large page would exceed one frame and be useless to a model anyway.
         XCTAssertTrue(previewSnapshotJS.contains("MAX"))

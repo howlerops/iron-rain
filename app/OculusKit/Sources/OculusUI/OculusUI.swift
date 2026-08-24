@@ -3454,7 +3454,9 @@ public final class Model: ObservableObject {
         }
 
         do {
-            let raw = try await webView.evaluateJavaScript(js)
+            // Isolated world: a page that redefined querySelectorAll or getOwnPropertyDescriptor
+            // could otherwise lie to the snapshot, or watch every element an agent inspects.
+            let raw = try await webView.evaluateJavaScript(js, in: nil, contentWorld: .defaultClient)
             let text = (raw as? String) ?? ""
             // The scripts report their own failures inside the payload (a ref that no longer exists,
             // an element that cannot be typed into) — those are outcomes the agent should read and

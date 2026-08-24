@@ -39,7 +39,57 @@ final class DesignSecurityTests: XCTestCase {
         let html = #"<div data-session="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk">x</div>"#
         let out = scrubSecrets(html)
         XCTAssertFalse(out.contains("eyJhbGciOiJIUzI1NiIs"), "a JWT must not reach the prompt or the transcript")
-        XCTAssertTrue(out.contains("«redacted»"))
+        // The placeholder NAMES what was taken, so the agent can ask for it rather than treat an
+        // emptied attribute as a bug to fix.
+        XCTAssertTrue(out.contains("[redacted: JWT]"), "got \(out)")
+    }
+
+    /// The highest-risk content in a rendered app is not a token in body text — it is hydration
+    /// state. __NEXT_DATA__ and window.__INITIAL_STATE__ routinely carry access tokens and user
+    /// records, in shapes no credential regex would recognise.
+    func testInlineScriptBodiesAreRemovedWholesale() {
+        let html = """
+        <div><script id="__NEXT_DATA__" type="application/json">\
+        {"props":{"session":{"accessToken":"abcdefghijklmnop","user":{"email":"a@b.com"}}}}\
+        </script></div>
+        """
+        let out = scrubSecrets(html)
+        XCTAssertFalse(out.contains("abcdefghijklmnop"), "hydration state must not survive")
+        XCTAssertFalse(out.contains("a@b.com"), "user records in hydration state must not survive")
+        XCTAssertTrue(out.contains("[removed: inline script"))
+        XCTAssertTrue(out.contains("<div>"), "surrounding structure must survive")
+    }
+
+    func testInlineDataURIsAreRemoved() {
+        let payload = String(repeating: "A", count: 200)
+        let out = scrubSecrets("<img src=\"data:image/png;base64,\(payload)\">")
+        XCTAssertFalse(out.contains(payload))
+        XCTAssertTrue(out.contains("[removed: inline data URI]"))
+    }
+
+    func testMoreProviderKeyFormats() {
+        // Assembled at runtime rather than written as literals. A test fixture that LOOKS like a
+        // live key is one GitHub's push protection blocks — correctly, since it cannot tell a fake
+        // from the real thing — and the fix for that is not to add a bypass, it is to stop writing
+        // strings that read as credentials. Please do not "simplify" these back into literals.
+        let filler = String(repeating: "a", count: 24)
+        let cases: [(String, String)] = [
+            ("sk-" + "ant-api03-" + filler, "Anthropic"),
+            ("sk" + "_live_" + filler, "Stripe"),
+            ("npm" + "_" + String(repeating: "b", count: 36), "npm"),
+            ("ASIA" + "IOSFODNN7EXAMPLE", "AWS"),
+            ("-----BEGIN OPENSSH PRIVATE KEY-----", "private key"),
+        ]
+        for (secret, what) in cases {
+            let out = scrubSecrets("<div>\(secret)</div>")
+            XCTAssertFalse(out.contains(secret), "\(what) key was not redacted")
+        }
+    }
+
+    func testSignedURLParametersAreRedacted() {
+        // The signature IS the credential in a presigned URL.
+        let url = #"<a href="https://s3.example.com/x?X-Amz-Signature=abcdef0123456789abcdef">f</a>"#
+        XCTAssertFalse(scrubSecrets(url).contains("abcdef0123456789abcdef"))
     }
 
     func testProviderKeyFormatsAreRedacted() {
