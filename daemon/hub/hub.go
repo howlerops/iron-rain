@@ -30,6 +30,7 @@ import (
 	"github.com/howlerops/oculus/daemon/loops"
 	"github.com/howlerops/oculus/daemon/lsp"
 	"github.com/howlerops/oculus/daemon/mcp"
+	"github.com/howlerops/oculus/daemon/preview"
 	"github.com/howlerops/oculus/daemon/project"
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/push"
@@ -59,43 +60,47 @@ type Hub struct {
 	approvals map[string]*managedSession // approvalID -> owning session
 	discover  DiscoverFunc
 
-	notifier          push.Notifier // optional: push actionable approvals to a device
-	slack             *slack.Client // optional: mirror agent events to a Slack channel
-	pushTokens        []string      // registered device tokens
-	attach            AttacherFactory
-	clients           map[*transport.Conn]*hubClient // all connected clients (for global broadcasts)
-	projects          *project.Registry              // optional: registered folders sessions spawn in
-	autoProjects      bool                           // auto-register projects from active agents' cwds
-	issues            *issues.Manager                // optional: connected trackers (Linear/Jira)
-	telemetry         *telemetry.Client              // optional: anonymized diagnostics shipping
-	logHub            *loghub.Hub                    // optional: live daemon-log stream (Developer log panel)
-	logSubs           map[*transport.Conn]bool       // clients subscribed to the log stream
-	transcripts       *transcript.Store              // optional: durable append-only per-session transcript (never-lose-work)
-	activity          *activity.Store                // optional: cross-session activity feed (Activity destination backbone)
-	accounts          *accounts.Registry             // optional: multi-account credentials + active selection per provider
-	remotes           *sshremote.Registry            // optional: registered SSH remote hosts (remote worktrees)
-	sshRunner         *sshremote.Runner              // optional: executes git/agent ops on remotes over SSH
-	redetect          func()                         // optional: re-run agent-harness detection (provider.refresh)
-	loopEngine        *loops.Engine                  // optional: recurring autonomous ticket workflows
-	agentsPath        string                         // path to ~/.oculus/agents.json (custom CLI agents)
-	agentHidePath     string                         // path to ~/.oculus/agent-visibility.json (hidden names)
-	agentHidden       map[string]bool                // agent names hidden from the session pickers
-	oauthAddr         string                         // loopback host:port for tracker OAuth callbacks (per-provider path)
-	worktreeBase      string                         // base dir for worktrees ("" = worktree.DefaultBase)
-	reservedPorts     map[int]bool                   // ports handed to worktree setup hooks (collision-free)
-	db                *store.Store                   // optional: durable local state (session names + records)
-	lsp               *lsp.Manager                   // language servers for the built-in editor (diagnostics/types)
-	runningTests      map[string]bool                // session ids with a test/build run in progress
-	prWatching        bool                           // the PR-check watcher goroutine is live (see prchecks.go)
-	approvalRulesPath string                         // path to ~/.oculus/approval-rules.json (persistent rules)
-	approvalRules     []ApprovalRule                 // ordered scoped rules; deny beats allow (see approval_rules.go)
-	approvalReqs      map[string]pendingApproval     // approvalID -> the request + its scope, for a scoped ALWAYS
-	setupTrust        *setupTrustStore               // per-repo approvals for worktree setup commands (see setup_trust.go)
-	notifyPrefsPath   string                         // path to ~/.oculus/notify.json (per-category push toggles)
-	notifyOff         map[string]bool                // push categories the user turned OFF (absent = enabled)
-	fanoutNotified    map[string]bool                // fan-out groups already notified as "all done" (fire once)
-	fanoutJudge       map[string]fanoutJudgeSpec     // groups that opted into an advisory judge
-	fanoutPrompt      map[string]string              // the task each group is racing (for the comparison header)
+	notifier      push.Notifier // optional: push actionable approvals to a device
+	slack         *slack.Client // optional: mirror agent events to a Slack channel
+	pushTokens    []string      // registered device tokens
+	attach        AttacherFactory
+	clients       map[*transport.Conn]*hubClient // all connected clients (for global broadcasts)
+	projects      *project.Registry              // optional: registered folders sessions spawn in
+	autoProjects  bool                           // auto-register projects from active agents' cwds
+	issues        *issues.Manager                // optional: connected trackers (Linear/Jira)
+	telemetry     *telemetry.Client              // optional: anonymized diagnostics shipping
+	logHub        *loghub.Hub                    // optional: live daemon-log stream (Developer log panel)
+	logSubs       map[*transport.Conn]bool       // clients subscribed to the log stream
+	transcripts   *transcript.Store              // optional: durable append-only per-session transcript (never-lose-work)
+	activity      *activity.Store                // optional: cross-session activity feed (Activity destination backbone)
+	accounts      *accounts.Registry             // optional: multi-account credentials + active selection per provider
+	remotes       *sshremote.Registry            // optional: registered SSH remote hosts (remote worktrees)
+	sshRunner     *sshremote.Runner              // optional: executes git/agent ops on remotes over SSH
+	redetect      func()                         // optional: re-run agent-harness detection (provider.refresh)
+	loopEngine    *loops.Engine                  // optional: recurring autonomous ticket workflows
+	agentsPath    string                         // path to ~/.oculus/agents.json (custom CLI agents)
+	agentHidePath string                         // path to ~/.oculus/agent-visibility.json (hidden names)
+	agentHidden   map[string]bool                // agent names hidden from the session pickers
+	oauthAddr     string                         // loopback host:port for tracker OAuth callbacks (per-provider path)
+	worktreeBase  string                         // base dir for worktrees ("" = worktree.DefaultBase)
+	// preview routes http://<name>.localhost:<port> to each session's own dev server, so several
+	// sessions can run one at a time without fighting over :3000 and without the user having to
+	// remember which number belongs to which agent. See package preview.
+	preview           *preview.Router
+	reservedPorts     map[int]bool               // ports handed to worktree setup hooks (collision-free)
+	db                *store.Store               // optional: durable local state (session names + records)
+	lsp               *lsp.Manager               // language servers for the built-in editor (diagnostics/types)
+	runningTests      map[string]bool            // session ids with a test/build run in progress
+	prWatching        bool                       // the PR-check watcher goroutine is live (see prchecks.go)
+	approvalRulesPath string                     // path to ~/.oculus/approval-rules.json (persistent rules)
+	approvalRules     []ApprovalRule             // ordered scoped rules; deny beats allow (see approval_rules.go)
+	approvalReqs      map[string]pendingApproval // approvalID -> the request + its scope, for a scoped ALWAYS
+	setupTrust        *setupTrustStore           // per-repo approvals for worktree setup commands (see setup_trust.go)
+	notifyPrefsPath   string                     // path to ~/.oculus/notify.json (per-category push toggles)
+	notifyOff         map[string]bool            // push categories the user turned OFF (absent = enabled)
+	fanoutNotified    map[string]bool            // fan-out groups already notified as "all done" (fire once)
+	fanoutJudge       map[string]fanoutJudgeSpec // groups that opted into an advisory judge
+	fanoutPrompt      map[string]string          // the task each group is racing (for the comparison header)
 
 	mcp     *mcp.Registry   // daemon-owned MCP server registry (nil = MCP not enabled)
 	roles   *roleRegistry   // who may steer vs. watch (see roles.go); disabled = everyone is the owner
@@ -1105,8 +1110,13 @@ func toProtoProjects(ps []project.Project) []protocol.Project {
 type AttacherFactory func(provider, url string) agent.Attacher
 
 // New returns an empty Hub.
+// defaultPreviewPort is where named session previews are served. Fixed by default so the address is
+// memorable across restarts; the router falls back to any free port if something else holds it.
+const defaultPreviewPort = 7777
+
 func New() *Hub {
 	h := &Hub{
+		preview:         preview.New(),
 		providers:       map[string]agent.Provider{},
 		sessions:        map[string]*managedSession{},
 		approvals:       map[string]*managedSession{},
@@ -1128,6 +1138,14 @@ func New() *Hub {
 	h.lsp = lsp.NewManager(func(path string, diags []lsp.Diagnostic) {
 		h.broadcast(protocol.TypeLSPDiagnostics, protocol.LSPDiagnostics{Path: path, Diagnostics: toProtoDiags(diags)})
 	})
+	// Named previews. Started here rather than by every embedder so nobody has to remember a second
+	// call — and a failure is logged, not fatal: losing pretty URLs must never stop the daemon that
+	// runs the user's agents.
+	if err := h.preview.Start(defaultPreviewPort); err != nil {
+		log.Printf("preview: named session URLs unavailable (%v) — the raw ports still work", err)
+	} else if p := h.preview.Port(); p != defaultPreviewPort {
+		log.Printf("preview: serving named session URLs on :%d (%d was taken)", p, defaultPreviewPort)
+	}
 	return h
 }
 
@@ -1241,6 +1259,18 @@ func toProtoDiags(diags []lsp.Diagnostic) []protocol.LSPDiagnostic {
 // addSession creates and stores a managed (shared) session for a provider session.
 // A persisted user-set name (from a prior rename) is restored here so it survives a
 // daemon restart, unless the caller already supplied an explicit label.
+// previewName picks the most recognisable label for a session's preview URL. Ordered by what a
+// person would actually call it: the name they set, then the workspace, then the branch. The branch
+// is last because "oculus/subtask-79bb54" is technically unique and humanly useless.
+func previewName(meta sessionMeta) string {
+	for _, c := range []string{meta.label, meta.workspaceName, meta.subtask, meta.branch} {
+		if strings.TrimSpace(c) != "" {
+			return c
+		}
+	}
+	return ""
+}
+
 func (h *Hub) addSession(sess agent.Session, meta sessionMeta) *managedSession {
 	if meta.label == "" && h.db != nil {
 		if n, ok := h.db.Name(sess.ID()); ok {
@@ -1261,6 +1291,12 @@ func (h *Hub) addSession(sess agent.Session, meta sessionMeta) *managedSession {
 	h.mu.Lock()
 	h.sessions[sess.ID()] = m
 	h.mu.Unlock()
+	// Give the session's dev server a NAME. Only sessions that actually got a port have anything to
+	// serve, so this is a no-op for the rest. The name is derived from whatever the user would
+	// recognise the session by — its label, workspace or branch — falling back to the id.
+	if meta.port > 0 {
+		h.preview.Register(sess.ID(), previewName(meta), meta.port)
+	}
 	if !meta.ephemeral {
 		h.persistSession(m) // durable record so it survives a daemon restart (ephemeral chats aren't kept)
 	}
@@ -1278,6 +1314,10 @@ func (h *Hub) managed(id string) *managedSession {
 // AFTER re-registering a FRESH managedSession under the same id — so we must only evict when the id
 // still points at THIS session. Pass nil to force removal (e.g. deleting a stopped/record-only session).
 func (h *Hub) removeSession(id string, owner *managedSession) {
+	// Drop the preview name first. A stale name would keep proxying to a port that AllocPort is free
+	// to hand to the next session, so someone clicking an old link would silently reach a different
+	// agent's server.
+	h.preview.Unregister(id)
 	h.mu.Lock()
 	if owner != nil && h.sessions[id] != owner {
 		h.mu.Unlock()

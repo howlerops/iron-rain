@@ -161,9 +161,9 @@ const (
 	// COMBINED implementation — as an additional variant in the same group, never as a replacement.
 	// It is the alternative to diffing two branches and grafting one into the other by hand.
 	TypeFanoutSynthesize = "fanout.synthesize"
-	TypeTurnState        = "turn.state"        // daemon-authoritative turn lifecycle + heartbeat (the client renders, never infers)
-	TypeNotifyPrefsGet   = "notify.prefs.get"  // list toggleable push-notification types + their on/off state
-	TypeNotifyPrefsSet   = "notify.prefs.set"  // enable/disable one push-notification type
+	TypeTurnState        = "turn.state"       // daemon-authoritative turn lifecycle + heartbeat (the client renders, never infers)
+	TypeNotifyPrefsGet   = "notify.prefs.get" // list toggleable push-notification types + their on/off state
+	TypeNotifyPrefsSet   = "notify.prefs.set" // enable/disable one push-notification type
 
 	TypeFanoutSummary        = "fanout.summary"         // per-variant results once every agent in a group finishes
 	TypeMCPList              = "mcp.list"               // registered MCP servers + last probe status
@@ -1357,7 +1357,13 @@ type Session struct {
 	ParentID      string `json:"parent_id,omitempty"`      // parent session this was delegated from (child sessions)
 	Subtask       string `json:"subtask,omitempty"`        // the subtask a child session owns
 	Port          int    `json:"port,omitempty"`           // port a setup hook assigned to this worktree
-	IssueKey      string `json:"issue_key,omitempty"`      // the ticket this session works (e.g. ENG-42)
+	// PreviewURL is the NAMED address of this session's dev server, e.g.
+	// http://fix-login.localhost:7777. Several sessions run at once and each gets its own port, so
+	// a bare number tells you nothing about whose it is. The raw port stays reachable and is not
+	// replaced: anything that hardcodes localhost:PORT — OAuth redirect URIs, chiefly — cannot
+	// follow a name.
+	PreviewURL    string `json:"preview_url,omitempty"`
+	IssueKey      string `json:"issue_key,omitempty"` // the ticket this session works (e.g. ENG-42)
 	IssueID       string `json:"issue_id,omitempty"`
 	Model         string `json:"model,omitempty"`          // active model id ("" = provider default)
 	ModelProvider string `json:"model_provider,omitempty"` // sub-provider/backend for the model

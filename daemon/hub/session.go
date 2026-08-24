@@ -546,6 +546,7 @@ func (m *managedSession) info() protocol.Session {
 		ParentID:      m.meta.parentID,
 		Subtask:       m.meta.subtask,
 		Port:          m.meta.port,
+		PreviewURL:    m.hub.preview.URL(m.sess.ID()),
 		IssueKey:      m.meta.issueKey,
 		IssueID:       m.meta.issueID,
 		Model:         model,
