@@ -143,18 +143,20 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	label := labelFromHost(req.Host)
 	r.mu.RLock()
 	e, ok := r.byName[label]
-	known := make([]string, 0, len(r.byName))
-	if !ok {
-		for n := range r.byName {
-			known = append(known, n)
-		}
-	}
+	live := len(r.byName)
 	port := r.port
 	r.mu.RUnlock()
 
 	if !ok {
-		// A miss is far more likely to be a typo or a finished session than a bug, so say which
-		// names DO work rather than returning a bare 404 that leaves the user guessing.
+		// A miss is far more likely to be a typo or a finished session than a bug, so the response
+		// should orient the reader.
+		//
+		// It deliberately does NOT list the names that would work. Labels are derived from session
+		// titles — "fix-customer-billing" — so enumerating them discloses what else is being worked
+		// on to anything that can reach this port, which includes every agent on the machine. One
+		// wrong guess used to return the entire roster. The count alone is enough to distinguish
+		// "nothing is running" from "you have the wrong name", which is the question a person
+		// actually has, and their own session's URL is shown to them in the app.
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusNotFound)
 		if label == "" {
@@ -162,11 +164,13 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		} else {
 			fmt.Fprintf(w, "No session named %q.\n", label)
 		}
-		if len(known) > 0 {
-			fmt.Fprintf(w, "\nCurrently serving:\n")
-			for _, n := range known {
-				fmt.Fprintf(w, "  http://%s.localhost:%d\n", n, port)
-			}
+		switch live {
+		case 0:
+			fmt.Fprint(w, "\nNo sessions are serving a preview right now.\n")
+		case 1:
+			fmt.Fprint(w, "\n1 session is serving a preview. Its address is shown in Iron Rain.\n")
+		default:
+			fmt.Fprintf(w, "\n%d sessions are serving previews. Their addresses are shown in Iron Rain.\n", live)
 		}
 		return
 	}

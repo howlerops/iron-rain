@@ -102,16 +102,40 @@ func TestUnregisterStopsServingTheName(t *testing.T) {
 	}
 }
 
-// A miss is nearly always a typo or a finished session, so the response should say what DOES work.
-func TestUnknownNameListsTheOnesThatWork(t *testing.T) {
+// A miss must NOT disclose the other sessions' names.
+//
+// This asserts the reverse of what it originally did. Listing the live labels was a genuine
+// convenience for someone who mistyped their own URL, but a label is derived from a session title —
+// "fix-customer-billing" — and the 404 is reachable by anything that can open a loopback socket,
+// which on this machine means every agent. One wrong guess returned the whole roster of what was
+// being worked on, and handed a would-be cross-session caller its target list for free.
+func TestUnknownNameDoesNotDiscloseOtherSessions(t *testing.T) {
 	r := New()
-	r.Register("s1", "alpha", 1111)
+	r.Register("s1", "acquisition-due-diligence", 1111)
 	r.Register("s2", "beta", 2222)
 	body := get(t, r, "gamma.localhost:7777")
-	for _, want := range []string{"gamma", "alpha", "beta"} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("404 body missing %q:\n%s", want, body)
+
+	if !strings.Contains(body, "gamma") {
+		t.Errorf("the 404 should echo the name that missed:\n%s", body)
+	}
+	for _, secret := range []string{"acquisition-due-diligence", "beta"} {
+		if strings.Contains(body, secret) {
+			t.Errorf("404 leaked another session's label %q:\n%s", secret, body)
 		}
+	}
+	// The count still distinguishes "nothing is running" from "wrong name", which is the question
+	// the person at the keyboard actually has.
+	if !strings.Contains(body, "2 sessions") {
+		t.Errorf("404 should say how many previews are live, without naming them:\n%s", body)
+	}
+}
+
+// With nothing running at all, the answer should say so rather than implying a typo.
+func TestUnknownNameWithNoPreviewsSaysSo(t *testing.T) {
+	r := New()
+	body := get(t, r, "anything.localhost:7777")
+	if !strings.Contains(body, "No sessions are serving") {
+		t.Errorf("expected an explicit empty state:\n%s", body)
 	}
 }
 
