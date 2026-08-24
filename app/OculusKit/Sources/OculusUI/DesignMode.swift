@@ -175,6 +175,9 @@ struct DesignWebView {
     var onPick: (PickedElement) -> Void
     /// A cropped PNG screenshot of the picked element (nil if the snapshot failed).
     var onScreenshot: (Data?) -> Void
+    /// Serves the page through the daemon when the dev server is not reachable from this device.
+    /// nil means load `url` directly, which keeps live reload working when both are on one machine.
+    var tunnel: PreviewSchemeHandler?
 
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         let onPick: (PickedElement) -> Void
@@ -201,7 +204,15 @@ struct DesignWebView {
 
             // Schemes first: file/data/javascript/about are never a dev server, and each is a way to
             // get content the picker would happily scrape into a prompt.
-            guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
+            let scheme = url.scheme?.lowercased() ?? ""
+            // The tunnel scheme is served entirely by our own handler, which can only ask the daemon
+            // for a path within the session's own dev server — it cannot name a host at all, so it is
+            // strictly narrower than the http case below.
+            if scheme == previewTunnelScheme {
+                decisionHandler(.allow)
+                return
+            }
+            guard scheme == "http" || scheme == "https" else {
                 decisionHandler(.cancel)
                 return
             }
@@ -241,6 +252,11 @@ struct DesignWebView {
     private func makeWebView(_ coordinator: Coordinator) -> WKWebView {
         let cfg = WKWebViewConfiguration()
         cfg.userContentController.add(coordinator, name: "oculusPick")
+        // Must be registered before the web view exists — a configuration is copied at init, so
+        // installing the handler afterwards has no effect.
+        if let tunnel {
+            cfg.setURLSchemeHandler(tunnel, forURLScheme: previewTunnelScheme)
+        }
         let wv = WKWebView(frame: .zero, configuration: cfg)
         wv.navigationDelegate = coordinator
         wv.load(URLRequest(url: url))
@@ -277,20 +293,55 @@ struct DesignModeView: View {
     @State private var picking = false
     @State private var lastPick: PickedElement?
     @State private var lastShot: Data?
+    /// Non-nil when the dev server has to be fetched through the daemon. Created once, because a
+    /// WKWebViewConfiguration is copied at init and the handler cannot be swapped afterwards.
+    @State private var tunnelHandler: PreviewSchemeHandler?
 
     init(model: Model, palette: OculusPalette, initialURL: String, onClose: @escaping () -> Void) {
         self.model = model; self.palette = palette; self.initialURL = initialURL; self.onClose = onClose
-        _urlString = State(initialValue: initialURL)
-        _loadedURL = State(initialValue: URL(string: initialURL))
+
+        // Direct when the daemon is on this machine: the dev server is genuinely reachable, and
+        // loading it straight keeps HMR and live reload working, which the tunnel cannot do (a
+        // scheme handler answers requests, it cannot service a websocket upgrade from page JS).
+        //
+        // Everywhere else — a phone, or a Mac driving a daemon on another Mac — `localhost` here is
+        // not the `localhost` the dev server is on, so the request has to be carried.
+        let sessionID = model.currentSession?.id
+        if !model.daemonIsLocal, let sessionID {
+            _tunnelHandler = State(initialValue: PreviewSchemeHandler { path, method, headers, body in
+                try await model.previewFetch(sessionID: sessionID, path: path,
+                                             method: method, headers: headers, body: body)
+            })
+            _urlString = State(initialValue: "/")
+            _loadedURL = State(initialValue: previewTunnelURL())
+        } else {
+            _tunnelHandler = State(initialValue: nil)
+            _urlString = State(initialValue: initialURL)
+            _loadedURL = State(initialValue: URL(string: initialURL))
+        }
+    }
+
+    /// Resolves what the user typed. Through the tunnel the only thing they can name is a PATH —
+    /// the daemon derives the host from the session, so there is no other address to give.
+    private func resolveInput() -> URL? {
+        tunnelHandler != nil ? previewTunnelURL(path: urlString) : normalizedURL(urlString)
     }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Label("Design", systemImage: "cursorarrow.rays").font(.headline)
-                TextField("http://localhost:3000", text: $urlString, onCommit: { loadedURL = normalizedURL(urlString) })
+                TextField(tunnelHandler != nil ? "/" : "http://localhost:3000",
+                          text: $urlString, onCommit: { loadedURL = resolveInput() })
                     .textFieldStyle(.roundedBorder).frame(maxWidth: 320)
-                Button { loadedURL = normalizedURL(urlString) } label: { Image(systemName: "arrow.clockwise") }
+                Button { loadedURL = resolveInput() } label: { Image(systemName: "arrow.clockwise") }
+                if tunnelHandler != nil {
+                    // Worth saying plainly: the page is being fetched by the Mac, and live reload is
+                    // not going to work here. Silence would read as a broken dev server.
+                    Label("via daemon", systemImage: "antenna.radiowaves.left.and.right")
+                        .font(.caption).foregroundStyle(palette.mutedForeground)
+                        .help("This device can't reach the dev server directly, so Iron Rain is fetching it. Live reload is unavailable.")
+                }
                 Toggle(isOn: $picking) { Label("Pick element", systemImage: "cursorarrow.rays") }
                     .toggleStyle(.button).tint(palette.primary)
                 Spacer()
@@ -305,7 +356,8 @@ struct DesignModeView: View {
                     picking = false
                 }, onScreenshot: { data in
                     lastShot = data
-                })
+                }, tunnel: tunnelHandler)
+                .id(tunnelHandler == nil ? "direct" : "tunnel") // the handler is fixed at creation
                 .frame(minHeight: 380)
             } else {
                 Text("Enter your dev-server URL to inspect the running app.")

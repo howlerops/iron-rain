@@ -134,6 +134,7 @@ public enum MessageType {
     public static let fsTree = "fs.tree"
     public static let fsRead = "fs.read"
     public static let fsReadBytes = "fs.readbytes"
+    public static let previewFetch = "preview.fetch"
     public static let fsWrite = "fs.write"
     public static let fsDiff = "fs.diff"
     public static let fsWatch = "fs.watch"
@@ -466,6 +467,34 @@ public struct FSChange: Codable {
     public var path: String
     public var sha: String?
 }
+/// Asks the daemon to fetch one resource from a session's dev server on our behalf.
+///
+/// There is no `url` field by design: the daemon derives the target from `sessionID` alone. A
+/// client-supplied URL would make the daemon an open proxy inside the user's network.
+public struct PreviewFetchReq: Codable {
+    public var sessionID: String
+    public var path: String
+    public var method: String?
+    public var headers: [String: String]?
+    public var body: String? // base64
+    public init(sessionID: String, path: String, method: String? = nil,
+                headers: [String: String]? = nil, body: String? = nil) {
+        self.sessionID = sessionID; self.path = path
+        self.method = method; self.headers = headers; self.body = body
+    }
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+        case path, method, headers, body
+    }
+}
+
+/// One whole HTTP response relayed back from the daemon host.
+public struct PreviewFetchResp: Codable {
+    public var status: Int
+    public var headers: [String: String]?
+    public var body: String // base64
+}
+
 public struct ImageAttachment: Codable, Hashable, Identifiable {
     public let id: UUID // client-only stable identity for SwiftUI; never on the wire
     public var mime: String

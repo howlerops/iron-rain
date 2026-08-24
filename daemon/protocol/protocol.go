@@ -107,14 +107,15 @@ const (
 	TypeIssueImage            = "issue.image"            // proxy an auth-gated attachment image
 
 	// Built-in editor file access — all paths validated against project roots + session cwds.
-	TypeFSTree      = "fs.tree"      // list a directory (or the available roots when path is empty)
-	TypeFSRead      = "fs.read"      // read a text file (content + sha for conflict detection)
-	TypeFSReadBytes = "fs.readbytes" // read a file's raw bytes (images shown inline)
-	TypeFSWrite     = "fs.write"     // save a file if its base sha still matches on disk
-	TypeFSDiff      = "fs.diff"      // unified git diff for a path or session (review)
-	TypeFSWatch     = "fs.watch"     // subscribe to change events for open files
-	TypeFSSearch    = "fs.search"    // multi-file text search across the workspace
-	TypeRunTest     = "run.test"     // run the project's tests/build in a session's workspace
+	TypeFSTree       = "fs.tree"       // list a directory (or the available roots when path is empty)
+	TypeFSRead       = "fs.read"       // read a text file (content + sha for conflict detection)
+	TypeFSReadBytes  = "fs.readbytes"  // read a file's raw bytes (images shown inline)
+	TypePreviewFetch = "preview.fetch" // fetch one resource from a session's own dev server
+	TypeFSWrite      = "fs.write"      // save a file if its base sha still matches on disk
+	TypeFSDiff       = "fs.diff"       // unified git diff for a path or session (review)
+	TypeFSWatch      = "fs.watch"      // subscribe to change events for open files
+	TypeFSSearch     = "fs.search"     // multi-file text search across the workspace
+	TypeRunTest      = "run.test"      // run the project's tests/build in a session's workspace
 
 	// LSP (built-in editor: diagnostics/linting/types/definition)
 	TypeLSPOpen        = "lsp.open"        // open a document in its language server
@@ -1049,6 +1050,40 @@ type FSFile struct {
 // FSReadBytesReq reads a file's raw bytes (an image to show inline).
 type FSReadBytesReq struct {
 	Path string `json:"path"`
+}
+
+// PreviewFetchReq asks the daemon to fetch ONE resource from a session's dev server on the client's
+// behalf, so a web view running in the app can render a page that is only reachable from the daemon
+// host.
+//
+// There is deliberately NO url field. The target is derived entirely from SessionID, server-side,
+// by looking up that session's own registered preview. A caller-supplied URL would make this an
+// open proxy running inside the user's LAN: it could reach 169.254.169.254, the daemon's own control
+// port, another session's preview, or any host on the network. Taking only a path means the caller
+// cannot name a destination at all, so those are not risks to be validated — they are unreachable.
+type PreviewFetchReq struct {
+	SessionID string `json:"session_id"`
+	// Path is the resource within that dev server, e.g. "/" or "/assets/app.js?v=2".
+	Path string `json:"path"`
+	// Method defaults to GET. Present because a preview page will POST forms and issue API calls
+	// against its own backend.
+	Method string `json:"method,omitempty"`
+	// Headers the web view asked for (Accept, Range and friends). Hop-by-hop and authorization
+	// headers are dropped daemon-side; see previewRequestHeaders.
+	Headers map[string]string `json:"headers,omitempty"`
+	// Body is base64 (StdEncoding), for POST/PUT.
+	Body string `json:"body,omitempty"`
+}
+
+// PreviewFetchResp is one HTTP response, carried whole.
+//
+// Whole rather than streamed because the envelope layer has no chunked-reply notion: every reply is
+// a single payload. The frame ceiling is 8 MiB and base64 inflates by 4/3, so the daemon caps the
+// body well under that and says so rather than truncating into a corrupt asset.
+type PreviewFetchResp struct {
+	Status  int               `json:"status"`
+	Headers map[string]string `json:"headers,omitempty"`
+	Body    string            `json:"body"` // base64 (StdEncoding)
 }
 
 // FSBytes is a file's raw bytes (base64) + MIME type.

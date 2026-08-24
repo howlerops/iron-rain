@@ -4845,6 +4845,21 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			Path: req.Path, Mime: mime, Data: base64.StdEncoding.EncodeToString(data),
 		})
 
+	case protocol.TypePreviewFetch:
+		// capSteer, matching the fs.* read family: this reads content from the machine on the user's
+		// behalf, and an observer should not be able to pull pages out of someone else's dev server.
+		if !h.requireCapability(conn, env.ID, capSteer, "view a session's dev server") {
+			return
+		}
+		var req protocol.PreviewFetchReq
+		_ = env.Unmarshal(&req)
+		resp, err := h.handlePreviewFetch(req)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, resp)
+
 	case protocol.TypeLSPOpen:
 		var req protocol.LSPDocReq
 		_ = env.Unmarshal(&req)

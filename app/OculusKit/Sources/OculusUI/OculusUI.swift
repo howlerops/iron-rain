@@ -64,6 +64,14 @@ public final class Model: ObservableObject {
     @Published public var connectionRouteHost = ""
     /// True when this connection is going through a relay rather than straight to the Mac.
     public var onRelay: Bool { connected && connectionRoute == Self.relayRouteLabel }
+    /// True when the daemon is on THIS machine, so the dev servers it knows about are reachable from
+    /// here directly.
+    ///
+    /// Derived from the route that actually won the connection race rather than from the platform.
+    /// A phone is never local, but neither is a Mac talking to a daemon on another Mac, and both need
+    /// the same treatment: fetch through the daemon instead of dialling a `localhost` that means
+    /// something different here than it does there.
+    public var daemonIsLocal: Bool { connected && isLoopbackHost(connectionRouteHost) }
     /// A prominent, dismissable error for a user action that failed while connected (e.g. a session
     /// that couldn't start). Drives an alert on the main surface — status text alone is invisible
     /// once the triggering sheet has dismissed.
@@ -3421,6 +3429,23 @@ public final class Model: ObservableObject {
     /// Reads a file's raw bytes (an image to show inline in the editor).
     public func fsReadBytes(_ path: String) async throws -> FSBytes {
         try await request(MessageType.fsReadBytes, payload: FSReadBytesReq(path: path)).payload(as: FSBytes.self)
+    }
+
+    /// Fetches one resource from a session's dev server, via the daemon.
+    ///
+    /// Design Mode's web view runs HERE, in the app, so on a phone `localhost` is the phone and the
+    /// dev server is unreachable. The daemon fetches on our behalf and we render what comes back.
+    /// Rides the existing connection: the relay bridges exactly one client, so a second socket would
+    /// evict this one.
+    public func previewFetch(sessionID: String, path: String, method: String? = nil,
+                             headers: [String: String]? = nil, body: Data? = nil) async throws -> PreviewFetchResp {
+        try await request(MessageType.previewFetch, payload: PreviewFetchReq(
+            sessionID: sessionID,
+            path: path,
+            method: method,
+            headers: headers,
+            body: body?.base64EncodedString()
+        )).payload(as: PreviewFetchResp.self)
     }
 
     // MARK: - LSP (editor diagnostics/types/definition)
