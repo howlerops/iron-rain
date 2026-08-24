@@ -2,6 +2,7 @@ package preview
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -27,6 +28,23 @@ type listener struct {
 	pid  int
 	port int
 	cwd  string
+	cmd  string
+}
+
+// infraCommands are processes that listen inside a project directory but are NOT the user's dev
+// server — they are the machinery running the agents.
+//
+// This is not hypothetical: `opencode serve` runs with cwd set to the project it serves, so a
+// session in that project would otherwise have opencode's own HTTP port named as its preview. The
+// daemon does the same when started from a checkout. Naming either would point the user's preview
+// URL at the agent harness instead of their app.
+//
+// Matched on the executable name, not a path, because lsof reports a truncated command. Deliberately
+// NOT excluding "node": vite, next and most JS dev servers are node, and excluding it would discard
+// exactly what this feature exists to find.
+var infraCommands = map[string]bool{
+	"opencode": true,
+	"oculusd":  true,
 }
 
 // Detect returns sessionID -> port for every session whose worktree contains a listening process.
@@ -54,30 +72,52 @@ func Detect(ctx context.Context, paths map[string]string) (map[string]int, bool)
 	for i := range ls {
 		ls[i].cwd = resolve(ls[i].cwd)
 	}
-	out := map[string]int{}
+	dirs := make(map[string]string, len(paths)) // sessionID -> resolved dir
 	for id, dir := range paths {
-		dir = resolve(dir)
-		if dir == "" {
-			continue // not an absolute, existing directory — nothing to attribute a port to
-		}
-		best := 0
-		for _, l := range ls {
-			if l.cwd == "" || !underResolved(l.cwd, dir) {
-				continue
-			}
-			// Lowest port wins when a session has several. Dev servers cluster in the low ranges
-			// (3000/5173/8080) while tooling — debuggers, HMR side-channels, language servers —
-			// tends to land on high ephemeral ports, so the lowest is the better guess at "the thing
-			// a person wants to look at".
-			if best == 0 || l.port < best {
-				best = l.port
-			}
-		}
-		if best > 0 {
-			out[id] = best
+		if d := resolve(dir); d != "" {
+			dirs[id] = d
 		}
 	}
-	return out, true
+
+	return attribute(ls, dirs), true
+}
+
+// attribute maps each listener to the session that owns it, and picks one port per session.
+//
+// Split out from Detect so the rules can be tested directly — the interesting behaviour is all here,
+// while Detect's other job is shelling out to lsof, which a test cannot meaningfully drive.
+//
+// Each listener goes to AT MOST ONE session: the deepest directory match. Without that a session
+// opened on a repo root claims the servers of every worktree beneath it, and the parent's preview
+// URL silently serves a child's app.
+//
+// Sessions sharing an IDENTICAL directory both keep the port. It really is both of theirs, and
+// choosing one would make the result depend on map iteration order.
+func attribute(ls []listener, dirs map[string]string) map[string]int {
+	out := map[string]int{}
+	for _, l := range ls {
+		if l.cwd == "" {
+			continue
+		}
+		owners, depth := []string(nil), -1
+		for id, dir := range dirs {
+			if !underResolved(l.cwd, dir) {
+				continue
+			}
+			switch d := len(dir); {
+			case d > depth:
+				owners, depth = []string{id}, d
+			case d == depth:
+				owners = append(owners, id)
+			}
+		}
+		for _, id := range owners {
+			if cur, ok := out[id]; !ok || better(l.port, cur) {
+				out[id] = l.port
+			}
+		}
+	}
+	return out
 }
 
 // under reports whether path is dir or sits inside it, comparing RESOLVED paths.
@@ -143,16 +183,18 @@ func listeners(ctx context.Context) ([]listener, bool) {
 	ctx, cancel := context.WithTimeout(ctx, scanTimeout)
 	defer cancel()
 
+	// -Fcpn adds the command name so agent infrastructure can be told apart from a dev server.
 	// -b avoids kernel calls that can BLOCK. Without it lsof intermittently hung for the full
 	// timeout on this machine — measured at a steady 4.1s against a 4s deadline — which is what
 	// produced the flapping. Blocking calls are how lsof stalls on an unresponsive mount, and none
 	// of what they add is needed here: we only want pids, ports and cwds.
-	out, err := exec.CommandContext(ctx, "lsof", "-b", "-w", "-nP", "-iTCP", "-sTCP:LISTEN", "-Fpn").Output()
+	out, err := exec.CommandContext(ctx, "lsof", "-b", "-w", "-nP", "-iTCP", "-sTCP:LISTEN", "-Fcpn").Output()
 	if err != nil && len(out) == 0 {
 		return nil, false // hung, missing, or refused — report failure, do NOT report "none"
 	}
 	var ls []listener
-	pid := 0
+	pid, cmd := 0, ""
+	self := os.Getpid()
 	for _, line := range strings.Split(string(out), "\n") {
 		if len(line) < 2 {
 			continue
@@ -160,10 +202,14 @@ func listeners(ctx context.Context) ([]listener, bool) {
 		switch line[0] {
 		case 'p':
 			pid, _ = strconv.Atoi(line[1:])
+		case 'c':
+			cmd = line[1:]
 		case 'n':
-			if p := portOfAddr(line[1:]); p > 0 && pid > 0 {
-				ls = append(ls, listener{pid: pid, port: p})
+			p := portOfAddr(line[1:])
+			if p <= 0 || pid <= 0 || pid == self || infraCommands[cmd] {
+				continue
 			}
+			ls = append(ls, listener{pid: pid, port: p, cmd: cmd})
 		}
 	}
 	if len(ls) == 0 {
@@ -210,6 +256,27 @@ func cwdsOf(ctx context.Context, ls []listener) map[int]string {
 		}
 	}
 	return res
+}
+
+// devPorts are the ports frameworks conventionally use. A listener on one of these is far more
+// likely to be the thing a person wants to look at than a debugger or language server, which take
+// whatever ephemeral port they are given.
+var devPorts = map[int]bool{
+	3000: true, 3001: true, 4000: true, 4200: true, 4321: true, 5000: true,
+	5173: true, 5174: true, 8000: true, 8080: true, 8081: true, 1313: true, 9000: true,
+}
+
+// better reports whether candidate beats current as "the session's dev server".
+//
+// A conventional dev port wins outright; otherwise the lower port does. Lowest-alone was the first
+// heuristic and it is wrong often enough to matter: a debugger on :9229 or an LSP on a low ephemeral
+// port would outrank a Vite server on :5173 purely by number.
+func better(candidate, current int) bool {
+	cd, cur := devPorts[candidate], devPorts[current]
+	if cd != cur {
+		return cd
+	}
+	return candidate < current
 }
 
 // portOfAddr pulls 5173 out of "127.0.0.1:5173" or "*:5173" or "[::1]:5173".
