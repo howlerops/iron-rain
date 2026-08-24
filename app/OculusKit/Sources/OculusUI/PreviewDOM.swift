@@ -92,9 +92,23 @@ public let previewSnapshotJS = """
     var s = getComputedStyle(el);
     return s.visibility !== 'hidden' && s.display !== 'none' && s.opacity !== '0';
   }
+  // Fields whose CONTENTS must never be reported, whatever else is true of them.
+  //
+  // Checked in one place because there are two ways a value escapes and only one is obvious. The
+  // explicit `value` branch below is easy to remember; the accessible NAME is not — it falls back
+  // through label, placeholder and title to el.value, so an unlabelled password field reported its
+  // own contents as its name. A real browser found that; reading the source did not.
+  function sensitive(el) {
+    var type = (el.getAttribute('type') || '').toLowerCase();
+    if (type === 'password') return true;
+    var hint = ((el.getAttribute('name') || '') + ' ' + (el.id || '') + ' ' +
+                (el.getAttribute('autocomplete') || '')).toLowerCase();
+    return /pass|secret|token|otp|cvv|cvc|card|cc-|ssn/.test(hint);
+  }
   function name(el) {
     var t = (el.getAttribute('aria-label') || el.getAttribute('placeholder') ||
-             el.getAttribute('title') || el.innerText || el.value || '').trim();
+             el.getAttribute('title') || el.innerText ||
+             (sensitive(el) ? '' : el.value) || '').trim();
     return t.length > 120 ? t.slice(0, 120) + '…' : t;
   }
   document.querySelectorAll(sel).forEach(function(el) {
@@ -107,9 +121,11 @@ public let previewSnapshotJS = """
     var n = name(el); if (n) e.name = n;
     if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT') {
       e.type = el.getAttribute('type') || el.tagName.toLowerCase();
-      // The VALUE is deliberately not reported for a password field — a snapshot goes into the
-      // agent's context and into the durable transcript, and there is no use for it there.
-      if (e.type !== 'password' && el.value) {
+      // A snapshot goes into the agent's context AND into the durable transcript, where a secret
+      // captured once is retained long after the session ends.
+      if (sensitive(el)) {
+        if (el.value) e.value = '[withheld]'; // say a value EXISTS without saying what it is
+      } else if (el.value) {
         e.value = String(el.value).slice(0, 120);
       }
     }
