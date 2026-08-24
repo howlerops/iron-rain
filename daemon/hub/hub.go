@@ -49,6 +49,8 @@ type DiscoverFunc func(context.Context) ([]protocol.Discovered, error)
 
 // Hub owns providers and live sessions.
 type Hub struct {
+	// auth throttles failed authentication attempts (see authlimit.go).
+	auth      authThrottle
 	mu        sync.Mutex
 	providers map[string]agent.Provider
 	sessions  map[string]*managedSession // sessionID -> hub-owned shared session

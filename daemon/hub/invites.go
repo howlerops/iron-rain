@@ -231,59 +231,76 @@ func (h *Hub) AcceptConfiguredSecret(ownerSecret string) func(clientPub []byte, 
 func (h *Hub) acceptSecret(ownerSecret string, configured bool) func(clientPub []byte, presented string) bool {
 	h.creds().adoptLegacySecret(ownerSecret, configured)
 	return func(clientPub []byte, presented string) bool {
-		presented = strings.TrimSpace(presented)
-		if presented == "" {
-			return false
-		}
-		c := h.creds()
-
-		// 1. The device's own credential. Bound to this public key, so a credential lifted from one
-		//    device authenticates nothing from another.
-		if h.authenticateDevice(clientPub, presented) {
+		if h.authenticate(clientPub, presented) {
 			return true
 		}
-
-		// 2. A single-use pairing code, or the same-Mac bootstrap code. Both enroll the device and
-		//    mint it a credential; the pairing code is destroyed in the process, which is what makes a
-		//    screenshot of the QR worthless the moment it is used.
-		if c.redeemPairCode(presented) {
-			_, ok := h.enrollWithCredential(clientPub)
-			if ok {
-				log.Printf("pairing: enrolled %s… from a pairing code", shortPub(hexKey(clientPub)))
-			}
-			return ok
-		}
-		if c.isLocalCode(presented) {
-			_, ok := h.enrollWithCredential(clientPub)
-			return ok
-		}
-
-		// 3. A live invite. Guests are enrolled so they are visible and revocable, but get no
-		//    credential of their own — their access has to end when the invite does.
-		if inv, ok := h.invites.redeem(clientPub, presented); ok {
-			if !h.enrollGuest(clientPub) {
-				return false // this device was revoked; an invite must not undo that
-			}
-			log.Printf("invites: %q redeemed as %s", inviteLabel(inv), inv.Role)
-			// Sharing is only meaningful with enforcement on; redeeming an invite turns it on so a
-			// guest can't arrive with owner powers because nobody flipped a switch first.
-			h.SetRolesEnabled(true)
-			return true
-		}
-
-		// 4. The legacy permanent secret. Accepting it is a MIGRATION, not a login: the device is
-		//    immediately given a credential of its own, and confirming receipt starts the clock that
-		//    kills the permanent secret.
-		if c.acceptLegacy(presented) {
-			_, ok := h.enrollWithCredential(clientPub)
-			if ok {
-				log.Printf("pairing: %s… presented the old permanent secret; issuing it a per-device credential",
-					shortPub(hexKey(clientPub)))
-			}
-			return ok
+		// A wrong answer costs time; a right one never does. Nothing else bounded how fast this port
+		// could be guessed at, and it is reachable from the whole network in every shipped install —
+		// leaving 128 bits of entropy as the sole defence. See authlimit.go for why this delays
+		// rather than locks out.
+		if d := h.auth.penalty(time.Now()); d > 0 {
+			time.Sleep(d)
 		}
 		return false
 	}
+}
+
+// authenticate tries each credential kind in priority order, returning true on the first that
+// accepts. Split out of acceptSecret so that every failure path — not just the final one — passes
+// through the throttle above.
+func (h *Hub) authenticate(clientPub []byte, presented string) bool {
+	presented = strings.TrimSpace(presented)
+	if presented == "" {
+		return false
+	}
+	c := h.creds()
+
+	// 1. The device's own credential. Bound to this public key, so a credential lifted from one
+	//    device authenticates nothing from another.
+	if h.authenticateDevice(clientPub, presented) {
+		return true
+	}
+
+	// 2. A single-use pairing code, or the same-Mac bootstrap code. Both enroll the device and
+	//    mint it a credential; the pairing code is destroyed in the process, which is what makes a
+	//    screenshot of the QR worthless the moment it is used.
+	if c.redeemPairCode(presented) {
+		_, ok := h.enrollWithCredential(clientPub)
+		if ok {
+			log.Printf("pairing: enrolled %s… from a pairing code", shortPub(hexKey(clientPub)))
+		}
+		return ok
+	}
+	if c.isLocalCode(presented) {
+		_, ok := h.enrollWithCredential(clientPub)
+		return ok
+	}
+
+	// 3. A live invite. Guests are enrolled so they are visible and revocable, but get no
+	//    credential of their own — their access has to end when the invite does.
+	if inv, ok := h.invites.redeem(clientPub, presented); ok {
+		if !h.enrollGuest(clientPub) {
+			return false // this device was revoked; an invite must not undo that
+		}
+		log.Printf("invites: %q redeemed as %s", inviteLabel(inv), inv.Role)
+		// Sharing is only meaningful with enforcement on; redeeming an invite turns it on so a
+		// guest can't arrive with owner powers because nobody flipped a switch first.
+		h.SetRolesEnabled(true)
+		return true
+	}
+
+	// 4. The legacy permanent secret. Accepting it is a MIGRATION, not a login: the device is
+	//    immediately given a credential of its own, and confirming receipt starts the clock that
+	//    kills the permanent secret.
+	if c.acceptLegacy(presented) {
+		_, ok := h.enrollWithCredential(clientPub)
+		if ok {
+			log.Printf("pairing: %s… presented the old permanent secret; issuing it a per-device credential",
+				shortPub(hexKey(clientPub)))
+		}
+		return ok
+	}
+	return false
 }
 
 func inviteLabel(inv *invite) string {

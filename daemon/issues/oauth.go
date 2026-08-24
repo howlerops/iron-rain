@@ -43,12 +43,38 @@ func OAuthRedirectURI(addrPort, provider string) string {
 	return "http://" + addrPort + "/oauth/" + provider + "/callback"
 }
 
+// oauthStateTTL bounds how long an unfinished OAuth flow stays redeemable.
+//
+// Without it a state minted once lived until the daemon restarted, and the callback route is served
+// on the main mux — which every shipped install binds to 0.0.0.0 — so each abandoned flow left a
+// permanently guessable value on a network-reachable, unthrottled endpoint. The states are random
+// and single-use, so this narrows a window rather than closing a hole; ten minutes matches the
+// pairing-code TTL and is far longer than any real consent screen takes.
+const oauthStateTTL = 10 * time.Minute
+
+// pendingOAuth is an in-flight authorization: which provider it belongs to, and when it stops being
+// redeemable.
+type pendingOAuth struct {
+	provider  string
+	expiresAt time.Time
+}
+
+// prunePendingLocked drops expired states. Called on both mint and redeem so an abandoned flow is
+// cleaned up by the next one rather than needing a timer of its own.
+func (m *Manager) prunePendingLocked(now time.Time) {
+	for state, p := range m.pending {
+		if now.After(p.expiresAt) {
+			delete(m.pending, state)
+		}
+	}
+}
+
 // OAuthStart begins a provider's OAuth flow: returns the authorize URL and records the state.
 // Requires the OAuth app's client_id in the saved config (from ~/.oculus/integrations.json).
 func (m *Manager) OAuthStart(provider, redirectURI string) (string, error) {
 	m.mu.Lock()
 	if m.pending == nil {
-		m.pending = map[string]string{}
+		m.pending = map[string]pendingOAuth{}
 	}
 	var clientID string
 	switch provider {
@@ -66,7 +92,9 @@ func (m *Manager) OAuthStart(provider, redirectURI string) (string, error) {
 	}
 	state := randState()
 	m.mu.Lock()
-	m.pending[state] = provider
+	now := time.Now()
+	m.prunePendingLocked(now)
+	m.pending[state] = pendingOAuth{provider: provider, expiresAt: now.Add(oauthStateTTL)}
 	m.mu.Unlock()
 
 	q := url.Values{}
@@ -92,10 +120,15 @@ func (m *Manager) OAuthStart(provider, redirectURI string) (string, error) {
 // OAuthCallback exchanges the authorization code for an access token and connects.
 func (m *Manager) OAuthCallback(ctx context.Context, code, state, redirectURI string) error {
 	m.mu.Lock()
-	provider := m.pending[state]
-	delete(m.pending, state)
+	now := time.Now()
+	m.prunePendingLocked(now)
+	p, found := m.pending[state]
+	delete(m.pending, state) // redeemed or not, one presentation is all a state gets
 	m.mu.Unlock()
-	if provider == "" {
+	provider := p.provider
+	// The expiry is re-checked rather than trusted to the prune above, so a state cannot be redeemed
+	// in the instant between falling due and being swept.
+	if !found || provider == "" || now.After(p.expiresAt) {
 		return fmt.Errorf("unknown or expired oauth state")
 	}
 	switch provider {

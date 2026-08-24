@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	mrand "math/rand"
@@ -390,7 +391,13 @@ func serve(args []string) error {
 			code, state := r.URL.Query().Get("code"), r.URL.Query().Get("state")
 			if err := issuesMgr.OAuthCallback(r.Context(), code, state, redirect); err != nil {
 				w.WriteHeader(http.StatusBadRequest)
-				fmt.Fprintf(w, "<h2>%s connection failed</h2><p>%s</p>", provider, err.Error())
+				// Escaped, not because a reachable error currently carries attacker input — the ones
+				// on this path are fixed strings — but because this route is unauthenticated and
+				// network-reachable, and every future error added here would inherit the hole. An
+				// error string is exactly the kind of thing that quietly grows a %s for a query
+				// parameter later.
+				fmt.Fprintf(w, "<h2>%s connection failed</h2><p>%s</p>",
+					html.EscapeString(provider), html.EscapeString(err.Error()))
 				return
 			}
 			fmt.Fprintf(w, "<h2>Iron Rain connected to %s ✓</h2><p>You can close this tab and return to the app.</p>", provider)
@@ -1005,9 +1012,22 @@ func loadOrCreateKey(path string) (crypto.KeyPair, error) {
 	return kp, nil
 }
 
+// randomHex returns n bytes of cryptographic randomness, hex encoded.
+//
+// Fatal on failure, because both ways of returning are worse than stopping. Ignoring the error — as
+// this did — yields an all-zeros string, which is a PREDICTABLE credential that gets written to disk
+// and accepted by the gateway forever after. Returning "" is worse still: Gateway.authorized reads
+// an empty token as "no authentication configured" and allows every caller unconditionally.
+//
+// A daemon that cannot obtain randomness cannot mint a credential, and should say so rather than
+// invent one. Contrast randomSecret in hub/credentials.go, where "" is the right answer because an
+// empty credential there authenticates nothing.
 func randomHex(n int) string {
 	b := make([]byte, n)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		log.Fatalf("crypto/rand is unavailable (%v) — refusing to start, because every credential "+
+			"this daemon would mint is predictable", err)
+	}
 	return hex.EncodeToString(b)
 }
 
