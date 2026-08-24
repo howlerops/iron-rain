@@ -1114,6 +1114,24 @@ type AttacherFactory func(provider, url string) agent.Attacher
 // memorable across restarts; the router falls back to any free port if something else holds it.
 const defaultPreviewPort = 7777
 
+// previewPollEvery is how often listening ports are re-scanned. Slow enough that two lsof calls are
+// nothing on a busy machine, fast enough that a dev server you just started is named before you
+// finish switching windows to look at it.
+const previewPollEvery = 4 * time.Second
+
+// previewMissesBeforeDrop is how many consecutive scans must find nothing before a session's name is
+// released. Two (~8s) rides out an ordinary dev-server restart without letting a name point at a
+// dead port long enough for that port to be reassigned.
+const previewMissesBeforeDrop = 2
+
+// previewDebug logs each scan's counts and duration under OCULUS_PREVIEW_DEBUG.
+//
+// Kept rather than removed: it is what found the flapping. Two guesses (syscall volume, then lsof
+// exit codes) were both wrong, and the timing signature — failures landing at exactly the context
+// deadline — is what identified a hang. The next person chasing a detection problem should not have
+// to re-add this.
+var previewDebug = os.Getenv("OCULUS_PREVIEW_DEBUG") != ""
+
 func New() *Hub {
 	h := &Hub{
 		preview:         preview.New(),
@@ -1143,8 +1161,11 @@ func New() *Hub {
 	// runs the user's agents.
 	if err := h.preview.Start(defaultPreviewPort); err != nil {
 		log.Printf("preview: named session URLs unavailable (%v) — the raw ports still work", err)
-	} else if p := h.preview.Port(); p != defaultPreviewPort {
-		log.Printf("preview: serving named session URLs on :%d (%d was taken)", p, defaultPreviewPort)
+	} else {
+		if p := h.preview.Port(); p != defaultPreviewPort {
+			log.Printf("preview: serving named session URLs on :%d (%d was taken)", p, defaultPreviewPort)
+		}
+		go h.watchPreviewPorts()
 	}
 	return h
 }
@@ -1269,6 +1290,82 @@ func previewName(meta sessionMeta) string {
 		}
 	}
 	return ""
+}
+
+// watchPreviewPorts keeps each session's name pointed at whatever port its dev server actually
+// bound, so `npm run dev` gets a name without the project declaring anything.
+//
+// Polling rather than an event: there is no portable notification when a process starts listening,
+// and the alternatives are worse — parsing every harness's stdout for "Local: http://…" means a new
+// parser per tool and per framework, and forcing a port via OCULUS_PORT only works when the repo
+// opted in AND its start script honours the variable. A poll is dull, provider-agnostic and cannot
+// be defeated by a framework changing its banner text.
+func (h *Hub) watchPreviewPorts() {
+	t := time.NewTicker(previewPollEvery)
+	defer t.Stop()
+	last := map[string]int{}
+	misses := map[string]int{}
+	for range t.C {
+		// Only sessions with a directory can own a port. Snapshot under the lock; the scan itself
+		// shells out to lsof and must not hold it.
+		paths := map[string]string{}
+		names := map[string]string{}
+		h.mu.Lock()
+		for id, m := range h.sessions {
+			if m.meta.cwd != "" {
+				paths[id] = m.meta.cwd
+				names[id] = previewName(m.meta)
+			}
+		}
+		h.mu.Unlock()
+		if len(paths) == 0 {
+			continue
+		}
+		t0 := time.Now()
+		found, ok := preview.Detect(context.Background(), paths)
+		if previewDebug {
+			log.Printf("preview/debug: %d sessions, %d detected, ok=%v, scan took %s",
+				len(paths), len(found), ok, time.Since(t0))
+		}
+		if !ok {
+			// The scan failed rather than finding nothing. Releasing names here is how every URL
+			// flapped: a hung lsof is indistinguishable from every dev server stopping at once, and
+			// only one of those should cost the user their links.
+			continue
+		}
+		for id, port := range found {
+			misses[id] = 0
+			if last[id] == port {
+				continue // unchanged; re-registering would churn the label for no reason
+			}
+			last[id] = port
+			label := h.preview.Register(id, names[id], port)
+			log.Printf("preview: %s -> http://%s.localhost:%d (detected :%d)",
+				id, label, h.preview.Port(), port)
+			h.broadcastSessionList() // the URL is part of a session's info
+		}
+		// A session whose server has GONE must lose its name, or the name keeps pointing at a port
+		// that AllocPort (or the OS) is free to hand to somebody else — and then one session's URL
+		// quietly serves another session's server, which is the exact cross-talk this feature exists
+		// to prevent.
+		//
+		// Tolerating a couple of misses first, because a dev server being restarted is down for a
+		// second or two and a name that vanishes and reappears on every save would be its own bug.
+		for id := range last {
+			if _, ok := found[id]; ok {
+				continue
+			}
+			misses[id]++
+			if misses[id] < previewMissesBeforeDrop {
+				continue
+			}
+			h.preview.Unregister(id)
+			delete(last, id)
+			delete(misses, id)
+			log.Printf("preview: %s no longer serving — name released", id)
+			h.broadcastSessionList()
+		}
+	}
 }
 
 func (h *Hub) addSession(sess agent.Session, meta sessionMeta) *managedSession {
