@@ -50,12 +50,14 @@ type DiscoverFunc func(context.Context) ([]protocol.Discovered, error)
 // Hub owns providers and live sessions.
 type Hub struct {
 	// auth throttles failed authentication attempts (see authlimit.go).
-	auth      authThrottle
-	mu        sync.Mutex
-	providers map[string]agent.Provider
-	sessions  map[string]*managedSession // sessionID -> hub-owned shared session
-	devices   *deviceRegistry            // enrolled client keys (per-device revocation)
-	awake     interface {
+	auth authThrottle
+	// previewDOM correlates an outstanding DOM ask with the client that answers it (preview_dom.go).
+	previewDOM *previewDOMWaiters
+	mu         sync.Mutex
+	providers  map[string]agent.Provider
+	sessions   map[string]*managedSession // sessionID -> hub-owned shared session
+	devices    *deviceRegistry            // enrolled client keys (per-device revocation)
+	awake      interface {
 		Hold()
 		Release()
 	} // keeps the machine awake while a turn is open
@@ -1144,6 +1146,7 @@ func New() *Hub {
 		invites:         newInviteRegistry(),
 		credentials:     newCredentials(),
 		mcpTokens:       newMCPSessionTokens(),
+		previewDOM:      newPreviewDOMWaiters(),
 		mcpApprovals:    map[string]chan string{},
 		fanoutNotified:  map[string]bool{},
 		fanoutJudge:     map[string]fanoutJudgeSpec{},
@@ -4844,6 +4847,15 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.FSBytes{
 			Path: req.Path, Mime: mime, Data: base64.StdEncoding.EncodeToString(data),
 		})
+
+	case protocol.TypePreviewDOMResult:
+		// The app's answer to a preview.dom.ask. No capability gate: this resolves a waiter the
+		// daemon itself created moments ago and keyed with an unguessable id, so an unsolicited
+		// result matches nothing and is discarded.
+		var res protocol.PreviewDOMResult
+		if env.Unmarshal(&res) == nil && res.RequestID != "" && h.previewDOM != nil {
+			h.previewDOM.resolve(res)
+		}
 
 	case protocol.TypePreviewFetch:
 		// capSteer, matching the fs.* read family: this reads content from the machine on the user's

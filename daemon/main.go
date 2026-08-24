@@ -254,6 +254,10 @@ func serve(args []string) error {
 	mcpToken := loadOrCreateSecret(mcpTokenPath())
 	mcpGateway := mcp.NewGateway(mcpMgr, mcpToken)
 	h.SetMCPGateway(mcpGateway, mcpToken)
+	// The daemon's own tools for looking at a session's running app. Registered on the manager so
+	// they reach agents through the same authenticated gateway as every external server — which is
+	// what subjects them to session modes and approval rules rather than making them a side door.
+	h.RegisterPreviewTools(mcpMgr)
 	if len(issuesMgr.Connected()) > 0 {
 		go func() { _ = issuesMgr.Refresh(context.Background()) }() // initial fetch
 	}

@@ -25,6 +25,9 @@ var mutatingTools = map[string]bool{
 	"bash": true, "shell": true, "run": true, "execute": true, "terminal": true,
 	"notebookedit": true, "multiedit": true, "create": true, "delete": true, "move": true,
 	"webfetch": false, // reading the network is not mutating the machine
+	// The preview tools. Clicking and typing drive the user's running app, which can submit a form
+	// or fire a request, so they are mutating; looking at the rendered page is not.
+	"preview_click": true, "preview_fill": true, "preview_snapshot": false,
 }
 
 // isMutatingTool reports whether a tool can modify the machine. Unknown tools are treated as

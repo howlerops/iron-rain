@@ -135,6 +135,8 @@ public enum MessageType {
     public static let fsRead = "fs.read"
     public static let fsReadBytes = "fs.readbytes"
     public static let previewFetch = "preview.fetch"
+    public static let previewDOMAsk = "preview.dom.ask"
+    public static let previewDOMResult = "preview.dom.result"
     public static let fsWrite = "fs.write"
     public static let fsDiff = "fs.diff"
     public static let fsWatch = "fs.watch"
@@ -485,6 +487,37 @@ public struct PreviewFetchReq: Codable {
     enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
         case path, method, headers, body
+    }
+}
+
+/// The daemon asking this app to perform one DOM operation in a preview it has open.
+///
+/// The daemon has no browser; this app does. See PreviewDOM.swift.
+public struct PreviewDOMAsk: Codable {
+    public var requestID: String
+    public var sessionID: String
+    public var op: String          // snapshot | click | fill
+    public var ref: String?
+    public var value: String?
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case sessionID = "session_id"
+        case op, ref, value
+    }
+}
+
+/// This app's answer.
+public struct PreviewDOMResult: Codable {
+    public var requestID: String
+    public var ok: Bool
+    public var result: String?
+    public var error: String?
+    public init(requestID: String, ok: Bool, result: String? = nil, error: String? = nil) {
+        self.requestID = requestID; self.ok = ok; self.result = result; self.error = error
+    }
+    enum CodingKeys: String, CodingKey {
+        case requestID = "request_id"
+        case ok, result, error
     }
 }
 

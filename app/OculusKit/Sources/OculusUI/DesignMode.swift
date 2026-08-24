@@ -178,6 +178,9 @@ struct DesignWebView {
     /// Serves the page through the daemon when the dev server is not reachable from this device.
     /// nil means load `url` directly, which keeps live reload working when both are on one machine.
     var tunnel: PreviewSchemeHandler?
+    /// The session this page belongs to. Publishes the web view so an agent's snapshot/click/fill
+    /// can reach a real DOM — the daemon has none of its own.
+    var sessionID: String?
 
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         let onPick: (PickedElement) -> Void
@@ -259,6 +262,7 @@ struct DesignWebView {
         }
         let wv = WKWebView(frame: .zero, configuration: cfg)
         wv.navigationDelegate = coordinator
+        if let sessionID { PreviewDOMRegistry.shared.register(sessionID: sessionID, view: wv) }
         wv.load(URLRequest(url: url))
         return wv
     }
@@ -356,7 +360,7 @@ struct DesignModeView: View {
                     picking = false
                 }, onScreenshot: { data in
                     lastShot = data
-                }, tunnel: tunnelHandler)
+                }, tunnel: tunnelHandler, sessionID: model.currentSession?.id)
                 .id(tunnelHandler == nil ? "direct" : "tunnel") // the handler is fixed at creation
                 .frame(minHeight: 380)
             } else {
@@ -389,6 +393,12 @@ struct DesignModeView: View {
         }
         .frame(minWidth: 640, minHeight: 480)
         .background(palette.background)
+        .onDisappear {
+            // Withdraw the page the moment the sheet closes. The registry holds the view weakly, so
+            // this is not about leaking — it is that an agent must not be told about a page nobody is
+            // looking at any more.
+            if let id = model.currentSession?.id { PreviewDOMRegistry.shared.unregister(sessionID: id) }
+        }
     }
 
     private func normalizedURL(_ s: String) -> URL? {

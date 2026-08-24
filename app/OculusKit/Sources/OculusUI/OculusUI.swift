@@ -3431,6 +3431,51 @@ public final class Model: ObservableObject {
         try await request(MessageType.fsReadBytes, payload: FSReadBytesReq(path: path)).payload(as: FSBytes.self)
     }
 
+    /// Runs one agent-requested DOM operation in the preview web view, if this device has it open.
+    ///
+    /// Answers only when it can actually do the work. A client with nothing open returns without
+    /// replying, so the daemon's wait is decided by the device that CAN help rather than by whichever
+    /// device answers first — and when no device can, the daemon's timeout produces one clear
+    /// "nobody is showing this page" instead of a pile of contradictory refusals.
+    @MainActor
+    func handlePreviewDOMAsk(_ ask: PreviewDOMAsk) async {
+        #if canImport(WebKit)
+        guard let webView = PreviewDOMRegistry.shared.view(for: ask.sessionID) else { return }
+
+        let js: String
+        switch ask.op {
+        case "snapshot": js = previewSnapshotJS
+        case "click":    js = previewClickJS(ref: ask.ref ?? "")
+        case "fill":     js = previewFillJS(ref: ask.ref ?? "", value: ask.value ?? "")
+        default:
+            await sendPreviewDOMResult(PreviewDOMResult(
+                requestID: ask.requestID, ok: false, error: "Unknown preview operation \"\(ask.op)\"."))
+            return
+        }
+
+        do {
+            let raw = try await webView.evaluateJavaScript(js)
+            let text = (raw as? String) ?? ""
+            // The scripts report their own failures inside the payload (a ref that no longer exists,
+            // an element that cannot be typed into) — those are outcomes the agent should read and
+            // act on, not transport errors.
+            await sendPreviewDOMResult(PreviewDOMResult(requestID: ask.requestID, ok: true, result: text))
+        } catch {
+            await sendPreviewDOMResult(PreviewDOMResult(
+                requestID: ask.requestID, ok: false,
+                error: "The preview page could not run that: \(error.localizedDescription)"))
+        }
+        #endif
+    }
+
+    private func sendPreviewDOMResult(_ result: PreviewDOMResult) async {
+        guard let client else { return }
+        if let env = try? Protocol.encode(id: UUID().uuidString,
+                                          type: MessageType.previewDOMResult, payload: result) {
+            try? await client.send(env)
+        }
+    }
+
     /// Fetches one resource from a session's dev server, via the daemon.
     ///
     /// Design Mode's web view runs HERE, in the app, so on a phone `localhost` is the phone and the
@@ -4228,6 +4273,14 @@ public final class Model: ObservableObject {
                 default:
                     break
                 }
+            }
+        case MessageType.previewDOMAsk:
+            // The daemon is asking whoever has this session's preview open to look at, or act on,
+            // the live page. Every connected client receives this; only one can answer, and one that
+            // has nothing open must stay SILENT rather than reply "no" — otherwise the phone in your
+            // pocket races the Mac showing the page and wins by being quicker to say nothing useful.
+            if let ask = try? env.payload(as: PreviewDOMAsk.self) {
+                Task { await handlePreviewDOMAsk(ask) }
             }
         case MessageType.approvalRequest:
             // Record EVERY approval, not just the open session's. The old `ar.sessionID == sessionID`

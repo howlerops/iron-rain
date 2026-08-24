@@ -107,15 +107,17 @@ const (
 	TypeIssueImage            = "issue.image"            // proxy an auth-gated attachment image
 
 	// Built-in editor file access — all paths validated against project roots + session cwds.
-	TypeFSTree       = "fs.tree"       // list a directory (or the available roots when path is empty)
-	TypeFSRead       = "fs.read"       // read a text file (content + sha for conflict detection)
-	TypeFSReadBytes  = "fs.readbytes"  // read a file's raw bytes (images shown inline)
-	TypePreviewFetch = "preview.fetch" // fetch one resource from a session's own dev server
-	TypeFSWrite      = "fs.write"      // save a file if its base sha still matches on disk
-	TypeFSDiff       = "fs.diff"       // unified git diff for a path or session (review)
-	TypeFSWatch      = "fs.watch"      // subscribe to change events for open files
-	TypeFSSearch     = "fs.search"     // multi-file text search across the workspace
-	TypeRunTest      = "run.test"      // run the project's tests/build in a session's workspace
+	TypeFSTree           = "fs.tree"            // list a directory (or the available roots when path is empty)
+	TypeFSRead           = "fs.read"            // read a text file (content + sha for conflict detection)
+	TypeFSReadBytes      = "fs.readbytes"       // read a file's raw bytes (images shown inline)
+	TypePreviewFetch     = "preview.fetch"      // fetch one resource from a session's own dev server
+	TypePreviewDOMAsk    = "preview.dom.ask"    // daemon -> client: run a DOM op in the open preview
+	TypePreviewDOMResult = "preview.dom.result" // client -> daemon: the answer
+	TypeFSWrite          = "fs.write"           // save a file if its base sha still matches on disk
+	TypeFSDiff           = "fs.diff"            // unified git diff for a path or session (review)
+	TypeFSWatch          = "fs.watch"           // subscribe to change events for open files
+	TypeFSSearch         = "fs.search"          // multi-file text search across the workspace
+	TypeRunTest          = "run.test"           // run the project's tests/build in a session's workspace
 
 	// LSP (built-in editor: diagnostics/linting/types/definition)
 	TypeLSPOpen        = "lsp.open"        // open a document in its language server
@@ -1084,6 +1086,38 @@ type PreviewFetchResp struct {
 	Status  int               `json:"status"`
 	Headers map[string]string `json:"headers,omitempty"`
 	Body    string            `json:"body"` // base64 (StdEncoding)
+}
+
+// PreviewDOMAsk asks a connected app to perform one DOM operation inside the preview it already has
+// open, and report back.
+//
+// The daemon cannot do this itself: it speaks HTTP, and a dev server's HTML is inert. Clicking needs
+// a live DOM with the page's own JavaScript having run — for any client-rendered app the fetched
+// markup is an empty shell. The app already has a real browser engine, so the work happens there.
+//
+// The cost of that choice, stated plainly because it shapes the tools' behaviour: this only works
+// while someone has that session's preview open. An agent working with nobody watching gets a clear
+// refusal rather than a wrong answer.
+type PreviewDOMAsk struct {
+	RequestID string `json:"request_id"`
+	SessionID string `json:"session_id"`
+	// Op is snapshot | click | fill.
+	Op string `json:"op"`
+	// Ref identifies an element from a previous snapshot. Not a CSS selector: a snapshot stamps each
+	// element it lists, so a ref means "the thing you showed me", which survives a class name
+	// changing under it and cannot be used to reach an element the agent was never shown.
+	Ref string `json:"ref,omitempty"`
+	// Value is the text to type, for fill.
+	Value string `json:"value,omitempty"`
+}
+
+// PreviewDOMResult is one app's answer to a PreviewDOMAsk.
+type PreviewDOMResult struct {
+	RequestID string `json:"request_id"`
+	OK        bool   `json:"ok"`
+	// Result is the operation's payload — for a snapshot, the page outline.
+	Result string `json:"result,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
 // FSBytes is a file's raw bytes (base64) + MIME type.

@@ -89,7 +89,12 @@ func (h *Hub) mcpServersForSession(projectID, token string) []mcp.Server {
 	if r == nil {
 		return nil
 	}
-	return h.gatewayServers(r.Enabled(projectID), token)
+	servers := r.Enabled(projectID)
+	// The daemon's own preview tools ride the same path as any other server: declared as stdio so
+	// gatewayServers rewrites them to the authenticated gateway URL, which is what makes the session
+	// token — and therefore modes and approval rules — apply to them too.
+	servers = append(servers, mcp.Server{Name: previewBuiltinServer, Transport: "stdio"})
+	return h.gatewayServers(servers, token)
 }
 
 // handleMCP dispatches the mcp.* protocol surface. Every mutating arm broadcasts, so a second device

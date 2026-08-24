@@ -174,6 +174,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// A builtin has to know WHICH session is calling — that is the whole basis on which it scopes
+	// what it will do. The bearer token is the only thing that carries that identity, so it travels
+	// down in the context rather than as an argument the caller could claim.
+	ctx = WithSessionToken(ctx, bearer)
+
 	client, protocolVersion, err := g.mgr.Dial(ctx, name)
 	if err != nil {
 		writeRPCError(w, req.ID, -32000, err.Error())

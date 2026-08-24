@@ -37,6 +37,9 @@ type Manager struct {
 	// remoteVersions caches the negotiated protocol for hosted servers, which have no persistent
 	// connection to hang it off.
 	remoteVersions map[string]string
+	// builtins are servers the daemon implements itself (see builtin.go). Keyed by name and
+	// consulted before the registry.
+	builtins map[string]*builtin
 }
 
 // supervised is one server's connection plus its restart state.
@@ -63,6 +66,11 @@ type Caller interface {
 // servers need no supervision — there is no process to watch — so they bypass the restart machinery
 // entirely and are negotiated per call cycle.
 func (m *Manager) Dial(ctx context.Context, name string) (Caller, string, error) {
+	// Builtins first: a daemon-implemented server has no registry entry to find, and shadowing by
+	// name means a stray entry cannot quietly replace one with a process.
+	if b, ok := m.lookupBuiltin(name); ok {
+		return b, ProtocolLatest, nil
+	}
 	srv, ok := m.reg.Get(name)
 	if !ok {
 		return nil, "", &NotFoundError{Server: name}
