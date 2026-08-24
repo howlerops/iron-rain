@@ -133,24 +133,11 @@ func (t *mcpSessionTokens) revoke(sessionID string) string {
 // read-only session must not be able to write via an MCP server), then persisted approval RULES,
 // then a real approval the user answers.
 func (h *Hub) authorizeMCPTool(ctx context.Context, token, server, tool string, args json.RawMessage) error {
-	sessionID, ok := h.mcpTokens.session(token)
-	if !ok {
-		// The machine-wide token (or an unbound one): no session context, so no rules can be applied
-		// and no approval can be attributed. Allow, because this is the path the user's own tooling
-		// uses; per-session tokens are what carry policy.
-		return nil
-	}
-	m := h.managed(sessionID)
-	if m == nil {
-		return nil // the session ended mid-call; nothing to enforce against
-	}
-
 	// Present it to the user (and to the rule engine) as a qualified name, so a rule can target one
 	// server's tool without colliding with a native tool of the same name.
 	qualified := "mcp:" + server + ":" + tool
 	ar := protocol.ApprovalRequest{
 		ApprovalID: "mcpap_" + randToken(),
-		SessionID:  sessionID,
 		Tool:       qualified,
 		Detail:     tool + " (via the " + server + " MCP server)" + argSummary(args),
 		// The arguments are what the tool will actually act on, so they must reach the guard and the
@@ -159,21 +146,40 @@ func (h *Hub) authorizeMCPTool(ctx context.Context, token, server, tool string, 
 		Input: args,
 	}
 
+	// The guard runs FIRST, before any question of whose call this is.
+	//
+	// It used to sit after session attribution, which quietly made it optional: a call presenting the
+	// machine-wide token resolves to no session and returned early, so it faced no mode gate, no
+	// rules, no approval and no guard. The justification for that early return — anything that can
+	// read a 0600 file in ~/.oculus can read ~/.oculus/key too, so it is game over already — is sound
+	// against a local ATTACKER and unsound against the AGENT. The agent is not a trusted local user;
+	// it is the party this whole system constrains, and it runs as that user with a shell. `cat
+	// ~/.oculus/mcp-token` was a complete bypass of everything above.
+	//
+	// A .git write is refused because of what it IS, not because of who asked, so this check needs no
+	// session and belongs ahead of the lookup.
+	if g := guardApproval(ar); g.reason != "" {
+		log.Printf("mcp: refused %s — %s", qualified, g.reason)
+		return fmt.Errorf("refused: %s", g.reason)
+	}
+
+	sessionID, ok := h.mcpTokens.session(token)
+	if !ok {
+		// The machine-wide token (or an unbound one): no session context, so no rules can be applied
+		// and no approval can be attributed. Allowed past the session policy because this is the path
+		// the user's own tooling uses — but no longer past the guard above, and the gateway confines
+		// it to loopback so a LAN caller cannot present it.
+		return nil
+	}
+	m := h.managed(sessionID)
+	if m == nil {
+		return nil // the session ended mid-call; nothing to enforce against
+	}
+	ar.SessionID = sessionID
+
 	if mode := m.sessionMode(); modeDeniesTool(mode, tool) {
 		log.Printf("mcp: denied %s — session %s is in %s mode", qualified, sessionID, mode)
 		return fmt.Errorf("this session is in %s mode, which is read-only", mode)
-	}
-
-	// The same guard the native path runs (session.go), and for the same reason: a write into .git
-	// becomes code execution later, performed by Iron Rain's own commit/merge. Nothing about arriving
-	// over MCP makes that safer, and until now this path skipped the check entirely — an MCP server
-	// with file-write capability could place a pre-commit hook that the native path refuses.
-	//
-	// Placed after the mode gate and BEFORE the rules check, mirroring session.go exactly: a standing
-	// "always allow" must not be able to clear something a person would never be shown.
-	if g := guardApproval(ar); g.reason != "" {
-		log.Printf("mcp: refused %s for session %s — %s", qualified, sessionID, g.reason)
-		return fmt.Errorf("refused: %s", g.reason)
 	}
 
 	m.mu.Lock()

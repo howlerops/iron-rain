@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -61,9 +62,13 @@ type Gateway struct {
 	sessionTokens map[string]bool
 }
 
-// NewGateway returns a gateway over mgr. token must be presented as a bearer credential: the
-// endpoint listens on loopback, but loopback is shared with every other process on the machine, so
-// "local" is not by itself an authorization.
+// NewGateway returns a gateway over mgr. token must be presented as a bearer credential.
+//
+// This handler is NOT loopback-only, despite what the mount site suggests: the --addr flag defaults
+// to 127.0.0.1, but every shipped install overrides it to 0.0.0.0:6000 so the pairing QR can carry
+// the Mac's LAN IP. An earlier version of this comment asserted loopback and that assumption is
+// exactly how the machine token came to be an unauthenticated remote allow-all. Treat every request
+// here as potentially arriving from the network.
 func NewGateway(mgr *Manager, token string) *Gateway {
 	return &Gateway{mgr: mgr, token: token, sessionTokens: map[string]bool{}}
 }
@@ -119,6 +124,19 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !g.authorized(bearer) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	// The machine-wide token carries no session, so no mode, rule or approval can be attributed to
+	// it — it is an allow-all credential by construction. That is defensible for the user's own local
+	// tooling and indefensible from the network, and this handler is NOT loopback-only in practice:
+	// every shipped install path (the app's daemon child, both launchd agents, the installer's
+	// fallback) passes --addr 0.0.0.0:6000 so the pairing QR can carry the LAN IP.
+	//
+	// So a single 0600 file read anywhere converts into unapproved tool execution from any host on
+	// the network. Session tokens stay reachable remotely — they carry policy and are answerable to
+	// it; the credential that answers to nothing does not.
+	if g.isMachineToken(bearer) && !isLoopbackAddr(r.RemoteAddr) {
+		http.Error(w, "the machine token is accepted on loopback only; use a session token", http.StatusForbidden)
 		return
 	}
 
@@ -184,6 +202,29 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"id":      req.ID,
 		"result":  json.RawMessage(result),
 	})
+}
+
+// isMachineToken reports whether the presented credential is the machine-wide one rather than a
+// per-session token. Constant-time, since a mismatch here decides whether a remote caller is turned
+// away.
+func (g *Gateway) isMachineToken(bearer string) bool {
+	if g.token == "" {
+		return false // no machine token configured; nothing to confine
+	}
+	return subtle.ConstantTimeCompare([]byte(bearer), []byte(g.token)) == 1
+}
+
+// isLoopbackAddr reports whether a RemoteAddr belongs to this machine.
+//
+// A malformed address is treated as NOT loopback: this decides whether to grant the allow-all
+// credential, so anything unparseable must fail closed.
+func isLoopbackAddr(remote string) bool {
+	host, _, err := net.SplitHostPort(remote)
+	if err != nil {
+		host = remote // some transports hand over a bare address
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
 }
 
 // authorized accepts either the machine-wide token or a live per-session token. Comparison against

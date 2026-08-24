@@ -171,3 +171,72 @@ func TestWithMetaPreservesCallerParams(t *testing.T) {
 		t.Error("array params must pass through unchanged")
 	}
 }
+
+// The machine-wide token is an allow-all credential: it resolves to no session, so no mode, rule or
+// approval can attach to it. That is tolerable for the user's own tooling on the same machine and
+// not tolerable from the network — and this handler IS on the network, because every shipped install
+// passes --addr 0.0.0.0:6000 so the pairing QR can carry the LAN IP.
+func TestMachineTokenIsRefusedFromOffMachine(t *testing.T) {
+	gw := NewGateway(NewManager(NewRegistry(filepath.Join(t.TempDir(), "s.json"))), "machine-token")
+
+	body := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write"}}`)
+	req := httptest.NewRequest("POST", "/mcp/files", body)
+	req.Header.Set("Authorization", "Bearer machine-token")
+	req.RemoteAddr = "192.168.1.50:51234" // another host on the LAN
+	w := httptest.NewRecorder()
+	gw.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("a LAN caller presenting the machine token got %d, want 403", w.Code)
+	}
+}
+
+// The same credential from the same machine still works — this confines the token, it does not
+// retire it, and the user's local tooling depends on it.
+func TestMachineTokenStillWorksOnLoopback(t *testing.T) {
+	gw := NewGateway(NewManager(NewRegistry(filepath.Join(t.TempDir(), "s.json"))), "machine-token")
+
+	body := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write"}}`)
+	req := httptest.NewRequest("POST", "/mcp/files", body)
+	req.Header.Set("Authorization", "Bearer machine-token")
+	req.RemoteAddr = "127.0.0.1:51234"
+	w := httptest.NewRecorder()
+	gw.ServeHTTP(w, req)
+
+	if w.Code == http.StatusForbidden {
+		t.Fatal("loopback use of the machine token must keep working")
+	}
+}
+
+// A per-session token stays usable remotely: it carries policy and is answerable to it, which is
+// the whole distinction being drawn.
+func TestSessionTokenIsAllowedFromOffMachine(t *testing.T) {
+	gw := NewGateway(NewManager(NewRegistry(filepath.Join(t.TempDir(), "s.json"))), "machine-token")
+	gw.AddSessionToken("session-token")
+
+	body := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"write"}}`)
+	req := httptest.NewRequest("POST", "/mcp/files", body)
+	req.Header.Set("Authorization", "Bearer session-token")
+	req.RemoteAddr = "192.168.1.50:51234"
+	w := httptest.NewRecorder()
+	gw.ServeHTTP(w, req)
+
+	if w.Code == http.StatusForbidden {
+		t.Fatal("a session token must remain usable from off-machine — the relay depends on it")
+	}
+}
+
+// A RemoteAddr that cannot be parsed must fail CLOSED: this decides whether to hand over the
+// allow-all credential.
+func TestUnparseableRemoteAddrIsNotTreatedAsLoopback(t *testing.T) {
+	for _, addr := range []string{"", "garbage", "not-an-ip:1", "example.com:443"} {
+		if isLoopbackAddr(addr) {
+			t.Errorf("isLoopbackAddr(%q) = true; an unreadable address must not be trusted", addr)
+		}
+	}
+	for _, addr := range []string{"127.0.0.1:5", "[::1]:5", "127.0.0.1"} {
+		if !isLoopbackAddr(addr) {
+			t.Errorf("isLoopbackAddr(%q) = false; this is loopback", addr)
+		}
+	}
+}
