@@ -3478,6 +3478,22 @@ public final class Model: ObservableObject {
         }
     }
 
+    /// Lists the GitHub repositories this account can reach, resolved on the daemon host.
+    ///
+    /// The daemon runs `gh` and, for each repo, reports whether it is already checked out there —
+    /// which the client could not work out for itself, and which is the difference between "clone
+    /// this" and "open the copy you already have".
+    public func githubRepos() async throws -> GitHubRepos {
+        try await request(MessageType.githubRepos, payload: [String: String]()).payload(as: GitHubRepos.self)
+    }
+
+    /// Clones a repository onto the daemon host and returns where it landed.
+    public func githubClone(nameWithOwner: String, parent: String) async throws -> String {
+        try await request(MessageType.githubClone,
+                          payload: GitHubClone(nameWithOwner: nameWithOwner, parent: parent))
+            .payload(as: GitHubCloned.self).path
+    }
+
     /// Fetches one resource from a session's dev server, via the daemon.
     ///
     /// Design Mode's web view runs HERE, in the app, so on a phone `localhost` is the phone and the

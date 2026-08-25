@@ -3304,6 +3304,28 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		}
 		h.sendOK(conn, env.ID, toProtoProject(p))
 
+	case protocol.TypeGitHubRepos:
+		// capOwner, matching project.add. Listing reveals the names of the owner's PRIVATE
+		// repositories, and cloning writes to their disk — neither is something a guest who was
+		// invited to watch one session should be able to do.
+		if !h.requireCapability(conn, env.ID, capOwner, "list your GitHub repositories") {
+			return
+		}
+		h.sendOK(conn, env.ID, h.handleGitHubRepos(context.Background()))
+
+	case protocol.TypeGitHubClone:
+		if !h.requireCapability(conn, env.ID, capOwner, "clone a repository") {
+			return
+		}
+		var req protocol.GitHubClone
+		_ = env.Unmarshal(&req)
+		res, err := h.handleGitHubClone(context.Background(), req)
+		if err != nil {
+			h.sendErr(conn, env.ID, err.Error())
+			return
+		}
+		h.sendOK(conn, env.ID, res)
+
 	case protocol.TypeProjectBrowse:
 		var req protocol.ProjectBrowseReq
 		_ = env.Unmarshal(&req)

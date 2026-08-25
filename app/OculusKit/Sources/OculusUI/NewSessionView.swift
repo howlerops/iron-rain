@@ -679,11 +679,28 @@ struct NewSessionView: View {
                     .accessibilityLabel("Clear selected folders")
                 }
             }
-            Text("Pick one — or several for a multi-repo task. \(selectVerb) a selected folder again to remove it.")
+            Text("Pick a repository — or several for a multi-repo task. \(selectVerb) a chosen folder again to remove it.")
                 .font(.caption).foregroundStyle(palette.mutedForeground)
                 .fixedSize(horizontal: false, vertical: true)
-            VStack(spacing: 5) {
-                ForEach(model.projects) { p in projectRow(p) }
+            VStack(spacing: 8) {
+                // Repository first. What used to sit here was every folder the daemon had ever seen
+                // an agent run in — worktrees, duplicate checkouts, temp directories — listed in
+                // full and unsearchable, because auto-registration adds them and nothing removes
+                // them.
+                GitHubPicker(model: model, palette: palette) { path in
+                    Task {
+                        if let p = await model.addProject(path: path) {
+                            selectedProjects.insert(p.id)
+                        }
+                    }
+                }
+                // Only what has actually been CHOSEN, so this can never grow back into the list it
+                // replaced. Tapping one still removes it, which is where that gesture was learned.
+                if !chosenProjects.isEmpty {
+                    VStack(spacing: 5) {
+                        ForEach(chosenProjects) { p in projectRow(p) }
+                    }
+                }
                 addFolderRow
             }
             planNote

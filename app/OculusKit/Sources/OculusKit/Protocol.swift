@@ -134,6 +134,8 @@ public enum MessageType {
     public static let fsTree = "fs.tree"
     public static let fsRead = "fs.read"
     public static let fsReadBytes = "fs.readbytes"
+    public static let githubRepos = "github.repos"
+    public static let githubClone = "github.clone"
     public static let previewFetch = "preview.fetch"
     public static let previewDOMAsk = "preview.dom.ask"
     public static let previewDOMResult = "preview.dom.result"
@@ -489,6 +491,57 @@ public struct PreviewFetchReq: Codable {
         case path, method, headers, body
     }
 }
+
+/// One repository the user can reach, offered when starting a session.
+public struct GitHubRepo: Codable, Identifiable, Equatable {
+    public var name: String
+    public var nameWithOwner: String
+    public var description: String?
+    public var url: String?
+    public var isPrivate: Bool?
+    public var updatedAt: String?
+    public var language: String?
+    /// Where this repo already sits on the DAEMON's disk, nil if it is not checked out.
+    /// Resolved daemon-side because the client cannot see that filesystem.
+    public var localPath: String?
+    public var id: String { nameWithOwner }
+    enum CodingKeys: String, CodingKey {
+        case name, url, language, description
+        case nameWithOwner = "name_with_owner"
+        case isPrivate = "private"
+        case updatedAt = "updated_at"
+        case localPath = "local_path"
+    }
+}
+
+/// The answer to github.repos.
+public struct GitHubRepos: Codable {
+    public var available: Bool
+    public var reason: String?
+    public var account: String?
+    public var repos: [GitHubRepo]?
+    /// Directories the user already keeps checkouts in, most-used first — offered as clone
+    /// destinations so nobody has to type an absolute path on a phone.
+    public var cloneRoots: [String]?
+    enum CodingKeys: String, CodingKey {
+        case available, reason, account, repos
+        case cloneRoots = "clone_roots"
+    }
+}
+
+public struct GitHubClone: Codable {
+    public var nameWithOwner: String
+    public var parent: String
+    public init(nameWithOwner: String, parent: String) {
+        self.nameWithOwner = nameWithOwner; self.parent = parent
+    }
+    enum CodingKeys: String, CodingKey {
+        case nameWithOwner = "name_with_owner"
+        case parent
+    }
+}
+
+public struct GitHubCloned: Codable { public var path: String }
 
 /// The daemon asking this app to perform one DOM operation in a preview it has open.
 ///

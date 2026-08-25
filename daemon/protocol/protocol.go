@@ -110,6 +110,8 @@ const (
 	TypeFSTree           = "fs.tree"            // list a directory (or the available roots when path is empty)
 	TypeFSRead           = "fs.read"            // read a text file (content + sha for conflict detection)
 	TypeFSReadBytes      = "fs.readbytes"       // read a file's raw bytes (images shown inline)
+	TypeGitHubRepos      = "github.repos"       // list the repositories this account can reach
+	TypeGitHubClone      = "github.clone"       // clone one of them onto the daemon host
 	TypePreviewFetch     = "preview.fetch"      // fetch one resource from a session's own dev server
 	TypePreviewDOMAsk    = "preview.dom.ask"    // daemon -> client: run a DOM op in the open preview
 	TypePreviewDOMResult = "preview.dom.result" // client -> daemon: the answer
@@ -1086,6 +1088,43 @@ type PreviewFetchResp struct {
 	Status  int               `json:"status"`
 	Headers map[string]string `json:"headers,omitempty"`
 	Body    string            `json:"body"` // base64 (StdEncoding)
+}
+
+// GitHubRepo is one repository the user can reach, as offered when starting a session.
+type GitHubRepo struct {
+	Name          string `json:"name"`
+	NameWithOwner string `json:"name_with_owner"`
+	Description   string `json:"description,omitempty"`
+	URL           string `json:"url,omitempty"`
+	Private       bool   `json:"private,omitempty"`
+	UpdatedAt     string `json:"updated_at,omitempty"`
+	Language      string `json:"language,omitempty"`
+	// LocalPath is where this repo already sits on the daemon host, "" if it is not checked out.
+	// Resolved daemon-side because the client cannot see that disk.
+	LocalPath string `json:"local_path,omitempty"`
+}
+
+// GitHubRepos answers github.repos.
+type GitHubRepos struct {
+	// Available is false when gh is missing or signed out; Reason then says what to do about it.
+	Available bool         `json:"available"`
+	Reason    string       `json:"reason,omitempty"`
+	Account   string       `json:"account,omitempty"`
+	Repos     []GitHubRepo `json:"repos,omitempty"`
+	// CloneRoots are directories the user already keeps checkouts in, most-used first, offered as
+	// destinations so nobody has to type a path on a phone.
+	CloneRoots []string `json:"clone_roots,omitempty"`
+}
+
+// GitHubClone asks the daemon to check a repository out under Parent.
+type GitHubClone struct {
+	NameWithOwner string `json:"name_with_owner"`
+	Parent        string `json:"parent"`
+}
+
+// GitHubCloned reports where a clone landed.
+type GitHubCloned struct {
+	Path string `json:"path"`
 }
 
 // PreviewDOMAsk asks a connected app to perform one DOM operation inside the preview it already has
