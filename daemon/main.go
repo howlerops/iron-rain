@@ -459,6 +459,26 @@ func serve(args []string) error {
 	h.SetPairURLBuilder(func(secret string) string {
 		return buildPairURL(pubURL, hex.EncodeToString(kp.Public()), secret, desktopName, *relayURL)
 	})
+	// BIND FIRST, and only then rotate the local credential.
+	//
+	// Rotation rewrites ~/.oculus/pairing.json while the RUNNING daemon keeps its own code in memory,
+	// so a second daemon that starts, rotates, and then dies on "address already in use" leaves the
+	// live one holding a code that no longer matches the file. Every recovery path reads that file —
+	// including the app's own "the daemon forgot me, re-enrol with the bootstrap code" fallback — so
+	// the result is a machine whose app cannot reconnect and cannot repair itself, fixable only by
+	// restarting the daemon that was working fine.
+	//
+	// Observed exactly that way: a stray daemon launched against the same home rewrote the file three
+	// hours after the real one started, and the app was locked out until a restart.
+	//
+	// Binding here makes the common cause of a doomed start — the port is taken — fail before any
+	// credential is touched.
+	ln, err := net.Listen("tcp", *addr)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w (is another oculusd already running?)", *addr, err)
+	}
+	defer ln.Close()
+
 	// Drop a local pairing file so an app on THIS machine (the macOS app) can auto-discover + connect
 	// with zero config. 0600, same-user only. It carries the LOCAL bootstrap code, which is rotated
 	// on every daemon start — so the file is never the permanent secret, and a copy of it taken from a
@@ -492,7 +512,9 @@ func serve(args []string) error {
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	errCh := make(chan error, 1)
 	go func() {
-		err := httpSrv.ListenAndServe()
+		// Serve on the listener bound above, rather than binding here — see the comment there for
+		// why the bind has to happen before any credential is rotated.
+		err := httpSrv.Serve(ln)
 		if err == http.ErrServerClosed {
 			err = nil
 		}
