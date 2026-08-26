@@ -202,6 +202,14 @@ struct GitHubPicker: View {
 
     private func load(force: Bool = false) async {
         if !force && answer != nil { return }
+        // Not connected is a state, not a failure to report: the request would fail with a bare
+        // "not connected" — lowercase, unpunctuated, and describing the transport rather than
+        // anything the reader can act on. Say what is true and what happens next.
+        guard model.connected else {
+            failure = "Not connected to your Mac yet. Your repositories will appear once it reconnects."
+            loading = false
+            return
+        }
         loading = true
         failure = nil
         do {
@@ -209,7 +217,9 @@ struct GitHubPicker: View {
             answer = a
             cloneRoot = a.cloneRoots?.first ?? ""
         } catch {
-            failure = error.localizedDescription
+            // Sentence-cased, because these surface verbatim and daemon errors start lowercase.
+            let raw = error.localizedDescription
+            failure = raw.isEmpty ? "Couldn't reach GitHub." : raw.prefix(1).uppercased() + raw.dropFirst()
         }
         loading = false
     }
