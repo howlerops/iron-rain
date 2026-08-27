@@ -41,6 +41,7 @@ import (
 	"github.com/howlerops/oculus/daemon/genui"
 	"github.com/howlerops/oculus/daemon/hub"
 	"github.com/howlerops/oculus/daemon/issues"
+	"github.com/howlerops/oculus/daemon/lockfile"
 	"github.com/howlerops/oculus/daemon/loghub"
 	"github.com/howlerops/oculus/daemon/mcp"
 	"github.com/howlerops/oculus/daemon/project"
@@ -152,6 +153,28 @@ func serve(args []string) error {
 	// aren't detected on my other Mac" bug. Merge in the user's real interactive-shell PATH + common
 	// tool dirs so LookPath finds opencode/claude/node/pi/codex/gemini regardless of how they run us.
 	augmentPATH()
+
+	// ONE daemon per state directory, established before anything reads or writes that directory.
+	//
+	// ~/.oculus is single-owner state, and the sharpest edge is not the SQLite handle: a second
+	// daemon ROTATES the local bootstrap code and rewrites pairing.json, while the first keeps its
+	// own copy in memory. From that moment the file and the running daemon disagree, every local
+	// recovery path reads the wrong code — including the app's own "re-enrol with the bootstrap
+	// code" fallback — and the machine is left with an app that can neither connect nor repair
+	// itself, with nothing anywhere naming the cause.
+	//
+	// Binding the listener first (further down) catches the usual version of this, since a second
+	// daemon normally wants a port the first already holds. It does nothing about a second daemon on
+	// a different port, which is the same accident with a flag typo. The invariant worth enforcing
+	// is the directory, so it is enforced on the directory.
+	//
+	// Taken BEFORE self-update, which re-execs: a lock held across exec would be inherited by the
+	// replacement and is released by the kernel when this process image goes away.
+	stateLock, err := lockfile.Acquire(oculusStateDir(), "daemon.lock")
+	if err != nil {
+		return err
+	}
+	defer stateLock.Release()
 
 	// Keep the daemon in lockstep with releases: if a newer one exists, self-update + re-exec BEFORE
 	// binding, so every (re)start runs the latest. No-op for dev builds / non-installs. This is why
@@ -739,6 +762,19 @@ func runDiscover() error {
 		}
 	}
 	return nil
+}
+
+// oculusStateDir is the single-owner state directory: keys, credentials, the device registry, the
+// project list and the transcript database. Its identity is what the daemon lock is taken on.
+//
+// Falls back to the working directory for the same reason defaultKeyPath does — a machine with no
+// resolvable home should still run, and it will simply be locking a different directory.
+func oculusStateDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "."
+	}
+	return filepath.Join(home, ".oculus")
 }
 
 func defaultKeyPath() string {
