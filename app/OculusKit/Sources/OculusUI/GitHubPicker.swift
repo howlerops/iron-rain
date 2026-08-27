@@ -25,24 +25,15 @@ struct GitHubPicker: View {
     @State private var cloneRoot = ""
     @FocusState private var searchFocused: Bool
 
-    /// How many rows to render before asking the user to narrow the search.
-    ///
-    /// The point of this screen is to stop being a wall of rows; showing a hundred would rebuild the
-    /// thing it replaces. Already-cloned repos sort first daemon-side, so the visible set is the
-    /// useful one.
-    private static let visibleLimit = 25
-
-    /// How much height the results get.
-    ///
-    /// Bounded so the rest of the sheet keeps its room, but scaled with the sheet rather than fixed:
-    /// a constant that leaves a laptop workable wastes most of a large display, and this list is the
-    /// surface the sheet now exists for. Roughly half the sheet, floored so it never collapses back
-    /// to the two rows this replaced.
-    static var listHeight: CGFloat {
+    /// Rows rendered. This IS the height bound, now that the list has no scroll view of its own:
+    /// rows are a fixed size, so counting them and bounding the height are the same act. Derived from
+    /// the sheet so a large display shows more and a laptop is not overflowed, with a floor that keeps
+    /// it well clear of the two rows this replaced.
+    private static var visibleLimit: Int {
         #if os(macOS)
-        return max(NewSessionView.sheetHeight * 0.42, 220)
+        return max(Int((NewSessionView.sheetHeight * 0.42) / 34), 6)
         #else
-        return 260
+        return 8
         #endif
     }
 
@@ -226,21 +217,21 @@ struct GitHubPicker: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
         } else {
-            // The list scrolls WITHIN a bounded height rather than growing the sheet.
+            // Rendered INLINE, with no scroll view of its own.
             //
-            // Left to grow it competed with the prompt field, the agent picker and the chosen
-            // folders for one modal's worth of space, and lost: two rows were visible, which is
-            // fewer than the folder list this replaced. Bounding it means the number of rows is the
-            // same whether an account has five repositories or five hundred.
-            ScrollView {
-                VStack(spacing: 5) {
-                    ForEach(shown) { row($0) }
-                }
+            // It had one, to bound its height — and that made the sheet two scroll surfaces stacked,
+            // where a wheel gesture over the list moved the list and anything below it was reachable
+            // only by aiming at the margins. The bound was the right instinct and a scroll view was
+            // the wrong mechanism: capping the ROW COUNT bounds the height just as well, leaves one
+            // scrolling surface, and turns "there are more" into something the search box answers
+            // rather than something you hunt for by dragging.
+            VStack(spacing: 5) {
+                ForEach(shown) { row($0) }
             }
-            .frame(maxHeight: Self.listHeight)
             if filtered.count > shown.count {
-                Text("\(filtered.count - shown.count) more — narrow the search to see them.")
+                Text("\(filtered.count - shown.count) more — search to narrow them down.")
                     .font(.caption2).foregroundStyle(palette.mutedForeground)
+                    .padding(.top, 1)
             }
         }
     }

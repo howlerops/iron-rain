@@ -3,6 +3,9 @@ import OculusKit
 #if canImport(AppKit)
 import AppKit
 #endif
+#if canImport(WebKit)
+import WebKit
+#endif
 #if os(iOS)
 import ActivityKit
 #endif
@@ -3450,7 +3453,14 @@ public final class Model: ObservableObject {
     @MainActor
     func handlePreviewDOMAsk(_ ask: PreviewDOMAsk) async {
         #if canImport(WebKit)
-        guard let webView = PreviewDOMRegistry.shared.view(for: ask.sessionID) else { return }
+        // Prefer a view a PERSON has open — same page, and no second renderer. Otherwise build an
+        // offscreen one, so "look at the page you just changed" does not require someone to have
+        // opened a sheet first. Nothing is shown and nothing takes focus.
+        var webView = PreviewDOMRegistry.shared.anyView(for: ask.sessionID)
+        if webView == nil { webView = await headlessPreview(for: ask.sessionID) }
+        // Still nothing: stay SILENT rather than answering "no". Another connected device may be
+        // able to serve this, and a fast refusal would beat a slower real answer.
+        guard let webView else { return }
 
         let js: String
         switch ask.op {
@@ -3479,6 +3489,40 @@ public final class Model: ObservableObject {
         }
         #endif
     }
+
+    /// Builds an offscreen web view on this session's preview, or nil if there is nothing to load.
+    ///
+    /// Every connected client may do this, so two devices can both end up rendering the same page
+    /// for one question. The first answer wins and the loser's view ages out — which is a little
+    /// waste in exchange for the tools working whenever ANY device is connected, rather than only
+    /// when the right one is.
+    #if canImport(WebKit)
+    @MainActor
+    private func headlessPreview(for sessionID: String) async -> WKWebView? {
+        guard let session = sessions.first(where: { $0.id == sessionID }) else { return nil }
+        // The same choice the Design sheet makes: load directly when the dev server is genuinely
+        // reachable from here, and tunnel through the daemon when it is not.
+        let url: URL?
+        var tunnel: PreviewSchemeHandler?
+        if daemonIsLocal, let raw = session.previewURL, !raw.isEmpty {
+            url = URL(string: raw)
+        } else {
+            tunnel = PreviewSchemeHandler { [weak self] path, method, headers, body in
+                guard let self else { throw PreviewTunnelError.badRequest }
+                return try await self.previewFetch(sessionID: sessionID, path: path,
+                                                   method: method, headers: headers, body: body)
+            }
+            url = previewTunnelURL()
+        }
+        guard let url else { return nil }
+        guard let wv = await HeadlessPreview.make(url: url, tunnel: tunnel) else {
+            PreviewDOMRegistry.shared.dropHeadless(sessionID: sessionID)
+            return nil
+        }
+        PreviewDOMRegistry.shared.adoptHeadless(sessionID: sessionID, view: wv)
+        return wv
+    }
+    #endif
 
     private func sendPreviewDOMResult(_ result: PreviewDOMResult) async {
         guard let client else { return }

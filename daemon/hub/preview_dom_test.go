@@ -145,8 +145,9 @@ func TestPreviewToolsAreDeclaredHonestly(t *testing.T) {
 			t.Errorf("missing tool %s", want)
 		}
 	}
-	if !strings.Contains(previewTools[0].Description, "open") {
-		t.Error("preview_snapshot must tell the agent it needs the preview to be open")
+	// The agent must know the one precondition it cannot satisfy itself: an app has to be connected.
+	if !strings.Contains(previewTools[0].Description, "running") {
+		t.Error("preview_snapshot must tell the agent it needs the app running")
 	}
 }
 

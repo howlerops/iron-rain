@@ -56,6 +56,51 @@ public final class PreviewDOMRegistry {
     }
     #endif
 
+    #if canImport(WebKit)
+    /// Web views this app created for an agent, rather than for a person to look at.
+    ///
+    /// Held STRONGLY, unlike the ones above: nothing else is keeping them alive. Evicted after an
+    /// idle period so a day of agent work does not accumulate one renderer per session.
+    private var headless: [String: (view: WKWebView, lastUsed: Date)] = [:]
+
+    /// How long an agent-created view survives without use.
+    private static let headlessIdle: TimeInterval = 10 * 60
+
+    /// A view for this session, preferring one a PERSON already has open.
+    ///
+    /// The visible one is preferred because it is the page the user is actually looking at — the
+    /// agent and the human should be seeing the same thing where possible.
+    public func anyView(for sessionID: String) -> WKWebView? {
+        if let visible = view(for: sessionID) { return visible }
+        lock.lock(); defer { lock.unlock() }
+        evictIdleLocked()
+        guard let entry = headless[sessionID] else { return nil }
+        headless[sessionID] = (entry.view, Date())
+        return entry.view
+    }
+
+    /// Registers a view this app created for agent use.
+    public func adoptHeadless(sessionID: String, view: WKWebView) {
+        guard !sessionID.isEmpty else { return }
+        lock.lock(); defer { lock.unlock() }
+        evictIdleLocked()
+        headless[sessionID] = (view, Date())
+    }
+
+    /// Drops an agent-created view — when its session ends, or its page failed to load.
+    public func dropHeadless(sessionID: String) {
+        lock.lock(); defer { lock.unlock() }
+        headless.removeValue(forKey: sessionID)
+    }
+
+    private func evictIdleLocked() {
+        let cutoff = Date().addingTimeInterval(-Self.headlessIdle)
+        for (id, entry) in headless where entry.lastUsed < cutoff {
+            headless.removeValue(forKey: id)
+        }
+    }
+    #endif
+
     /// Whether any web view is currently showing this session's preview.
     public func isShowing(sessionID: String) -> Bool {
         #if canImport(WebKit)
@@ -65,6 +110,78 @@ public final class PreviewDOMRegistry {
         #endif
     }
 }
+
+#if canImport(WebKit)
+/// Builds an offscreen web view for a session's preview, so an agent can look at the page without a
+/// person having the Design sheet open.
+///
+/// The alternative was to have the daemon ask the app to OPEN that sheet, which works and is wrong:
+/// an agent would be yanking a window in front of whatever its owner was doing, and the moment that
+/// is possible it is also a thing a misbehaving agent can do repeatedly. This renders the same page
+/// with the same scripts and interrupts nobody.
+///
+/// The frame is explicit and non-zero on purpose. A WKWebView with a zero frame still runs
+/// JavaScript, so the temptation is to leave it unsized — but it does not LAY OUT, and the snapshot
+/// walks the page asking each element for its client rects. Unsized, every element reports no boxes,
+/// the visibility check drops all of them, and the agent is told a fully working page is empty. That
+/// is the worst possible answer: confidently wrong rather than unavailable.
+@MainActor
+public enum HeadlessPreview {
+    /// A conventional desktop viewport. Responsive layouts branch on width, so a page rendered at
+    /// 320pt would answer questions about the mobile layout while the person asking is looking at
+    /// the desktop one.
+    static let viewport = CGSize(width: 1280, height: 900)
+
+    /// How long to wait for the page before giving up and saying so.
+    static let loadTimeout: TimeInterval = 20
+
+    /// Creates a view, loads `url`, and returns it once the page has finished loading.
+    public static func make(url: URL, tunnel: PreviewSchemeHandler?) async -> WKWebView? {
+        let cfg = WKWebViewConfiguration()
+        if let tunnel {
+            cfg.setURLSchemeHandler(tunnel, forURLScheme: previewTunnelScheme)
+        }
+        let wv = WKWebView(frame: CGRect(origin: .zero, size: viewport), configuration: cfg)
+        let waiter = LoadWaiter()
+        wv.navigationDelegate = waiter
+        wv.load(URLRequest(url: url))
+        let loaded = await waiter.wait(timeout: loadTimeout)
+        // The delegate is cleared either way: it exists only to observe the first load, and leaving
+        // it attached would keep a waiter alive for the life of the view.
+        wv.navigationDelegate = nil
+        return loaded ? wv : nil
+    }
+}
+
+/// Resumes once a web view finishes (or fails) its first navigation.
+private final class LoadWaiter: NSObject, WKNavigationDelegate {
+    private var continuation: CheckedContinuation<Bool, Never>?
+    private var settled = false
+
+    func wait(timeout: TimeInterval) async -> Bool {
+        await withCheckedContinuation { (c: CheckedContinuation<Bool, Never>) in
+            continuation = c
+            // A dev server that accepts the connection and then never answers would otherwise park
+            // this forever, and the agent with it.
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                self.settle(false)
+            }
+        }
+    }
+
+    private func settle(_ ok: Bool) {
+        guard !settled else { return } // a failure after a success, or the timeout after either
+        settled = true
+        continuation?.resume(returning: ok)
+        continuation = nil
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { settle(true) }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { settle(false) }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { settle(false) }
+}
+#endif
 
 /// Reads the live DOM into an outline an agent can reason about, stamping each listed element with a
 /// ref.

@@ -158,6 +158,8 @@ func (h *Hub) handlePreviewFetch(req protocol.PreviewFetchReq) (protocol.Preview
 		return zero, fmt.Errorf("that resource is larger than %d MiB, which is more than one message can carry", maxPreviewBody>>20)
 	}
 
+	raw = relativiseOwnOrigin(raw, host, resp.Header.Get("Content-Type"))
+
 	out := protocol.PreviewFetchResp{
 		Status:  resp.StatusCode,
 		Headers: map[string]string{},
@@ -175,4 +177,37 @@ func (h *Hub) handlePreviewFetch(req protocol.PreviewFetchReq) (protocol.Preview
 		out.Headers[k] = vs[0]
 	}
 	return out, nil
+}
+
+// relativiseOwnOrigin rewrites the dev server's own absolute URLs into root-relative ones.
+//
+// The client renders this page under a custom scheme, and a scheme handler only ever sees requests
+// for its OWN scheme. So `<script src="http://my-app.localhost:7777/x.js">` bypasses the tunnel
+// entirely and goes to the device's network stack — where, on the phone this feature exists for,
+// nothing is listening. The asset simply never loads, with no error pointing at why.
+//
+// Rewriting it to "/x.js" fixes that without the daemon needing to know anything about the client: a
+// root-relative URL inherits whatever scheme and host the document was loaded under, which is the
+// same property that already makes relative assets work. It is therefore harmless in the direct
+// case, where it changes which string is used and not which server answers.
+//
+// Deliberately narrow. Only this session's OWN origin is touched — a link to another host is left
+// alone because it genuinely belongs to another host — and only in textual responses, since
+// rewriting a binary payload would corrupt it.
+func relativiseOwnOrigin(body []byte, host, contentType string) []byte {
+	if host == "" || len(body) == 0 {
+		return body
+	}
+	ct := strings.ToLower(contentType)
+	textual := strings.Contains(ct, "html") || strings.Contains(ct, "javascript") ||
+		strings.Contains(ct, "css") || strings.Contains(ct, "json") || strings.HasPrefix(ct, "text/")
+	if !textual {
+		return body
+	}
+	out := body
+	// Both schemes: a dev server serves http, but a page may still have been written with https.
+	for _, origin := range []string{"http://" + host, "https://" + host} {
+		out = bytes.ReplaceAll(out, []byte(origin), nil)
+	}
+	return out
 }

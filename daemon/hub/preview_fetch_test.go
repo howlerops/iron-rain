@@ -236,3 +236,71 @@ func TestPreviewFetchDropsHopByHopHeaders(t *testing.T) {
 		}
 	}
 }
+
+// A dev server's own absolute URLs must become root-relative, or they bypass the tunnel and go to
+// the device's network stack — where on a phone nothing is listening and the asset silently never
+// loads.
+func TestPreviewFetchRelativisesTheDevServersOwnOrigin(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		// The Host the router routes on is what the page would have been written with.
+		fmt.Fprintf(w, `<script src="http://%s/app.js"></script><a href="https://%s/x">x</a>`, r.Host, r.Host)
+	}))
+	defer up.Close()
+	h := previewHub(t, up.URL)
+
+	resp, err := h.handlePreviewFetch(protocol.PreviewFetchReq{SessionID: "sess-1", Path: "/"})
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	body, _ := base64.StdEncoding.DecodeString(resp.Body)
+	got := string(body)
+	if strings.Contains(got, "http://my-app.localhost") || strings.Contains(got, "https://my-app.localhost") {
+		t.Errorf("the dev server's own origin survived: %s", got)
+	}
+	if !strings.Contains(got, `src="/app.js"`) {
+		t.Errorf("expected a root-relative src, got: %s", got)
+	}
+	if !strings.Contains(got, `href="/x"`) {
+		t.Errorf("expected a root-relative href, got: %s", got)
+	}
+}
+
+// Another host's URLs belong to that host and must be left alone.
+func TestPreviewFetchLeavesOtherOriginsAlone(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<img src="https://cdn.example.com/logo.png">`)
+	}))
+	defer up.Close()
+	h := previewHub(t, up.URL)
+
+	resp, err := h.handlePreviewFetch(protocol.PreviewFetchReq{SessionID: "sess-1", Path: "/"})
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	body, _ := base64.StdEncoding.DecodeString(resp.Body)
+	if !strings.Contains(string(body), "https://cdn.example.com/logo.png") {
+		t.Errorf("a third-party URL was rewritten: %s", body)
+	}
+}
+
+// Rewriting a binary payload would corrupt it, so only textual responses are touched.
+func TestPreviewFetchDoesNotRewriteBinary(t *testing.T) {
+	// A byte sequence that happens to contain the origin string inside "binary" content.
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		fmt.Fprintf(w, "PNG\x00http://%s/x\x00", r.Host)
+	}))
+	defer up.Close()
+	h := previewHub(t, up.URL)
+
+	resp, err := h.handlePreviewFetch(protocol.PreviewFetchReq{SessionID: "sess-1", Path: "/i.png"})
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	body, _ := base64.StdEncoding.DecodeString(resp.Body)
+	if !strings.Contains(string(body), "http://my-app.localhost") {
+		t.Errorf("a binary body was rewritten, which corrupts it: %q", body)
+	}
+}

@@ -586,6 +586,9 @@ public struct PreviewFetchResp: Codable {
     public var status: Int
     public var headers: [String: String]?
     public var body: String // base64
+    public init(status: Int, headers: [String: String]? = nil, body: String) {
+        self.status = status; self.headers = headers; self.body = body
+    }
 }
 
 public struct ImageAttachment: Codable, Hashable, Identifiable {

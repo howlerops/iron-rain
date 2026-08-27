@@ -23,9 +23,15 @@ import (
 // clients, whichever one has that session's preview open performs the operation in its own web view,
 // and the answer comes back. Same shape as an approval — broadcast, wait on a keyed waiter, time out.
 //
-// The honest limitation, which the tool descriptions state rather than hide: this works only while
-// someone has that preview open. An agent running with nobody watching gets a clear refusal, because
-// a wrong answer about what a page renders is worse than no answer.
+// The limitation is narrower than it first was. The app renders the page whether or not a person has
+// the preview open: if nobody does, it builds an offscreen web view for the purpose, shows nothing
+// and takes no focus. What remains is that SOME app has to be connected — there is no renderer
+// otherwise — and that case still refuses clearly rather than guessing, because a wrong answer about
+// what a page displays is worse than no answer.
+//
+// Deliberately not "the daemon asks the app to open the Design sheet". That works, and it means an
+// agent can throw a window in front of whatever its owner was doing — which is a capability worth
+// not having.
 
 // previewDOMTimeout bounds one DOM round trip. Generous enough for a slow page on a phone over a
 // relay, short enough that an agent is not parked on a client that has gone away.
@@ -106,8 +112,8 @@ func (h *Hub) askPreviewDOM(ctx context.Context, sessionID, op, ref, value strin
 	case <-time.After(previewDOMTimeout):
 		// Overwhelmingly this means nobody has the page open, so say that rather than "timeout" —
 		// the agent can act on the first and can do nothing with the second.
-		return "", fmt.Errorf("no app is showing this session's preview. " +
-			"Open the session in Iron Rain and press Design to let me see the page")
+		return "", fmt.Errorf("no Iron Rain app is connected, so there is nothing that can render " +
+			"this page. Open Iron Rain on any of your devices and try again")
 	case <-ctx.Done():
 		return "", ctx.Err()
 	}
@@ -127,9 +133,9 @@ var previewTools = []mcp.BuiltinTool{
 		Description: "Look at the page your dev server is currently rendering, as a structured outline " +
 			"of its interactive and text-bearing elements, each with a ref you can pass to preview_click " +
 			"or preview_fill. This reads the LIVE DOM after the page's own JavaScript has run, so it " +
-			"reflects what a person actually sees. Requires that someone has this session's preview " +
-			"open in Iron Rain (Design); if nobody does, it will tell you so — do not guess at the page " +
-			"in that case, ask the user to open it.",
+			"reflects what a person actually sees. Requires the Iron Rain app to be running somewhere — " +
+			"it renders the page for me, without showing anything, if nobody has the preview open. If " +
+			"no app is connected it will tell you so; do not guess at the page in that case.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
 	},
 	{
