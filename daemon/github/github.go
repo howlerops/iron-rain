@@ -29,9 +29,12 @@ const listTimeout = 25 * time.Second
 // cloneTimeout bounds a clone. Generous: a large repo over a slow link is not a failure.
 const cloneTimeout = 10 * time.Minute
 
-// maxRepos bounds one listing. The API page cap is 100 and that is plenty to search within; a person
-// looking for a repo they touched a year ago will type its name rather than scroll to it.
-const maxRepos = 100
+// pageSize is the API's maximum page.
+const pageSize = 100
+
+// maxPages bounds the walk. Five pages is 500 repositories, past which someone is searching by name
+// rather than scrolling, and each page is a network round trip a person is waiting on.
+const maxPages = 5
 
 // Repo is one repository the user can reach.
 type Repo struct {
@@ -112,17 +115,80 @@ func List(ctx context.Context, searchRoots []string) ([]Repo, error) {
 	ctx, cancel := context.WithTimeout(ctx, listTimeout)
 	defer cancel()
 
-	out, err := exec.CommandContext(ctx, "gh", "api",
-		fmt.Sprintf("user/repos?per_page=%d&sort=updated&affiliation=owner,collaborator,organization_member", maxRepos),
-	).Output()
+	raw, err := fetchPages(ctx, "user/repos?affiliation=owner,collaborator,organization_member&sort=updated")
 	if err != nil {
 		return nil, fmt.Errorf("gh could not list your repositories: %w", err)
 	}
-	var raw []ghRepo
-	if err := json.Unmarshal(out, &raw); err != nil {
-		return nil, fmt.Errorf("could not read gh's answer: %w", err)
-	}
+	return decorate(raw, searchRoots), nil
+}
 
+// ListOwner returns the repositories belonging to one owner.
+//
+// This exists because user/repos does NOT return everything a person can reach, which is not obvious
+// and cost real time to find: on this account it returns 132 repositories across six organisations
+// and ZERO from a seventh that the user works in daily — an org they are an outside collaborator on,
+// which therefore appears in neither user/repos nor user/orgs. Paginating harder does not help; the
+// endpoint simply does not include them.
+//
+// Asking for an owner by name does, so typing "totango/" reaches repositories that browsing never
+// would. Tries the organisation endpoint first and falls back to the user one, since the caller
+// knows a name and not which kind of account it is.
+func ListOwner(ctx context.Context, owner string, searchRoots []string) ([]Repo, error) {
+	if st := Check(ctx); !st.Available {
+		return nil, fmt.Errorf("%s", st.Reason)
+	}
+	owner = strings.TrimSpace(strings.Trim(owner, "/"))
+	// The owner is interpolated into a request path, so it may only be a GitHub login.
+	if owner == "" || strings.ContainsAny(owner, "/?&#. ") || strings.HasPrefix(owner, "-") {
+		return nil, fmt.Errorf("%q is not a valid owner name", owner)
+	}
+	ctx, cancel := context.WithTimeout(ctx, listTimeout)
+	defer cancel()
+
+	raw, err := fetchPages(ctx, "orgs/"+owner+"/repos?sort=pushed")
+	if err != nil || len(raw) == 0 {
+		// Not an organisation, or not one we can see — try it as a personal account before giving up.
+		raw, err = fetchPages(ctx, "users/"+owner+"/repos?sort=pushed")
+		if err != nil {
+			return nil, fmt.Errorf("no repositories found for %q", owner)
+		}
+	}
+	return decorate(raw, searchRoots), nil
+}
+
+// fetchPages walks a paginated collection endpoint.
+func fetchPages(ctx context.Context, path string) ([]ghRepo, error) {
+	var all []ghRepo
+	sep := "&"
+	if !strings.Contains(path, "?") {
+		sep = "?"
+	}
+	for page := 1; page <= maxPages; page++ {
+		url := fmt.Sprintf("%s%sper_page=%d&page=%d", path, sep, pageSize, page)
+		out, err := exec.CommandContext(ctx, "gh", "api", url).Output()
+		if err != nil {
+			if page == 1 {
+				return nil, err
+			}
+			break // a later page failing still leaves a usable list
+		}
+		var batch []ghRepo
+		if err := json.Unmarshal(out, &batch); err != nil {
+			if page == 1 {
+				return nil, fmt.Errorf("could not read gh's answer: %w", err)
+			}
+			break
+		}
+		all = append(all, batch...)
+		if len(batch) < pageSize {
+			break // short page means this was the last one
+		}
+	}
+	return all, nil
+}
+
+// decorate converts the API shape and resolves which repositories are already on disk.
+func decorate(raw []ghRepo, searchRoots []string) []Repo {
 	repos := make([]Repo, 0, len(raw))
 	for _, r := range raw {
 		repos = append(repos, Repo{
@@ -145,7 +211,7 @@ func List(ctx context.Context, searchRoots []string) ([]Repo, error) {
 		}
 		return repos[i].UpdatedAt > repos[j].UpdatedAt
 	})
-	return repos, nil
+	return repos
 }
 
 // findLocal looks for an existing checkout of `name` directly inside any search root.

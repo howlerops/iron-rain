@@ -32,9 +32,36 @@ struct GitHubPicker: View {
     /// useful one.
     private static let visibleLimit = 25
 
+    /// Repositories fetched for an explicitly named owner, and which owner they belong to.
+    ///
+    /// Browsing cannot reach every repository a person can open. On this account the general listing
+    /// returns 132 across six organisations and NONE from a seventh the user works in daily — an org
+    /// they are an outside collaborator on, which appears in neither user/repos nor user/orgs.
+    /// Naming it is the only way, so "totango/" is a first-class query rather than a filter.
+    @State private var ownerRepos: [GitHubRepo] = []
+    @State private var fetchedOwner = ""
+
     private var repos: [GitHubRepo] { answer?.repos ?? [] }
 
+    /// The owner named by the query, "" when it is an ordinary search.
+    private var queryOwner: String {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard let slash = q.firstIndex(of: "/") else { return "" }
+        return String(q[q.startIndex..<slash]).trimmingCharacters(in: .whitespaces)
+    }
+
+    /// The part after the slash, used to narrow within a named owner.
+    private var queryRemainder: String {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard let slash = q.firstIndex(of: "/") else { return q }
+        return String(q[q.index(after: slash)...]).trimmingCharacters(in: .whitespaces).lowercased()
+    }
+
     private var filtered: [GitHubRepo] {
+        if !queryOwner.isEmpty, fetchedOwner.caseInsensitiveCompare(queryOwner) == .orderedSame {
+            let r = queryRemainder
+            return r.isEmpty ? ownerRepos : ownerRepos.filter { $0.name.lowercased().contains(r) }
+        }
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
         guard !q.isEmpty else { return repos }
         return repos.filter {
@@ -46,20 +73,36 @@ struct GitHubPicker: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
-            if loading {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Asking GitHub…").font(.caption).foregroundStyle(palette.mutedForeground)
-                }
-                .frame(minHeight: 44)
-            } else if let reason = failure ?? (answer?.available == false ? answer?.reason : nil) {
-                unavailable(reason)
+            // Once a listing has arrived the search field STAYS, whatever happens afterwards. An
+            // owner lookup that finds nothing is a search result, not a broken screen — replacing the
+            // field with an error would leave someone unable to edit the query that caused it.
+            if let blocking = blockingReason {
+                unavailable(blocking)
             } else {
                 search
-                list
+                if let failure { inlineNote(failure) }
+                if loading {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Asking GitHub…").font(.caption).foregroundStyle(palette.mutedForeground)
+                    }
+                    .frame(minHeight: 44)
+                } else {
+                    list
+                }
             }
         }
         .task { await load() }
+        // Fetching on every keystroke of "totango/" would be four requests for one intent, so this
+        // waits for a pause. Cancellation is what makes that work: SwiftUI tears down the old task
+        // when the value changes again, so only the last one survives to sleep out.
+        .task(id: queryOwner) {
+            let owner = queryOwner
+            guard !owner.isEmpty, owner.caseInsensitiveCompare(fetchedOwner) != .orderedSame else { return }
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard !Task.isCancelled else { return }
+            await loadOwner(owner)
+        }
     }
 
     private var header: some View {
@@ -83,6 +126,28 @@ struct GitHubPicker: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Refresh repositories")
             }
+        }
+    }
+
+    /// A reason there is no usable picker at all, as opposed to a failed search within one.
+    ///
+    /// Only the FIRST listing can block: gh missing, signed out, or not connected. After that the
+    /// screen works and any later error belongs beside the search field, not in place of it.
+    private var blockingReason: String? {
+        if answer != nil { return nil }
+        if loading { return nil }
+        if let failure { return failure }
+        if answer?.available == false { return answer?.reason }
+        return nil
+    }
+
+    /// A failure that sits alongside the working picker rather than replacing it.
+    private func inlineNote(_ text: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "exclamationmark.circle").font(.caption2)
+                .foregroundStyle(palette.mutedForeground).accessibilityHidden(true)
+            Text(text).font(.caption2).foregroundStyle(palette.mutedForeground)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -132,11 +197,20 @@ struct GitHubPicker: View {
     @ViewBuilder private var list: some View {
         let shown = Array(filtered.prefix(Self.visibleLimit))
         if filtered.isEmpty {
-            Text(query.isEmpty
-                 ? "No repositories came back for this account."
-                 : "Nothing matches “\(query)”.")
-                .font(.caption).foregroundStyle(palette.mutedForeground)
-                .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(query.isEmpty
+                     ? "No repositories came back for this account."
+                     : "Nothing matches “\(query)”.")
+                    .font(.caption).foregroundStyle(palette.mutedForeground)
+                // Says the one thing a person cannot guess: browsing does not reach every repo they
+                // can open, and naming the owner does. Without this the org they work in every day
+                // looks simply absent.
+                if !query.isEmpty && queryOwner.isEmpty {
+                    Text("Type an organisation as “name/” to search it directly.")
+                        .font(.caption2).foregroundStyle(palette.mutedForeground)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
         } else {
             VStack(spacing: 5) {
                 ForEach(shown) { row($0) }
@@ -218,6 +292,29 @@ struct GitHubPicker: View {
             cloneRoot = a.cloneRoots?.first ?? ""
         } catch {
             // Sentence-cased, because these surface verbatim and daemon errors start lowercase.
+            let raw = error.localizedDescription
+            failure = raw.isEmpty ? "Couldn't reach GitHub." : raw.prefix(1).uppercased() + raw.dropFirst()
+        }
+        loading = false
+    }
+
+    /// Asks one owner directly, for the repositories browsing cannot reach.
+    private func loadOwner(_ owner: String) async {
+        guard model.connected else { return }
+        loading = true
+        failure = nil
+        do {
+            let a = try await model.githubRepos(owner: owner)
+            if a.available {
+                ownerRepos = a.repos ?? []
+                fetchedOwner = owner
+                if ownerRepos.isEmpty {
+                    failure = "No repositories found for “\(owner)”."
+                }
+            } else {
+                failure = a.reason ?? "Couldn't reach GitHub."
+            }
+        } catch {
             let raw = error.localizedDescription
             failure = raw.isEmpty ? "Couldn't reach GitHub." : raw.prefix(1).uppercased() + raw.dropFirst()
         }

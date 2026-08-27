@@ -529,6 +529,13 @@ public struct GitHubRepos: Codable {
     }
 }
 
+/// Asks for repositories. An empty owner means "everything this account can reach"; naming one asks
+/// that owner directly, which is the only way to reach an org the user is an outside collaborator on.
+public struct GitHubReposReq: Codable {
+    public var owner: String?
+    public init(owner: String? = nil) { self.owner = owner }
+}
+
 public struct GitHubClone: Codable {
     public var nameWithOwner: String
     public var parent: String

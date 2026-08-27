@@ -76,13 +76,19 @@ func isWorktreeish(path string) bool {
 }
 
 // handleGitHubRepos answers github.repos.
-func (h *Hub) handleGitHubRepos(ctx context.Context) protocol.GitHubRepos {
+func (h *Hub) handleGitHubRepos(ctx context.Context, req protocol.GitHubReposReq) protocol.GitHubRepos {
 	roots := h.cloneRoots()
 	st := github.Check(ctx)
 	if !st.Available {
 		return protocol.GitHubRepos{Available: false, Reason: st.Reason, CloneRoots: roots}
 	}
-	repos, err := github.List(ctx, roots)
+	var repos []github.Repo
+	var err error
+	if owner := strings.TrimSpace(req.Owner); owner != "" {
+		repos, err = github.ListOwner(ctx, owner, roots)
+	} else {
+		repos, err = github.List(ctx, roots)
+	}
 	if err != nil {
 		return protocol.GitHubRepos{Available: false, Reason: err.Error(), Account: st.Account, CloneRoots: roots}
 	}

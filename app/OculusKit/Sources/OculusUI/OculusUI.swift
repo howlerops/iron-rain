@@ -3493,8 +3493,12 @@ public final class Model: ObservableObject {
     /// The daemon runs `gh` and, for each repo, reports whether it is already checked out there —
     /// which the client could not work out for itself, and which is the difference between "clone
     /// this" and "open the copy you already have".
-    public func githubRepos() async throws -> GitHubRepos {
-        try await request(MessageType.githubRepos, payload: [String: String]()).payload(as: GitHubRepos.self)
+    /// `owner` asks one account directly. Needed because user/repos does not return everything a
+    /// person can reach — an org they are an outside collaborator on appears in neither that nor
+    /// user/orgs, so browsing can never surface it and only naming it works.
+    public func githubRepos(owner: String? = nil) async throws -> GitHubRepos {
+        try await request(MessageType.githubRepos, payload: GitHubReposReq(owner: owner))
+            .payload(as: GitHubRepos.self)
     }
 
     /// Clones a repository onto the daemon host and returns where it landed.

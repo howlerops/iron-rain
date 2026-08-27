@@ -1104,6 +1104,13 @@ type GitHubRepo struct {
 	LocalPath string `json:"local_path,omitempty"`
 }
 
+// GitHubReposReq asks for repositories. An empty Owner means "everything this account can reach";
+// naming one asks that owner directly, which is the only way to reach an org the user is an outside
+// collaborator on — those appear in neither user/repos nor user/orgs.
+type GitHubReposReq struct {
+	Owner string `json:"owner,omitempty"`
+}
+
 // GitHubRepos answers github.repos.
 type GitHubRepos struct {
 	// Available is false when gh is missing or signed out; Reason then says what to do about it.

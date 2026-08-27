@@ -3311,7 +3311,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		if !h.requireCapability(conn, env.ID, capOwner, "list your GitHub repositories") {
 			return
 		}
-		h.sendOK(conn, env.ID, h.handleGitHubRepos(context.Background()))
+		var greq protocol.GitHubReposReq
+		_ = env.Unmarshal(&greq)
+		h.sendOK(conn, env.ID, h.handleGitHubRepos(context.Background(), greq))
 
 	case protocol.TypeGitHubClone:
 		if !h.requireCapability(conn, env.ID, capOwner, "clone a repository") {

@@ -167,3 +167,50 @@ func TestLiveAlreadyClonedSortFirst(t *testing.T) {
 		}
 	}
 }
+
+// Naming an owner is the ONLY way to reach an org the user is an outside collaborator on. Verified
+// against the real API: on this account user/repos returns 132 repositories across six
+// organisations and zero from the one exercised here.
+func TestLiveListOwnerReachesWhatBrowsingCannot(t *testing.T) {
+	st := Check(context.Background())
+	if !st.Available {
+		t.Skipf("gh unavailable: %s", st.Reason)
+	}
+	const owner = "totango"
+
+	general, err := List(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	inGeneral := 0
+	for _, r := range general {
+		if strings.HasPrefix(strings.ToLower(r.NameWithOwner), owner+"/") {
+			inGeneral++
+		}
+	}
+
+	byOwner, err := ListOwner(context.Background(), owner, nil)
+	if err != nil {
+		t.Skipf("this account cannot see %s: %v", owner, err)
+	}
+	if len(byOwner) == 0 {
+		t.Skipf("no repositories under %s for this account", owner)
+	}
+	t.Logf("general listing: %d repos, %d from %s; naming the owner: %d",
+		len(general), inGeneral, owner, len(byOwner))
+
+	for _, r := range byOwner {
+		if !strings.HasPrefix(strings.ToLower(r.NameWithOwner), owner+"/") {
+			t.Errorf("ListOwner(%q) returned %q, which is not that owner's", owner, r.NameWithOwner)
+		}
+	}
+}
+
+// The owner is interpolated into a request path, so it may only ever be a login.
+func TestListOwnerRejectsUnsafeNames(t *testing.T) {
+	for _, bad := range []string{"", "  ", "a/b", "../../etc", "-flag", "owner?x=1", "own er", "a.b"} {
+		if _, err := ListOwner(context.Background(), bad, nil); err == nil {
+			t.Errorf("ListOwner(%q) was accepted", bad)
+		}
+	}
+}
