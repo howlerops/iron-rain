@@ -622,6 +622,16 @@ public final class Model: ObservableObject {
         }
 
         // Every route failed.
+        //
+        // Re-read the pairing file before deciding, because the daemon ROTATES its local bootstrap
+        // code on every start and this app may have been running across that restart. The cached
+        // copy is from launch, so without this the recovery below presents a code the daemon has
+        // already replaced, fails, and then never runs again — the guard sees its own stale value in
+        // `sec` and concludes there is nothing new to try. That is a permanent lockout healed only
+        // by relaunching the app, with nothing on screen suggesting why.
+        if rejected != nil {
+            await loadLocalPairing()
+        }
         if rejected != nil, !localBootstrapSecret.isEmpty, localBootstrapSecret != sec {
             // The daemon reached us and refused our credential. On this Mac that has one likely cause:
             // the daemon was reinstalled (or its device registry was cleared) and no longer knows this
