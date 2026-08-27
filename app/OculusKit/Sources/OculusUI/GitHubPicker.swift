@@ -40,7 +40,7 @@ struct GitHubPicker: View {
     /// to the two rows this replaced.
     static var listHeight: CGFloat {
         #if os(macOS)
-        return max(NewSessionView.sheetHeight * 0.48, 220)
+        return max(NewSessionView.sheetHeight * 0.42, 220)
         #else
         return 260
         #endif

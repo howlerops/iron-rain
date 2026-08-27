@@ -222,6 +222,10 @@ struct NewSessionView: View {
     /// ways a written task used to evaporate: a backgrounded phone, and a sheet dismissed by mistake.
     /// Cleared when the task is handed to a session, or when the user explicitly discards it.
     @AppStorage("oculus.newSession.draftPrompt") private var firstPrompt = ""
+    /// Whether the run settings are unfolded. Persisted, because whether someone tunes the agent on
+    /// every session or never touches it is a habit, and re-collapsing on a person who always expands
+    /// it is the same nuisance as re-expanding on one who never does.
+    @AppStorage("oculus.newSession.showRunSettings") private var showRunSettings = false
     static let lastWorktreeKey = "oculus.newSession.worktree"
     static let lastProjectsKey = "oculus.newSession.projects"
     @State private var sessionMode = SessionMode.code
@@ -604,6 +608,70 @@ struct NewSessionView: View {
                     .lineLimit(2...5)
                     .focused($focus, equals: .prompt)
             }
+            // Run settings sit ABOVE the repository picker, and the ordering is load-bearing rather
+            // than aesthetic. This row is one line tall; the picker grows to fill what is left. With
+            // the picker first, the row was pushed below the fold — and could not be scrolled to,
+            // because a wheel gesture over the list scrolls the LIST. A fixed-height control after a
+            // variable-height one is only reachable by luck.
+            runSettings
+
+            workingDirectorySection
+        }
+    }
+
+    /// Everything that is HOW the session runs, behind one disclosure.
+    ///
+    /// Seven sections used to stack in a single 560pt column — task, agent, model, folders, worktree,
+    /// mode, autonomous — and they competed for the same vertical space. What lost was the repository
+    /// list, which is the one part a person is actually reading and choosing from; the rest are
+    /// settings that keep their previous value between sessions and are changed rarely.
+    ///
+    /// So the rare things fold away and the chosen values stay on the summary line, which means
+    /// nothing becomes invisible — only quiet. Anything with a surprising consequence (a read-only
+    /// mode, isolation, autonomy) is named there explicitly, because a setting you cannot see and
+    /// would not expect is worse than one more row.
+    @ViewBuilder private var runSettings: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Button { withAnimation(.easeInOut(duration: 0.15)) { showRunSettings.toggle() } } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: showRunSettings ? "chevron.down" : "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(palette.mutedForeground)
+                        .accessibilityHidden(true)
+                    Text("How it runs").font(.footnote.weight(.semibold))
+                        .foregroundStyle(palette.mutedForeground)
+                    Spacer(minLength: 8)
+                    if !showRunSettings {
+                        Text(runSummary)
+                            .font(.caption).foregroundStyle(palette.mutedForeground)
+                            .lineLimit(1).truncationMode(.tail)
+                    }
+                }
+                .frame(minHeight: 34)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("How it runs")
+            .accessibilityValue(runSummary)
+            .accessibilityHint(showRunSettings ? "Collapses the run settings" : "Expands the run settings")
+
+            if showRunSettings { runSettingsBody }
+        }
+    }
+
+    /// The one-line answer to "what will this actually do", shown while the settings are folded away.
+    private var runSummary: String {
+        var parts: [String] = [provider]
+        if let m = models.first(where: { $0.id == selectedModel }) { parts.append(m.name) }
+        if sessionMode == SessionMode.ask { parts.append("read-only") }
+        if sessionMode == SessionMode.architect { parts.append("architect") }
+        if effectiveIsolate { parts.append("isolated") }
+        if autonomous { parts.append("autonomous") }
+        return parts.joined(separator: " · ")
+    }
+
+    @ViewBuilder private var runSettingsBody: some View {
+        VStack(alignment: .leading, spacing: 22) {
             field("Agent") {
                 agentPicker
                 if !models.isEmpty {
@@ -615,8 +683,6 @@ struct NewSessionView: View {
                     .labelsHidden()
                 }
             }
-
-            workingDirectorySection
 
             field(isMulti ? "Workspace" : "Worktree") {
                 Toggle(isOn: $useWorktree) {
