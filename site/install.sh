@@ -30,7 +30,15 @@ tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
 # --- 1. The daemon (oculusd) ---
 say "Downloading the Iron Rain daemon ($os/$arch)…"
 if curl -fsSL "$REL/oculusd_${os}_${arch}.tar.gz" -o "$tmp/o.tgz" 2>/dev/null; then
-  tar -xzf "$tmp/o.tgz" -C "$tmp"; mkdir -p "$BIN"; install -m 0755 "$tmp/oculusd" "$BIN/oculusd"
+  # Staged into the destination directory and RENAMED into place, never written over the existing
+  # file. `install` opens the target and writes through it, which on macOS is enough to poison the
+  # kernel's code-signing cache for that PATH when the old binary is still executing: every later
+  # exec is SIGKILLed by AMFI even though `codesign -v` on the file passes. Observed exactly that
+  # way — identical bytes ran fine from a different path and were killed from this one, and only
+  # replacing the directory entry cleared it. A rename swaps the entry, so the running process keeps
+  # its inode and the next exec sees a genuinely new file.
+  tar -xzf "$tmp/o.tgz" -C "$tmp"; mkdir -p "$BIN"
+  install -m 0755 "$tmp/oculusd" "$BIN/.oculusd.new" && mv -f "$BIN/.oculusd.new" "$BIN/oculusd"
   # Release binaries are now SIGNED in CI, so this is a repair path rather than the norm: it fixes a
   # binary whose signature didn't survive the trip (quarantine xattr, an older unsigned release).
   #
@@ -60,7 +68,10 @@ else
   src="${OCULUS_SRC:-$HOME/.oculus/src}"
   if [ -d "$src/.git" ]; then git -C "$src" pull --ff-only --quiet
   else mkdir -p "$(dirname "$src")"; git clone --depth 1 --quiet "https://github.com/$REPO" "$src"; fi
-  ( cd "$src/daemon" && go build -o oculusd . ); mkdir -p "$BIN"; install -m 0755 "$src/daemon/oculusd" "$BIN/oculusd"
+  # Same staged rename as the download path above — a source build replaces the binary just as often
+  # as a release does, and writing through a live one poisons the path identically.
+  ( cd "$src/daemon" && go build -o oculusd . ); mkdir -p "$BIN"
+  install -m 0755 "$src/daemon/oculusd" "$BIN/.oculusd.new" && mv -f "$BIN/.oculusd.new" "$BIN/oculusd"
   ok "built + installed $BIN/oculusd"
 fi
 
