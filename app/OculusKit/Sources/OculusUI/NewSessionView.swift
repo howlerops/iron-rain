@@ -360,6 +360,23 @@ struct NewSessionView: View {
         #endif
     }
 
+    #if os(macOS)
+    /// How tall the sheet gets, as a share of the display rather than a constant.
+    ///
+    /// This was a flat 640pt on every screen. Once the folder list became a repository picker that
+    /// was no longer enough: header, footer and padding take about 140 of it, and what remains has
+    /// to hold a task field, two pickers, the chosen folders, a search box AND the results — which
+    /// left the results, the thing the sheet now exists for, with two visible rows on a 27-inch
+    /// display that had room for fifteen.
+    ///
+    /// Clamped at both ends. The floor keeps it usable on a laptop and the ceiling stops a tall
+    /// display from producing a column of mostly empty sheet, which is its own kind of unusable.
+    static var sheetHeight: CGFloat {
+        let visible = NSScreen.main?.visibleFrame.height ?? 900
+        return min(max(visible * 0.82, 560), 940)
+    }
+    #endif
+
     private var form: some View {
         VStack(spacing: 0) {
             header
@@ -369,7 +386,7 @@ struct NewSessionView: View {
             footer
         }
         #if os(macOS)
-        .frame(width: 560, height: 640)
+        .frame(width: 560, height: Self.sheetHeight)
         #endif
         .background(palette.background)
         // A half-written task description is real work; a swipe-down should not be able to delete it

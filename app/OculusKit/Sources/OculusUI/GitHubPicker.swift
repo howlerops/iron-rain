@@ -32,6 +32,20 @@ struct GitHubPicker: View {
     /// useful one.
     private static let visibleLimit = 25
 
+    /// How much height the results get.
+    ///
+    /// Bounded so the rest of the sheet keeps its room, but scaled with the sheet rather than fixed:
+    /// a constant that leaves a laptop workable wastes most of a large display, and this list is the
+    /// surface the sheet now exists for. Roughly half the sheet, floored so it never collapses back
+    /// to the two rows this replaced.
+    static var listHeight: CGFloat {
+        #if os(macOS)
+        return max(NewSessionView.sheetHeight * 0.48, 220)
+        #else
+        return 260
+        #endif
+    }
+
     /// Repositories fetched for an explicitly named owner, and which owner they belong to.
     ///
     /// Browsing cannot reach every repository a person can open. On this account the general listing
@@ -223,7 +237,7 @@ struct GitHubPicker: View {
                     ForEach(shown) { row($0) }
                 }
             }
-            .frame(maxHeight: 220)
+            .frame(maxHeight: Self.listHeight)
             if filtered.count > shown.count {
                 Text("\(filtered.count - shown.count) more — narrow the search to see them.")
                     .font(.caption2).foregroundStyle(palette.mutedForeground)
