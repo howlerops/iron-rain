@@ -212,9 +212,18 @@ struct GitHubPicker: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 8)
         } else {
-            VStack(spacing: 5) {
-                ForEach(shown) { row($0) }
+            // The list scrolls WITHIN a bounded height rather than growing the sheet.
+            //
+            // Left to grow it competed with the prompt field, the agent picker and the chosen
+            // folders for one modal's worth of space, and lost: two rows were visible, which is
+            // fewer than the folder list this replaced. Bounding it means the number of rows is the
+            // same whether an account has five repositories or five hundred.
+            ScrollView {
+                VStack(spacing: 5) {
+                    ForEach(shown) { row($0) }
+                }
             }
+            .frame(maxHeight: 220)
             if filtered.count > shown.count {
                 Text("\(filtered.count - shown.count) more — narrow the search to see them.")
                     .font(.caption2).foregroundStyle(palette.mutedForeground)
