@@ -299,9 +299,42 @@ jobs:
           rm -f "$GITHUB_WORKSPACE/IronRain-macos.zip"
           ditto -c -k --keepParent "$APP" "$GITHUB_WORKSPACE/IronRain-macos.zip"
           spctl -a -vv -t exec "$APP" 2>&1 | head -3 || true
+
+      # Cover the app zip in checksums.txt.
+      #
+      # It was publishing four daemon tarball hashes and NOT the one artifact a person actually
+      # downloads and runs. The daemon job writes checksums.txt over `dist/*.tar.gz` before this job
+      # has even built the app, so the omission was structural rather than a forgotten glob — the
+      # hash has to be appended here, after notarization re-zips (a checksum taken before the staple
+      # would describe a file nobody receives).
+      #
+      # Append to the drafted release's own copy rather than regenerating: those four hashes are over
+      # the SIGNED binaries from the other job, and this runner does not have them to re-hash.
+      # If the drafted checksums.txt can't be fetched, leave it ALONE rather than replacing it with a
+      # file containing only the app's hash — publishing four fewer hashes than last release is worse
+      # than publishing the same ones again. The upload list is driven by this step's output so the
+      # failure path simply omits it.
+      - name: Add the app to checksums.txt
+        id: sums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          TAG="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          if ! gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p checksums.txt -O checksums.txt --clobber; then
+            echo "::warning::could not fetch checksums.txt — publishing it unchanged, without the app hash"
+            printf 'files<<__EOF__\nIronRain-macos.zip\n__EOF__\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          shasum -a 256 IronRain-macos.zip >> checksums.txt
+          sort -k2 -o checksums.txt checksums.txt
+          cat checksums.txt
+          # Multi-line step outputs need the delimiter form; a bare newline would be read as a second key.
+          printf 'files<<__EOF__\nIronRain-macos.zip\nchecksums.txt\n__EOF__\n' >> "$GITHUB_OUTPUT"
+
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-          files: IronRain-macos.zip
+          files: ${{ steps.sums.outputs.files }}
           draft: false        # publish now that ALL assets (daemon + macOS zip) are attached
           make_latest: "true"
