@@ -135,6 +135,24 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
+        # Design Mode loads the session's dev server over plain http — at a *.localhost name served
+        # by the daemon's preview router. Without an exception, App Transport Security refuses the
+        # response and the web view shows a BLANK page: the request succeeds and is logged by the dev
+        # server, so from the outside it looks like an app that renders nothing. It was broken this
+        # way on macOS the whole time, and only became visible once the sheet started reporting
+        # navigation failures.
+        #
+        # The iOS target has had this since it was written; macOS never got it, which is why the
+        # phone worked and the Mac did not.
+        #
+        # Scoped to localhost and its subdomains rather than NSAllowsArbitraryLoads: the preview
+        # router serves every session under <name>.localhost, and nothing else needs cleartext.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+          NSExceptionDomains:
+            localhost:
+              NSExceptionAllowsInsecureHTTPLoads: true
+              NSIncludesSubdomains: true
         NSMicrophoneUsageDescription: "Dictate prompts to your agent by voice."
         NSSpeechRecognitionUsageDescription: "Transcribe your voice into prompts."
         NSUserActivityTypes:

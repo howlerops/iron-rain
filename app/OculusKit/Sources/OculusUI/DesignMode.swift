@@ -216,12 +216,20 @@ struct DesignWebView {
     var sessionID: String?
     /// Load progress (0…1) and whether a load is in flight.
     var onProgress: ((Double, Bool) -> Void)?
+    /// A navigation that failed, described for a person.
+    var onFailure: ((String) -> Void)?
 
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         let onPick: (PickedElement) -> Void
         let onScreenshot: (Data?) -> Void
         /// Reports load progress so the sheet can show that something is happening.
         var onProgress: ((Double, Bool) -> Void)?
+        /// Reports a navigation failure, so a page that never arrives says so instead of showing an
+        /// endless blank rectangle that is indistinguishable from a working but empty app.
+        var onFailure: ((String) -> Void)?
+        /// The URL this view has actually been told to load, so `updateNSView` can tell a genuine
+        /// change from SwiftUI re-running the body.
+        var loadedURL: URL?
         private var progressObservation: NSKeyValueObservation?
 
         init(onPick: @escaping (PickedElement) -> Void, onScreenshot: @escaping (Data?) -> Void) {
@@ -249,9 +257,24 @@ struct DesignWebView {
         }
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
             onProgress?(1, false)
+            report(error)
         }
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
             onProgress?(1, false)
+            report(error)
+        }
+        /// The web content process dying leaves a blank view and no error anywhere — the one failure
+        /// that looks exactly like success with an empty page.
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            onProgress?(1, false)
+            onFailure?("The preview's renderer stopped. Reload to try again.")
+        }
+        private func report(_ error: Error) {
+            let ns = error as NSError
+            // A cancelled navigation is what a reload during load looks like; it is not a failure to
+            // show anyone.
+            if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled { return }
+            onFailure?(ns.localizedDescription)
         }
 
         /// Decides what this web view is allowed to load.
@@ -318,6 +341,7 @@ struct DesignWebView {
     func makeCoordinator() -> Coordinator {
         let c = Coordinator(onPick: onPick, onScreenshot: onScreenshot)
         c.onProgress = onProgress
+        c.onFailure = onFailure
         return c
     }
 
@@ -344,8 +368,21 @@ struct DesignWebView {
         wv.navigationDelegate = coordinator
         coordinator.observe(wv)
         if let sessionID { PreviewDOMRegistry.shared.register(sessionID: sessionID, view: wv) }
+        coordinator.loadedURL = url // or the first update would reload what we just asked for
         wv.load(URLRequest(url: url))
         return wv
+    }
+
+    /// Loads `url` when it has actually changed.
+    ///
+    /// This did nothing but inject the picker, so only `makeNSView`'s first load ever happened: the
+    /// address field and the reload button changed `loadedURL` and the web view ignored it. Typing a
+    /// path did nothing, and reloading a page that had failed was impossible — which is the worst
+    /// moment for a reload button to be inert.
+    private func syncURL(_ wv: WKWebView, _ coordinator: Coordinator) {
+        guard coordinator.loadedURL != url else { return }
+        coordinator.loadedURL = url
+        wv.load(URLRequest(url: url))
     }
 
     private func inject(_ wv: WKWebView) {
@@ -360,12 +397,18 @@ struct DesignWebView {
 #if os(macOS)
 extension DesignWebView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView { makeWebView(context.coordinator) }
-    func updateNSView(_ wv: WKWebView, context: Context) { inject(wv) }
+    func updateNSView(_ wv: WKWebView, context: Context) {
+        syncURL(wv, context.coordinator)
+        inject(wv)
+    }
 }
 #else
 extension DesignWebView: UIViewRepresentable {
     func makeUIView(context: Context) -> WKWebView { makeWebView(context.coordinator) }
-    func updateUIView(_ wv: WKWebView, context: Context) { inject(wv) }
+    func updateUIView(_ wv: WKWebView, context: Context) {
+        syncURL(wv, context.coordinator)
+        inject(wv)
+    }
 }
 #endif
 
@@ -385,6 +428,9 @@ struct DesignModeView: View {
     @State private var progress: Double = 0
     @State private var isLoading = false
     @State private var showTunnelNote = false
+    /// Why the last navigation failed. A blank web view is indistinguishable from an app that
+    /// renders nothing, so the difference has to be stated.
+    @State private var loadFailure: String?
     /// Non-nil when the dev server has to be fetched through the daemon. Created once, because a
     /// WKWebViewConfiguration is copied at init and the handler cannot be swapped afterwards.
     @State private var tunnelHandler: PreviewSchemeHandler?
@@ -439,6 +485,22 @@ struct DesignModeView: View {
                 Divider().overlay(palette.border)
             }
 
+            if let loadFailure {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill").font(.caption)
+                        .foregroundStyle(palette.warning).accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("This page didn't load").font(.footnote.weight(.medium))
+                            .foregroundStyle(palette.foreground)
+                        Text(loadFailure).font(.caption).foregroundStyle(palette.mutedForeground)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(10)
+                .background(palette.warning.opacity(0.12))
+            }
+
             if let url = loadedURL {
                 DesignWebView(url: url, picking: $picking, onPick: { el in
                     lastPick = el
@@ -449,7 +511,9 @@ struct DesignModeView: View {
                    onProgress: { p, loading in
                        progress = p
                        isLoading = loading
-                   })
+                       if loading { loadFailure = nil } // a new attempt clears the last verdict
+                   },
+                   onFailure: { loadFailure = $0 })
                 .id(tunnelHandler == nil ? "direct" : "tunnel") // the handler is fixed at creation
                 .frame(minHeight: 380)
             } else {

@@ -216,6 +216,37 @@ private enum PanelSheet: Int, Identifiable { case loops, agents, accounts, remot
 /// — they just stop presenting, which is exactly how the New Session sheet went dead after the first
 /// session once before. One item-valued slot makes "what is on screen" a single value that can only
 /// hold one answer.
+/// Hosts the single sheet slot on a view that OBSERVES the model.
+///
+/// `.onChange` only evaluates when the containing body re-renders. RootView observes the store and
+/// takes the active model as a plain local, so a model-owned request — Design, a fan-out summary —
+/// changed nothing this view was watching, and the handler that opens the sheet simply did not run
+/// until an unrelated re-render happened to bring it along.
+///
+/// Declaring the model as `@ObservedObject` here is the fix; everything else about the slot is
+/// unchanged.
+private struct DeckSheetHost: ViewModifier {
+    @ObservedObject var model: Model
+    @Binding var sheet: DeckSheet?
+    let build: (DeckSheet, Model) -> AnyView
+
+    func body(content: Content) -> some View {
+        content
+            // Clearing the fan-out summary on dismiss stops a swipe-away leaving a stale value that
+            // would re-present. Design needs no equivalent: it is a counter, so a stale value cannot
+            // block the next request.
+            .sheet(item: $sheet, onDismiss: { model.fanoutSummary = nil }) { which in
+                build(which, model)
+            }
+            .onChange(of: model.fanoutSummary?.id) { _ in
+                if let sum = model.fanoutSummary { sheet = .fanoutCompare(sum) }
+            }
+            .onChange(of: model.designRequest) { token in
+                sheet = .design(token)
+            }
+    }
+}
+
 private enum DeckSheet: Identifiable {
     case newSession
     case fanoutCompose
@@ -364,24 +395,19 @@ public struct RootView: View {
                     #if os(macOS)
                     .modifier(SoftwareUpdateModifier(palette: palette, forceCheck: $checkForUpdates, updates: updates))
                     #endif
-                    // ONE sheet slot for everything — see DeckSheet. `onDismiss` clears the two
-                    // model-owned REQUESTS that can open a sheet, so a swipe-to-dismiss doesn't leave
-                    // a stale flag set that immediately re-presents (or blocks the next request).
-                    .sheet(item: $sheet, onDismiss: {
-                        model.fanoutSummary = nil
-                        // Nothing to clear for Design any more — it is a counter, so a stale value
-                        // cannot block the next request.
-                    }) { which in
-                        sheetContent(which, model)
-                    }
-                    // The daemon can push a fan-out summary, and the chat toolbar can request Design
-                    // mode, at any time — mirror those requests into the one slot.
-                    .onChange(of: model.fanoutSummary?.id) { _ in
-                        if let sum = model.fanoutSummary { sheet = .fanoutCompare(sum) }
-                    }
-                    .onChange(of: model.designRequest) { token in
-                        sheet = .design(token)
-                    }
+                    // ONE sheet slot for everything — see DeckSheet. Hosted in a modifier that
+                    // OBSERVES the model, which is the whole point: this view observes `store`, and
+                    // took the active model as a plain local. A change to `model.designRequest` was
+                    // therefore not a change this view watched, so its body never re-evaluated and
+                    // the `.onChange` that opens the sheet never ran.
+                    //
+                    // It fired later, whenever something ELSE re-rendered this view — which is
+                    // exactly how it presented: tapping Design did nothing, and it opened the moment
+                    // you navigated back. Two earlier fixes (a counter for the request, a token in
+                    // the sheet's identity) were treating symptoms of this.
+                    .modifier(DeckSheetHost(model: model, sheet: $sheet) { which, m in
+                        AnyView(sheetContent(which, m))
+                    })
                     // macOS only. On iOS this inset sat on top of the tab bar and swallowed taps
                     // along the bottom edge — and a live-tailing log is a desk affordance anyway, not
                     // something worth a permanent strip of a phone screen.
