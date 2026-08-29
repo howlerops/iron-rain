@@ -220,7 +220,14 @@ private enum DeckSheet: Identifiable {
     case newSession
     case fanoutCompose
     case fanoutCompare(FanoutSummary)
-    case design
+    /// Carries the request token, so the IDENTITY changes on every request.
+    ///
+    /// A constant id was the second half of the same latch that made Design unopenable. Making the
+    /// request a counter was not enough: `.sheet(item:)` keys on identity, so if a dropped
+    /// presentation left this slot holding a phantom `.design`, assigning `.design` again was the
+    /// same id and SwiftUI did nothing at all. Both the request AND the slot value have to be
+    /// distinct for a retry to mean anything.
+    case design(Int)
     case panel(PanelSheet)
     /// Pair another Mac. In the shared slot rather than its own `.sheet`, because a second sheet
     /// modifier on this view is what silently killed a presentation once before.
@@ -231,7 +238,7 @@ private enum DeckSheet: Identifiable {
         case .newSession:            return "new-session"
         case .fanoutCompose:         return "fanout-compose"
         case .fanoutCompare(let s):  return "fanout-compare-\(s.id)"
-        case .design:                return "design"
+        case .design(let token):     return "design-\(token)"
         case .panel(let p):          return "panel-\(p.rawValue)"
         case .addDesktop:            return "add-desktop"
         }
@@ -372,8 +379,8 @@ public struct RootView: View {
                     .onChange(of: model.fanoutSummary?.id) { _ in
                         if let sum = model.fanoutSummary { sheet = .fanoutCompare(sum) }
                     }
-                    .onChange(of: model.designRequest) { _ in
-                        sheet = .design
+                    .onChange(of: model.designRequest) { token in
+                        sheet = .design(token)
                     }
                     // macOS only. On iOS this inset sat on top of the tab bar and swallowed taps
                     // along the bottom edge — and a live-tailing log is a desk affordance anyway, not
@@ -951,7 +958,7 @@ public struct RootView: View {
                                   openSessionNav(sid, model)
                               },
                               onClose: { sheet = nil })
-        case .design:
+        case .design:  // token only affects identity; the view is the same
             #if canImport(WebKit)
             DesignModeView(model: model, palette: palette, initialURL: designURL(model), onClose: { sheet = nil })
             #else

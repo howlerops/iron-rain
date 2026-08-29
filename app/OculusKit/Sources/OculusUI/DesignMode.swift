@@ -384,6 +384,7 @@ struct DesignModeView: View {
     @State private var lastShot: Data?
     @State private var progress: Double = 0
     @State private var isLoading = false
+    @State private var showTunnelNote = false
     /// Non-nil when the dev server has to be fetched through the daemon. Created once, because a
     /// WKWebViewConfiguration is copied at init and the handler cannot be swapped afterwards.
     @State private var tunnelHandler: PreviewSchemeHandler?
@@ -540,12 +541,34 @@ struct DesignModeView: View {
 
     /// Worth saying plainly: the page is being fetched by the Mac, and live reload will not work
     /// here. Silence would read as a broken dev server.
+    ///
+    /// `.help` is a HOVER tooltip, so on a phone the explanation did not exist — which is the one
+    /// place it is needed, since that is where the tunnel is always used and where a page that never
+    /// live-reloads looks like a broken dev server. Tapping the badge says it out loud.
     private var viaDaemonBadge: some View {
-        Label("via daemon", systemImage: "antenna.radiowaves.left.and.right")
-            .font(.caption).foregroundStyle(palette.mutedForeground)
-            .labelStyle(.titleAndIcon)
-            .help("This device can't reach the dev server directly, so Iron Rain is fetching it. Live reload is unavailable.")
+        Button { showTunnelNote = true } label: {
+            Label("via daemon", systemImage: "antenna.radiowaves.left.and.right")
+                .font(.caption).foregroundStyle(palette.mutedForeground)
+                .labelStyle(.titleAndIcon)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(Self.tunnelNote)
+        .accessibilityLabel("Loaded through your Mac")
+        .accessibilityHint("Explains why live reload is unavailable")
+        .alert("Loaded through your Mac", isPresented: $showTunnelNote) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(Self.tunnelNote)
+        }
     }
+
+    /// Measured, not assumed: a websocket opened from a tunnelled page fails — the scheme handler is
+    /// request/response and cannot service an upgrade. So live reload genuinely does not work here,
+    /// and saying so is better than letting it look like the dev server is broken.
+    private static let tunnelNote =
+        "This device can't reach your dev server directly, so Iron Rain fetches the page through your Mac. "
+        + "Everything renders normally, but live reload (HMR) won't work — pull to refresh to see changes."
 
     private var pickToggle: some View {
         Toggle(isOn: $picking) { Label("Pick element", systemImage: "cursorarrow.rays") }

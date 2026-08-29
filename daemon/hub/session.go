@@ -526,12 +526,22 @@ func (m *managedSession) info() protocol.Session {
 	inTok, outTok, cost := m.inTok, m.outTok, m.costUSD
 	isWorkspace := len(m.meta.members) > 0
 	status := m.lastStatus
+	turnOpen := m.turnPhase != ""
 	model, modelProvider := m.model, m.modelProvider
 	mode := m.mode
 	conflicted := m.conflicted
 	m.mu.Unlock()
 	if status == "" {
-		status = protocol.StatusRunning // freshly created — no status event yet
+		// No status event yet, so ask the turn engine instead of assuming. "Freshly created" used to
+		// mean running unconditionally, which is right only when the session was created WITH a
+		// prompt — and the New Session sheet explicitly allows starting without one. A session that
+		// has never been asked to do anything then reported "working…" forever, with no turn, no
+		// messages, and nothing that would ever clear it.
+		if turnOpen {
+			status = protocol.StatusRunning
+		} else {
+			status = protocol.StatusIdle
+		}
 	}
 	return protocol.Session{
 		ID:            m.sess.ID(),

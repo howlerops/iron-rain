@@ -134,6 +134,34 @@ final class PreviewTunnelLiveTests: XCTestCase {
         XCTAssertTrue(names.contains("Go"), "the button was not listed; got \(names)")
     }
 
+    /// Can a tunnelled page open a WEBSOCKET back to its dev server? This is what HMR does, and the
+    /// answer has been asserted in comments and release notes without ever being observed.
+    ///
+    /// A scheme handler is request/response, so it cannot service an upgrade — and a ws:// URL is a
+    /// different origin anyway, so it goes to the device's own network stack, where on a phone there
+    /// is no dev server. Measured rather than reasoned: the point is to know, and to notice if a
+    /// future WebKit changes it.
+    func testWebSocketFromATunnelledPageDoesNotReachTheTunnel() {
+        js("""
+        window.__wsState = 'pending';
+        try {
+          var ws = new WebSocket('ws://localhost:65531/hmr');
+          ws.onopen  = function () { window.__wsState = 'open'; };
+          ws.onerror = function () { window.__wsState = 'error'; };
+          ws.onclose = function () { if (window.__wsState === 'pending') window.__wsState = 'closed'; };
+        } catch (e) { window.__wsState = 'threw: ' + e.name; }
+        """)
+        let settled = expectation(description: "ws settles")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { settled.fulfill() }
+        wait(for: [settled], timeout: 8)
+
+        let state = js("window.__wsState") as? String
+        XCTAssertNotEqual(state, "open", "a websocket reached a dev server the tunnel cannot serve")
+        XCTAssertFalse(site.wasRequested("/hmr"), "the scheme handler cannot service an upgrade")
+        // Recorded so the actual behaviour is visible when this runs, not just the assertion.
+        print("TUNNELLED_WEBSOCKET_STATE: \(state ?? "nil")")
+    }
+
     /// A page that hardcodes an absolute http:// URL does NOT come through the tunnel — that request
     /// goes to the device's own network stack, where on a phone there is no dev server.
     ///

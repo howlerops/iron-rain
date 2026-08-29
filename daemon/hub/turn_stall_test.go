@@ -374,3 +374,26 @@ func TestAnsweringAnApprovalRestartsTheProgressClock(t *testing.T) {
 	}
 	m.closeTurn(protocol.StatusIdle, "")
 }
+
+// A session created with NO prompt has never been asked to do anything, and must not report itself
+// as working.
+//
+// It did: with no status event yet, info() assumed "freshly created" meant running. That is true
+// only when a prompt came with the create — and the New Session sheet explicitly allows starting
+// without one. The result was a session showing "working…" indefinitely, with no turn, no messages,
+// and nothing that would ever clear it.
+func TestFreshSessionWithNoTurnIsIdle(t *testing.T) {
+	h := New()
+	fake := &approvalFakeSess{ch: make(chan agent.Event, 4)}
+	m := newManagedSession(h, fake, sessionMeta{})
+
+	if got := m.info().Status; got != protocol.StatusIdle {
+		t.Errorf("a session with no turn reports %q, want %q", got, protocol.StatusIdle)
+	}
+
+	// With a turn actually open — the created-with-a-prompt path — running is correct.
+	m.openTurn("")
+	if got := m.info().Status; got != protocol.StatusRunning {
+		t.Errorf("a session with an open turn reports %q, want %q", got, protocol.StatusRunning)
+	}
+}
