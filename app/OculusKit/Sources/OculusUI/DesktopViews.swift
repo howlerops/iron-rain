@@ -366,18 +366,9 @@ public struct RootView: View {
                 // isn't preceded by a flash of onboarding / disconnected default.
                 loadingScreen
             } else if store.isEmpty {
+                // The daemon banner used to be pinned here as a top inset, and only when `trouble` was
+                // non-nil. It belongs INSIDE the macOS onboarding, unconditionally — see the note there.
                 DesktopOnboardView(store: store, palette: palette)
-                #if os(macOS)
-                    .safeAreaInset(edge: .top) {
-                        if launcher.trouble != nil {
-                            DaemonStatusBanner(launcher: launcher, palette: palette) {
-                                await launcher.ensureRunning()
-                                await store.bootstrap()
-                            }
-                            .padding(.horizontal, 20).padding(.top, 14)
-                        }
-                    }
-                #endif
             } else if let model = store.active {
                 mainSurface(model)
                     .modifier(SessionStartingOverlay(model: model, palette: palette))
@@ -1152,12 +1143,68 @@ struct AddDesktopView: View {
 }
 
 /// First-run screen when no desktops are paired yet.
+///
+/// The two platforms are in opposite positions here and the screen has to say so. The phone is a
+/// CLIENT with nothing to talk to yet, so it asks you to pair a Mac. The Mac is the HOST — it is the
+/// machine the agents run on — so "pair your Mac" is nonsense advice to give it, and telling someone
+/// sitting at their Mac to go find a QR code on their Mac is a loop. It shipped that way: the Mac
+/// showed the phone's onboarding whenever the local daemon hadn't produced a pairing yet, which is
+/// exactly the moment the daemon is what needs attention.
 struct DesktopOnboardView: View {
     @ObservedObject var store: DesktopStore
     let palette: OculusPalette
     @State private var showAdd = false
+    #if os(macOS)
+    @ObservedObject private var launcher = DaemonLauncher.shared
+    #endif
 
     var body: some View {
+        #if os(macOS)
+        macBody
+        #else
+        phoneBody
+        #endif
+    }
+
+    #if os(macOS)
+    /// This Mac has no daemon to talk to yet. Everything here is about getting it running; pairing to
+    /// a DIFFERENT Mac is a real thing to want, but it is the secondary case.
+    private var macBody: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            Spacer()
+            VStack(alignment: .leading, spacing: 14) {
+                Image("WolfMark").resizable().scaledToFit().frame(width: 64, height: 64)
+                IronRainWordmark(size: 28)
+                Text("Start the agent daemon")
+                    .font(.largeTitle.bold())
+                    .foregroundStyle(palette.foreground)
+                Text("Iron Rain runs your coding agents in a background daemon on this Mac. The app starts it for you — if it can't, the reason and the fix are below.")
+                    .font(.body)
+                    .foregroundStyle(palette.foreground)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            // Always shown, not only when `trouble` is set. This screen exists BECAUSE the daemon has
+            // not come up, so its status is the content, not an exception to it.
+            DaemonStatusBanner(launcher: launcher, palette: palette) {
+                await launcher.ensureRunning()
+                await store.bootstrap()
+            }
+            // A Mac can drive another Mac's agents; it is just not what this screen is for.
+            Button { showAdd = true } label: {
+                Label("Connect to another Mac instead…", systemImage: "plus.circle")
+            }
+            .buttonStyle(.link)
+            .foregroundStyle(palette.primary)
+            Spacer()
+        }
+        .padding(.horizontal, 28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(palette.background.ignoresSafeArea())
+        .sheet(isPresented: $showAdd) { AddDesktopView(store: store, palette: palette) { showAdd = false } }
+    }
+    #endif
+
+    private var phoneBody: some View {
         // Left-aligned and bold, per the OS 26 onboarding treatment — and because this is the entire
         // explanation of what the app is. It used to be one centred `.subheadline` line in
         // `mutedForeground`, i.e. the app introduced itself in its de-emphasised colour, and never
