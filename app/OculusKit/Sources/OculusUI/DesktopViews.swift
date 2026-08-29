@@ -362,7 +362,8 @@ public struct RootView: View {
                     // a stale flag set that immediately re-presents (or blocks the next request).
                     .sheet(item: $sheet, onDismiss: {
                         model.fanoutSummary = nil
-                        model.designRequested = false
+                        // Nothing to clear for Design any more — it is a counter, so a stale value
+                        // cannot block the next request.
                     }) { which in
                         sheetContent(which, model)
                     }
@@ -371,8 +372,8 @@ public struct RootView: View {
                     .onChange(of: model.fanoutSummary?.id) { _ in
                         if let sum = model.fanoutSummary { sheet = .fanoutCompare(sum) }
                     }
-                    .onChange(of: model.designRequested) { on in
-                        if on { sheet = .design }
+                    .onChange(of: model.designRequest) { _ in
+                        sheet = .design
                     }
                     // macOS only. On iOS this inset sat on top of the tab bar and swallowed taps
                     // along the bottom edge — and a live-tailing log is a desk affordance anyway, not
@@ -714,7 +715,7 @@ public struct RootView: View {
         #if canImport(WebKit)
         out.append(PaletteItem(id: "act-design", kind: .action, title: "Design mode",
                                subtitle: "Pick a UI element → HTML/CSS into the prompt", symbol: "cursorarrow.rays") {
-            model.designRequested = true
+            model.requestDesign()
         })
         #endif
         if model.needsYouCount > 0 {

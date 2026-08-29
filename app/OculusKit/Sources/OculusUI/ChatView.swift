@@ -426,7 +426,7 @@ public struct ChatView: View {
                             Label("Code & changes", systemImage: "chevron.left.forwardslash.chevron.right")
                         }
                         #if canImport(WebKit)
-                        Button { model.designRequested = true } label: {
+                        Button { model.requestDesign() } label: {
                             Label("Browser / Design", systemImage: "safari")
                         }
                         #endif
@@ -506,7 +506,7 @@ public struct ChatView: View {
             controlsDestination = nil
             switch d {
             case .code:      model.codeReviewTarget = model.sessionID
-            case .design:    model.designRequested = true
+            case .design:    model.requestDesign()
             case .delegate:  showDelegate = true
             case .worktree:  showWorktreePanel = true
             case .workspace: showWorkspace = true; Task { await model.workspaceDiff() }
@@ -517,7 +517,7 @@ public struct ChatView: View {
                 model: model, palette: palette,
                 onClose: { showSessionControls = false },
                 onOpenCode: { model.codeReviewTarget = model.sessionID },
-                onOpenDesign: { model.designRequested = true },
+                onOpenDesign: { model.requestDesign() },
                 onDelegate: { showDelegate = true },
                 onWorktree: { showWorktreePanel = true },
                 onWorkspace: { showWorkspace = true; Task { await model.workspaceDiff() } },

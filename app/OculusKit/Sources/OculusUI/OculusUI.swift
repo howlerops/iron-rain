@@ -3955,7 +3955,21 @@ public final class Model: ObservableObject {
     @Published public var codeReviewTarget: String?
     /// Set to open Design Mode (the in-app browser element picker) — surfaced as a session toolbar
     /// button, not only the Cmd-K palette. The deck presents the sheet when this flips true.
-    @Published public var designRequested = false
+    /// A COUNTER, not a flag. Design Mode is presented from `.onChange` of this value, and a Bool
+    /// cannot express "asked again": once it was true, every later request set true → true, which is
+    /// not a change, so nothing fired.
+    ///
+    /// That is not hypothetical. Tapping Design dismisses the session-controls sheet first, and the
+    /// presentation that follows can be dropped by UIKit while that dismissal is still animating. The
+    /// flag stayed true, only the deck sheet's own onDismiss cleared it, and it had never presented —
+    /// so the screen was permanently stuck: every subsequent tap did nothing, and it finally opened
+    /// only when backing out let a presentation through.
+    ///
+    /// A counter makes each request distinct, so a dropped presentation self-heals on the next tap.
+    @Published public var designRequest = 0
+
+    /// Asks for Design Mode. Safe to call repeatedly.
+    public func requestDesign() { designRequest &+= 1 }
 
     /// Folds a sub-agent lifecycle event into the transcript. "started" inserts an inline collapsible
     /// card (once) at the point the parent delegated, and readies its child buffers so the sub-agent's
