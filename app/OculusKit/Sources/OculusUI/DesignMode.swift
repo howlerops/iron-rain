@@ -214,12 +214,44 @@ struct DesignWebView {
     /// The session this page belongs to. Publishes the web view so an agent's snapshot/click/fill
     /// can reach a real DOM — the daemon has none of its own.
     var sessionID: String?
+    /// Load progress (0…1) and whether a load is in flight.
+    var onProgress: ((Double, Bool) -> Void)?
 
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         let onPick: (PickedElement) -> Void
         let onScreenshot: (Data?) -> Void
+        /// Reports load progress so the sheet can show that something is happening.
+        var onProgress: ((Double, Bool) -> Void)?
+        private var progressObservation: NSKeyValueObservation?
+
         init(onPick: @escaping (PickedElement) -> Void, onScreenshot: @escaping (Data?) -> Void) {
             self.onPick = onPick; self.onScreenshot = onScreenshot
+        }
+
+        /// Watches estimatedProgress, so a slow load shows movement rather than a spinner that says
+        /// only "still going".
+        ///
+        /// It matters most through the tunnel, where every sub-resource is a round trip to the Mac
+        /// and back: first paint takes seconds, and with nothing on screen the honest reading is that
+        /// the tap did nothing. Someone then taps again — which is what happened the first time this
+        /// ran on a phone.
+        func observe(_ webView: WKWebView) {
+            progressObservation = webView.observe(\.estimatedProgress, options: [.new]) { [weak self] wv, _ in
+                self?.onProgress?(wv.estimatedProgress, wv.isLoading)
+            }
+        }
+
+        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            onProgress?(0.05, true) // a visible floor, so the bar appears the instant you tap
+        }
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            onProgress?(1, false)
+        }
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            onProgress?(1, false)
+        }
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            onProgress?(1, false)
         }
 
         /// Decides what this web view is allowed to load.
@@ -283,7 +315,11 @@ struct DesignWebView {
         }
     }
 
-    func makeCoordinator() -> Coordinator { Coordinator(onPick: onPick, onScreenshot: onScreenshot) }
+    func makeCoordinator() -> Coordinator {
+        let c = Coordinator(onPick: onPick, onScreenshot: onScreenshot)
+        c.onProgress = onProgress
+        return c
+    }
 
     private func makeWebView(_ coordinator: Coordinator) -> WKWebView {
         let cfg = WKWebViewConfiguration()
@@ -306,6 +342,7 @@ struct DesignWebView {
         }
         let wv = WKWebView(frame: .zero, configuration: cfg)
         wv.navigationDelegate = coordinator
+        coordinator.observe(wv)
         if let sessionID { PreviewDOMRegistry.shared.register(sessionID: sessionID, view: wv) }
         wv.load(URLRequest(url: url))
         return wv
@@ -345,6 +382,8 @@ struct DesignModeView: View {
     @State private var picking = false
     @State private var lastPick: PickedElement?
     @State private var lastShot: Data?
+    @State private var progress: Double = 0
+    @State private var isLoading = false
     /// Non-nil when the dev server has to be fetched through the daemon. Created once, because a
     /// WKWebViewConfiguration is copied at init and the handler cannot be swapped afterwards.
     @State private var tunnelHandler: PreviewSchemeHandler?
@@ -382,25 +421,22 @@ struct DesignModeView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Label("Design", systemImage: "cursorarrow.rays").font(.headline)
-                TextField(tunnelHandler != nil ? "/" : "http://localhost:3000",
-                          text: $urlString, onCommit: { loadedURL = resolveInput() })
-                    .textFieldStyle(.roundedBorder).frame(maxWidth: 320)
-                Button { loadedURL = resolveInput() } label: { Image(systemName: "arrow.clockwise") }
-                if tunnelHandler != nil {
-                    // Worth saying plainly: the page is being fetched by the Mac, and live reload is
-                    // not going to work here. Silence would read as a broken dev server.
-                    Label("via daemon", systemImage: "antenna.radiowaves.left.and.right")
-                        .font(.caption).foregroundStyle(palette.mutedForeground)
-                        .help("This device can't reach the dev server directly, so Iron Rain is fetching it. Live reload is unavailable.")
-                }
-                Toggle(isOn: $picking) { Label("Pick element", systemImage: "cursorarrow.rays") }
-                    .toggleStyle(.button).tint(palette.primary)
-                Spacer()
-                Button("Done", action: onClose).keyboardShortcut(.cancelAction)
+                toolbar
             }
             .padding(12)
-            Divider().overlay(palette.border)
+            // A determinate bar, not a spinner: through the tunnel a first paint is several seconds
+            // of round trips, and "something is happening" is a weaker answer than "this much of it
+            // has happened". Occupies no layout height when idle so nothing shifts as it appears.
+            if isLoading {
+                ProgressView(value: min(max(progress, 0.05), 1))
+                    .progressViewStyle(.linear)
+                    .tint(palette.primary)
+                    .frame(height: 2)
+                    .transition(.opacity)
+                    .accessibilityLabel("Loading the preview")
+            } else {
+                Divider().overlay(palette.border)
+            }
 
             if let url = loadedURL {
                 DesignWebView(url: url, picking: $picking, onPick: { el in
@@ -408,7 +444,11 @@ struct DesignModeView: View {
                     picking = false
                 }, onScreenshot: { data in
                     lastShot = data
-                }, tunnel: tunnelHandler, sessionID: model.currentSession?.id)
+                }, tunnel: tunnelHandler, sessionID: model.currentSession?.id,
+                   onProgress: { p, loading in
+                       progress = p
+                       isLoading = loading
+                   })
                 .id(tunnelHandler == nil ? "direct" : "tunnel") // the handler is fixed at creation
                 .frame(minHeight: 380)
             } else {
@@ -439,7 +479,13 @@ struct DesignModeView: View {
                 .padding(12).background(palette.secondary.opacity(0.4))
             }
         }
+        // macOS ONLY. This is a minimum for a resizable window; on a phone it is a demand for 640pt
+        // of width that does not exist, and the sheet simply overflows — the toolbar truncated
+        // mid-word, the URL field clipped, and the page itself hanging off both edges. Seen on a real
+        // iPhone the first time this screen ran there.
+        #if os(macOS)
         .frame(minWidth: 640, minHeight: 480)
+        #endif
         .background(palette.background)
         .onDisappear {
             // Withdraw the page the moment the sheet closes. The registry holds the view weakly, so
@@ -447,6 +493,63 @@ struct DesignModeView: View {
             // looking at any more.
             if let id = model.currentSession?.id { PreviewDOMRegistry.shared.unregister(sessionID: id) }
         }
+    }
+
+    /// Seven controls in one row is a Mac toolbar. On a phone it cannot fit at any width — the first
+    /// run on a real iPhone truncated the Pick button mid-word and clipped the address field — so the
+    /// same controls are stacked into two rows there: actions above, address below.
+    @ViewBuilder private var toolbar: some View {
+        #if os(macOS)
+        Label("Design", systemImage: "cursorarrow.rays").font(.headline)
+        addressField
+        refreshButton
+        if tunnelHandler != nil { viaDaemonBadge }
+        pickToggle
+        Spacer()
+        Button("Done", action: onClose).keyboardShortcut(.cancelAction)
+        #else
+        VStack(spacing: 8) {
+            HStack(spacing: 10) {
+                Button("Done", action: onClose)
+                Spacer(minLength: 6)
+                if tunnelHandler != nil { viaDaemonBadge }
+                pickToggle
+            }
+            HStack(spacing: 8) {
+                addressField
+                refreshButton
+            }
+        }
+        #endif
+    }
+
+    private var addressField: some View {
+        TextField(tunnelHandler != nil ? "/" : "http://localhost:3000",
+                  text: $urlString, onCommit: { loadedURL = resolveInput() })
+            .textFieldStyle(.roundedBorder)
+            .plainInput()
+            #if os(macOS)
+            .frame(maxWidth: 320)
+            #endif
+    }
+
+    private var refreshButton: some View {
+        Button { loadedURL = resolveInput() } label: { Image(systemName: "arrow.clockwise") }
+            .accessibilityLabel("Reload the preview")
+    }
+
+    /// Worth saying plainly: the page is being fetched by the Mac, and live reload will not work
+    /// here. Silence would read as a broken dev server.
+    private var viaDaemonBadge: some View {
+        Label("via daemon", systemImage: "antenna.radiowaves.left.and.right")
+            .font(.caption).foregroundStyle(palette.mutedForeground)
+            .labelStyle(.titleAndIcon)
+            .help("This device can't reach the dev server directly, so Iron Rain is fetching it. Live reload is unavailable.")
+    }
+
+    private var pickToggle: some View {
+        Toggle(isOn: $picking) { Label("Pick element", systemImage: "cursorarrow.rays") }
+            .toggleStyle(.button).tint(palette.primary)
     }
 
     private func normalizedURL(_ s: String) -> URL? {
