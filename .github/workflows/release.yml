@@ -137,6 +137,19 @@ jobs:
           generate_release_notes: true
           draft: true
 
+      # Hand the daemon hashes to the macos-app job, which appends the app's own and re-uploads.
+      #
+      # Via a job artifact and NOT by re-downloading the release asset: the release is a DRAFT at this
+      # point, and the REST endpoint that resolves a release by tag does not return drafts. Reading it
+      # back would depend on the CLI's fallback behaviour holding, and if it ever didn't the step would
+      # take its "leave it alone" path silently — restoring the exact omission it exists to fix, now
+      # behind a warning nobody reads.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: daemon-checksums
+          path: dist/checksums.txt
+          retention-days: 1
+
   macos-app:
     # Attaches the macOS app zip to the drafted release, then PUBLISHES it (draft: false) — so the
     # release only becomes "latest" once every asset (daemon + macOS) is present.
@@ -308,33 +321,28 @@ jobs:
       # hash has to be appended here, after notarization re-zips (a checksum taken before the staple
       # would describe a file nobody receives).
       #
-      # Append to the drafted release's own copy rather than regenerating: those four hashes are over
-      # the SIGNED binaries from the other job, and this runner does not have them to re-hash.
-      # If the drafted checksums.txt can't be fetched, leave it ALONE rather than replacing it with a
-      # file containing only the app's hash — publishing four fewer hashes than last release is worse
-      # than publishing the same ones again. The upload list is driven by this step's output so the
-      # failure path simply omits it.
+      # Append to the daemon job's file rather than regenerating: those four hashes are over the
+      # SIGNED binaries built on the other runner, which this one does not have to re-hash.
+      - uses: actions/download-artifact@v4
+        with:
+          name: daemon-checksums
+
       - name: Add the app to checksums.txt
-        id: sums
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          set -uo pipefail
-          TAG="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
-          if ! gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p checksums.txt -O checksums.txt --clobber; then
-            echo "::warning::could not fetch checksums.txt — publishing it unchanged, without the app hash"
-            printf 'files<<__EOF__\nIronRain-macos.zip\n__EOF__\n' >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          set -euo pipefail
+          # Fail loudly if the daemon hashes didn't arrive. Publishing a checksums.txt containing only
+          # the app's line would quietly drop four hashes that were there last release — worse than a
+          # red build, and the kind of thing nobody notices until they try to verify a download.
+          test -s checksums.txt
           shasum -a 256 IronRain-macos.zip >> checksums.txt
           sort -k2 -o checksums.txt checksums.txt
           cat checksums.txt
-          # Multi-line step outputs need the delimiter form; a bare newline would be read as a second key.
-          printf 'files<<__EOF__\nIronRain-macos.zip\nchecksums.txt\n__EOF__\n' >> "$GITHUB_OUTPUT"
 
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-          files: ${{ steps.sums.outputs.files }}
+          files: |
+            IronRain-macos.zip
+            checksums.txt
           draft: false        # publish now that ALL assets (daemon + macOS zip) are attached
           make_latest: "true"
