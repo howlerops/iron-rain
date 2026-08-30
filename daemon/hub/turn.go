@@ -503,7 +503,15 @@ func (m *managedSession) publishSessionState(status, detail string) {
 	m.mu.Unlock()
 	if len(skip) > 0 {
 		if raw, err := (agent.Event{Type: protocol.TypeSessionStatus, Payload: payload}).Encode(); err == nil {
-			m.broadcast(raw)
+			// broadcastTransient, NOT broadcast: same subscriber queue (so the ordering guarantee
+			// above holds identically) but no append to the replayable transcript ring.
+			//
+			// Derived turn state is ambient, not conversation. Sending it through broadcast put a
+			// SECOND idle frame in every turn's replay, which a later attach would then replay as
+			// history. This is the same argument surface.go already makes for broadcastFacts, and
+			// the same one this file makes for turn.state — I made it twice elsewhere and still
+			// reached for broadcast here.
+			m.broadcastTransient(raw)
 		}
 	}
 	// Everyone else — the Fleet, other devices not in this session — by the hub route.
