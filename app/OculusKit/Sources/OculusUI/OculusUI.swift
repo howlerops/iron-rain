@@ -3008,6 +3008,60 @@ public final class Model: ObservableObject {
     /// Global defaults for NEW sessions. Nil until loaded.
     @Published public var sessionDefaults: SessionDefaults? = nil
 
+    /// The active session's branchable history. Empty until loaded.
+    @Published public var threadNodes: [ThreadNode] = []
+    @Published public var threadLoading = false
+    @Published public var threadError: String? = nil
+
+    /// Loads the points this conversation can be branched from.
+    public func loadThread() async {
+        guard client != nil, let sid = sessionID else { return }
+        threadLoading = true
+        threadError = nil
+        defer { threadLoading = false }
+        do {
+            let env = try await request(MessageType.threadTree, payload: SessionRef(sessionID: sid))
+            let res = try env.payload(as: ThreadTreeResult.self)
+            // Ignore an answer for a session we have since navigated away from — a slow tree for the
+            // previous session must not replace the one on screen.
+            guard res.sessionID == sessionID else { return }
+            threadNodes = res.nodes ?? []
+        } catch {
+            threadNodes = []
+            threadError = error.localizedDescription
+        }
+    }
+
+    /// Branches at a node. Opens the result — which may be a NEW session (opencode) or the same one
+    /// rebound onto the branch (pi), so the daemon's answer decides, not an assumption here.
+    public func forkThread(at nodeID: String) async {
+        guard client != nil, let sid = sessionID else { return }
+        do {
+            let env = try await request(MessageType.threadFork, payload: ThreadRef(sessionID: sid, nodeID: nodeID))
+            let res = try env.payload(as: ThreadForkResult.self)
+            appendTool("⑂ Branched the conversation")
+            if res.isNew, !res.sessionID.isEmpty {
+                await openSession(res.sessionID)
+            } else {
+                await loadThread()
+            }
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
+
+    /// Moves this session back to a node, discarding what came after.
+    public func rewindThread(to nodeID: String) async {
+        guard client != nil, let sid = sessionID else { return }
+        do {
+            _ = try await request(MessageType.threadRewind, payload: ThreadRef(sessionID: sid, nodeID: nodeID))
+            appendTool("⟲ Rewound the conversation")
+            await loadThread()
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
+
     /// Loads the global session defaults from the daemon.
     public func loadSessionDefaults() async {
         guard client != nil else { return }

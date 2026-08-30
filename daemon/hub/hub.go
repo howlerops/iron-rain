@@ -2771,6 +2771,39 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.setNotifyPref(req.Key, req.Enabled)
 		h.sendOK(conn, env.ID, h.notifyPrefs())
 
+	case protocol.TypeThreadTree:
+		var req protocol.SessionRef
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad thread.tree")
+			return
+		}
+		h.handleThreadTree(ctx, conn, env.ID, req)
+
+	case protocol.TypeThreadFork:
+		// Same capability as steering: forking starts an agent on a new line of work.
+		if !h.requireCapability(conn, env.ID, capSteer, "fork a conversation") {
+			return
+		}
+		var req protocol.ThreadRef
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad thread.fork")
+			return
+		}
+		h.handleThreadFork(ctx, conn, env.ID, req)
+
+	case protocol.TypeThreadRewind:
+		// Rewinding DISCARDS work — it is the most destructive of the three, so it is gated the same
+		// as steering rather than being readable-by-anyone like the tree.
+		if !h.requireCapability(conn, env.ID, capSteer, "rewind a conversation") {
+			return
+		}
+		var req protocol.ThreadRef
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad thread.rewind")
+			return
+		}
+		h.handleThreadRewind(ctx, conn, env.ID, req)
+
 	case protocol.TypeSessionDefaultsGet:
 		h.sendOK(conn, env.ID, h.sessionDefaults())
 

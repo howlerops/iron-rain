@@ -795,10 +795,21 @@ struct NewSessionView: View {
                 .font(.caption).foregroundStyle(palette.mutedForeground)
                 .fixedSize(horizontal: false, vertical: true)
             VStack(spacing: 8) {
-                // Repository first. What used to sit here was every folder the daemon had ever seen
-                // an agent run in — worktrees, duplicate checkouts, temp directories — listed in
-                // full and unsearchable, because auto-registration adds them and nothing removes
-                // them.
+                // What has actually been CHOSEN comes first — it is the answer to "what am I about
+                // to run on", and it belongs above the means of choosing rather than buried under a
+                // list of things you did not pick. Tapping one still removes it.
+                if !chosenProjects.isEmpty {
+                    VStack(spacing: 5) {
+                        ForEach(chosenProjects) { p in projectRow(p) }
+                    }
+                }
+                // Folders BEFORE repositories. This code has called folder-browsing the primary path
+                // since it was written, and rendered it last — under a list capped at roughly a third
+                // of the sheet. On an account with 132 repositories that put "Browse folders…" below
+                // the fold, so the only way to reach a folder that is not a GitHub repository was to
+                // scroll past repositories you did not want. Anything you have to scroll past to
+                // reach is not the primary path, whatever the comment says.
+                addFolderRow
                 GitHubPicker(model: model, palette: palette) { path in
                     Task {
                         if let p = await model.addProject(path: path) {
@@ -806,14 +817,6 @@ struct NewSessionView: View {
                         }
                     }
                 }
-                // Only what has actually been CHOSEN, so this can never grow back into the list it
-                // replaced. Tapping one still removes it, which is where that gesture was learned.
-                if !chosenProjects.isEmpty {
-                    VStack(spacing: 5) {
-                        ForEach(chosenProjects) { p in projectRow(p) }
-                    }
-                }
-                addFolderRow
             }
             planNote
         }
@@ -1190,6 +1193,16 @@ struct FolderBrowser: View {
     @State private var selected: Set<String> = [] // absolute paths
     @State private var loading = true
     @State private var adding = false
+    /// Filter over the CURRENT folder's entries. Cleared on navigation — carrying it into a new
+    /// folder would silently hide most of what you just opened.
+    @State private var filter = ""
+
+    private var visibleEntries: [ProjectDirEntry] {
+        let all = listing?.entries ?? []
+        let q = filter.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return all }
+        return all.filter { $0.name.lowercased().contains(q) }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1224,15 +1237,48 @@ struct FolderBrowser: View {
                 Spacer()
             }
             .padding(.leading, 6).padding(.bottom, 4)
+
+            // Filter the CURRENT folder.
+            //
+            // A home directory has forty-odd entries and this had no way to narrow them, so reaching
+            // a folder meant dragging through the list — the same "convoluted" complaint that got the
+            // repository list a search box, in the one place the search box was missing. Shown only
+            // when there is enough to be worth filtering, so a folder with three children does not
+            // grow a control it does not need.
+            if (listing?.entries.count ?? 0) > 8 {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass").font(.caption).foregroundStyle(palette.mutedForeground)
+                    TextField("Filter this folder", text: $filter)
+                        .textFieldStyle(.plain)
+                        .font(.footnote)
+                        #if os(iOS)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        #endif
+                    if !filter.isEmpty {
+                        Button { filter = "" } label: {
+                            Image(systemName: "xmark.circle.fill").font(.caption)
+                                .foregroundStyle(palette.mutedForeground)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 10).padding(.vertical, 7)
+                .background(OculusShape.rounded(OculusRadius.sm).fill(palette.input))
+                .padding(.horizontal, 10).padding(.bottom, 6)
+            }
             Divider().overlay(palette.border)
 
             ScrollView {
                 if loading {
                     ProgressView().padding(40)
-                } else if let entries = listing?.entries, !entries.isEmpty {
+                } else if !visibleEntries.isEmpty {
                     LazyVStack(spacing: 2) {
-                        ForEach(entries) { entry in row(entry) }
+                        ForEach(visibleEntries) { entry in row(entry) }
                     }.padding(10)
+                } else if !(listing?.entries.isEmpty ?? true) {
+                    Text("Nothing here matches “\(filter)”.")
+                        .font(.caption).foregroundStyle(palette.mutedForeground).padding(40)
                 } else {
                     Text("No sub-folders here.").font(.caption).foregroundStyle(palette.mutedForeground).padding(40)
                 }
@@ -1306,6 +1352,9 @@ struct FolderBrowser: View {
 
     private func load(_ path: String?) async {
         loading = true
+        // Clear the filter on navigation: carrying it into a new folder would hide most of what you
+        // just opened, and the emptiness would look like the folder rather than the filter.
+        filter = ""
         let res = await model.browseFolders(path: path)
         if let res { listing = res }
         loading = false

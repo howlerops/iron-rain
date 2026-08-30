@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/howlerops/oculus/daemon/genui"
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/textutil"
 )
@@ -134,7 +135,9 @@ func (m forkMessage) preview() string {
 	if t == "" {
 		t = m.Content
 	}
-	return textutil.FirstLine(strings.TrimSpace(t), 120)
+	// Strip the generative-UI guide folded into a session's first user turn, or that turn previews as
+	// "⟦iron:ui-guide⟧" rather than as the prompt the person actually typed.
+	return textutil.FirstLine(strings.TrimSpace(genui.StripGuide(t)), 120)
 }
 
 // ThreadTree lists the points this conversation can be forked from (agent.ThreadOps).

@@ -687,15 +687,19 @@ func (s *session) Capabilities() protocol.SessionCapabilities {
 		Commands:  true,
 		Agents:    true,
 		Models:    true,
-		Thread: protocol.ThreadCaps{
-			// The SDK resumes with forkSession, which is a branch from a point in the transcript —
-			// exactly the fork operation. Rewind-in-place is NOT offered: the SDK has no way to
-			// truncate a session, and claiming it would give the user a control that silently does
-			// the wrong thing.
-			Fork:    true,
-			Tree:    true,
-			Compact: true,
-		},
+		// Thread is deliberately EMPTY, and this is a correction of my own mistake rather than a
+		// statement about claude-code.
+		//
+		// It was declared Fork+Tree+Compact on the strength of the SDK having forkSession and the
+		// transcripts being a parent-linked tree (uuid/parentUuid, leafUuid, isSidechain — all really
+		// there). But this session type does not implement agent.ThreadOps, so every one of those
+		// controls would have appeared in the UI and failed on use: the daemon answers "claude-code
+		// sessions cannot branch their history".
+		//
+		// That is the precise failure the manifest exists to prevent, committed in the manifest
+		// itself. Declaring a capability is a promise about THIS ADAPTER, not about what the product
+		// could theoretically do — so it stays empty until the operations are implemented and
+		// verified against a real session, the way opencode's and pi's were.
 	}
 }
 

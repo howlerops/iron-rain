@@ -157,21 +157,27 @@ const (
 	// Global defaults for NEW sessions (request/response). See SessionDefaults.
 	TypeSessionDefaultsGet = "session.defaults.get"
 	TypeSessionDefaultsSet = "session.defaults.set"
-	TypeSessionTool        = "session.tool"      // a tool call with its command + output (rich inline card)
-	TypeUIComponent        = "ui.component"      // event: a normalized generative-UI component (projected or fenced)
-	TypeUIAction           = "ui.action"         // client → daemon: user activated a UI component's action
-	TypeSessionHeartbeat   = "session.heartbeat" // supervision state for a session (event)
-	TypeRunOutput          = "run.output"        // streamed line from a test/build run (event)
-	TypeRunResult          = "run.result"        // final pass/fail of a test/build run (event)
-	TypeSessionProgress    = "session.progress"  // live step during session.create (drives the loading checklist)
-	TypeLogSubscribe       = "log.subscribe"     // start streaming the daemon's log to this client (replays recent)
-	TypeLogUnsubscribe     = "log.unsubscribe"   // stop streaming the daemon's log
-	TypeLogLine            = "log.line"          // event: one daemon log line
-	TypeActivityList       = "activity.list"     // request → recent cross-session activity events (the feed backbone)
-	TypeActivityEvent      = "activity.event"    // event: one new activity item (finished/needs-you/error/loop)
-	TypeActivityMarkRead   = "activity.markread" // mark activity items read (clears the needs-you badge)
-	TypeFanoutCreate       = "fanout.create"     // spawn N agents on the SAME prompt in isolated worktrees (compare + merge winner)
-	TypeFanoutResolve      = "fanout.resolve"    // tear down a fan-out group (keep the winner, discard the rest + worktrees)
+	// Conversation history operations — going back to an earlier point. Which of these a session
+	// actually offers comes from SessionCapabilities.Thread; a client should not call one it was
+	// not told about.
+	TypeThreadTree       = "thread.tree"       // request → ThreadTreeResult
+	TypeThreadFork       = "thread.fork"       // branch into a new session at a node
+	TypeThreadRewind     = "thread.rewind"     // move THIS session back to a node
+	TypeSessionTool      = "session.tool"      // a tool call with its command + output (rich inline card)
+	TypeUIComponent      = "ui.component"      // event: a normalized generative-UI component (projected or fenced)
+	TypeUIAction         = "ui.action"         // client → daemon: user activated a UI component's action
+	TypeSessionHeartbeat = "session.heartbeat" // supervision state for a session (event)
+	TypeRunOutput        = "run.output"        // streamed line from a test/build run (event)
+	TypeRunResult        = "run.result"        // final pass/fail of a test/build run (event)
+	TypeSessionProgress  = "session.progress"  // live step during session.create (drives the loading checklist)
+	TypeLogSubscribe     = "log.subscribe"     // start streaming the daemon's log to this client (replays recent)
+	TypeLogUnsubscribe   = "log.unsubscribe"   // stop streaming the daemon's log
+	TypeLogLine          = "log.line"          // event: one daemon log line
+	TypeActivityList     = "activity.list"     // request → recent cross-session activity events (the feed backbone)
+	TypeActivityEvent    = "activity.event"    // event: one new activity item (finished/needs-you/error/loop)
+	TypeActivityMarkRead = "activity.markread" // mark activity items read (clears the needs-you badge)
+	TypeFanoutCreate     = "fanout.create"     // spawn N agents on the SAME prompt in isolated worktrees (compare + merge winner)
+	TypeFanoutResolve    = "fanout.resolve"    // tear down a fan-out group (keep the winner, discard the rest + worktrees)
 	// TypeFanoutSynthesize spawns an agent that reads the variants' diffs and writes the best
 	// COMBINED implementation — as an additional variant in the same group, never as a replacement.
 	// It is the alternative to diffing two branches and grafting one into the other by hand.
@@ -1568,6 +1574,11 @@ type ThreadCaps struct {
 	// "go back and try again, knowing why the last attempt failed". pi offers it as a choice at the
 	// moment of navigating (none / summarise / summarise with custom instructions).
 	Summarize bool `json:"summarize,omitempty"`
+	// Unrevert: a rewind on this provider can itself be undone (opencode's /unrevert). Nothing else
+	// offers it, and it changes what a client should SAY before rewinding — "this cannot be undone"
+	// is false on opencode and true everywhere else, and getting that backwards in either direction
+	// is worse than saying nothing.
+	Unrevert bool `json:"unrevert,omitempty"`
 }
 
 // SessionCapabilities is what a provider CAN do. Absent fields mean "not supported", so a client
@@ -1630,6 +1641,30 @@ type ThreadNode struct {
 	// abandoned siblings dimmed, which is the whole reason a tree with two branches is readable at
 	// all — without it a client can only highlight one row and every other branch looks equally live.
 	OnPath bool `json:"on_path,omitempty"`
+}
+
+// ThreadRef names a node in a session's history (thread.fork / thread.rewind).
+type ThreadRef struct {
+	SessionID string `json:"session_id"`
+	NodeID    string `json:"node_id"`
+}
+
+// ThreadTreeResult is a session's branchable history (thread.tree).
+type ThreadTreeResult struct {
+	SessionID string       `json:"session_id"`
+	Nodes     []ThreadNode `json:"nodes"`
+}
+
+// ThreadForkResult reports where the fork went.
+//
+// SessionID is the session to open afterwards, and it is NOT always a new one: opencode's fork
+// creates a separate session, while pi's rebinds the one you were in. A client that assumed either
+// would send half its users to the wrong conversation, so the daemon answers with the id to use.
+type ThreadForkResult struct {
+	SessionID string `json:"session_id"`
+	// New reports whether SessionID is a session that did not exist before, so the client knows
+	// whether to add a row or stay where it is.
+	New bool `json:"new,omitempty"`
 }
 
 // Todo is one item in the agent's live to-do list.

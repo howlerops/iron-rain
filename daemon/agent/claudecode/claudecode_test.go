@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/protocol"
 )
 
@@ -96,5 +97,23 @@ func TestClaudeCodeSidecar_E2E(t *testing.T) {
 func TestClaudeCode_NoSidecar(t *testing.T) {
 	if _, err := New(nil).Create(context.Background(), "", "hi"); err == nil {
 		t.Fatal("expected an error when no sidecar is configured")
+	}
+}
+
+// A declared capability is a promise about THIS ADAPTER. claude-code once declared Fork, Tree and
+// Compact on the strength of the SDK having forkSession and its transcripts being a parent-linked
+// tree — both true, and both irrelevant, because the session type does not implement
+// agent.ThreadOps. Every one of those controls would have rendered and then failed on use.
+//
+// This asserts the two stay in step: if someone declares a thread capability, the implementation has
+// to exist.
+func TestClaudeCodeDoesNotPromiseThreadOpsItCannotPerform(t *testing.T) {
+	s := &session{id: "cc_test"}
+	caps := s.Capabilities()
+	_, implements := any(s).(agent.ThreadOps)
+	declares := caps.Thread != (protocol.ThreadCaps{})
+	if declares && !implements {
+		t.Errorf("capabilities declare %+v but the session does not implement agent.ThreadOps — "+
+			"every one of those controls would fail when used", caps.Thread)
 	}
 }

@@ -169,6 +169,9 @@ public enum MessageType {
     public static let sessionFacts = "session.facts"               // what is true right now (status bar)
     public static let sessionDefaultsGet = "session.defaults.get"  // global starting config for new sessions
     public static let sessionDefaultsSet = "session.defaults.set"
+    public static let threadTree = "thread.tree"     // a session's branchable history
+    public static let threadFork = "thread.fork"     // branch at a node
+    public static let threadRewind = "thread.rewind" // move this session back to a node
     public static let sessionTool = "session.tool"         // a tool call with its command + output
     public static let sessionHeartbeat = "session.heartbeat"
     public static let sessionAutonomy = "session.autonomy"
@@ -936,11 +939,20 @@ public struct ThreadCaps: Codable, Hashable {
     /// forward — the difference between "go back and try again" and "go back and try again knowing
     /// why the last attempt failed".
     public var summarize: Bool?
+    /// A rewind on this provider can itself be undone. Changes what the confirmation must say:
+    /// "cannot be undone" is false on opencode and true everywhere else.
+    public var unrevert: Bool?
+    public init(tree: Bool? = nil, fork: Bool? = nil, rewind: Bool? = nil,
+                compact: Bool? = nil, summarize: Bool? = nil, unrevert: Bool? = nil) {
+        self.tree = tree; self.fork = fork; self.rewind = rewind
+        self.compact = compact; self.summarize = summarize; self.unrevert = unrevert
+    }
     public var hasTree: Bool { tree == true }
     public var hasFork: Bool { fork == true }
     public var hasRewind: Bool { rewind == true }
     public var hasCompact: Bool { compact == true }
     public var hasSummarize: Bool { summarize == true }
+    public var hasUnrevert: Bool { unrevert == true }
     /// Whether any thread operation is available — whether to show the control at all.
     public var any: Bool { hasTree || hasFork || hasRewind || hasCompact }
 }
@@ -984,6 +996,55 @@ public struct SessionFacts: Codable {
         guard let max = contextMax, max > 0, let used = contextUsed else { return nil }
         return min(1, Double(used) / Double(max))
     }
+}
+
+/// One point a conversation can be moved to.
+///
+/// Not only user messages: pi's tree includes tool calls, edits, model changes and branch
+/// summaries — four turns produce nineteen nodes. `kind` is what lets the list be filtered and
+/// rendered, rather than shown as an undifferentiated wall.
+public struct ThreadNode: Codable, Identifiable, Hashable {
+    public var id: String
+    public var parentID: String?
+    public var kind: String?
+    public var preview: String
+    public var at: Int?
+    public var depth: Int?
+    /// The session's current position. Exactly one node has it.
+    public var current: Bool?
+    /// On the line between the root and `current` — as opposed to an abandoned sibling branch.
+    /// Distinct from `current`, and both are needed: without this a client can only highlight one
+    /// row and every other branch looks equally live.
+    public var onPath: Bool?
+    public var isCurrent: Bool { current == true }
+    public var isOnPath: Bool { onPath == true }
+    enum CodingKeys: String, CodingKey {
+        case id, kind, preview, at, depth, current
+        case parentID = "parent_id"
+        case onPath = "on_path"
+    }
+}
+
+public struct ThreadTreeResult: Codable {
+    public var sessionID: String
+    public var nodes: [ThreadNode]?
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case nodes }
+}
+
+public struct ThreadRef: Codable {
+    public var sessionID: String
+    public var nodeID: String
+    public init(sessionID: String, nodeID: String) { self.sessionID = sessionID; self.nodeID = nodeID }
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case nodeID = "node_id" }
+}
+
+/// Where a fork went. `new` is false when the provider rebound the SAME session (pi) rather than
+/// creating one (opencode) — the client must not assume either.
+public struct ThreadForkResult: Codable {
+    public var sessionID: String
+    public var new: Bool?
+    public var isNew: Bool { new == true }
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case new }
 }
 
 /// Global starting configuration for new sessions.

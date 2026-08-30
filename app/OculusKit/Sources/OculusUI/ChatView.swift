@@ -123,6 +123,8 @@ public struct ChatView: View {
     /// A mode that turns approvals off, picked but not yet confirmed. Held rather than applied so the
     /// switch is a decision with a sentence attached, not a menu row next to three harmless ones.
     @State private var pendingUnsafeMode: SessionModeInfo?
+    /// The "Go back" sheet — the thread/branch picker.
+    @State private var showThread = false
     @State private var showSessionControls = false
     /// Where the controls sheet asked to go, acted on in its `onDismiss` so the destination isn't
     /// presented underneath a sheet that is still on screen.
@@ -260,6 +262,14 @@ public struct ChatView: View {
             yoloBanner
             Group {
                 if isStopped { restartFooter } else { Composer(model: model, draft: draft, palette: palette) }
+            }
+            // Hosted on the composer group, which is ALWAYS in the tree — not on yoloBanner, which is
+            // a @ViewBuilder returning nothing unless the session is in yolo. A sheet attached to a
+            // conditionally-empty view simply never presents, and nothing reports an error: the menu
+            // item just does nothing. Same root cause as the Design sheet that appeared to ignore
+            // two clicks and then open on the third.
+            .sheet(isPresented: $showThread) {
+                ThreadView(model: model, palette: palette) { showThread = false }
             }
             // The composer is the bottom of the same column the transcript sets — same measure, same
             // centring. Any disagreement here steps the column out at the bottom of the window.
@@ -447,6 +457,14 @@ public struct ChatView: View {
                 // items carry text labels so it's clear what each does, unlike hover-only tooltips.
                 ToolbarItem(placement: .automatic) {
                     Menu {
+                        // Shown only when this provider can actually branch. The whole point of the
+                        // capability manifest is that an absent ability means an absent control,
+                        // rather than a menu item that fails when tapped on three providers.
+                        if model.capabilities?.thread?.any == true {
+                            Button { showThread = true } label: {
+                                Label("Go back…", systemImage: "arrow.uturn.backward")
+                            }
+                        }
                         Button { model.codeReviewTarget = model.sessionID } label: {
                             Label("Code & changes", systemImage: "chevron.left.forwardslash.chevron.right")
                         }

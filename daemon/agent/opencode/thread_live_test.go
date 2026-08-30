@@ -6,8 +6,11 @@ import (
 	"testing"
 	"time"
 
+	"strings"
+
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/agent/opencode"
+	"github.com/howlerops/oculus/daemon/genui"
 	"github.com/howlerops/oculus/daemon/protocol"
 )
 
@@ -82,4 +85,22 @@ func TestLive_OpencodeThreadTree(t *testing.T) {
 		t.Errorf("%d nodes marked current, want exactly 1", current)
 	}
 	t.Logf("%d fork point(s); first=%q id=%q", len(nodes), nodes[0].Preview, nodes[0].ID)
+}
+
+// The generative-UI guide is folded into a session's FIRST user turn, so that turn's raw text starts
+// with the ⟦iron:ui-guide⟧ block. Unstripped, the first — and often only — row of the branch picker
+// reads "⟦iron:ui-guide⟧" instead of the prompt, which looks like the conversation began with
+// something the user never sent.
+//
+// Asserted on the preview helper directly so it runs without a server.
+func TestThreadPreviewStripsTheGenerativeUIGuide(t *testing.T) {
+	raw := genui.GuideOpen + "\nlots of instructions about components\n" + genui.GuideClose +
+		"\n\nRead TASK.md and carry out the migration."
+	got := opencode.PreviewForTest(raw)
+	if strings.Contains(got, "iron:ui") {
+		t.Errorf("preview still carries the guide: %q", got)
+	}
+	if !strings.HasPrefix(got, "Read TASK.md") {
+		t.Errorf("preview = %q, want the user's own first line", got)
+	}
 }

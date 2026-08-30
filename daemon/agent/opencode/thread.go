@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/howlerops/oculus/daemon/genui"
 	"github.com/howlerops/oculus/daemon/protocol"
 	"github.com/howlerops/oculus/daemon/textutil"
 )
@@ -30,10 +31,11 @@ import (
 // the code that has to honour it.
 func (s *session) threadCaps() protocol.ThreadCaps {
 	return protocol.ThreadCaps{
-		Tree:    true,
-		Fork:    true,
-		Rewind:  true,
-		Compact: true,
+		Tree:     true,
+		Fork:     true,
+		Rewind:   true,
+		Compact:  true,
+		Unrevert: true,
 		// Summarize is false: opencode reverts without producing a summary of what it left behind.
 		// pi's branch summary has no equivalent here, and claiming one would promise a carry-forward
 		// that never happens.
@@ -55,11 +57,21 @@ type ocMessage struct {
 	} `json:"parts"`
 }
 
-// preview is the first line of the message's text, or a description of what it was.
+// preview is the first line of what the USER actually wrote.
+//
+// The generative-UI guide is folded into a session's first user turn, so the raw text of that turn
+// begins with the ⟦iron:ui-guide⟧ block. Previewing it unstripped made the first — and often only —
+// row of the branch picker read "⟦iron:ui-guide⟧" instead of the prompt, which is both useless and
+// alarming: it looks like the conversation started with something you did not send. Found by opening
+// this picker on a real session rather than by reading the code.
 func (m ocMessage) preview() string {
 	for _, p := range m.Parts {
-		if p.Type == "text" && strings.TrimSpace(p.Text) != "" {
-			return textutil.FirstLine(strings.TrimSpace(p.Text), 120)
+		if p.Type != "text" {
+			continue
+		}
+		t := strings.TrimSpace(genui.StripGuide(p.Text))
+		if t != "" {
+			return textutil.FirstLine(t, 120)
 		}
 	}
 	return ""
@@ -152,4 +164,14 @@ func (s *session) ThreadRewind(ctx context.Context, nodeID string) error {
 // assertion by the one caller that offers the control.
 func (s *session) Unrevert(ctx context.Context) error {
 	return s.p.postJSON(ctx, withDir("/session/"+s.id+"/unrevert", s.dir), map[string]any{}, nil)
+}
+
+// PreviewForTest exposes the preview derivation for tests. The stripping it performs is the
+// difference between a picker showing your prompt and one showing an injected preamble, which is
+// worth a test that does not need a live server.
+func PreviewForTest(text string) string {
+	return ocMessage{Parts: []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}{{Type: "text", Text: text}}}.preview()
 }
