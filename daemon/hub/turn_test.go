@@ -10,6 +10,7 @@ import (
 
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/protocol"
+	"github.com/howlerops/oculus/daemon/transport"
 )
 
 // errRefused is a probe failure that means ABSENCE — nothing is listening — as opposed to a timeout,
@@ -37,6 +38,11 @@ func (f *turnFakeSess) Probe(ctx context.Context) (bool, error)       { return f
 func (f *turnFakeSess) Recover(context.Context)                       { f.recovered.Add(1) }
 
 // turnHarness builds a managedSession with an injected subscriber whose channel captures every
+// subscriberConnID is a non-nil connection identity for the harness's session subscriber, so it is
+// distinguishable from the hub-level observer registered at the nil key. Never dialled — it is only
+// ever a map key here.
+var subscriberConnID = &transport.Conn{}
+
 // emitted frame, plus tiny Turn Engine timings (restored on cleanup).
 func turnHarness(t *testing.T, probe func(context.Context) (bool, error)) (*managedSession, *turnFakeSess, chan []byte) {
 	t.Helper()
@@ -47,7 +53,15 @@ func turnHarness(t *testing.T, probe func(context.Context) (bool, error)) (*mana
 	m.hbEvery, m.quietAfter, m.reconcileTick, m.probeFailLimit = 30*time.Millisecond, 50*time.Millisecond, 10*time.Millisecond, 3
 	frames := make(chan []byte, 256)
 	m.mu.Lock()
-	m.subs[nil] = &subscriber{conn: nil, ch: frames, done: make(chan struct{})}
+	// A DISTINCT connection identity, not nil.
+	//
+	// wireVerdictHub registers its observer as h.clients[nil] to model "connected to the daemon but
+	// not subscribed to this session". Keying the subscriber at nil too made those one client, and
+	// the tests only passed because per-session state used to be broadcast hub-wide to everyone
+	// regardless. Now that a subscriber is served through the SESSION queue (so a turn's terminal
+	// status cannot overtake its content) and skipped hub-side, the collision matters: the harness
+	// has to model the two observers it describes.
+	m.subs[subscriberConnID] = &subscriber{conn: subscriberConnID, ch: frames, done: make(chan struct{})}
 	m.mu.Unlock()
 	return m, fake, frames
 }

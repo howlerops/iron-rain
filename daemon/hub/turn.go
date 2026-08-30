@@ -14,6 +14,7 @@ import (
 	"github.com/howlerops/oculus/daemon/activity"
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/protocol"
+	"github.com/howlerops/oculus/daemon/transport"
 )
 
 // The Turn Engine: the daemon-owned truth about whether a session's turn is alive (see
@@ -469,13 +470,44 @@ func (m *managedSession) publishVerdict(state, reason string, providerDriven boo
 // session.list snapshot they fetched on connect. Subscribers of this session also get session.status
 // through the pump; a repeat of the same state is idempotent on the client (it assigns, it doesn't
 // accumulate), and the cost of one small frame per turn edge is worth an honest sidebar.
+// publishSessionState announces derived turn state.
+//
+// The delivery is split deliberately, and the split is the fix for a real ordering defect.
+//
+// A connection has TWO independent outbound queues: the hub-level one (hubClient.ch, for
+// cross-device broadcasts) and the per-session subscriber one (subscriber.ch, which carries a
+// turn's content). Each is drained by its OWN goroutine writing to the same conn. Conn.Send
+// serialises individual frames, but nothing orders the two queues against each other — so a status
+// enqueued here could be written BEFORE deltas enqueued earlier on the session queue:
+//
+//	delta(here are the results:) | status:running | status:idle | COMPONENT | delta(done) | status:idle
+//
+// Measured at 11 of 60 runs in isolation. It matters because everything that finalises a turn does
+// so on the terminal status: the spinner stops, the transcript is persisted, and the "agent
+// finished" push is composed — all on an incomplete turn.
+//
+// So subscribers get this through the SESSION queue, behind that turn's content, and everyone else
+// keeps getting it hub-level. broadcastExcept already exists for exactly this shape of problem.
 func (m *managedSession) publishSessionState(status, detail string) {
 	if m.hub == nil || status == "" {
 		return
 	}
-	m.hub.broadcast(protocol.TypeSessionStatus, protocol.SessionStatus{
-		SessionID: m.sess.ID(), Status: status, Detail: detail,
-	})
+	payload := protocol.SessionStatus{SessionID: m.sess.ID(), Status: status, Detail: detail}
+
+	// Subscribers first, in the same queue as the content they are watching.
+	skip := map[*transport.Conn]bool{}
+	m.mu.Lock()
+	for c := range m.subs {
+		skip[c] = true
+	}
+	m.mu.Unlock()
+	if len(skip) > 0 {
+		if raw, err := (agent.Event{Type: protocol.TypeSessionStatus, Payload: payload}).Encode(); err == nil {
+			m.broadcast(raw)
+		}
+	}
+	// Everyone else — the Fleet, other devices not in this session — by the hub route.
+	m.hub.broadcastExcept(protocol.TypeSessionStatus, payload, skip)
 }
 
 // clearNeedsYou retires this session's live needs-you items and tells every client, so the badge
