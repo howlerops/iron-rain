@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/howlerops/oculus/daemon/activity"
@@ -111,8 +112,35 @@ type managedSession struct {
 	transcript      [][]byte  // encoded protocol events, replayed to new subscribers
 	transcriptBytes int       // running size of transcript (for the byte cap)
 	lastActivity    time.Time // last event time; surfaced as Session.UpdatedAt for sorting/relative time
-	inTok, outTok   int       // cumulative NEW tokens across the session (cache reads excluded)
-	costUSD         float64   // cumulative cost (USD) — meaningful only when costKnown
+	// pumpSeq counts events the pump has fully processed. See the bump site for why it exists.
+	pumpSeq atomic.Uint64
+	// segMu guards seg. The segmenter used to be touched only by the pump, so it needed no lock —
+	// until the turn engine had to flush it as well (a reconciled turn never receives the provider
+	// idle that the pump's flush hangs off).
+	segMu sync.Mutex
+
+	// pumpTasks lets another goroutine run work ON the pump, after everything already queued.
+	//
+	// This is a FENCE, and it replaced two failed attempts at timing. The reconciler asks the
+	// provider to re-emit output it lost, which lands on the provider's channel and is drained by
+	// the pump — so closing the turn from the turn-engine goroutine raced that content. Waiting for
+	// a settled counter could not tell "the pump finished" from "the pump has not started"; adding
+	// a parked flag fixed that but still stalled for the whole timeout whenever no pump was running.
+	//
+	// Posting the work to the pump removes the question. The pump drains provider events with
+	// priority and runs a task only when that channel is momentarily empty, so a task posted after
+	// Recover necessarily runs after the recovered frames have been broadcast. Buffered and posted
+	// non-blockingly, so the turn engine can never block on the pump.
+	pumpTasks chan func()
+	// pumpAlive is true while the pump loop is running and therefore able to execute posted tasks.
+	//
+	// Without it, onPump succeeds against a buffered channel nobody is draining and the caller
+	// believes its work is scheduled — so a reconciled turn would never close at all. Refusing when
+	// no pump is running lets the caller do the work itself, out of order but done.
+	pumpAlive atomic.Bool
+
+	inTok, outTok int     // cumulative NEW tokens across the session (cache reads excluded)
+	costUSD       float64 // cumulative cost (USD) — meaningful only when costKnown
 	// costKnown is false until a provider actually reports a cost. Without it a session that was
 	// never priced is indistinguishable from one that cost nothing, and the app rendered the former
 	// as "$0.000".
@@ -417,6 +445,8 @@ type sessionMeta struct {
 func newManagedSession(h *Hub, sess agent.Session, meta sessionMeta) *managedSession {
 	now := time.Now()
 	return &managedSession{hub: h, sess: sess, meta: meta, subs: map[*transport.Conn]*subscriber{},
+		// Small buffer: the only poster is the reconciler, at most once per turn.
+		pumpTasks:    make(chan func(), 4),
 		lastActivity: now, createdAt: now,
 		hbEvery: turnHeartbeatEvery, quietAfter: turnQuietAfter,
 		reconcileTick: turnReconcileTick, probeFailLimit: turnProbeFailLimit,
@@ -893,14 +923,16 @@ func (m *managedSession) emitUIComponents(sessionID string, comps []protocol.UIC
 // flushUI finalizes the generative-UI segmenter at turn end: it emits any component/text held in a
 // closing fence and resets the segmenter for the next turn. Called on idle/done.
 func (m *managedSession) flushUI(sessionID string) {
+	m.segMu.Lock()
 	fwd, comps := m.seg.Flush()
+	m.seg = genui.Segmenter{}
+	m.segMu.Unlock()
 	m.emitUIComponents(sessionID, comps)
 	if fwd != "" {
 		if raw, err := (agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: sessionID, Text: fwd}}).Encode(); err == nil {
 			m.broadcast(raw)
 		}
 	}
-	m.seg = genui.Segmenter{}
 }
 
 // ownEvent reports whether a delta/thinking event belongs to the session itself (not a sub-agent).
@@ -1143,7 +1175,45 @@ func (m *managedSession) run() {
 		m.ringFromStart = true // no durable store: the ring is all there has ever been
 		m.mu.Unlock()
 	}
-	for ev := range m.sess.Events() {
+	// Explicit receive rather than `for range`, so the pump can also run posted tasks — and run them
+	// only once the provider's own events are drained. See pumpTasks.
+	events := m.sess.Events()
+	m.pumpAlive.Store(true)
+	defer func() {
+		m.pumpAlive.Store(false)
+		// Run whatever was posted just as the loop was ending, so a task is never silently stranded
+		// by the race between posting and exit.
+		for {
+			select {
+			case fn := <-m.pumpTasks:
+				if fn != nil {
+					fn()
+				}
+			default:
+				return
+			}
+		}
+	}()
+	for {
+		var ev agent.Event
+		var ok bool
+		select {
+		case ev, ok = <-events:
+		default:
+			// Nothing waiting from the provider: now a posted task may run, in the order it was
+			// posted relative to the frames above.
+			select {
+			case ev, ok = <-events:
+			case fn := <-m.pumpTasks:
+				if fn != nil {
+					fn()
+				}
+				continue
+			}
+		}
+		if !ok {
+			break
+		}
 		m.noteTurnEvent() // every provider event = liveness for the Turn Engine
 		if sa, ok := ev.Payload.(protocol.SubAgent); ok && ev.Type == protocol.TypeSessionSubAgent && sa.ParentID == m.sess.ID() {
 			m.turnOnChild(sa) // sub-agents are children of the turn
@@ -1378,7 +1448,9 @@ func (m *managedSession) run() {
 			// Only the PARENT session's own text goes through the fence segmenter — a sub-agent's
 			// forwarded delta (SessionID == child id) must not be fed into the parent's segmenter.
 			if d, ok := ev.Payload.(protocol.OutputDelta); ok && d.SessionID == m.sess.ID() {
+				m.segMu.Lock()
 				fwd, comps := m.seg.Feed(d.Text)
+				m.segMu.Unlock()
 				m.emitUIComponents(d.SessionID, comps)
 				if fwd == "" {
 					continue // fully absorbed into a fence; nothing to stream this delta
@@ -1410,6 +1482,15 @@ func (m *managedSession) run() {
 		if len(extractedComps) > 0 {
 			m.emitUIComponents(m.sess.ID(), extractedComps) // right after the cleaned message
 		}
+		// A watermark of "the pump has finished with this event".
+		//
+		// Bumped LAST, after everything the event causes, so an observer that sees it advance knows
+		// the frame is on the subscriber queue. The turn engine uses it to avoid closing a turn on
+		// top of content it just asked the provider to re-emit (see waitForPumpQuiet).
+		//
+		// Not turnLastEvent: that is only bumped for specific event kinds, so it cannot answer
+		// "has the pump drained".
+		m.pumpSeq.Add(1)
 	}
 	// The provider event stream ended. Distinguish an EXPLICIT user stop (drop the durable record)
 	// from an UNEXPECTED provider exit — a crashed claude-code sidecar or an exited CLI process —
@@ -1560,4 +1641,21 @@ func (m *managedSession) sendHistoryPage(conn *transport.Conn, loaded, limit int
 		}
 		send(end)
 	}()
+}
+
+// onPump runs fn on the pump goroutine, after everything the provider has already sent.
+//
+// Non-blocking by construction: if the queue is full the task is dropped and reported false, because
+// the turn engine must never wait on the pump — the pump can block on a database append, and a turn
+// loop stuck behind it would freeze the session it is supposed to be supervising.
+func (m *managedSession) onPump(fn func()) bool {
+	if !m.pumpAlive.Load() {
+		return false // nobody would ever run it
+	}
+	select {
+	case m.pumpTasks <- fn:
+		return true
+	default:
+		return false
+	}
 }

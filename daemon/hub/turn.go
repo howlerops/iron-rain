@@ -964,6 +964,39 @@ func (m *managedSession) turnLoops(stop chan struct{}) {
 				rctx, rcancel := context.WithTimeout(context.Background(), 15*time.Second)
 				r.Recover(rctx) // re-emits the final output through the normal event stream
 				rcancel()
+				// Recover hands its output to the PROVIDER's event channel, which the pump drains on
+				// its own goroutine. Closing the turn straight away therefore raced the very content
+				// that was just recovered, and the reconciled idle could land in front of it — the
+				// same defect the subscriber-queue fix addressed, arriving by a different route
+				// (producer ordering, not queue ordering).
+				//
+				// Deliberately a bounded WAIT rather than a barrier. turnLoops must never block on a
+				// pump that can itself block (it appends to SQLite), so this observes a watermark and
+				// gives up on a timer instead of waiting to be signalled. Worst case it closes a
+				// little late, which costs nothing; a deadlock here would freeze the session.
+				// Finish this turn ON THE PUMP, after the frames Recover just enqueued.
+				//
+				// Recover hands its output to the provider's channel, which the pump drains on its
+				// own goroutine, so closing from here raced the very content that was recovered —
+				// the same disorder the subscriber-queue fix addressed, arriving as producer
+				// ordering rather than queue ordering.
+				//
+				// The flush matters as much as the order. flushUI hangs off the pump's handling of a
+				// PROVIDER-sent idle, and a reconciled turn is by definition one where that never
+				// arrived; the segmenter is line-oriented, so recovered output with no trailing
+				// newline sat in it undelivered and an unterminated fence left a placeholder
+				// spinning. The recovery could lose the tail it had just recovered.
+				//
+				// If the queue is full the task is refused rather than waited on, and we fall
+				// through to closing directly: a turn that ends slightly out of order is a blemish,
+				// a turn engine blocked on the pump is a frozen session.
+				posted := m.onPump(func() {
+					m.flushUI(m.sess.ID())
+					m.closeTurn(protocol.StatusIdle, "reconciled: completion event was lost")
+				})
+				if posted {
+					return
+				}
 			}
 			m.closeTurn(protocol.StatusIdle, "reconciled: completion event was lost")
 			return
