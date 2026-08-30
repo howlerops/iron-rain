@@ -101,6 +101,7 @@ type Hub struct {
 	approvalReqs      map[string]pendingApproval // approvalID -> the request + its scope, for a scoped ALWAYS
 	setupTrust        *setupTrustStore           // per-repo approvals for worktree setup commands (see setup_trust.go)
 	defaults          defaultsStore              // global starting config for new sessions (see defaults.go)
+	contextLimits     map[string]int             // provider/model -> context window, for the context meter
 	notifyPrefsPath   string                     // path to ~/.oculus/notify.json (per-category push toggles)
 	notifyOff         map[string]bool            // push categories the user turned OFF (absent = enabled)
 	fanoutNotified    map[string]bool            // fan-out groups already notified as "all done" (fire once)

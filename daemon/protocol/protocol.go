@@ -1501,10 +1501,16 @@ type Session struct {
 	Mode          string `json:"mode,omitempty"`           // code | ask | architect ("" = code)
 	Restartable   bool   `json:"restartable,omitempty"`    // a stopped session that can be re-created (session.restart)
 	UpdatedAt     int64  `json:"updated_at,omitempty"`     // unix seconds of last activity (0 = unknown)
-	// Cumulative token/cost usage for the session (surfaced as a meter; 0 = unknown).
+	// Cumulative NEW tokens for the session — cache reads excluded, because they are the same
+	// context re-sent each turn and summing them counts one conversation once per turn.
 	InputTokens  int     `json:"input_tokens,omitempty"`
 	OutputTokens int     `json:"output_tokens,omitempty"`
 	CostUSD      float64 `json:"cost_usd,omitempty"`
+	// ContextTokens is the size of the conversation last sent, REPLACED per turn rather than summed.
+	ContextTokens int `json:"context_tokens,omitempty"`
+	// CostKnown is false when no provider ever reported a cost for this session. Without it, "never
+	// priced" and "cost nothing" are the same value, and the app rendered the first as $0.000.
+	CostKnown bool `json:"cost_known,omitempty"`
 	// True when this worktree session's branch would conflict with the default branch (passive
 	// badge, computed by a periodic sweep) — so parallel agents on one repo don't silently collide.
 	Conflicted bool `json:"conflicted,omitempty"`
@@ -1880,6 +1886,11 @@ type ModelInfo struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
 	Provider string `json:"provider,omitempty"`
+	// ContextLimit is the model's context window in tokens, 0 when the provider does not say.
+	// It is the denominator of the context meter: without it a client can show how much has been
+	// used but never how close to full the conversation is, which is the number that decides when
+	// to compact.
+	ContextLimit int `json:"context_limit,omitempty"`
 }
 
 // ModelListReq asks for the models available to a provider (or a live session's provider).

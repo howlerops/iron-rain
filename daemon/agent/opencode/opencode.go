@@ -170,8 +170,15 @@ func (p *Provider) Models(ctx context.Context) ([]protocol.ModelInfo, error) {
 			ID     string `json:"id"`
 			Name   string `json:"name"`
 			Models map[string]struct {
-				ID   string `json:"id"`
-				Name string `json:"name"`
+				ID    string `json:"id"`
+				Name  string `json:"name"`
+				Limit struct {
+					// The model's context window. opencode reports it per model (500000 for
+					// gpt-5.6-terra-fast), and it is the denominator a context meter needs — without
+					// it a client can show tokens used but never how close to full the conversation
+					// is, which is the number that tells you when to compact.
+					Context int `json:"context"`
+				} `json:"limit"`
 			} `json:"models"`
 		} `json:"providers"`
 	}
@@ -185,7 +192,10 @@ func (p *Provider) Models(ctx context.Context) ([]protocol.ModelInfo, error) {
 			if name == "" {
 				name = m.ID
 			}
-			out = append(out, protocol.ModelInfo{ID: m.ID, Name: pr.Name + " · " + name, Provider: pr.ID})
+			out = append(out, protocol.ModelInfo{
+				ID: m.ID, Name: pr.Name + " · " + name, Provider: pr.ID,
+				ContextLimit: m.Limit.Context,
+			})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

@@ -106,13 +106,21 @@ type managedSession struct {
 	sess agent.Session
 	meta sessionMeta // grouping info (project/cwd/worktree) for session.list + create
 
-	mu               sync.Mutex
-	subs             map[*transport.Conn]*subscriber
-	transcript       [][]byte  // encoded protocol events, replayed to new subscribers
-	transcriptBytes  int       // running size of transcript (for the byte cap)
-	lastActivity     time.Time // last event time; surfaced as Session.UpdatedAt for sorting/relative time
-	inTok, outTok    int       // cumulative token usage across the session
-	costUSD          float64   // cumulative cost (USD)
+	mu              sync.Mutex
+	subs            map[*transport.Conn]*subscriber
+	transcript      [][]byte  // encoded protocol events, replayed to new subscribers
+	transcriptBytes int       // running size of transcript (for the byte cap)
+	lastActivity    time.Time // last event time; surfaced as Session.UpdatedAt for sorting/relative time
+	inTok, outTok   int       // cumulative NEW tokens across the session (cache reads excluded)
+	costUSD         float64   // cumulative cost (USD) — meaningful only when costKnown
+	// costKnown is false until a provider actually reports a cost. Without it a session that was
+	// never priced is indistinguishable from one that cost nothing, and the app rendered the former
+	// as "$0.000".
+	costKnown bool
+	// contextTokens is the size of the conversation last sent to the model (cache read + that turn's
+	// new input). REPLACED per turn, never summed — summing it is what reported 3.1M for a session
+	// whose largest turn was 17k.
+	contextTokens    int
 	wasRunning       bool      // saw activity since the last idle (gates the "finished" push)
 	turnStartedAt    time.Time // when the current turn started running (for the "finished" push duration)
 	loopDoneNotified bool      // fired the "loop run finished" push once (loop sessions only)
@@ -524,6 +532,7 @@ func (m *managedSession) info() protocol.Session {
 	updated := m.lastActivity.Unix()
 	label := m.meta.label
 	inTok, outTok, cost := m.inTok, m.outTok, m.costUSD
+	ctxTok, costKnown := m.contextTokens, m.costKnown
 	isWorkspace := len(m.meta.members) > 0
 	status := m.lastStatus
 	turnOpen := m.turnPhase != ""
@@ -566,6 +575,8 @@ func (m *managedSession) info() protocol.Session {
 		InputTokens:   inTok,
 		OutputTokens:  outTok,
 		CostUSD:       cost,
+		ContextTokens: ctxTok,
+		CostKnown:     costKnown,
 		Conflicted:    conflicted,
 		FanoutGroup:   m.meta.fanoutGroup,
 		FanoutVariant: m.meta.fanoutVariant,
@@ -1253,8 +1264,17 @@ func (m *managedSession) run() {
 				m.mu.Lock()
 				m.inTok += u.InputTokens
 				m.outTok += u.OutputTokens
-				m.costUSD += u.CostUSD
+				if u.CostReported {
+					m.costUSD += u.CostUSD
+					m.costKnown = true
+				}
+				// Replace, don't accumulate — this is how big the conversation is, not what it spent.
+				if ctx := u.CacheReadTokens + u.InputTokens; ctx > 0 {
+					m.contextTokens = ctx
+				}
 				m.mu.Unlock()
+				// The context meter lives in the status bar, which facts drive.
+				m.hub.broadcastFacts(m)
 			}
 		}
 		if ev.Type == protocol.TypeSessionTodos {

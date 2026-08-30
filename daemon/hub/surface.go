@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"time"
 
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/protocol"
@@ -65,6 +66,21 @@ func (h *Hub) sessionFacts(m *managedSession) protocol.SessionFacts {
 	facts := agent.FactsOf(context.Background(), m.sess)
 	facts.SessionID = m.sess.ID()
 	facts.Mode = m.sessionMode()
+	// The context meter. Used comes from the last turn's cache-read + new input — the size of the
+	// conversation actually sent — and the window from the model the session is running.
+	//
+	// Only reported when BOTH are known. A meter with no denominator can show a number but not how
+	// close to full you are, which is the one thing it exists to answer, and inventing a default
+	// window would put a confident wrong percentage in the status bar.
+	m.mu.Lock()
+	used, model := m.contextTokens, m.model
+	m.mu.Unlock()
+	if used > 0 {
+		facts.ContextUsed = used
+		if limit := h.contextLimitFor(m.sess.Provider(), model); limit > 0 {
+			facts.ContextMax = limit
+		}
+	}
 	if facts.CWD == "" {
 		m.mu.Lock()
 		facts.CWD = m.meta.cwd
@@ -74,4 +90,51 @@ func (h *Hub) sessionFacts(m *managedSession) protocol.SessionFacts {
 		facts.Branch = agent.GitBranch(facts.CWD)
 	}
 	return facts
+}
+
+// contextLimitFor resolves a model's context window, cached because it comes from a provider round
+// trip and changes only when the provider's configuration does.
+//
+// Returns 0 when unknown, and every caller treats 0 as "do not render a meter" rather than
+// substituting a guess: a percentage computed against the wrong window is worse than no percentage,
+// because it will be believed.
+func (h *Hub) contextLimitFor(provider, model string) int {
+	if provider == "" || model == "" {
+		return 0
+	}
+	key := provider + "/" + model
+	h.mu.Lock()
+	if h.contextLimits == nil {
+		h.contextLimits = map[string]int{}
+	}
+	if v, ok := h.contextLimits[key]; ok {
+		h.mu.Unlock()
+		return v
+	}
+	prov := h.providers[provider]
+	h.mu.Unlock()
+
+	lister, ok := prov.(agent.ModelLister)
+	if !ok {
+		return 0
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	models, err := lister.Models(ctx)
+	if err != nil {
+		return 0
+	}
+	limit := 0
+	h.mu.Lock()
+	for _, mi := range models {
+		if mi.ContextLimit > 0 {
+			h.contextLimits[mi.Provider+"/"+mi.ID] = mi.ContextLimit
+			h.contextLimits[provider+"/"+mi.ID] = mi.ContextLimit
+		}
+		if mi.ID == model {
+			limit = mi.ContextLimit
+		}
+	}
+	h.mu.Unlock()
+	return limit
 }

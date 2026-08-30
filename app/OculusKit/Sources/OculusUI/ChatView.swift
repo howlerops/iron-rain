@@ -359,6 +359,11 @@ public struct ChatView: View {
             if let s = model.currentSession, (s.costUSD ?? 0) > 0 || (s.inputTokens ?? 0) > 0 {
                 readoutToolbarItem { UsageChip(session: s, palette: palette) }
             }
+            // The context meter. Shown only when the provider reported BOTH a size and a window —
+            // a percentage against a guessed window would be believed, and acted on.
+            if let f = model.facts, let frac = f.contextFraction {
+                readoutToolbarItem { ContextChip(fraction: frac, facts: f, palette: palette) }
+            }
             if let sid = model.sessionID, let hb = model.heartbeats[sid] {
                 readoutToolbarItem { HeartbeatChip(hb: hb, palette: palette) }
             }
@@ -2233,6 +2238,52 @@ struct UsageChip: View {
                      ? "$\(String(format: "%.4f", session.costUSD ?? 0))"
                      : "cost not reported by this provider")
         return parts.joined(separator: " · ")
+    }
+}
+
+/// How full the conversation is.
+///
+/// This is the number that decides when to compact, and it was the one thing the status area could
+/// not say: the app knew tokens spent but not how close the context was to its limit. It needs a
+/// denominator, so it renders only when the provider reported a window — never against a guess.
+struct ContextChip: View {
+    let fraction: Double
+    let facts: SessionFacts
+    let palette: OculusPalette
+
+    var body: some View {
+        HStack(spacing: 5) {
+            // A ring rather than a number: "how full" is a proportion, and a proportion is read
+            // faster as an arc than as two figures you have to divide.
+            ZStack {
+                Circle().stroke(palette.mutedForeground.opacity(0.3), lineWidth: 2)
+                Circle().trim(from: 0, to: fraction)
+                    .stroke(tint, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
+            .frame(width: 11, height: 11)
+            Text("\(Int((fraction * 100).rounded()))%")
+                .font(.caption2.monospacedDigit())
+        }
+        .foregroundStyle(fraction >= 0.8 ? tint : palette.mutedForeground)
+        .help(helpText)
+        .accessibilityLabel("Context \(Int((fraction * 100).rounded())) percent full")
+    }
+
+    /// Warn before it is a problem, not once it already is: compaction takes a turn, so the useful
+    /// moment to notice is while there is still room to act.
+    private var tint: Color {
+        if fraction >= 0.9 { return palette.destructive }
+        if fraction >= 0.8 { return palette.warning }
+        return palette.primary
+    }
+
+    private var helpText: String {
+        let used = facts.contextUsed ?? 0
+        let max = facts.contextMax ?? 0
+        var s = "Context \(used.formatted()) of \(max.formatted()) tokens"
+        if fraction >= 0.8 { s += " — consider compacting" }
+        return s
     }
 }
 
