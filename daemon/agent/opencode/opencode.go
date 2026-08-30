@@ -718,9 +718,11 @@ func (s *session) Provider() string { return "opencode" }
 
 // Capabilities declares what opencode can do (agent.Capable).
 //
-// Thread operations are all false: opencode's server API has no branch/rewind endpoint we drive, and
-// declaring one would put a control in the UI that fails when tapped. A capability manifest is only
-// worth anything if "absent" reliably means "absent".
+// Thread operations were declared as ALL FALSE here, on the reasoning that opencode's server had no
+// branch/rewind endpoint. That reasoning was never checked against the API, and it was exactly
+// backwards: opencode has the richest thread surface of any provider — fork, revert, unrevert and
+// children. Declaring absent is as much a lie as declaring present, and it hid the best-supported
+// implementation behind the most cautious claim. See thread.go.
 func (s *session) Capabilities() protocol.SessionCapabilities {
 	return protocol.SessionCapabilities{
 		SessionID: s.id,
@@ -729,6 +731,7 @@ func (s *session) Capabilities() protocol.SessionCapabilities {
 		Commands:  true,
 		Agents:    true, // the `task` tool spawns child sessions; already reported as SubAgent events
 		Models:    true,
+		Thread:    s.threadCaps(),
 	}
 }
 
