@@ -1556,10 +1556,18 @@ type SessionMode struct {
 // pi has them natively (/tree, and forking from any earlier user message), and the others have
 // their own partial equivalents.
 type ThreadCaps struct {
-	Tree    bool `json:"tree,omitempty"`    // enumerate branch points / prior user messages
-	Fork    bool `json:"fork,omitempty"`    // start a new branch from an earlier point
-	Rewind  bool `json:"rewind,omitempty"`  // move this session back to an earlier point in place
+	Tree    bool `json:"tree,omitempty"`    // enumerate the tree's nodes
+	Fork    bool `json:"fork,omitempty"`    // start a NEW session branching from an earlier point
+	Rewind  bool `json:"rewind,omitempty"`  // move THIS session's position to another node
 	Compact bool `json:"compact,omitempty"` // summarise history to reclaim context
+	// Summarize: when moving away from a branch, this provider can summarise the entries being
+	// left behind and carry that summary forward.
+	//
+	// Kept distinct from Compact, which reclaims context on the CURRENT line. This one is about not
+	// losing what an abandoned attempt learned — the difference between "go back and try again" and
+	// "go back and try again, knowing why the last attempt failed". pi offers it as a choice at the
+	// moment of navigating (none / summarise / summarise with custom instructions).
+	Summarize bool `json:"summarize,omitempty"`
 }
 
 // SessionCapabilities is what a provider CAN do. Absent fields mean "not supported", so a client
@@ -1593,15 +1601,20 @@ type SessionFacts struct {
 	Queued      int `json:"queued,omitempty"` // prompts waiting behind the current turn
 }
 
-// ThreadNode is one point a conversation can be forked or rewound to — in practice an earlier user
-// message, which is what both pi's tree selector and a "go back and try again differently" gesture
-// are actually selecting.
+// ThreadNode is one point a conversation can be moved to.
+//
+// Not only user messages. pi's on-disk sessions are a parent-linked tree whose nodes also include
+// model changes and thinking-level changes, so "go back to before I switched models" is a real
+// destination — and a picker that showed messages alone would silently hide it. Kind is what lets a
+// client render those differently instead of printing an empty preview.
 type ThreadNode struct {
-	ID      string `json:"id"`
-	Preview string `json:"preview"`           // first line of the user message, for the picker
-	At      int64  `json:"at,omitempty"`      // unix seconds
-	Depth   int    `json:"depth,omitempty"`   // nesting for tree rendering; 0 = main line
-	Current bool   `json:"current,omitempty"` // this is where the session is now
+	ID       string `json:"id"`
+	ParentID string `json:"parent_id,omitempty"` // the tree is parent-linked; roots have none
+	Kind     string `json:"kind,omitempty"`      // message | model | thinking | session
+	Preview  string `json:"preview"`             // one line for the picker
+	At       int64  `json:"at,omitempty"`        // unix seconds
+	Depth    int    `json:"depth,omitempty"`     // nesting for tree rendering; 0 = main line
+	Current  bool   `json:"current,omitempty"`   // the session's current position (pi calls it the leaf)
 }
 
 // Todo is one item in the agent's live to-do list.

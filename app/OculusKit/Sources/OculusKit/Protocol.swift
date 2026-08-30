@@ -932,10 +932,15 @@ public struct ThreadCaps: Codable, Hashable {
     public var fork: Bool?
     public var rewind: Bool?
     public var compact: Bool?
+    /// When leaving a branch, the provider can summarise what is being abandoned and carry it
+    /// forward — the difference between "go back and try again" and "go back and try again knowing
+    /// why the last attempt failed".
+    public var summarize: Bool?
     public var hasTree: Bool { tree == true }
     public var hasFork: Bool { fork == true }
     public var hasRewind: Bool { rewind == true }
     public var hasCompact: Bool { compact == true }
+    public var hasSummarize: Bool { summarize == true }
     /// Whether any thread operation is available — whether to show the control at all.
     public var any: Bool { hasTree || hasFork || hasRewind || hasCompact }
 }

@@ -304,7 +304,11 @@ func (s *session) Capabilities() protocol.SessionCapabilities {
 		Models:    true,
 	}
 	if name == "pi" {
-		caps.Thread = protocol.ThreadCaps{Tree: true, Fork: true, Compact: true}
+		// Rewind, not merely fork. pi's /tree calls navigateTree, which moves THIS session's leaf to
+		// the chosen node — the session keeps every branch and simply points somewhere else, so going
+		// back and continuing creates a sibling rather than a new session. Fork is separate and real
+		// too (`--fork`, and the fork-from-a-user-message selector), which is why both are declared.
+		caps.Thread = protocol.ThreadCaps{Tree: true, Fork: true, Rewind: true, Compact: true, Summarize: true}
 	}
 	return caps
 }
