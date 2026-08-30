@@ -573,6 +573,7 @@ func (p *Provider) start(ctx context.Context, cwd, id, mode, prompt string, plan
 		id:         id,
 		replayUUID: replayUUID,
 		p:          p,
+		forks:      newForkWaiters(),
 		events:     make(chan agent.Event, 32),
 		stdin:      stdin,
 		cmd:        cmd,
@@ -631,6 +632,9 @@ type session struct {
 	toolMu    sync.Mutex
 	toolCards map[string]toolCard
 
+	// forks correlates a thread.fork request with the sidecar's reply (see thread.go).
+	forks *forkWaiters
+
 	// Live ambient state, accumulated from "facts" frames. Held so a client attaching mid-session
 	// gets the whole picture at once (Facts) instead of only the fields that happen to change
 	// afterwards — a status bar that fills in one field per event is worse than no status bar.
@@ -687,19 +691,15 @@ func (s *session) Capabilities() protocol.SessionCapabilities {
 		Commands:  true,
 		Agents:    true,
 		Models:    true,
-		// Thread is deliberately EMPTY, and this is a correction of my own mistake rather than a
-		// statement about claude-code.
+		// Thread ops are implemented in thread.go: the tree is read from claude's own JSONL
+		// transcript, and Fork uses the SDK's forkSession(sessionId, {upToMessageId}).
 		//
-		// It was declared Fork+Tree+Compact on the strength of the SDK having forkSession and the
-		// transcripts being a parent-linked tree (uuid/parentUuid, leafUuid, isSidechain — all really
-		// there). But this session type does not implement agent.ThreadOps, so every one of those
-		// controls would have appeared in the UI and failed on use: the daemon answers "claude-code
-		// sessions cannot branch their history".
-		//
-		// That is the precise failure the manifest exists to prevent, committed in the manifest
-		// itself. Declaring a capability is a promise about THIS ADAPTER, not about what the product
-		// could theoretically do — so it stays empty until the operations are implemented and
-		// verified against a real session, the way opencode's and pi's were.
+		// This declaration has now been wrong in BOTH directions, which is the lesson worth keeping.
+		// First it claimed Fork+Tree+Compact with no implementation at all, so every control would
+		// have rendered and failed. Then it was emptied with a comment asserting the SDK "has no way
+		// to truncate a session" — also untrue, and only reading the SDK's type definitions settled
+		// it. Claiming without checking and denying without checking are the same mistake.
+		Thread: s.threadCaps(),
 	}
 }
 
@@ -767,11 +767,14 @@ func (s *session) Events() <-chan agent.Event { return s.events }
 
 // inMsg / outMsg are the stdio protocol frames.
 type inMsg struct {
-	T        string   `json:"t"`
-	Text     string   `json:"text,omitempty"`
-	ID       string   `json:"id,omitempty"`
-	Decision string   `json:"decision,omitempty"`
-	Images   []imgAtt `json:"images,omitempty"`
+	// Fork (thread.go): the claude session to branch, and the message to slice at.
+	SessionID     string   `json:"sessionId,omitempty"`
+	UpToMessageID string   `json:"upToMessageId,omitempty"`
+	T             string   `json:"t"`
+	Text          string   `json:"text,omitempty"`
+	ID            string   `json:"id,omitempty"`
+	Decision      string   `json:"decision,omitempty"`
+	Images        []imgAtt `json:"images,omitempty"`
 }
 type imgAtt struct {
 	Mime string `json:"mime"`
@@ -810,6 +813,9 @@ type outMsg struct {
 	CWD      string   `json:"cwd,omitempty"`
 	Commands []string `json:"commands,omitempty"`
 	MCP      int      `json:"mcp,omitempty"`
+	// Fork reply (see thread.go).
+	ForkedSessionID string `json:"session_id,omitempty"`
+	Error           string `json:"error,omitempty"`
 }
 
 type sidecarTodo struct {
@@ -1090,6 +1096,8 @@ func (s *session) readLoop(stdout io.ReadCloser) {
 			title := s.peekToolCard(m.ID).title
 			s.emit(agent.Event{Type: protocol.TypeSessionSubAgent, Payload: protocol.SubAgent{
 				ParentID: s.id, ID: m.ID, Title: title, Status: "started"}})
+		case "forked":
+			s.forks.resolve(m.ID, forkReply{SessionID: m.ForkedSessionID, Error: m.Error})
 		case "compacted":
 			// The context figure the client is showing is now wrong. Zero the used side rather than
 			// leaving a stale number that only corrects itself on the next turn's usage report.

@@ -17,7 +17,7 @@
 // Auth: uses your logged-in `claude` CLI, i.e. your claude.ai SUBSCRIPTION — no API
 // key needed (verified live). Set ANTHROPIC_API_KEY only to use a metered key instead.
 // Run:  node sidecar.mjs   (with OCULUS_SESSION_ID / OCULUS_MODE set by the daemon).
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import { query, forkSession } from "@anthropic-ai/claude-agent-sdk";
 import { createInterface } from "node:readline";
 
 const sessionLabel = process.env.OCULUS_SESSION_ID || "";
@@ -110,6 +110,23 @@ rl.on("line", (line) => {
   try {
     m = JSON.parse(line);
   } catch {
+    return;
+  }
+  if (m.t === "fork") {
+    // Branch the conversation at a message. The SDK exposes this directly:
+    //   forkSession(sessionId, { upToMessageId })  →  { sessionId }  (a NEW session)
+    // "Slice transcript up to this message UUID (inclusive)", per its own type docs. Answered
+    // asynchronously with a correlated reply because the daemon blocks a client request on it.
+    (async () => {
+      try {
+        const res = await forkSession(String(m.sessionId || ""), {
+          upToMessageId: m.upToMessageId ? String(m.upToMessageId) : undefined,
+        });
+        send({ t: "forked", id: m.id ?? "", session_id: String(res?.sessionId || "") });
+      } catch (e) {
+        send({ t: "forked", id: m.id ?? "", error: String((e && e.message) || e) });
+      }
+    })();
     return;
   }
   if (m.t === "ping") {
