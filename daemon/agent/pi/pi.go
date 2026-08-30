@@ -143,6 +143,7 @@ func (p *Provider) spawn(_ context.Context, cwd, id string, extraArgs []string) 
 	s := &session{
 		id:     id,
 		p:      p,
+		cwd:    cwd,
 		events: make(chan agent.Event, 32),
 		stdin:  stdin,
 		cmd:    cmd,
@@ -181,6 +182,7 @@ func (p *Provider) spawn(_ context.Context, cwd, id string, extraArgs []string) 
 type session struct {
 	id     string
 	p      *Provider // for recording the session file pi opened (resume map)
+	cwd    string    // working directory, for the branch/cwd a status bar shows
 	events chan agent.Event
 	stdin  io.WriteCloser
 	cmd    *exec.Cmd
@@ -274,6 +276,38 @@ func (s *session) closeEvents() {
 func (s *session) ID() string                 { return s.id }
 func (s *session) Provider() string           { return "pi" }
 func (s *session) Events() <-chan agent.Event { return s.events }
+
+// Capabilities declares what pi can do (agent.Capable).
+//
+// pi is the provider with the richest THREAD model — /tree lists the branch points and you can fork
+// from any earlier user message — which is exactly the sort of thing the old
+// intersection-shaped adapter layer had no way to express, so it simply never reached the client.
+//
+// Efforts are pi's --thinking levels, in the order the CLI documents them.
+func (s *session) Capabilities() protocol.SessionCapabilities {
+	return protocol.SessionCapabilities{
+		SessionID: s.id,
+		Provider:  "pi",
+		Modes:     protocol.Modes(),
+		Efforts:   []string{"off", "minimal", "low", "medium", "high", "xhigh"},
+		Commands:  true,
+		Models:    true,
+		Thread: protocol.ThreadCaps{
+			Tree:    true,
+			Fork:    true,
+			Compact: true,
+		},
+	}
+}
+
+// Facts reports live ambient state (agent.Factual).
+func (s *session) Facts(context.Context) protocol.SessionFacts {
+	return protocol.SessionFacts{
+		SessionID: s.id,
+		CWD:       s.cwd,
+		Branch:    agent.GitBranch(s.cwd),
+	}
+}
 
 func (s *session) send(v any) error {
 	b, err := json.Marshal(v)

@@ -630,6 +630,73 @@ type session struct {
 	// reconnect, or history replay reads the persisted row instead of the live one.
 	toolMu    sync.Mutex
 	toolCards map[string]toolCard
+
+	// Live ambient state, accumulated from "facts" frames. Held so a client attaching mid-session
+	// gets the whole picture at once (Facts) instead of only the fields that happen to change
+	// afterwards — a status bar that fills in one field per event is worse than no status bar.
+	factsMu sync.Mutex
+	facts   protocol.SessionFacts
+	// commands is claude's slash-command list, reported once at init.
+	commands []string
+}
+
+// mergeFacts folds a partial "facts" frame onto the running picture and returns the whole of it.
+// Empty fields do not overwrite — a mode-change frame carries only `mode`, and must not blank the
+// model and cwd learned at init.
+func (s *session) mergeFacts(m outMsg) protocol.SessionFacts {
+	s.factsMu.Lock()
+	defer s.factsMu.Unlock()
+	s.facts.SessionID = s.id
+	if m.Model != "" {
+		s.facts.Model = m.Model
+	}
+	if m.Mode != "" {
+		s.facts.Mode = m.Mode
+	}
+	if m.CWD != "" {
+		s.facts.CWD = m.CWD
+	}
+	if len(m.Commands) > 0 {
+		s.commands = m.Commands
+	}
+	if s.facts.Branch == "" && s.facts.CWD != "" {
+		s.facts.Branch = agent.GitBranch(s.facts.CWD)
+	}
+	return s.facts
+}
+
+// Facts reports the current ambient state (agent.Factual).
+func (s *session) Facts(context.Context) protocol.SessionFacts {
+	s.factsMu.Lock()
+	defer s.factsMu.Unlock()
+	return s.facts
+}
+
+// Capabilities declares what claude-code can do (agent.Capable).
+//
+// Modes come from protocol.Modes() rather than claude's own permissionMode names. Modes are enforced
+// daemon-side against the approval layer, so they are a property of the SYSTEM, not of this
+// provider; listing claude's native vocabulary here would create a second set of mode ids that means
+// almost-but-not-quite the same thing, and every client would need a translation table. The native
+// value is a hint we forward in SetMode, not the contract.
+func (s *session) Capabilities() protocol.SessionCapabilities {
+	return protocol.SessionCapabilities{
+		SessionID: s.id,
+		Provider:  "claude-code",
+		Modes:     protocol.Modes(),
+		Commands:  true,
+		Agents:    true,
+		Models:    true,
+		Thread: protocol.ThreadCaps{
+			// The SDK resumes with forkSession, which is a branch from a point in the transcript —
+			// exactly the fork operation. Rewind-in-place is NOT offered: the SDK has no way to
+			// truncate a session, and claiming it would give the user a control that silently does
+			// the wrong thing.
+			Fork:    true,
+			Tree:    true,
+			Compact: true,
+		},
+	}
 }
 
 // toolCard is the identity half of an inline tool card, held only between the sidecar's tool_use
@@ -667,6 +734,18 @@ func (s *session) takeToolCard(id string) toolCard {
 		delete(s.toolCards, id)
 	}
 	return c
+}
+
+// peekToolCard reads a card WITHOUT consuming it — for the sub-agent announcement, which borrows the
+// Task tool's description for a title while that tool call is still running and still owes us its
+// terminal frame. Taking it here would blank the card's identity in the durable record.
+func (s *session) peekToolCard(id string) toolCard {
+	if id == "" {
+		return toolCard{}
+	}
+	s.toolMu.Lock()
+	defer s.toolMu.Unlock()
+	return s.toolCards[id]
 }
 
 // forgetToolCards drops every still-pending card at teardown. Tools interrupted by a stop or a
@@ -716,6 +795,14 @@ type outMsg struct {
 	Input json.RawMessage `json:"input,omitempty"`
 	// Busy answers a ping: whether the sidecar has a turn in flight (pong messages only).
 	Busy bool `json:"busy,omitempty"`
+	// Ambient state from the SDK's init message and from mode switches ("facts" frames). Each is
+	// optional: a facts frame carrying only `mode` updates only the mode, so a partial report can
+	// never blank out a field it says nothing about.
+	Model    string   `json:"model,omitempty"`
+	Mode     string   `json:"mode,omitempty"`
+	CWD      string   `json:"cwd,omitempty"`
+	Commands []string `json:"commands,omitempty"`
+	MCP      int      `json:"mcp,omitempty"`
 }
 
 type sidecarTodo struct {
@@ -980,6 +1067,23 @@ func (s *session) readLoop(stdout io.ReadCloser) {
 				todos[i] = protocol.Todo{Content: td.Content, Status: td.Status}
 			}
 			s.emit(agent.Event{Type: protocol.TypeSessionTodos, Payload: protocol.SessionTodos{SessionID: s.id, Todos: todos}})
+		case "facts":
+			s.emit(agent.Event{Type: protocol.TypeSessionFacts, Payload: s.mergeFacts(m)})
+		case "subagent":
+			// parent_tool_use_id IS the Task tool call's id, so the card we already remembered for
+			// that tool carries the human description ("Review the auth flow") the model gave it.
+			// Peek rather than take: the tool card still needs its own terminal frame.
+			title := s.peekToolCard(m.ID).title
+			s.emit(agent.Event{Type: protocol.TypeSessionSubAgent, Payload: protocol.SubAgent{
+				ParentID: s.id, ID: m.ID, Title: title, Status: "started"}})
+		case "compacted":
+			// The context figure the client is showing is now wrong. Zero the used side rather than
+			// leaving a stale number that only corrects itself on the next turn's usage report.
+			s.factsMu.Lock()
+			s.facts.ContextUsed = 0
+			snapshot := s.facts
+			s.factsMu.Unlock()
+			s.emit(agent.Event{Type: protocol.TypeSessionFacts, Payload: snapshot})
 		}
 	}
 	if !idle {

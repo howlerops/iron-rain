@@ -58,13 +58,25 @@ func modeDeniesTool(mode, tool string) bool {
 	}
 }
 
+// modeAutoApproves reports whether the session's mode answers approvals itself, without asking.
+//
+// Only yolo does. Kept as its own predicate rather than an inline string compare so that every place
+// that can skip a prompt has to name this concept — a bare `mode == "yolo"` scattered through the
+// approval path is how one of them ends up missing.
+func modeAutoApproves(mode string) bool { return mode == protocol.ModeYolo }
+
 // normalizeMode maps input (including the legacy Plan bool) onto a known mode.
+//
+// Unknown input falls back to code, NOT to the most recently added mode: an old client sending a
+// mode string this daemon doesn't recognise must never be silently upgraded into yolo.
 func normalizeMode(mode string, plan bool) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case protocol.ModeAsk:
 		return protocol.ModeAsk
 	case protocol.ModeArchitect, "plan":
 		return protocol.ModeArchitect
+	case protocol.ModeYolo:
+		return protocol.ModeYolo
 	case protocol.ModeCode, "build", "":
 		if mode == "" && plan {
 			return protocol.ModeArchitect // the pre-mode client's "plan mode" checkbox
@@ -88,6 +100,13 @@ func (h *Hub) setSessionMode(ctx context.Context, m *managedSession, mode string
 		}
 	}
 	h.persistSession(m)
+	// Every watching device has a mode indicator, and one of the modes turns approvals off. A stale
+	// indicator on a second device is exactly the case where someone believes they are being asked
+	// before anything runs, and is not.
+	h.broadcastFacts(m)
+	if mode == protocol.ModeYolo {
+		log.Printf("session %s: YOLO — approvals are auto-allowed for this session", m.sess.ID())
+	}
 }
 
 // sessionMode reads a session's current mode, defaulting to code.

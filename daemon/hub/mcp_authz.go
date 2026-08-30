@@ -182,6 +182,13 @@ func (h *Hub) authorizeMCPTool(ctx context.Context, token, server, tool string, 
 		return fmt.Errorf("this session is in %s mode, which is read-only", mode)
 	}
 
+	// Same placement as the native approval path: after the guard, before the rules. A mode that
+	// means "don't ask me" on native tools but still prompts on MCP tools would be the worst of both
+	// — the user would learn to distrust the indicator.
+	if modeAutoApproves(m.sessionMode()) {
+		return nil
+	}
+
 	m.mu.Lock()
 	projectID := m.meta.projectID
 	execKind := m.meta.execKind

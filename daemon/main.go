@@ -262,6 +262,7 @@ func serve(args []string) error {
 	h.EnableLoops(loopsPath())                      // recurring autonomous ticket workflows
 	h.SetAgentsPath(agentsPath(), agentPrefsPath()) // custom CLI agents + picker visibility
 	h.SetNotifyPrefsPath(notifyPrefsPath())         // per-category push-notification toggles
+	h.SetDefaultsPath(sessionDefaultsPath())        // global starting mode for new sessions
 	h.SetApprovalRulesPath(approvalRulesPath())     // persistent "Always allow" (asked once, ever)
 	// Per-repo approvals of worktree setup commands. Without a path these last only as long as the
 	// daemon does, which means re-approving the same install command after every restart.
@@ -836,6 +837,16 @@ func worktreeSetupTrustPath() string {
 		return "oculus-worktree-setup-trust.json"
 	}
 	return filepath.Join(home, ".oculus", "worktree-setup-trust.json")
+}
+
+// sessionDefaultsPath is ~/.oculus/defaults.json — the global starting configuration for new
+// sessions (see hub/defaults.go).
+func sessionDefaultsPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "oculus-defaults.json"
+	}
+	return filepath.Join(home, ".oculus", "defaults.json")
 }
 
 func notifyPrefsPath() string {

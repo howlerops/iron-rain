@@ -146,22 +146,32 @@ const (
 	TypeFSChange         = "fs.change"         // a watched file changed on disk
 	TypeSessionUsage     = "session.usage"     // token/cost usage for a session (event)
 	TypeSessionTodos     = "session.todos"     // the agent's live to-do list (event)
-	TypeSessionSubAgent  = "session.subagent"  // a sub-agent (opencode task etc.) started/finished under a parent
-	TypeSessionTool      = "session.tool"      // a tool call with its command + output (rich inline card)
-	TypeUIComponent      = "ui.component"      // event: a normalized generative-UI component (projected or fenced)
-	TypeUIAction         = "ui.action"         // client → daemon: user activated a UI component's action
-	TypeSessionHeartbeat = "session.heartbeat" // supervision state for a session (event)
-	TypeRunOutput        = "run.output"        // streamed line from a test/build run (event)
-	TypeRunResult        = "run.result"        // final pass/fail of a test/build run (event)
-	TypeSessionProgress  = "session.progress"  // live step during session.create (drives the loading checklist)
-	TypeLogSubscribe     = "log.subscribe"     // start streaming the daemon's log to this client (replays recent)
-	TypeLogUnsubscribe   = "log.unsubscribe"   // stop streaming the daemon's log
-	TypeLogLine          = "log.line"          // event: one daemon log line
-	TypeActivityList     = "activity.list"     // request → recent cross-session activity events (the feed backbone)
-	TypeActivityEvent    = "activity.event"    // event: one new activity item (finished/needs-you/error/loop)
-	TypeActivityMarkRead = "activity.markread" // mark activity items read (clears the needs-you badge)
-	TypeFanoutCreate     = "fanout.create"     // spawn N agents on the SAME prompt in isolated worktrees (compare + merge winner)
-	TypeFanoutResolve    = "fanout.resolve"    // tear down a fan-out group (keep the winner, discard the rest + worktrees)
+	TypeSessionSubAgent  = "session.subagent"  // a sub-agent (opencode task, claude sidechain, ...) started/finished under a parent
+	// What this provider CAN do, as data — see SessionCapabilities. Sent on attach/subscribe and
+	// whenever it changes. The client renders affordances it is TOLD exist instead of hardcoding a
+	// hint bar that is wrong for three providers out of four.
+	TypeSessionCapabilities = "session.capabilities"
+	// Live ambient state — see SessionFacts. This is the status bar: model, mode, effort, branch,
+	// context budget, queued count.
+	TypeSessionFacts = "session.facts"
+	// Global defaults for NEW sessions (request/response). See SessionDefaults.
+	TypeSessionDefaultsGet = "session.defaults.get"
+	TypeSessionDefaultsSet = "session.defaults.set"
+	TypeSessionTool        = "session.tool"      // a tool call with its command + output (rich inline card)
+	TypeUIComponent        = "ui.component"      // event: a normalized generative-UI component (projected or fenced)
+	TypeUIAction           = "ui.action"         // client → daemon: user activated a UI component's action
+	TypeSessionHeartbeat   = "session.heartbeat" // supervision state for a session (event)
+	TypeRunOutput          = "run.output"        // streamed line from a test/build run (event)
+	TypeRunResult          = "run.result"        // final pass/fail of a test/build run (event)
+	TypeSessionProgress    = "session.progress"  // live step during session.create (drives the loading checklist)
+	TypeLogSubscribe       = "log.subscribe"     // start streaming the daemon's log to this client (replays recent)
+	TypeLogUnsubscribe     = "log.unsubscribe"   // stop streaming the daemon's log
+	TypeLogLine            = "log.line"          // event: one daemon log line
+	TypeActivityList       = "activity.list"     // request → recent cross-session activity events (the feed backbone)
+	TypeActivityEvent      = "activity.event"    // event: one new activity item (finished/needs-you/error/loop)
+	TypeActivityMarkRead   = "activity.markread" // mark activity items read (clears the needs-you badge)
+	TypeFanoutCreate       = "fanout.create"     // spawn N agents on the SAME prompt in isolated worktrees (compare + merge winner)
+	TypeFanoutResolve      = "fanout.resolve"    // tear down a fan-out group (keep the winner, discard the rest + worktrees)
 	// TypeFanoutSynthesize spawns an agent that reads the variants' diffs and writes the best
 	// COMBINED implementation — as an additional variant in the same group, never as a replacement.
 	// It is the alternative to diffing two branches and grafting one into the other by hand.
@@ -1516,6 +1526,84 @@ type SessionUsage struct {
 	CostUSD      float64 `json:"cost_usd"`
 }
 
+// The two events below exist because the adapter layer had become a narrow waist sized to the
+// INTERSECTION of the providers rather than the union of them. Every adapter emitted the same eight
+// events, so the surface could only ever show what the poorest provider could do — which penalised
+// the richest provider hardest, and left the app describing a session differently from that
+// provider's own TUI sitting next to it.
+//
+// The fix is not "more event types per feature". It is to let a provider DECLARE what it supports
+// and REPORT what is currently true, and let the client render from that. Adding a provider, or a
+// capability to one, should not require a new event or a new branch in the UI.
+
+// SessionMode is one behaviour/permission mode a provider offers — claude-code's permissionMode
+// (default/plan/acceptEdits/bypassPermissions), opencode's Build vs Plan, and so on.
+//
+// Mode is not decoration: it decides what the agent will do WITHOUT asking. Not being able to see
+// the current one is a correctness gap, which is why it is modelled rather than left to a label.
+type SessionMode struct {
+	ID          string `json:"id"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+	// Unsafe marks a mode that bypasses approvals (e.g. bypassPermissions). The client is expected
+	// to make entering one deliberate and visible while it is active.
+	Unsafe bool `json:"unsafe,omitempty"`
+}
+
+// ThreadCaps declares which conversation-history operations a provider supports.
+//
+// Distinct from checkpoints, which snapshot the FILESYSTEM with git. These move the CONVERSATION:
+// pi has them natively (/tree, and forking from any earlier user message), and the others have
+// their own partial equivalents.
+type ThreadCaps struct {
+	Tree    bool `json:"tree,omitempty"`    // enumerate branch points / prior user messages
+	Fork    bool `json:"fork,omitempty"`    // start a new branch from an earlier point
+	Rewind  bool `json:"rewind,omitempty"`  // move this session back to an earlier point in place
+	Compact bool `json:"compact,omitempty"` // summarise history to reclaim context
+}
+
+// SessionCapabilities is what a provider CAN do. Absent fields mean "not supported", so a client
+// renders nothing for them rather than an affordance that fails when tapped.
+type SessionCapabilities struct {
+	SessionID string        `json:"session_id"`
+	Provider  string        `json:"provider"`
+	Modes     []SessionMode `json:"modes,omitempty"`
+	Efforts   []string      `json:"efforts,omitempty"` // reasoning/thinking levels, low→high
+	Commands  bool          `json:"commands,omitempty"`
+	Agents    bool          `json:"agents,omitempty"` // can dispatch sub-agents
+	Models    bool          `json:"models,omitempty"` // model can be chosen/switched
+	Thread    ThreadCaps    `json:"thread"`
+}
+
+// SessionFacts is live ambient state — what is true right now. Every field is optional: a provider
+// reports what it knows, and the client omits what it is not told rather than inventing a default.
+//
+// Emitted on change, not per turn, so it is cheap enough to keep a status bar honest.
+type SessionFacts struct {
+	SessionID string `json:"session_id"`
+	Model     string `json:"model,omitempty"`
+	Mode      string `json:"mode,omitempty"`   // matches a SessionMode.ID
+	Effort    string `json:"effort,omitempty"` // matches an entry in Capabilities.Efforts
+	Branch    string `json:"branch,omitempty"` // git branch the session is working on
+	CWD       string `json:"cwd,omitempty"`
+	// Context budget. Max of 0 means the provider does not report one, in which case the client
+	// shows nothing rather than a meter reading zero.
+	ContextUsed int `json:"context_used,omitempty"`
+	ContextMax  int `json:"context_max,omitempty"`
+	Queued      int `json:"queued,omitempty"` // prompts waiting behind the current turn
+}
+
+// ThreadNode is one point a conversation can be forked or rewound to — in practice an earlier user
+// message, which is what both pi's tree selector and a "go back and try again differently" gesture
+// are actually selecting.
+type ThreadNode struct {
+	ID      string `json:"id"`
+	Preview string `json:"preview"`           // first line of the user message, for the picker
+	At      int64  `json:"at,omitempty"`      // unix seconds
+	Depth   int    `json:"depth,omitempty"`   // nesting for tree rendering; 0 = main line
+	Current bool   `json:"current,omitempty"` // this is where the session is now
+}
+
 // Todo is one item in the agent's live to-do list.
 type Todo struct {
 	Content string `json:"content"`
@@ -1923,7 +2011,46 @@ const (
 	// ModeArchitect is plan-first: same denials as ask, plus the harness's native plan mode where it
 	// has one, so the agent proposes a plan instead of editing.
 	ModeArchitect = "architect"
+	// ModeYolo auto-approves everything: no prompt for any tool, including shell and file writes.
+	//
+	// This is a real removal of the safety net, not a convenience setting, and it is modelled as a
+	// mode precisely so it lives in the same place as the others — one vocabulary, one enforcement
+	// point, one thing to display. On harnesses with a native equivalent (claude-code's
+	// bypassPermissions) the daemon ALSO forwards it, which has a consequence worth stating plainly:
+	// that harness then stops consulting the daemon's approval callback at all, so the approval rule
+	// engine is out of the loop rather than merely quiet. A client must therefore show this mode as
+	// continuously active, not confirm it once and forget.
+	ModeYolo = "yolo"
 )
+
+// Modes is the canonical mode list, in the order a picker should show them — safest first, so the
+// unsafe one is never the neighbouring tap of the safe one.
+//
+// Defined once here rather than per provider: modes are enforced daemon-side, so every harness
+// supports all of them and any per-provider list would be the same list copied four times, with the
+// usual outcome that they stop being the same.
+func Modes() []SessionMode {
+	return []SessionMode{
+		{ID: ModeAsk, Label: "Read-only", Description: "Reads, searches and explains. Cannot edit, write or run commands."},
+		{ID: ModeArchitect, Label: "Plan", Description: "Investigates and proposes a plan instead of editing."},
+		{ID: ModeCode, Label: "Normal", Description: "Your approval rules decide; anything else asks first."},
+		{ID: ModeYolo, Label: "YOLO", Description: "Approves everything automatically, including shell commands and file writes.", Unsafe: true},
+	}
+}
+
+// SessionDefaults is the global starting configuration for new sessions.
+//
+// AllowYoloDefault is separate from Mode on purpose. Defaulting every future session to yolo turns
+// approvals off for sessions nobody is present for — loops, fan-outs, scheduled work — so it takes a
+// deliberate second acknowledgement rather than one tap, and the daemon re-checks the pair every
+// time it starts a session rather than trusting that the file was written by this code.
+type SessionDefaults struct {
+	Mode             string `json:"mode,omitempty"`
+	AllowYoloDefault bool   `json:"allow_yolo_default,omitempty"`
+	// Modes is the catalog, so a settings screen renders the same list and copy as the session
+	// picker without hardcoding either.
+	Modes []SessionMode `json:"modes,omitempty"`
+}
 
 // SessionModeSet switches a live session's mode (session.mode.set).
 type SessionModeSet struct {

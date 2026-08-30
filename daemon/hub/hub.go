@@ -100,6 +100,7 @@ type Hub struct {
 	approvalRules     []ApprovalRule             // ordered scoped rules; deny beats allow (see approval_rules.go)
 	approvalReqs      map[string]pendingApproval // approvalID -> the request + its scope, for a scoped ALWAYS
 	setupTrust        *setupTrustStore           // per-repo approvals for worktree setup commands (see setup_trust.go)
+	defaults          defaultsStore              // global starting config for new sessions (see defaults.go)
 	notifyPrefsPath   string                     // path to ~/.oculus/notify.json (per-category push toggles)
 	notifyOff         map[string]bool            // push categories the user turned OFF (absent = enabled)
 	fanoutNotified    map[string]bool            // fan-out groups already notified as "all done" (fire once)
@@ -395,7 +396,13 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 	// Mode subsumes the old Plan bool: architect keeps the harness's native plan mode, ask is
 	// read-only, code is normal. Enforcement is daemon-side (modes.go), so a harness with no native
 	// mode still obeys it.
+	// An unspecified mode takes the user's global default rather than always code — that setting
+	// exists so work does not start in the wrong mode every single time. A request that DOES name a
+	// mode always wins, so the default can never override an explicit choice.
 	mode := normalizeMode(req.Mode, req.Plan)
+	if strings.TrimSpace(req.Mode) == "" && !req.Plan {
+		mode = h.defaultMode()
+	}
 	planStart := mode == protocol.ModeArchitect
 	log.Printf("session.create: starting %s in %s (mode=%s)…", req.Provider, cwd, mode)
 	emit("provider", "Starting "+req.Provider+"…", 0, 0)
@@ -2764,6 +2771,22 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.setNotifyPref(req.Key, req.Enabled)
 		h.sendOK(conn, env.ID, h.notifyPrefs())
 
+	case protocol.TypeSessionDefaultsGet:
+		h.sendOK(conn, env.ID, h.sessionDefaults())
+
+	case protocol.TypeSessionDefaultsSet:
+		// Same capability as changing a live session's mode: this decides the mode every future
+		// session starts in, so it cannot be a lesser permission than setting one session's.
+		if !h.requireCapability(conn, env.ID, capSteer, "change session defaults") {
+			return
+		}
+		var req protocol.SessionDefaults
+		if err := env.Unmarshal(&req); err != nil {
+			h.sendErr(conn, env.ID, "bad session.defaults.set")
+			return
+		}
+		h.sendOK(conn, env.ID, h.setSessionDefaults(req))
+
 	case protocol.TypeUsageReport:
 		h.sendOK(conn, env.ID, h.usageReport())
 
@@ -4273,6 +4296,11 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			return
 		}
 		h.sendOK(conn, env.ID, m.info())
+		// Send what this provider CAN do and what is currently true BEFORE the transcript replays.
+		// A client that learns the capabilities after the history has scrolled past would render the
+		// first screenful with no mode indicator and no affordances, then pop them in — and a status
+		// bar that appears late reads as a bug even when the values are right.
+		h.sendSessionSurface(conn, m)
 		m.subscribe(conn) // replays the transcript, then live events flow
 
 	case protocol.TypeSessionPrompt:

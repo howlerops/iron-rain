@@ -154,10 +154,20 @@ rl.on("line", (line) => {
     // Switch the permission mode for subsequent turns. The daemon enforces its own rules regardless;
     // this makes the MODEL aware it should be planning rather than editing, which changes what it
     // proposes, not just what it's allowed to do.
-    permissionMode = m.text === "architect" || m.text === "ask" ? "plan" : "default";
+    // yolo maps onto the SDK's bypassPermissions, which has a consequence the daemon relies on
+    // knowing: in that mode the SDK stops calling canUseTool, so the approval callback below is
+    // never consulted again. The daemon auto-allows in yolo anyway, so the two agree — but they
+    // agree by construction, not by accident, and changing either half alone would break it.
+    permissionMode =
+      m.text === "yolo" ? "bypassPermissions"
+      : m.text === "architect" || m.text === "ask" ? "plan"
+      : "default";
     if (currentQuery && typeof currentQuery.setPermissionMode === "function") {
       try { currentQuery.setPermissionMode(permissionMode); } catch {}
     }
+    // Say so. A mode change the user cannot see is the same class of problem as not knowing the
+    // mode at all — it decides what happens without asking.
+    send({ t: "facts", mode: permissionMode });
   } else if (m.t === "model") {
     // Switch the model for subsequent turns (SDK setModel accepts an alias like "opus" or a full id).
     if (currentQuery && m.text) {
@@ -224,6 +234,18 @@ function hardExit(code) {
 
 rl.on("close", shutdownOnEOF);
 
+// --- sub-agent tracking ---
+//
+// The SDK does not announce a sub-agent starting; it just starts tagging messages with the Task
+// tool's id. So "have I seen this parent before" IS the start signal. Bounded because a turn runs a
+// handful of sub-agents, not thousands, and the set dies with the process.
+const seenSubAgents = new Set();
+function noteSubAgent(parentToolUseID) {
+  if (!parentToolUseID || seenSubAgents.has(parentToolUseID)) return;
+  seenSubAgents.add(parentToolUseID);
+  send({ t: "subagent", id: String(parentToolUseID), status: "running" });
+}
+
 // --- run the session ---
 const planMode = process.env.OCULUS_PLAN === "1";
 let permissionMode = planMode ? "plan" : "default";
@@ -281,8 +303,25 @@ try {
   for await (const message of currentQuery) {
     switch (message.type) {
       case "system":
-        if (message.subtype === "init" && message.session_id) {
-          send({ t: "session", id: message.session_id });
+        if (message.subtype === "init") {
+          if (message.session_id) send({ t: "session", id: message.session_id });
+          // The init message is the richest thing the SDK ever sends and we were taking one field
+          // out of it. Model, permission mode, cwd and the slash-command list were all right here
+          // and discarded, which is why the app could not tell you which mode you were in while
+          // claude's own TUI showed it in the status bar.
+          send({
+            t: "facts",
+            model: String(message.model || ""),
+            mode: String(message.permissionMode || permissionMode || ""),
+            cwd: String(message.cwd || ""),
+            commands: Array.isArray(message.slash_commands) ? message.slash_commands : [],
+            mcp: Array.isArray(message.mcp_servers) ? message.mcp_servers.length : 0,
+          });
+        } else if (message.subtype === "compact_boundary") {
+          // History was just compacted, so any context figure the client is showing is now stale.
+          // Reporting it as an event is the difference between a context meter that resets and one
+          // that silently lies until the next turn.
+          send({ t: "compacted" });
         }
         break;
       case "stream_event": {
@@ -296,6 +335,12 @@ try {
         break;
       }
       case "assistant": {
+        // parent_tool_use_id is set on everything a SUB-AGENT produces (the Task tool's own
+        // conversation). opencode already reported sub-agents and claude-code did not, so the
+        // richer provider looked like it had none — work would happen with nothing on screen to say
+        // who was doing it. Announce each parent once; the adapter turns this into the same
+        // session.subagent event opencode emits.
+        noteSubAgent(message.parent_tool_use_id);
         const blocks = message.message?.content;
         if (Array.isArray(blocks)) {
           let latestTodoBlock = null;

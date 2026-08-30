@@ -1175,6 +1175,19 @@ func (m *managedSession) run() {
 					m.emitTool("⊘ " + ar.Tool + " blocked — " + g.reason)
 					continue
 				}
+				// YOLO answers everything itself — but only from HERE, after guardApproval.
+				//
+				// The user asked not to be prompted; they did not ask to disable the guard on
+				// repository metadata. That guard exists for consequences that are invisible at the
+				// moment of asking and arrive later from our own git commands (a written .git/hooks
+				// script runs on the next commit), so "I approved it" is not informed consent for it.
+				// Keeping the guard ahead of yolo means yolo cannot be used, deliberately or by an
+				// injected instruction, to install a persistence mechanism silently — and the block
+				// is still surfaced as a visible tool note rather than a silent refusal.
+				if modeAutoApproves(m.sessionMode()) {
+					go func(id string) { _ = m.sess.Respond(context.Background(), id, protocol.DecisionAllow) }(ar.ApprovalID)
+					continue
+				}
 				// A persisted rule answers it silently — permissions are asked ONCE, ever, not once
 				// per session. The request never reaches a client.
 				if m.hub.autoAllowApproval(m, ar) {

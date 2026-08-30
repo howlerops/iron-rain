@@ -713,8 +713,46 @@ type session struct {
 	subStarted  map[string]bool   // sub-agent ids already announced (dedup the started card)
 }
 
-func (s *session) ID() string                 { return s.id }
-func (s *session) Provider() string           { return "opencode" }
+func (s *session) ID() string       { return s.id }
+func (s *session) Provider() string { return "opencode" }
+
+// Capabilities declares what opencode can do (agent.Capable).
+//
+// Thread operations are all false: opencode's server API has no branch/rewind endpoint we drive, and
+// declaring one would put a control in the UI that fails when tapped. A capability manifest is only
+// worth anything if "absent" reliably means "absent".
+func (s *session) Capabilities() protocol.SessionCapabilities {
+	return protocol.SessionCapabilities{
+		SessionID: s.id,
+		Provider:  "opencode",
+		Modes:     protocol.Modes(),
+		Commands:  true,
+		Agents:    true, // the `task` tool spawns child sessions; already reported as SubAgent events
+		Models:    true,
+	}
+}
+
+// Facts reports live ambient state (agent.Factual).
+func (s *session) Facts(context.Context) protocol.SessionFacts {
+	s.modelMu.Lock()
+	model, mode := s.modelID, s.agent
+	s.modelMu.Unlock()
+	// The wire vocabulary is the house one; s.agent holds opencode's native value ("plan"/""), so
+	// translate back rather than leaking it to the client.
+	switch mode {
+	case "plan":
+		mode = protocol.ModeArchitect
+	case "":
+		mode = protocol.ModeCode
+	}
+	return protocol.SessionFacts{
+		SessionID: s.id,
+		Model:     model,
+		Mode:      mode,
+		CWD:       s.dir,
+		Branch:    agent.GitBranch(s.dir),
+	}
+}
 func (s *session) Events() <-chan agent.Event { return s.events }
 
 func (s *session) subscribe() error {
