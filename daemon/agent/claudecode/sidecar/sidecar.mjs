@@ -154,14 +154,22 @@ rl.on("line", (line) => {
     // Switch the permission mode for subsequent turns. The daemon enforces its own rules regardless;
     // this makes the MODEL aware it should be planning rather than editing, which changes what it
     // proposes, not just what it's allowed to do.
-    // yolo maps onto the SDK's bypassPermissions, which has a consequence the daemon relies on
-    // knowing: in that mode the SDK stops calling canUseTool, so the approval callback below is
-    // never consulted again. The daemon auto-allows in yolo anyway, so the two agree — but they
-    // agree by construction, not by accident, and changing either half alone would break it.
-    permissionMode =
-      m.text === "yolo" ? "bypassPermissions"
-      : m.text === "architect" || m.text === "ask" ? "plan"
-      : "default";
+    // yolo is deliberately NOT forwarded as the SDK's bypassPermissions.
+    //
+    // The SDK refuses to enter that mode unless the process was launched with
+    // --dangerously-skip-permissions, and it refuses ASYNCHRONOUSLY — the rejection surfaces inside
+    // its own message-reader loop, where a try/catch around the setPermissionMode call cannot see
+    // it. So asking for it did not fail, it killed this process, and with it the user's session:
+    //   Error: Cannot set permission mode to bypassPermissions because the session was not
+    //   launched with --dangerously-skip-permissions
+    //   ...
+    //   session cc_…: provider stream ended unexpectedly — kept as stopped/restartable
+    //
+    // Staying on "default" costs nothing, because the daemon is what implements yolo: it answers
+    // canUseTool with allow, so no prompt ever reaches the user. It is also the better arrangement
+    // of the two — the daemon stays IN the loop and can keep enforcing the guard on repository
+    // metadata, which bypassPermissions would have taken away entirely.
+    permissionMode = m.text === "architect" || m.text === "ask" ? "plan" : "default";
     if (currentQuery && typeof currentQuery.setPermissionMode === "function") {
       try { currentQuery.setPermissionMode(permissionMode); } catch {}
     }
@@ -239,6 +247,22 @@ rl.on("close", shutdownOnEOF);
 // The SDK does not announce a sub-agent starting; it just starts tagging messages with the Task
 // tool's id. So "have I seen this parent before" IS the start signal. Bounded because a turn runs a
 // handful of sub-agents, not thousands, and the set dies with the process.
+// --- an SDK rejection must not take the session with it ---
+//
+// The bypassPermissions incident: a rejected control request surfaced inside the SDK's own reader
+// loop, where nothing we wrote could catch it, and Node's default behaviour for an unhandled
+// rejection is to kill the process. From the user's side a mode switch silently ended their
+// session and the transcript stopped.
+//
+// Report it and keep going. The turn may well be broken, and the daemon's own supervision is what
+// decides that — but the decision belongs there, with the session state and the reconciler, and not
+// to whether Node happened to see a promise nobody awaited.
+process.on("unhandledRejection", (reason) => {
+  const text = String((reason && reason.message) || reason);
+  send({ t: "error", message: `internal error: ${text}` });
+  send({ t: "idle" }); // never leave the turn spinning on an error the user cannot see
+});
+
 const seenSubAgents = new Set();
 function noteSubAgent(parentToolUseID) {
   if (!parentToolUseID || seenSubAgents.has(parentToolUseID)) return;

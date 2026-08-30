@@ -165,6 +165,10 @@ public enum MessageType {
     public static let uiComponent = "ui.component"   // event: a normalized generative-UI component
     public static let uiAction = "ui.action"         // client → daemon: user activated a UI action
     public static let sessionSubAgent = "session.subagent" // a sub-agent started/finished under a parent
+    public static let sessionCapabilities = "session.capabilities" // what this provider CAN do
+    public static let sessionFacts = "session.facts"               // what is true right now (status bar)
+    public static let sessionDefaultsGet = "session.defaults.get"  // global starting config for new sessions
+    public static let sessionDefaultsSet = "session.defaults.set"
     public static let sessionTool = "session.tool"         // a tool call with its command + output
     public static let sessionHeartbeat = "session.heartbeat"
     public static let sessionAutonomy = "session.autonomy"
@@ -895,6 +899,102 @@ public struct SessionTodos: Codable {
     public var sessionID: String
     public var todos: [Todo]
     enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case todos }
+}
+
+// What a provider can do, and what is currently true of a session.
+//
+// These exist so the app renders affordances it is TOLD about rather than a hint bar hardcoded to
+// one harness. The previous shape showed the same controls for every provider — the intersection of
+// four — which made the richest one look the thinnest and disagreed with its own TUI.
+
+/// One behaviour/permission mode as DESCRIBED by the daemon — id, label, help text, and whether it
+/// turns approvals off. Named ...Info to leave `SessionMode` as the namespace of mode constants that
+/// call sites already use.
+public struct SessionModeInfo: Codable, Identifiable, Hashable {
+    public var id: String
+    public var label: String
+    public var description: String?
+    public var unsafe: Bool?
+    public var isUnsafe: Bool { unsafe == true }
+    public init(id: String, label: String, description: String? = nil, unsafe: Bool? = nil) {
+        self.id = id
+        self.label = label
+        self.description = description
+        self.unsafe = unsafe
+    }
+    enum CodingKeys: String, CodingKey { case id, label, description, unsafe }
+}
+
+/// Which conversation-history operations a provider supports. Distinct from checkpoints, which move
+/// the filesystem: these move the CONVERSATION (pi's /tree and forking from an earlier message).
+public struct ThreadCaps: Codable, Hashable {
+    public var tree: Bool?
+    public var fork: Bool?
+    public var rewind: Bool?
+    public var compact: Bool?
+    public var hasTree: Bool { tree == true }
+    public var hasFork: Bool { fork == true }
+    public var hasRewind: Bool { rewind == true }
+    public var hasCompact: Bool { compact == true }
+    /// Whether any thread operation is available — whether to show the control at all.
+    public var any: Bool { hasTree || hasFork || hasRewind || hasCompact }
+}
+
+public struct SessionCapabilities: Codable {
+    public var sessionID: String
+    public var provider: String?
+    public var modes: [SessionModeInfo]?
+    public var efforts: [String]?
+    public var commands: Bool?
+    public var agents: Bool?
+    public var models: Bool?
+    public var thread: ThreadCaps?
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+        case provider, modes, efforts, commands, agents, models, thread
+    }
+}
+
+/// Live ambient state. Every field is optional and absent means "not reported" — the UI renders
+/// nothing for it rather than inventing a default, because a status bar confidently showing a wrong
+/// mode is worse than one showing no mode.
+public struct SessionFacts: Codable {
+    public var sessionID: String
+    public var model: String?
+    public var mode: String?
+    public var effort: String?
+    public var branch: String?
+    public var cwd: String?
+    public var contextUsed: Int?
+    public var contextMax: Int?
+    public var queued: Int?
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+        case model, mode, effort, branch, cwd, queued
+        case contextUsed = "context_used"
+        case contextMax = "context_max"
+    }
+    /// Fraction of the context window used, or nil when the provider reports no budget.
+    public var contextFraction: Double? {
+        guard let max = contextMax, max > 0, let used = contextUsed else { return nil }
+        return min(1, Double(used) / Double(max))
+    }
+}
+
+/// Global starting configuration for new sessions.
+public struct SessionDefaults: Codable {
+    public var mode: String?
+    public var allowYoloDefault: Bool?
+    public var modes: [SessionModeInfo]?
+    public init(mode: String? = nil, allowYoloDefault: Bool? = nil, modes: [SessionModeInfo]? = nil) {
+        self.mode = mode
+        self.allowYoloDefault = allowYoloDefault
+        self.modes = modes
+    }
+    enum CodingKeys: String, CodingKey {
+        case mode, modes
+        case allowYoloDefault = "allow_yolo_default"
+    }
 }
 
 // Heartbeat supervision: derived on-track state for a session (event), and the client→daemon
@@ -2111,16 +2211,23 @@ public enum SessionMode {
     public static let ask = "ask"
     /// Plan-first: same refusals as ask, plus the harness's native plan mode where it has one.
     public static let architect = "architect"
+    /// Approves everything automatically — no prompt for any tool, including shell and file writes.
+    public static let yolo = "yolo"
 
     public static func label(_ mode: String?) -> String {
         switch mode {
-        case ask: return "Ask"
-        case architect: return "Architect"
-        default: return "Code"
+        case ask: return "Read-only"
+        case architect: return "Plan"
+        case yolo: return "YOLO"
+        default: return "Normal"
         }
     }
     /// Read-only modes get a visible chip; normal operation doesn't need one.
     public static func isRestricted(_ mode: String?) -> Bool { mode == ask || mode == architect }
+    /// The one mode that removes the safety net. Distinct from `isRestricted`, which is the opposite
+    /// concern — these must never be collapsed into a single "not normal" test, because they want
+    /// opposite treatment: restricted is reassuring, unsafe is a warning.
+    public static func isUnsafe(_ mode: String?) -> Bool { mode == yolo }
 }
 
 public struct SessionModeSet: Codable {

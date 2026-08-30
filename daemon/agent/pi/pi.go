@@ -284,20 +284,29 @@ func (s *session) Events() <-chan agent.Event { return s.events }
 // intersection-shaped adapter layer had no way to express, so it simply never reached the client.
 //
 // Efforts are pi's --thinking levels, in the order the CLI documents them.
+// This adapter drives more than pi: prime-agent (Prime Intellect) speaks the same JSONL RPC
+// protocol and rides it unchanged (see autodetect.go). They are NOT the same product, so the thread
+// operations — /tree and forking from an earlier user message — are declared only for pi, which is
+// where they were actually verified. Declaring them for everything on this adapter would put a
+// control in front of prime-agent users that fails when tapped, which is the one thing a capability
+// manifest exists to prevent.
 func (s *session) Capabilities() protocol.SessionCapabilities {
-	return protocol.SessionCapabilities{
+	name := "pi"
+	if s.p != nil {
+		name = s.p.Name()
+	}
+	caps := protocol.SessionCapabilities{
 		SessionID: s.id,
-		Provider:  "pi",
+		Provider:  name,
 		Modes:     protocol.Modes(),
 		Efforts:   []string{"off", "minimal", "low", "medium", "high", "xhigh"},
 		Commands:  true,
 		Models:    true,
-		Thread: protocol.ThreadCaps{
-			Tree:    true,
-			Fork:    true,
-			Compact: true,
-		},
 	}
+	if name == "pi" {
+		caps.Thread = protocol.ThreadCaps{Tree: true, Fork: true, Compact: true}
+	}
+	return caps
 }
 
 // Facts reports live ambient state (agent.Factual).

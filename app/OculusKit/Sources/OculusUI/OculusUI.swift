@@ -2972,9 +2972,38 @@ public final class Model: ObservableObject {
     /// presenting it is the host view's job. Cleared when the group is resolved.
     @Published public var fanoutSummary: FanoutSummary? = nil
 
-    /// The active session's mode (code | ask | architect). Mirrors the daemon, which is authoritative
-    /// and enforces it regardless of what the client shows.
+    /// The active session's mode (code | ask | architect | yolo). Mirrors the daemon, which is
+    /// authoritative and enforces it regardless of what the client shows.
     @Published public var sessionMode: String = SessionMode.code
+
+    /// What the active session's provider CAN do. Nil until the daemon says — and a nil capability
+    /// renders NO control, which is the point: the app used to show one hardcoded set of affordances
+    /// for four different harnesses, so it was wrong for at least three of them.
+    @Published public var capabilities: SessionCapabilities? = nil
+
+    /// Live ambient state for the status bar — model, branch, context budget, queue depth.
+    @Published public var facts: SessionFacts? = nil
+
+    /// The modes this session offers, or the standard four if the daemon hasn't said yet. Never
+    /// empty, so a picker always has something to show.
+    public var availableModes: [SessionModeInfo] {
+        if let m = capabilities?.modes, !m.isEmpty { return m }
+        return [
+            SessionModeInfo(id: SessionMode.ask, label: "Read-only",
+                            description: "Reads, searches and explains. Cannot edit, write or run commands.", unsafe: false),
+            SessionModeInfo(id: SessionMode.architect, label: "Plan",
+                            description: "Investigates and proposes a plan instead of editing.", unsafe: false),
+            SessionModeInfo(id: SessionMode.code, label: "Normal",
+                            description: "Your approval rules decide; anything else asks first.", unsafe: false),
+            SessionModeInfo(id: SessionMode.yolo, label: "YOLO",
+                            description: "Approves everything automatically, including shell commands and file writes.", unsafe: true),
+        ]
+    }
+
+    /// Whether the active session is running with approvals off. Drives the persistent banner — this
+    /// is deliberately a continuous indicator rather than a one-time confirmation, because on
+    /// claude-code this mode also takes the daemon's approval callback out of the loop entirely.
+    public var isYolo: Bool { SessionMode.isUnsafe(sessionMode) }
 
     /// Switches the live session's mode. Optimistic: the daemon confirms via session.list.
     public func setSessionMode(_ mode: String) async {
@@ -4484,6 +4513,18 @@ public final class Model: ObservableObject {
         case MessageType.sessionTodos: // the agent's live to-do list (replaces the prior list)
             if let t = try? env.payload(as: SessionTodos.self), t.sessionID == sessionID {
                 todos = t.todos
+            }
+        case MessageType.sessionCapabilities: // what this provider CAN do — drives which controls exist
+            if let c = try? env.payload(as: SessionCapabilities.self), c.sessionID == sessionID {
+                capabilities = c
+            }
+        case MessageType.sessionFacts: // live ambient state — model, mode, branch, context budget
+            if let f = try? env.payload(as: SessionFacts.self), f.sessionID == sessionID {
+                facts = f
+                // The daemon is authoritative on mode because it is what enforces it. Keeping the
+                // local copy in step matters most for the one mode that turns approvals off: a
+                // second device must not go on showing "Normal" after this one switched to YOLO.
+                if let m = f.mode { sessionMode = m }
             }
         case MessageType.uiComponent: // a normalized generative-UI component (projected or fenced)
             if let c = try? env.payload(as: UIComponent.self), c.sessionID == sessionID {

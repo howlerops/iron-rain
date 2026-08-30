@@ -30,10 +30,28 @@ func (h *Hub) sendSessionSurface(conn *transport.Conn, m *managedSession) {
 // broadcastFacts republishes a session's facts to everyone watching it. Used when the daemon — not
 // the provider — changes something the status bar shows, the mode being the one that matters: the
 // user switches to yolo on their phone and the Mac must stop showing "Normal".
+//
+// Sent straight to each watcher's connection rather than through managedSession.broadcast, for two
+// reasons that both bit:
+//
+//   - broadcast APPENDS to the replayable transcript ring. Facts are ambient state, not conversation,
+//     so every mode change would have been persisted as history and replayed on every future attach,
+//     growing the ring with frames that describe a moment that has passed.
+//   - broadcast drops a subscriber whose outbound buffer is full. Switching mode right after
+//     subscribing therefore raced the transcript replay still draining into that buffer, and the
+//     loser was not the event — it was the whole subscription. The test for this failed consistently
+//     and then passed when a log line was added, which is what a race looks like when you are lucky
+//     enough to see it.
 func (h *Hub) broadcastFacts(m *managedSession) {
-	ev := agent.Event{Type: protocol.TypeSessionFacts, Payload: h.sessionFacts(m)}
-	if raw, err := ev.Encode(); err == nil {
-		m.broadcast(raw)
+	facts := h.sessionFacts(m)
+	m.mu.Lock()
+	conns := make([]*transport.Conn, 0, len(m.subs))
+	for c := range m.subs {
+		conns = append(conns, c)
+	}
+	m.mu.Unlock()
+	for _, c := range conns {
+		h.sendEvent(c, protocol.TypeSessionFacts, facts)
 	}
 }
 

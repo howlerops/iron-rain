@@ -120,6 +120,9 @@ public struct ChatView: View {
     @State private var showWorkspace = false
     @State private var showDelegate = false
     /// iOS: the session's controls live on a sheet instead of eight squeezed navigation-bar items.
+    /// A mode that turns approvals off, picked but not yet confirmed. Held rather than applied so the
+    /// switch is a decision with a sentence attached, not a menu row next to three harmless ones.
+    @State private var pendingUnsafeMode: SessionModeInfo?
     @State private var showSessionControls = false
     /// Where the controls sheet asked to go, acted on in its `onDismiss` so the destination isn't
     /// presented underneath a sheet that is still on screen.
@@ -251,6 +254,10 @@ public struct ChatView: View {
                     .readableColumn(chatMeasure)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+            // Directly above the composer — the last thing in view before you type, and full-bleed
+            // rather than column-capped, because unlike the approval card this is not asking a
+            // question about one path, it is describing the state everything you send will run under.
+            yoloBanner
             Group {
                 if isStopped { restartFooter } else { Composer(model: model, draft: draft, palette: palette) }
             }
@@ -399,24 +406,42 @@ public struct ChatView: View {
                 }
                 // Mode is its own control, not buried in the overflow: a read-only session behaves
                 // very differently and the user must be able to see AND change that at a glance.
+                // Built from what the DAEMON says this provider offers, not a hardcoded list. The
+                // hardcoded three were the same for every harness — the intersection — which is how
+                // the app ended up describing a session differently from that harness's own TUI.
                 ToolbarItem(placement: .automatic) {
                     Menu {
-                        Button { Task { await model.setSessionMode(SessionMode.code) } } label: {
-                            Label("Code — normal", systemImage: "hammer")
-                        }
-                        Button { Task { await model.setSessionMode(SessionMode.ask) } } label: {
-                            Label("Ask — read-only", systemImage: "magnifyingglass")
-                        }
-                        Button { Task { await model.setSessionMode(SessionMode.architect) } } label: {
-                            Label("Architect — plan first", systemImage: "ruler")
+                        ForEach(model.availableModes) { m in
+                            Button {
+                                // Turning approvals off is not a menu pick you can make by accident.
+                                if m.isUnsafe { pendingUnsafeMode = m } else { Task { await model.setSessionMode(m.id) } }
+                            } label: {
+                                Label(m.description.map { "\(m.label) — \($0)" } ?? m.label,
+                                      systemImage: modeIcon(m))
+                            }
                         }
                     } label: {
-                        Label(SessionMode.label(model.sessionMode),
-                              systemImage: SessionMode.isRestricted(model.sessionMode) ? "lock.shield" : "hammer")
+                        Label(SessionMode.label(model.sessionMode), systemImage: currentModeIcon)
                     }
-                    .help(SessionMode.isRestricted(model.sessionMode)
-                          ? "This session is read-only — edits and commands are refused."
-                          : "Normal mode. Your approval rules decide what runs without asking.")
+                    .tint(model.isYolo ? palette.warning : nil)
+                    .help(modeHelp)
+                    // Spell out what is being given up, and make the confirming button say what it
+                    // does rather than "OK". `role: .destructive` is accurate here: what is being
+                    // destroyed is the check that stands between the agent and your machine.
+                    .confirmationDialog(
+                        pendingUnsafeMode.map { "Turn on \($0.label)?" } ?? "",
+                        isPresented: Binding(get: { pendingUnsafeMode != nil },
+                                             set: { if !$0 { pendingUnsafeMode = nil } }),
+                        titleVisibility: .visible
+                    ) {
+                        Button("Turn off approvals", role: .destructive) {
+                            if let m = pendingUnsafeMode { Task { await model.setSessionMode(m.id) } }
+                            pendingUnsafeMode = nil
+                        }
+                        Button("Cancel", role: .cancel) { pendingUnsafeMode = nil }
+                    } message: {
+                        Text("Every tool runs without asking — including shell commands, file writes and deletions. Your approval rules stop applying to this session until you switch back.")
+                    }
                 }
                 // Everything else folds into ONE labeled menu (was 4 bare icons in the header) — the
                 // items carry text labels so it's clear what each does, unlike hover-only tooltips.
@@ -1014,6 +1039,60 @@ public struct ChatView: View {
         if d.kind == DiscoveredKind.server { return "◆ opencode \(d.url ?? "")" }
         if d.provider == "opencode" { return "  ● \(d.title ?? d.sessionID ?? "session")" }
         return "◆ claude-code \(d.cwd ?? d.sessionID ?? "")"
+    }
+
+    // MARK: - Mode
+
+    /// Icons carry the meaning at a glance, so the unsafe mode does not look like the other three.
+    func modeIcon(_ m: SessionModeInfo) -> String {
+        if m.isUnsafe { return "exclamationmark.triangle.fill" }
+        switch m.id {
+        case SessionMode.ask: return "magnifyingglass"
+        case SessionMode.architect: return "ruler"
+        default: return "hammer"
+        }
+    }
+
+    var currentModeIcon: String {
+        if model.isYolo { return "exclamationmark.triangle.fill" }
+        return SessionMode.isRestricted(model.sessionMode) ? "lock.shield" : "hammer"
+    }
+
+    var modeHelp: String {
+        if model.isYolo {
+            return "YOLO — every tool is approved automatically, including shell commands and file writes."
+        }
+        if SessionMode.isRestricted(model.sessionMode) {
+            return "This session is read-only — edits and commands are refused."
+        }
+        return "Normal mode. Your approval rules decide what runs without asking."
+    }
+
+    /// A standing banner for as long as approvals are off.
+    ///
+    /// Deliberately not a one-time confirmation. On claude-code this mode maps to the SDK's
+    /// bypassPermissions, which stops the SDK calling the daemon's approval callback at all — so the
+    /// rule engine is out of the loop rather than merely quiet, and that is a state worth being
+    /// reminded of every time you look at the session, not once when you enabled it.
+    @ViewBuilder var yoloBanner: some View {
+        if model.isYolo {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                Text("YOLO — approvals are off. Everything runs without asking.")
+                    .font(.footnote.weight(.medium))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                Button("Turn off") { Task { await model.setSessionMode(SessionMode.code) } }
+                    .buttonStyle(.borderless)
+                    .font(.footnote.weight(.semibold))
+            }
+            .foregroundStyle(palette.background) // the house pairing for a solid warning fill
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(palette.warning)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("YOLO mode is on. Approvals are off — every tool runs without asking.")
+        }
     }
 }
 
