@@ -835,9 +835,16 @@ public struct Session: Codable, Identifiable {
     public var mode: String?           // code | ask | architect ("" / nil = code)
     public var restartable: Bool?      // a "stopped" session that can be re-created (session.restart)
     public var updatedAt: Int? // unix seconds of last activity
+    /// Cumulative NEW input across the session (cache reads excluded — see contextTokens).
     public var inputTokens: Int?
     public var outputTokens: Int?
     public var costUSD: Double?
+    /// Size of the conversation last sent to the model (cache read + new input for that turn).
+    /// Replaced each turn rather than summed: it describes the conversation, not spend.
+    public var contextTokens: Int?
+    /// Whether ANY provider-reported cost has been seen. False means "not reported", which must not
+    /// render as $0.00.
+    public var costKnown: Bool?
     public var conflicted: Bool? // worktree branch would conflict with the default branch
     public var fanoutGroup: String?  // shared id when this is one of N agents racing the same prompt
     public var fanoutVariant: Int?   // 0-based variant index within the fan-out group
@@ -883,6 +890,16 @@ public struct SessionList: Codable { public var sessions: [Session] }
 // Usage + to-dos (agent observability events).
 public struct SessionUsage: Codable {
     public var sessionID: String
+    /// Reasoning portion OF outputTokens — for display, not to be added again.
+    public var reasoningTokens: Int?
+    /// Context re-sent from cache this turn. Describes the SIZE of the conversation, not new spend,
+    /// so it is displayed rather than accumulated. Summing it per turn is what reported 3.1M tokens
+    /// for a session whose largest turn was 17k.
+    public var cacheReadTokens: Int?
+    public var cacheWriteTokens: Int?
+    /// False means the provider reported no cost at all — distinct from a turn that cost nothing.
+    /// Without this a missing cost renders as $0.000, which reads as free.
+    public var costReported: Bool?
     public var inputTokens: Int
     public var outputTokens: Int
     public var costUSD: Double
@@ -891,6 +908,10 @@ public struct SessionUsage: Codable {
         case inputTokens = "input_tokens"
         case outputTokens = "output_tokens"
         case costUSD = "cost_usd"
+        case reasoningTokens = "reasoning_tokens"
+        case cacheReadTokens = "cache_read_tokens"
+        case cacheWriteTokens = "cache_write_tokens"
+        case costReported = "cost_reported"
     }
 }
 public struct Todo: Codable, Identifiable, Hashable {

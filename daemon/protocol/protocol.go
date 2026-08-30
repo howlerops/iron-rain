@@ -1525,11 +1525,39 @@ type Session struct {
 
 // SessionUsage is a usage update for one session (event). InputTokens/OutputTokens/CostUSD are
 // the delta for the just-completed turn; the hub accumulates them onto the Session.
+// SessionUsage is one turn's token and cost accounting.
+//
+// The shape is deliberately more explicit than "input, output, cost", because the flat version was
+// wrong in both directions at once and the errors hid each other:
+//
+//   - every adapter folded CACHE READS into InputTokens, and the client then SUMMED that per turn.
+//     A cache read is the same context being re-sent, so summing it counts one conversation once
+//     per turn: a session whose largest turn was 17k reported 3.1M.
+//   - meanwhile the adapters dropped what they could not express — opencode's reasoning tokens,
+//     claude's cache-creation tokens, pi's cacheRead/cacheWrite — so the same number was also an
+//     undercount of real spend.
+//
+// Separating them lets the client sum what is cumulative (new input, output) and DISPLAY what is
+// not (the context size, which replaces rather than accumulates).
 type SessionUsage struct {
-	SessionID    string  `json:"session_id"`
-	InputTokens  int     `json:"input_tokens"`
-	OutputTokens int     `json:"output_tokens"`
-	CostUSD      float64 `json:"cost_usd"`
+	SessionID string `json:"session_id"`
+	// InputTokens is NEW input this turn, excluding cache reads.
+	InputTokens int `json:"input_tokens"`
+	// OutputTokens includes reasoning tokens, which are billed as output.
+	OutputTokens int `json:"output_tokens"`
+	// ReasoningTokens is the reasoning portion OF OutputTokens — reported separately for display,
+	// not to be added again.
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
+	// CacheReadTokens is context re-sent from cache this turn. Cumulative summing of this is what
+	// produced the 3.1M figure; it describes the size of the conversation, not new spend.
+	CacheReadTokens  int `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
+	// CostUSD is only meaningful when CostReported is true.
+	CostUSD float64 `json:"cost_usd"`
+	// CostReported distinguishes "this turn cost nothing" from "the provider told us nothing".
+	// Without it a missing cost renders as $0.000, which reads as free — opencode reports no cost at
+	// all for some models, and the app was quietly presenting that as a bill of zero.
+	CostReported bool `json:"cost_reported,omitempty"`
 }
 
 // The two events below exist because the adapter layer had become a narrow waist sized to the

@@ -4586,9 +4586,20 @@ public final class Model: ObservableObject {
             }
         case MessageType.sessionUsage: // per-turn token/cost usage; accumulate onto the session
             if let u = try? env.payload(as: SessionUsage.self), u.sessionID == sessionID {
+                // Input and output ACCUMULATE — they are new spend each turn.
                 currentSession?.inputTokens = (currentSession?.inputTokens ?? 0) + u.inputTokens
                 currentSession?.outputTokens = (currentSession?.outputTokens ?? 0) + u.outputTokens
-                currentSession?.costUSD = (currentSession?.costUSD ?? 0) + u.costUSD
+                // Cache reads REPLACE — they are the size of the conversation being re-sent, not new
+                // spend. Summing them per turn counted one conversation once per turn, which is how a
+                // session whose largest turn was 17k tokens came to report 3.1M.
+                currentSession?.contextTokens = (u.cacheReadTokens ?? 0) + u.inputTokens
+                // Cost is only added when the provider actually reported one. opencode reports none
+                // for models it has no pricing for, and adding 0 rendered that as "$0.000" — a bill
+                // of zero rather than an unknown.
+                if u.costReported == true {
+                    currentSession?.costUSD = (currentSession?.costUSD ?? 0) + u.costUSD
+                    currentSession?.costKnown = true
+                }
             }
         case MessageType.sessionTodos: // the agent's live to-do list (replaces the prior list)
             if let t = try? env.payload(as: SessionTodos.self), t.sessionID == sessionID {

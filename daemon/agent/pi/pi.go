@@ -488,7 +488,13 @@ type piMessageEnd struct {
 		Usage struct {
 			Input  int `json:"input"`
 			Output int `json:"output"`
-			Cost   struct {
+			// Observed on the wire and previously unread, so pi's cache traffic — the bulk of a long
+			// session — never reached the client:
+			//   "usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,
+			//            "cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}
+			CacheRead  int `json:"cacheRead"`
+			CacheWrite int `json:"cacheWrite"`
+			Cost       struct {
 				Total float64 `json:"total"`
 			} `json:"cost"`
 		} `json:"usage"`
@@ -597,9 +603,16 @@ func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool) {
 			var me piMessageEnd
 			if json.Unmarshal(line, &me) == nil {
 				u := me.Message.Usage
-				if u.Input > 0 || u.Output > 0 || u.Cost.Total > 0 {
+				if u.Input > 0 || u.Output > 0 || u.Cost.Total > 0 || u.CacheRead > 0 || u.CacheWrite > 0 {
 					s.emit(agent.Event{Type: protocol.TypeSessionUsage, Payload: protocol.SessionUsage{
-						SessionID: s.id, InputTokens: u.Input, OutputTokens: u.Output, CostUSD: u.Cost.Total}})
+						SessionID:        s.id,
+						InputTokens:      u.Input,
+						OutputTokens:     u.Output,
+						CacheReadTokens:  u.CacheRead,
+						CacheWriteTokens: u.CacheWrite,
+						CostUSD:          u.Cost.Total,
+						CostReported:     u.Cost.Total > 0,
+					}})
 				}
 			}
 		case "message_update":

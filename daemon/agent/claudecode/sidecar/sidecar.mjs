@@ -407,11 +407,18 @@ try {
         break;
       }
       case "result": {
+        // Cache tokens were not read at all, and on a long session they are the BULK of the input:
+        // claude re-sends the conversation as a cache read every turn. Reporting only input_tokens
+        // under-reported real usage badly, and silently — the number looked plausible, just small.
         const inputTokens = Number(message.usage?.input_tokens ?? 0);
         const outputTokens = Number(message.usage?.output_tokens ?? 0);
+        const cacheRead = Number(message.usage?.cache_read_input_tokens ?? 0);
+        const cacheWrite = Number(message.usage?.cache_creation_input_tokens ?? 0);
         const costUsd = Number(message.total_cost_usd ?? 0);
-        if (inputTokens > 0 || outputTokens > 0 || costUsd > 0) {
-          send({ t: "usage", input_tokens: inputTokens, output_tokens: outputTokens, cost_usd: costUsd });
+        if (inputTokens > 0 || outputTokens > 0 || costUsd > 0 || cacheRead > 0 || cacheWrite > 0) {
+          send({ t: "usage", input_tokens: inputTokens, output_tokens: outputTokens,
+                 cache_read_tokens: cacheRead, cache_write_tokens: cacheWrite,
+                 cost_usd: costUsd, cost_reported: message.total_cost_usd != null });
         }
         busy = false;
         send({ t: "idle" });

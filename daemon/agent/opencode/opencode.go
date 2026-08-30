@@ -936,7 +936,12 @@ func (s *session) handle(raw []byte) {
 				Tokens struct {
 					Input  int `json:"input"`
 					Output int `json:"output"`
-					Cache  struct {
+					// Reasoning was ABSENT from this struct, which is why reasoning tokens were
+					// silently dropped: opencode reports them on every turn of a reasoning model
+					// (observed non-zero on gpt-5.6), and a field that does not exist cannot be
+					// missed in review.
+					Reasoning int `json:"reasoning"`
+					Cache     struct {
 						Read  int `json:"read"`
 						Write int `json:"write"`
 					} `json:"cache"`
@@ -996,9 +1001,26 @@ func (s *session) handle(raw []byte) {
 				}
 				if !s.usageDone[mu.Info.ID] {
 					s.usageDone[mu.Info.ID] = true
-					in := mu.Info.Tokens.Input + mu.Info.Tokens.Cache.Read + mu.Info.Tokens.Cache.Write
+					// Cache reads are reported SEPARATELY, not folded into input. Folding them in and
+					// then summing per turn is what turned a session of 17k-token turns into a
+					// headline of 3.1M — the same context counted once per turn.
+					//
+					// Reasoning tokens are added to output because that is how they are billed, and
+					// they were previously dropped entirely: opencode reports them, we did not read
+					// them, so reasoning models under-reported their real output.
+					t := mu.Info.Tokens
 					s.emit(agent.Event{Type: protocol.TypeSessionUsage, Payload: protocol.SessionUsage{
-						SessionID: s.id, InputTokens: in, OutputTokens: mu.Info.Tokens.Output, CostUSD: mu.Info.Cost}})
+						SessionID:        s.id,
+						InputTokens:      t.Input,
+						OutputTokens:     t.Output + t.Reasoning,
+						ReasoningTokens:  t.Reasoning,
+						CacheReadTokens:  t.Cache.Read,
+						CacheWriteTokens: t.Cache.Write,
+						CostUSD:          mu.Info.Cost,
+						// opencode reports 0 for models it has no pricing for. Presenting that as
+						// "$0.000" told the user the run was free; it means unknown.
+						CostReported: mu.Info.Cost > 0,
+					}})
 				}
 			}
 		}

@@ -782,18 +782,21 @@ type imgAtt struct {
 const maxLoggedBadFrames = 5
 
 type outMsg struct {
-	T            string        `json:"t"`
-	ID           string        `json:"id,omitempty"`
-	Text         string        `json:"text,omitempty"`
-	Tool         string        `json:"tool,omitempty"`
-	Detail       string        `json:"detail,omitempty"`
-	Output       string        `json:"output,omitempty"`
-	Status       string        `json:"status,omitempty"`
-	Message      string        `json:"message,omitempty"`
-	InputTokens  int           `json:"input_tokens,omitempty"`
-	OutputTokens int           `json:"output_tokens,omitempty"`
-	CostUSD      float64       `json:"cost_usd,omitempty"`
-	Todos        []sidecarTodo `json:"todos,omitempty"`
+	T                string        `json:"t"`
+	ID               string        `json:"id,omitempty"`
+	Text             string        `json:"text,omitempty"`
+	Tool             string        `json:"tool,omitempty"`
+	Detail           string        `json:"detail,omitempty"`
+	Output           string        `json:"output,omitempty"`
+	Status           string        `json:"status,omitempty"`
+	Message          string        `json:"message,omitempty"`
+	InputTokens      int           `json:"input_tokens,omitempty"`
+	OutputTokens     int           `json:"output_tokens,omitempty"`
+	CacheReadTokens  int           `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens int           `json:"cache_write_tokens,omitempty"`
+	CostUSD          float64       `json:"cost_usd,omitempty"`
+	CostReported     bool          `json:"cost_reported,omitempty"`
+	Todos            []sidecarTodo `json:"todos,omitempty"`
 	// Input is the approved tool's raw arguments (approval messages only) — what the daemon's rule
 	// engine needs to scope an "always allow" to a path or command shape.
 	Input json.RawMessage `json:"input,omitempty"`
@@ -1064,7 +1067,14 @@ func (s *session) readLoop(stdout io.ReadCloser) {
 			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusError, Detail: m.Message}})
 		case "usage":
 			s.emit(agent.Event{Type: protocol.TypeSessionUsage, Payload: protocol.SessionUsage{
-				SessionID: s.id, InputTokens: m.InputTokens, OutputTokens: m.OutputTokens, CostUSD: m.CostUSD}})
+				SessionID:        s.id,
+				InputTokens:      m.InputTokens,
+				OutputTokens:     m.OutputTokens,
+				CacheReadTokens:  m.CacheReadTokens,
+				CacheWriteTokens: m.CacheWriteTokens,
+				CostUSD:          m.CostUSD,
+				CostReported:     m.CostReported,
+			}})
 		case "todos":
 			todos := make([]protocol.Todo, len(m.Todos))
 			for i, td := range m.Todos {

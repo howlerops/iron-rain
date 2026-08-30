@@ -2201,17 +2201,38 @@ struct UsageChip: View {
     var body: some View {
         HStack(spacing: 5) {
             Image(systemName: "dollarsign.circle").font(.caption2)
-            Text(String(format: "$%.3f", session.costUSD ?? 0)).font(.caption2.monospacedDigit())
+            // "—" when the provider reported no cost at all. It previously read "$0.000", which says
+            // the run was free; opencode reports no cost for models it has no pricing for, so the app
+            // was presenting an unknown as a bill of zero.
+            Text(costText).font(.caption2.monospacedDigit())
             if let tok = tokenText { Text("· \(tok)").font(.caption2.monospacedDigit()).foregroundStyle(palette.mutedForeground) }
         }
         .foregroundStyle(palette.mutedForeground)
-        .help("\(session.inputTokens ?? 0) in / \(session.outputTokens ?? 0) out tokens · $\(String(format: "%.4f", session.costUSD ?? 0))")
+        .help(helpText)
     }
 
+    private var costText: String {
+        guard session.costKnown == true else { return "—" }
+        return String(format: "$%.3f", session.costUSD ?? 0)
+    }
+
+    /// Tokens actually SPENT: new input plus output. Cache reads are excluded — they are the same
+    /// context re-sent each turn, and including them made a session of 17k-token turns read 3.1M.
     private var tokenText: String? {
         let t = (session.inputTokens ?? 0) + (session.outputTokens ?? 0)
         guard t > 0 else { return nil }
         return t >= 1000 ? String(format: "%.1fk", Double(t) / 1000) : "\(t)"
+    }
+
+    private var helpText: String {
+        var parts = ["\(session.inputTokens ?? 0) in / \(session.outputTokens ?? 0) out tokens"]
+        if let ctx = session.contextTokens, ctx > 0 {
+            parts.append("context \(ctx) tokens")
+        }
+        parts.append(session.costKnown == true
+                     ? "$\(String(format: "%.4f", session.costUSD ?? 0))"
+                     : "cost not reported by this provider")
+        return parts.joined(separator: " · ")
     }
 }
 
