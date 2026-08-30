@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/crypto"
@@ -71,11 +72,49 @@ func TestGenUIFenceProducesComponent(t *testing.T) {
 		t.Fatalf("component session id not stamped: %q", comp.SessionID)
 	}
 
-	// The surrounding prose still streams, but the fence JSON must be gone from any output.delta.
-	// Walk events until the idle status; assert no fence leaked and that real prose came through.
+	// The surrounding prose still streams, and the fence JSON must be gone from every output.delta.
+	//
+	// Drained over a WINDOW rather than walked "until the idle status", because that walk was
+	// testing something it did not mean to. Two independent publishers emit session status — the
+	// provider event pump forwarding the harness's own status, and the turn engine publishing
+	// derived turn state — and they are not ordered against each other. Every run emits idle TWICE,
+	// and in a minority of runs an idle overtakes the component and the trailing prose of its own
+	// turn:
+	//
+	//	delta(here are the results:) | status:running | status:idle | COMPONENT | delta(done) | status:idle
+	//
+	// So stopping at the first idle dropped the very events under test, and the failure read as
+	// "prose never streamed" — a gen-UI symptom for an ordering cause. Measured at ~8% of runs.
+	//
+	// The leading prose is also collected here. The earlier version asserted only on what arrived
+	// AFTER the component, because the first waitFor had already consumed everything before it —
+	// leaving the whole assertion resting on the one delta most likely to be reordered.
 	sawText := false
-	r.waitFor(t, "session idle", func(e protocol.Envelope) bool {
-		if e.Type == protocol.TypeOutputDelta {
+	sawTerminal := false
+	// The deadline is the backstop, not the normal exit: the loop leaves as soon as it has both the
+	// prose and a terminal status, so the common case costs nothing.
+	drain := time.After(2 * time.Second)
+	draining := true
+	for draining {
+		select {
+		case e, ok := <-r.ch:
+			if !ok {
+				draining = false
+				break
+			}
+			if e.Type == protocol.TypeSessionStatus {
+				var st protocol.SessionStatus
+				_ = json.Unmarshal(e.Payload, &st)
+				if st.Status == protocol.StatusIdle || st.Status == protocol.StatusDone {
+					sawTerminal = true
+				}
+			}
+			if sawText && sawTerminal {
+				draining = false
+			}
+			if e.Type != protocol.TypeOutputDelta {
+				continue
+			}
 			var d protocol.OutputDelta
 			_ = json.Unmarshal(e.Payload, &d)
 			if containsStr(d.Text, "iron:ui") || containsStr(d.Text, "\"component\"") {
@@ -84,20 +123,10 @@ func TestGenUIFenceProducesComponent(t *testing.T) {
 			if containsStr(d.Text, "results") || containsStr(d.Text, "done") {
 				sawText = true
 			}
+		case <-drain:
+			draining = false
 		}
-		// Stop on the TERMINAL status, not on any status at all. A turn also emits `running` (and
-		// can emit others), and on a loaded machine one of those can arrive before the prose
-		// deltas — which ended this walk early with sawText still false and failed the test for a
-		// reason that had nothing to do with gen-UI. That is exactly how it failed in CI while
-		// passing every local run. The comment above always said "until the idle status"; the code
-		// just didn't say it.
-		if e.Type != protocol.TypeSessionStatus {
-			return false
-		}
-		var st protocol.SessionStatus
-		_ = json.Unmarshal(e.Payload, &st)
-		return st.Status == protocol.StatusIdle || st.Status == protocol.StatusDone
-	})
+	}
 	if !sawText {
 		t.Fatal("surrounding prose never streamed as output.delta")
 	}
