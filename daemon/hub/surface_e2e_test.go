@@ -158,3 +158,94 @@ func TestSessionListReportsTheSwitchedMode(t *testing.T) {
 		t.Fatal("the session was not in the list")
 	}
 }
+
+// The global defaults round-trip over the wire, and the daemon's refusal to honour a yolo default
+// without its acknowledgement holds at the PROTOCOL boundary too — not just in the store. A client
+// that sets yolo and is told "yolo" while the daemon quietly stored something else would show a
+// setting that is not in force.
+func TestSessionDefaultsRoundTripRefusesUnacknowledgedYolo(t *testing.T) {
+	reg, _ := project.Load(filepath.Join(t.TempDir(), "projects.json"))
+	h := hub.New()
+	h.Register(&cwdProvider{})
+	h.SetProjects(reg)
+	h.SetDefaultsPath(filepath.Join(t.TempDir(), "defaults.json"))
+	daemonKP, _ := crypto.GenerateKeyPair()
+	conn := connectClient(t, h, daemonKP)
+	r := newReader(conn)
+
+	// A safe default is stored as asked.
+	send(t, conn, "d1", protocol.TypeSessionDefaultsSet, protocol.SessionDefaults{Mode: protocol.ModeArchitect})
+	var got protocol.SessionDefaults
+	if err := json.Unmarshal(r.waitOK(t, "d1"), &got); err != nil {
+		t.Fatalf("defaults decode: %v", err)
+	}
+	if got.Mode != protocol.ModeArchitect {
+		t.Errorf("stored mode = %q, want architect", got.Mode)
+	}
+	// The catalog rides along so a settings screen renders the same copy as the session picker.
+	if len(got.Modes) == 0 {
+		t.Error("defaults carried no mode catalog for the client to render")
+	}
+
+	// yolo WITHOUT the acknowledgement is downgraded, and the reply says so.
+	send(t, conn, "d2", protocol.TypeSessionDefaultsSet, protocol.SessionDefaults{Mode: protocol.ModeYolo})
+	if err := json.Unmarshal(r.waitOK(t, "d2"), &got); err != nil {
+		t.Fatalf("defaults decode: %v", err)
+	}
+	if got.Mode == protocol.ModeYolo {
+		t.Error("an unacknowledged yolo default was accepted over the wire")
+	}
+
+	// With it, it sticks — and a fresh get agrees.
+	send(t, conn, "d3", protocol.TypeSessionDefaultsSet,
+		protocol.SessionDefaults{Mode: protocol.ModeYolo, AllowYoloDefault: true})
+	if err := json.Unmarshal(r.waitOK(t, "d3"), &got); err != nil {
+		t.Fatalf("defaults decode: %v", err)
+	}
+	if got.Mode != protocol.ModeYolo {
+		t.Fatalf("acknowledged yolo default was not stored (mode=%q)", got.Mode)
+	}
+	send(t, conn, "d4", protocol.TypeSessionDefaultsGet, nil)
+	if err := json.Unmarshal(r.waitOK(t, "d4"), &got); err != nil {
+		t.Fatalf("defaults get decode: %v", err)
+	}
+	if got.Mode != protocol.ModeYolo || got.AllowYoloDefault != true {
+		t.Errorf("get returned mode=%q allow=%v, want yolo/true", got.Mode, got.AllowYoloDefault)
+	}
+}
+
+// A session created WITHOUT a mode takes the stored default. This is the whole point of the setting
+// — and the assertion that it does not leak into a request that named its own mode.
+func TestNewSessionTakesTheDefaultModeUnlessItNamesOne(t *testing.T) {
+	reg, _ := project.Load(filepath.Join(t.TempDir(), "projects.json"))
+	h := hub.New()
+	h.Register(&cwdProvider{})
+	h.SetProjects(reg)
+	h.SetDefaultsPath(filepath.Join(t.TempDir(), "defaults.json"))
+	daemonKP, _ := crypto.GenerateKeyPair()
+	conn := connectClient(t, h, daemonKP)
+	r := newReader(conn)
+
+	send(t, conn, "d1", protocol.TypeSessionDefaultsSet, protocol.SessionDefaults{Mode: protocol.ModeAsk})
+	r.waitOK(t, "d1")
+
+	send(t, conn, "c1", protocol.TypeSessionCreate, protocol.SessionCreate{Provider: "fake", Cwd: t.TempDir()})
+	var sess protocol.Session
+	if err := json.Unmarshal(r.waitOK(t, "c1"), &sess); err != nil {
+		t.Fatalf("create decode: %v", err)
+	}
+	if sess.Mode != protocol.ModeAsk {
+		t.Errorf("new session mode = %q, want the default (ask)", sess.Mode)
+	}
+
+	// An explicit mode always wins over the default.
+	send(t, conn, "c2", protocol.TypeSessionCreate,
+		protocol.SessionCreate{Provider: "fake", Cwd: t.TempDir(), Mode: protocol.ModeCode})
+	var explicit protocol.Session
+	if err := json.Unmarshal(r.waitOK(t, "c2"), &explicit); err != nil {
+		t.Fatalf("create decode: %v", err)
+	}
+	if explicit.Mode != protocol.ModeCode {
+		t.Errorf("explicit mode = %q, want code — the default must not override a stated choice", explicit.Mode)
+	}
+}

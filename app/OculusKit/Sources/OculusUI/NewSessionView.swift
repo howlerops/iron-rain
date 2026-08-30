@@ -229,6 +229,9 @@ struct NewSessionView: View {
     static let lastWorktreeKey = "oculus.newSession.worktree"
     static let lastProjectsKey = "oculus.newSession.projects"
     @State private var sessionMode = SessionMode.code
+    /// Held separately from `sessionMode` so the safe modes stay a segmented choice and this stays a
+    /// deliberate switch. `effectiveMode` is what actually starts the session.
+    @State private var yolo = false
     @State private var autonomous = false
     @State private var workspaceName = ""
     @State private var terminalSearch = ""
@@ -279,6 +282,11 @@ struct NewSessionView: View {
         case takeOver = "Take over"
         var id: String { rawValue }
     }
+
+    /// The mode the session actually starts in. yolo wins when set, which is why the segmented
+    /// control is disabled while it is on — two controls that disagree about the same thing is worse
+    /// than one control that says so.
+    private var effectiveMode: String { yolo ? SessionMode.yolo : sessionMode }
 
     // Whether the harness ALSO has a native plan mode we can hint (enforcement is daemon-side either way).
     private var planCapable: Bool { provider == "opencode" || provider == "claude-code" }
@@ -498,7 +506,7 @@ struct NewSessionView: View {
                                                   projectIDs: ids.isEmpty ? nil : ids,
                                                   worktree: isolate,
                                                   workspaceName: workspaceName.isEmpty ? nil : workspaceName,
-                                                  mode: sessionMode,
+                                                  mode: effectiveMode,
                                                   autonomous: autonomous,
                                                   model: selectedModel.isEmpty ? nil : selectedModel,
                                                   modelProvider: chosen?.provider,
@@ -663,8 +671,9 @@ struct NewSessionView: View {
     private var runSummary: String {
         var parts: [String] = [provider]
         if let m = models.first(where: { $0.id == selectedModel }) { parts.append(m.name) }
-        if sessionMode == SessionMode.ask { parts.append("read-only") }
-        if sessionMode == SessionMode.architect { parts.append("architect") }
+        if yolo { parts.append("YOLO") } // the one worth seeing in the summary line before you start
+        else if sessionMode == SessionMode.ask { parts.append("read-only") }
+        else if sessionMode == SessionMode.architect { parts.append("plan") }
         if effectiveIsolate { parts.append("isolated") }
         if autonomous { parts.append("autonomous") }
         return parts.joined(separator: " · ")
@@ -710,12 +719,32 @@ struct NewSessionView: View {
             // we can additionally ask the harness to plan natively.
             field("Mode") {
                 Picker("", selection: $sessionMode) {
-                    Text("Code").tag(SessionMode.code)
-                    Text("Ask").tag(SessionMode.ask)
-                    Text("Architect").tag(SessionMode.architect)
+                    Text("Normal").tag(SessionMode.code)
+                    Text("Read-only").tag(SessionMode.ask)
+                    Text("Plan").tag(SessionMode.architect)
                 }
                 .pickerStyle(.segmented).labelsHidden()
+                .disabled(yolo) // yolo overrides these; leaving them live would imply otherwise
                 Text(modeHelp).font(.caption).foregroundStyle(palette.mutedForeground)
+
+                // YOLO is deliberately NOT a fourth segment. A segmented control applies on touch,
+                // which would put "run everything without asking" one stray tap from "Normal". As its
+                // own switch it cannot be reached by accident, and it can carry the sentence that
+                // says what it actually does.
+                Toggle(isOn: $yolo) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                        Text("YOLO — approve everything").font(.footnote.weight(.medium))
+                    }
+                    .foregroundStyle(yolo ? palette.warning : palette.foreground)
+                }
+                .toggleStyle(.switch).tint(palette.warning)
+                Text(yolo
+                     ? "Every tool runs without asking, including shell commands, file writes and deletions. Your approval rules will not apply to this session."
+                     : "Runs every tool without asking. Use for throwaway work in a worktree, not on a repo you care about.")
+                    .font(.caption)
+                    .foregroundStyle(yolo ? palette.warning : palette.mutedForeground)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             field("Autonomous") {

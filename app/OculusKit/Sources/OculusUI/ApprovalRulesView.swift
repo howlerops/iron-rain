@@ -24,6 +24,69 @@ public struct ApprovalRulesView: View {
     /// the rule anywhere, so nothing here removes one on a single tap.
     @State private var pendingDelete: ApprovalRuleInfo? = nil
 
+    /// Staged mode for the "new sessions start in" control, so a yolo default can require its own
+    /// acknowledgement before anything is sent.
+    @State private var pendingDefaultYolo = false
+
+    private var defaultMode: String { model.sessionDefaults?.mode ?? SessionMode.code }
+
+    /// What NEW sessions start in.
+    ///
+    /// Separate from the per-session control because the blast radius is different in kind: this one
+    /// also applies to sessions started when nobody is present to see it — a loop's, a fan-out's, a
+    /// scheduled run's. That is why the daemon requires a second acknowledgement for a yolo default
+    /// and re-checks it every time it starts a session, and why this asks in those terms rather than
+    /// offering yolo as one more entry in a picker.
+    @ViewBuilder private var defaultsCard: some View {
+        SheetCard(palette: palette, tint: defaultMode == SessionMode.yolo ? palette.warning : nil) {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("New sessions start in").font(.callout.weight(.semibold))
+                Picker("", selection: Binding(
+                    get: { defaultMode == SessionMode.yolo ? SessionMode.code : defaultMode },
+                    set: { newMode in Task { await model.saveSessionDefaults(mode: newMode, allowYolo: false) } }
+                )) {
+                    Text("Normal").tag(SessionMode.code)
+                    Text("Read-only").tag(SessionMode.ask)
+                    Text("Plan").tag(SessionMode.architect)
+                }
+                .pickerStyle(.segmented).labelsHidden()
+                .disabled(defaultMode == SessionMode.yolo)
+
+                Toggle(isOn: Binding(
+                    get: { defaultMode == SessionMode.yolo },
+                    set: { on in
+                        if on { pendingDefaultYolo = true } // ask first
+                        else { Task { await model.saveSessionDefaults(mode: SessionMode.code, allowYolo: false) } }
+                    }
+                )) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                        Text("Start every new session in YOLO").font(.footnote.weight(.medium))
+                    }
+                    .foregroundStyle(defaultMode == SessionMode.yolo ? palette.warning : palette.foreground)
+                }
+                .toggleStyle(.switch).tint(palette.warning)
+
+                Text(defaultMode == SessionMode.yolo
+                     ? "Every new session approves everything automatically — including sessions started by loops and fan-outs, which run when you are not watching."
+                     : "Applies only to sessions started from now on. You can still change any session's mode while it runs.")
+                    .font(.caption)
+                    .foregroundStyle(defaultMode == SessionMode.yolo ? palette.warning : palette.mutedForeground)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .confirmationDialog("Start every new session in YOLO?",
+                            isPresented: $pendingDefaultYolo, titleVisibility: .visible) {
+            Button("Turn off approvals by default", role: .destructive) {
+                Task { await model.saveSessionDefaults(mode: SessionMode.yolo, allowYolo: true) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This is not just the sessions you start by hand. Loops, fan-outs and scheduled runs will also begin with approvals off, and those run when nobody is watching.")
+        }
+        .task { await model.loadSessionDefaults() }
+    }
+
     private func matching(_ rs: [ApprovalRuleInfo]) -> [ApprovalRuleInfo] {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
         guard !q.isEmpty else { return rs }
@@ -44,6 +107,9 @@ public struct ApprovalRulesView: View {
             searchPrompt: "Search rules",
             onClose: onClose
         ) {
+            // Above the rules, because it OUTRANKS them: the default mode decides whether the rules
+            // below get consulted at all.
+            defaultsCard
             if model.approvalRules.isEmpty {
                 SheetEmptyState(icon: "checkmark.shield",
                                 title: "No standing rules",

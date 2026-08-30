@@ -3005,6 +3005,32 @@ public final class Model: ObservableObject {
     /// claude-code this mode also takes the daemon's approval callback out of the loop entirely.
     public var isYolo: Bool { SessionMode.isUnsafe(sessionMode) }
 
+    /// Global defaults for NEW sessions. Nil until loaded.
+    @Published public var sessionDefaults: SessionDefaults? = nil
+
+    /// Loads the global session defaults from the daemon.
+    public func loadSessionDefaults() async {
+        guard client != nil else { return }
+        guard let env = try? await request(MessageType.sessionDefaultsGet, payload: Optional<Int>.none) else { return }
+        sessionDefaults = try? env.payload(as: SessionDefaults.self)
+    }
+
+    /// Saves the global session defaults and adopts what the daemon ACTUALLY stored.
+    ///
+    /// The returned value is used rather than the requested one because the daemon refuses a yolo
+    /// default that arrives without its acknowledgement, and downgrades it instead of erroring. A
+    /// toggle left showing a setting the daemon is not honouring would be a lie told by our own UI,
+    /// so it snaps back to the truth.
+    public func saveSessionDefaults(mode: String, allowYolo: Bool) async {
+        guard client != nil else { return }
+        let payload = SessionDefaults(mode: mode, allowYoloDefault: allowYolo)
+        guard let env = try? await request(MessageType.sessionDefaultsSet, payload: payload) else {
+            actionError = "Couldn't save the session defaults."
+            return
+        }
+        sessionDefaults = try? env.payload(as: SessionDefaults.self)
+    }
+
     /// Switches the live session's mode. Optimistic: the daemon confirms via session.list.
     public func setSessionMode(_ mode: String) async {
         guard client != nil, let sid = sessionID else { return }
