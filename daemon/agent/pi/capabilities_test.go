@@ -17,18 +17,18 @@ func TestPiDeclaresTheThreadOperationsItActuallyHas(t *testing.T) {
 	if caps.Provider != "pi" {
 		t.Fatalf("provider = %q, want pi", caps.Provider)
 	}
-	// /tree calls navigateTree, which moves THIS session's leaf — a rewind, not only a fork. Both
-	// are real (fork also exists via --fork and the fork-from-a-message selector).
-	if !caps.Thread.Rewind {
-		t.Error("pi rewinds in place (navigateTree moves the leaf) — Rewind must be declared")
+	// Declared against what RPC MODE exposes, not what the product can do. pi's TUI navigates a full
+	// tree and summarises abandoned branches; `--mode rpc` offers get_fork_messages, fork, clone and
+	// compact, and no tree navigation at all. Claiming the richer set would put controls in the app
+	// that this adapter cannot honour.
+	if !caps.Thread.Tree || !caps.Thread.Fork || !caps.Thread.Compact {
+		t.Error("rpc mode does expose fork points, fork and compact")
 	}
-	if !caps.Thread.Tree || !caps.Thread.Fork {
-		t.Error("pi has both a tree and a fork")
+	if caps.Thread.Rewind {
+		t.Error("rpc mode has no navigate_tree — Rewind must not be claimed")
 	}
-	// Summarising the branch you are leaving is offered at the moment of navigating, and is the
-	// thing that makes /tree more than an undo.
-	if !caps.Thread.Summarize {
-		t.Error("pi can summarise the branch being left behind — Summarize must be declared")
+	if caps.Thread.Summarize {
+		t.Error("branch summarisation rides navigateTree, which rpc mode does not expose")
 	}
 	if len(caps.Efforts) == 0 {
 		t.Error("pi has thinking levels")
@@ -46,8 +46,8 @@ func TestPrimeAgentGetsTheThreadOperationsItShips(t *testing.T) {
 	if caps.Provider != "prime-agent" {
 		t.Fatalf("provider = %q, want prime-agent", caps.Provider)
 	}
-	if !caps.Thread.Tree || !caps.Thread.Fork || !caps.Thread.Rewind {
-		t.Errorf("prime-agent ships the tree machinery but declares %+v", caps.Thread)
+	if !caps.Thread.Tree || !caps.Thread.Fork {
+		t.Errorf("prime-agent ships the same rpc surface but declares %+v", caps.Thread)
 	}
 	if len(caps.Modes) == 0 {
 		t.Error("every provider gets the daemon-enforced modes")

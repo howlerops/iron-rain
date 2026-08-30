@@ -144,6 +144,7 @@ func (p *Provider) spawn(_ context.Context, cwd, id string, extraArgs []string) 
 		id:     id,
 		p:      p,
 		cwd:    cwd,
+		rpc:    newRPCWaiters(),
 		events: make(chan agent.Event, 32),
 		stdin:  stdin,
 		cmd:    cmd,
@@ -180,9 +181,14 @@ func (p *Provider) spawn(_ context.Context, cwd, id string, extraArgs []string) 
 }
 
 type session struct {
-	id     string
-	p      *Provider // for recording the session file pi opened (resume map)
-	cwd    string    // working directory, for the branch/cwd a status bar shows
+	id  string
+	p   *Provider // for recording the session file pi opened (resume map)
+	cwd string    // working directory, for the branch/cwd a status bar shows
+
+	// RPC request/response (see thread.go). pi answers a command with
+	// {"type":"response","command":…}; rpcMu serialises round trips because responses carry no id.
+	rpcMu  sync.Mutex
+	rpc    *rpcWaiters
 	events chan agent.Event
 	stdin  io.WriteCloser
 	cmd    *exec.Cmd
@@ -312,11 +318,19 @@ func (s *session) Capabilities() protocol.SessionCapabilities {
 		Models:    true,
 	}
 	if threadCapableAgents[name] {
-		// Rewind, not merely fork. /tree calls navigateTree, which moves THIS session's leaf to the
-		// chosen node — the session keeps every branch and simply points somewhere else, so going
-		// back and continuing creates a sibling rather than a new session. Fork is separate and real
-		// too (`--fork`, and the fork-from-a-user-message selector), which is why both are declared.
-		caps.Thread = protocol.ThreadCaps{Tree: true, Fork: true, Rewind: true, Compact: true, Summarize: true}
+		// Declared against what the RPC MODE exposes, which is a strict subset of what the TUI does.
+		//
+		// The interactive TUI has the full picture: /tree calls navigateTree, moving the session's
+		// leaf anywhere in a 19-node tree of messages, tool calls and edits, optionally summarising
+		// the branch it leaves behind. None of that is reachable over `--mode rpc`. The commands that
+		// exist are get_fork_messages (USER MESSAGES only — not the tree), fork(entryId), clone and
+		// compact. There is no navigate_tree.
+		//
+		// So Rewind and Summarize are false. Claiming them because the product can do them in another
+		// mode would put controls in the app that this adapter cannot honour, which is the exact
+		// failure the manifest exists to prevent — and a "rewind" that silently forked instead, with
+		// no branch summary, would be worse than an absent button.
+		caps.Thread = protocol.ThreadCaps{Tree: true, Fork: true, Compact: true}
 	}
 	return caps
 }
@@ -573,6 +587,11 @@ func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool) {
 			// handle that outlives this process, and therefore the only way a restore can resume this
 			// exact conversation instead of starting a new one under the same id.
 			s.recordResumeHandle(e.Command, line)
+			// Hand the frame to whoever asked (thread.go's request/response calls), keyed by the id
+			// pi echoes back. Unconditional and after the above: a response nobody is waiting for
+			// resolves nothing and costs nothing, and get_state is sent fire-and-forget at startup
+			// with no id at all, so it can never be mistaken for someone's awaited reply.
+			s.rpc.resolve(e.ID, line)
 		case "message_end":
 			// Per-turn token/cost usage (the "message" key here is an object → decode separately).
 			var me piMessageEnd
