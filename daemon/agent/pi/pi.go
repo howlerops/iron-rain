@@ -284,12 +284,20 @@ func (s *session) Events() <-chan agent.Event { return s.events }
 // intersection-shaped adapter layer had no way to express, so it simply never reached the client.
 //
 // Efforts are pi's --thinking levels, in the order the CLI documents them.
-// This adapter drives more than pi: prime-agent (Prime Intellect) speaks the same JSONL RPC
-// protocol and rides it unchanged (see autodetect.go). They are NOT the same product, so the thread
-// operations — /tree and forking from an earlier user message — are declared only for pi, which is
-// where they were actually verified. Declaring them for everything on this adapter would put a
-// control in front of prime-agent users that fails when tapped, which is the one thing a capability
-// manifest exists to prevent.
+// threadCapableAgents are the products on this adapter that actually ship the session-tree
+// machinery, checked in their installed source rather than assumed from the shared protocol.
+//
+// The adapter drives more than pi: prime-agent (Prime Intellect) speaks the same JSONL RPC protocol
+// and rides it unchanged (see autodetect.go). Sharing a WIRE protocol would not by itself mean
+// sharing a feature — but these two share a codebase lineage, and prime-agent's install has
+// navigateTree, the branch-summary collection, and the app.session.tree / app.session.fork /
+// app.session.resume actions, same as pi's.
+//
+// An allowlist rather than "anything on this adapter", because NewNamed takes an arbitrary name: a
+// third product could ride the same RPC tomorrow with none of this, and would inherit controls that
+// fail when tapped — which is the one thing a capability manifest exists to prevent.
+var threadCapableAgents = map[string]bool{"pi": true, "prime-agent": true}
+
 func (s *session) Capabilities() protocol.SessionCapabilities {
 	name := "pi"
 	if s.p != nil {
@@ -303,9 +311,9 @@ func (s *session) Capabilities() protocol.SessionCapabilities {
 		Commands:  true,
 		Models:    true,
 	}
-	if name == "pi" {
-		// Rewind, not merely fork. pi's /tree calls navigateTree, which moves THIS session's leaf to
-		// the chosen node — the session keeps every branch and simply points somewhere else, so going
+	if threadCapableAgents[name] {
+		// Rewind, not merely fork. /tree calls navigateTree, which moves THIS session's leaf to the
+		// chosen node — the session keeps every branch and simply points somewhere else, so going
 		// back and continuing creates a sibling rather than a new session. Fork is separate and real
 		// too (`--fork`, and the fork-from-a-user-message selector), which is why both are declared.
 		caps.Thread = protocol.ThreadCaps{Tree: true, Fork: true, Rewind: true, Compact: true, Summarize: true}

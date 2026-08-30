@@ -1603,18 +1603,33 @@ type SessionFacts struct {
 
 // ThreadNode is one point a conversation can be moved to.
 //
-// Not only user messages. pi's on-disk sessions are a parent-linked tree whose nodes also include
-// model changes and thinking-level changes, so "go back to before I switched models" is a real
-// destination — and a picker that showed messages alone would silently hide it. Kind is what lets a
-// client render those differently instead of printing an empty preview.
+// Measured against pi's real tree rather than guessed at: four turns produced NINETEEN nodes. Every
+// tool call, file edit, shell run, model change and thinking-level change is its own node, and so is
+// the branch summary itself. Two consequences the design has to take seriously:
+//
+//   - a picker that lists nodes unfiltered is a wall of tool calls with the user's messages lost in
+//     it. pi's own selector ships type filters and a search box for exactly this reason, and any
+//     client rendering this needs the same or it will be unusable by the second branch.
+//   - Kind is not decoration. It is what lets a client filter, and what lets it render an edit or a
+//     branch summary as something other than an empty preview line.
 type ThreadNode struct {
 	ID       string `json:"id"`
 	ParentID string `json:"parent_id,omitempty"` // the tree is parent-linked; roots have none
-	Kind     string `json:"kind,omitempty"`      // message | model | thinking | session
-	Preview  string `json:"preview"`             // one line for the picker
-	At       int64  `json:"at,omitempty"`        // unix seconds
-	Depth    int    `json:"depth,omitempty"`     // nesting for tree rendering; 0 = main line
-	Current  bool   `json:"current,omitempty"`   // the session's current position (pi calls it the leaf)
+	// Kind of node. Observed in pi: user, assistant, tool, edit, bash, branch_summary, model,
+	// thinking, session. Left as a string rather than an enum because a provider may have kinds we
+	// have not seen, and an unknown kind should render generically rather than be dropped.
+	Kind    string `json:"kind,omitempty"`
+	Preview string `json:"preview"`         // one line for the picker
+	At      int64  `json:"at,omitempty"`    // unix seconds
+	Depth   int    `json:"depth,omitempty"` // nesting for tree rendering; 0 = the main line
+	// Current is the session's position — pi calls it the leaf. Exactly one node has it.
+	Current bool `json:"current,omitempty"`
+	// OnPath marks the nodes between the root and Current: the line the session is actually on.
+	//
+	// Distinct from Current, and both are needed. pi renders the active line bright and the
+	// abandoned siblings dimmed, which is the whole reason a tree with two branches is readable at
+	// all — without it a client can only highlight one row and every other branch looks equally live.
+	OnPath bool `json:"on_path,omitempty"`
 }
 
 // Todo is one item in the agent's live to-do list.
