@@ -28,6 +28,20 @@ import (
 
 // primeSessionsRoot is where prime-agent keeps its conversation JSONL files. Same shape as pi's
 // (~/.pi/agent/sessions), one directory over.
+// ompSessionsRoot is where oh-my-pi keeps its conversation files.
+//
+// A best guess by analogy with pi (~/.pi/agent/sessions) and prime-agent (~/.prime/agent/sessions),
+// and it is only used for RESUME. Getting it wrong costs the ability to resume an omp session after
+// a daemon restart; it cannot corrupt anything, because the adapter records the exact path the agent
+// reports at startup (get_state) and prefers that.
+func ompSessionsRoot() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".omp", "agent", "sessions")
+}
+
 func primeSessionsRoot() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -79,6 +93,23 @@ func enableProviders(ctx context.Context, h *hub.Hub, opencodeURL, claudeSidecar
 	if p, err := exec.LookPath("prime-agent"); err == nil {
 		h.Register(pi.NewNamed("prime-agent", []string{p, "--mode", "rpc"}, primeSessionsRoot()))
 		enabled = append(enabled, "prime-agent   -> "+p+" --mode rpc")
+	}
+	// oh-my-pi (omp) is a FORK of pi that keeps its agent engine, and offers the same
+	// `--mode rpc` stdio interface — so it rides this adapter for the same reason prime-agent does:
+	// a second copy of a JSONL parser we already have would drift, and only one copy would get
+	// fixed.
+	//
+	// Registered by BINARY NAME rather than by assuming the protocol matches. If its RPC frames turn
+	// out to differ, the adapter's own logging says so loudly (it rate-limits and reports
+	// unparseable frames) rather than failing silently — that specific failure mode is why pi's
+	// readLoop logs dropped frames at all.
+	//
+	// Deliberately NOT added to pi's threadCapableAgents: /tree and fork are declared only for
+	// products whose implementation was actually checked, and this one has not been. An absent
+	// control is correct until verified; a present one that fails is not.
+	if p, err := exec.LookPath("omp"); err == nil {
+		h.Register(pi.NewNamed("oh-my-pi", []string{p, "--mode", "rpc"}, ompSessionsRoot()))
+		enabled = append(enabled, "oh-my-pi      -> "+p+" --mode rpc")
 	}
 	if piBin != "" {
 		h.Register(pi.New([]string{piBin, "--mode", "rpc"}))

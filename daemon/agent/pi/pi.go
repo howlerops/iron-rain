@@ -485,7 +485,19 @@ func piToolSummary(args map[string]any) string {
 // whereas piEvent.Message is a string for other events — same key, so keep them apart).
 type piMessageEnd struct {
 	Message struct {
-		Usage struct {
+		Role string `json:"role"`
+		// A FAILED turn is reported here and nowhere else.
+		//
+		// The adapter read neither of these, so a turn that errored — a model without tool support,
+		// a refused key, a 400 from the provider — emitted a plain idle and the app showed
+		// "Finished" over an empty reply. Observed with oh-my-pi defaulting to an ollama model:
+		//   stopReason: "error"
+		//   errorMessage: "400 ... vicuna:latest does not support tools"
+		// The user is told nothing, which is the same silent-failure shape this file's own header
+		// warns about twice.
+		StopReason   string `json:"stopReason"`
+		ErrorMessage string `json:"errorMessage"`
+		Usage        struct {
 			Input  int `json:"input"`
 			Output int `json:"output"`
 			// Observed on the wire and previously unread, so pi's cache traffic — the bulk of a long
@@ -699,6 +711,13 @@ func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool) {
 		case "agent_end":
 			idle = true
 			s.busy.Store(false)
+			// A turn that ended in an error must not close as a plain idle: the reply is empty, and
+			// without this the user is shown a finished turn with nothing in it and no reason.
+			if msg, ok := failedTurn(line); ok {
+				s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{
+					SessionID: s.id, Status: protocol.StatusError, Detail: msg}})
+				continue
+			}
 			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusIdle}})
 		}
 	}
@@ -709,4 +728,37 @@ func randID() string {
 	b := make([]byte, 6)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// failedTurn reports the error an agent_end carries, if the turn failed.
+//
+// agent_end repeats the whole conversation, so the ASSISTANT message is what matters and it is the
+// last one. A turn can end with stopReason "error" and a populated errorMessage while every other
+// frame in the stream looks perfectly normal — which is exactly how a broken model configuration
+// presented as a successful, empty turn.
+func failedTurn(line []byte) (string, bool) {
+	var end struct {
+		Messages []struct {
+			Role         string `json:"role"`
+			StopReason   string `json:"stopReason"`
+			ErrorMessage string `json:"errorMessage"`
+		} `json:"messages"`
+	}
+	if json.Unmarshal(line, &end) != nil {
+		return "", false
+	}
+	for i := len(end.Messages) - 1; i >= 0; i-- {
+		m := end.Messages[i]
+		if m.Role != "assistant" {
+			continue
+		}
+		if m.StopReason != "error" && m.ErrorMessage == "" {
+			return "", false
+		}
+		if msg := textutil.FirstLine(strings.TrimSpace(m.ErrorMessage), 300); msg != "" {
+			return msg, true
+		}
+		return "the agent's turn ended in an error it did not describe", true
+	}
+	return "", false
 }
