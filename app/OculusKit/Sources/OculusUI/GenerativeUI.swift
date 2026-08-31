@@ -17,15 +17,87 @@ struct UIComponentView: View {
     /// values (nil for every other component).
     var onAction: ((UIComponentAction, [String: JSONValue]?) -> Void)? = nil
 
+    /// Whether the full component is open in a sheet.
+    @State private var expanded = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            content
+            if let big = oversize {
+                summaryCard(big)
+            } else {
+                content
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
         .background(palette.secondary.opacity(0.25), in: OculusShape.rounded(OculusRadius.md))
         .overlay(OculusShape.rounded(OculusRadius.md).strokeBorder(palette.border))
         .overlay(alignment: .topTrailing) { provenanceChip }
+        // Hosted on the CARD, which is always in the tree — not on the conditional branch above. A
+        // sheet attached to a view that disappears never presents, and reports nothing when it
+        // doesn't: the same mistake cost two debugging rounds elsewhere in this app.
+        .sheet(isPresented: $expanded) {
+            ComponentSheet(component: component, palette: palette, onAction: onAction) {
+                expanded = false
+            }
+        }
+    }
+
+    /// A long report, plan or table is worse inline than it is behind one tap.
+    ///
+    /// Thresholds are per shape rather than one character count, because "too long" means different
+    /// things: a table is unreadable long before a checklist is, since every row is already dense.
+    /// Below them nothing changes — a three-step plan inline is exactly right, and putting it behind
+    /// a tap would be ceremony for its own sake.
+    @Environment(\.genUIAlwaysExpanded) private var alwaysExpanded
+
+    private var oversize: (title: String, detail: String, icon: String)? {
+        guard !alwaysExpanded, component.status != "running" else { return nil }
+        switch component.component {
+        case "table":
+            guard let p = component.props?.decoded(TableProps.self), p.rows.count > 8 else { return nil }
+            return (p.caption ?? "Table", "\(p.rows.count) rows · \(p.columns.count) columns", "tablecells")
+        case "checklist", "plan":
+            guard let p = component.props?.decoded(ChecklistProps.self), p.items.count > 10 else { return nil }
+            let done = p.items.filter { ($0.status ?? "") == "completed" || ($0.status ?? "") == "done" }.count
+            let word = component.component == "plan" ? "Plan" : "Checklist"
+            return (p.title ?? word, "\(p.items.count) items · \(done) done", "checklist")
+        case "diff":
+            guard let p = component.props?.decoded(DiffProps.self) else { return nil }
+            let lines = p.patch?.split(separator: "\n").count ?? 0
+            guard lines > 40 else { return nil }
+            return (p.path ?? "Diff", "\(lines) lines", "plusminus")
+        default:
+            return nil
+        }
+    }
+
+    /// The collapsed form: what it is, how big it is, and one tap to read it.
+    private func summaryCard(_ big: (title: String, detail: String, icon: String)) -> some View {
+        Button { expanded = true } label: {
+            HStack(spacing: 10) {
+                Image(systemName: big.icon)
+                    .font(.callout)
+                    .foregroundStyle(palette.primary)
+                    .frame(width: 20)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(big.title)
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(palette.foreground)
+                        .lineLimit(1)
+                    Text(big.detail)
+                        .font(.caption)
+                        .foregroundStyle(palette.mutedForeground)
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(palette.mutedForeground)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(big.title), \(big.detail). Open to read.")
     }
 
     @ViewBuilder private var content: some View {
@@ -477,5 +549,44 @@ struct FormView: View {
             }
         }
         onAction?(a, out)
+    }
+}
+
+/// The expanded form of an oversize component.
+///
+/// Renders the SAME UIComponentView, so there is one implementation of every component rather than
+/// an inline one and a sheet one that drift. It is handed a copy with a marker that suppresses the
+/// collapse, which is what stops the sheet from immediately offering to open itself again.
+private struct ComponentSheet: View {
+    let component: UIComponent
+    let palette: OculusPalette
+    var onAction: ((UIComponentAction, [String: JSONValue]?) -> Void)?
+    let onClose: () -> Void
+
+    var body: some View {
+        OculusSheet(title: title, subtitle: nil, palette: palette, onClose: onClose) {
+            UIComponentView(component: component, palette: palette, onAction: onAction)
+                .environment(\.genUIAlwaysExpanded, true)
+        }
+    }
+
+    private var title: String {
+        switch component.component {
+        case "plan": return "Plan"
+        case "checklist": return "Checklist"
+        case "table": return "Table"
+        case "diff": return "Changes"
+        default: return "Details"
+        }
+    }
+}
+
+/// Set inside the sheet so the component renders in full instead of collapsing again.
+private struct GenUIAlwaysExpandedKey: EnvironmentKey { static let defaultValue = false }
+
+extension EnvironmentValues {
+    var genUIAlwaysExpanded: Bool {
+        get { self[GenUIAlwaysExpandedKey.self] }
+        set { self[GenUIAlwaysExpandedKey.self] = newValue }
     }
 }
