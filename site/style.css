@@ -674,6 +674,12 @@ figcaption {
   border-radius: var(--radius);
   border: 1px solid var(--border);
   -webkit-overflow-scrolling: touch;
+  /* overflow-x: auto was already here and was not enough. A flex/grid item's min-width defaults to
+     `auto`, meaning "never shrink below your content" — so the wrapper widened to the table's
+     540px min-width instead of clipping it, and on a 390px phone the whole PAGE scrolled sideways
+     rather than just the table. These two lines are what actually confine it. */
+  min-width: 0;
+  max-width: 100%;
 }
 
 .compare-table {
@@ -863,7 +869,11 @@ figcaption {
   box-shadow: 0 0 0 5px var(--bg);
 }
 
-.step-body { flex: 1; padding-top: 8px }
+/* min-width: 0 for the same reason .compare-wrap needs it: a flex item defaults to
+   min-width: auto — "never shrink below your content" — so this column widened to fit the whole
+   install command on one line and pushed the PAGE sideways on a phone. pre.cmd already had
+   overflow-x: auto and could not use it, because it was never given a narrow width to scroll in. */
+.step-body { flex: 1; min-width: 0; padding-top: 8px }
 .step-body h3 {
   margin: 0 0 10px;
   font-size: 19px;
@@ -997,24 +1007,19 @@ pre.cmd code {
    poster is the clip's own first frame, so nothing pops in when it loads. */
 .media-video {
   display: block;
+  /* width:100% + height:auto, with the element's own width/height attributes supplying the aspect
+     ratio. That is all it takes to make the box fit the clip exactly — no letterbox bars, and the
+     border hugs the content at every viewport.
+     Two earlier attempts are worth not repeating: a fixed slot height with object-fit:contain left
+     56% of the portrait card empty; and width:auto (to make the box hug a centred clip) collapsed
+     the two lazy-loaded <img> slots to 2x2 before they loaded, because an auto-width replaced
+     element has no size to reserve. The real fix was upstream — cropping the two extreme captures
+     so nothing on the page is wildly portrait any more. */
   width: 100%;
-  /* Captures come in whatever shape the UI they show is — the session sheet is tall
-     and portrait, the fleet board is wide. Letterboxing inside a fixed slot keeps every
-     card the same height instead of one portrait clip making its card three times the
-     others; `contain` means nothing is ever cropped to achieve it. */
-  height: 340px;
-  object-fit: contain;
-  object-position: center;
+  height: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--card);
 }
-.media-video--tall { height: 420px }
-@media (max-width: 720px) {
-  .media-video, .media-video--tall { height: 260px }
-}
-@media (prefers-reduced-motion: reduce) {
-  /* The clips loop forever, which is exactly what this setting exists to stop.
-     The poster frame still shows what the feature looks like. */
-  .media-video { animation: none }
-}
+/* prefers-reduced-motion is honoured in JS, where it can actually stop playback — the CSS rule that
+   used to live here set `animation: none` on an element that has no animation, and did nothing. */
