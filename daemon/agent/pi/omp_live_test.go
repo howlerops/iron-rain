@@ -2,6 +2,7 @@ package pi
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -25,7 +26,17 @@ func TestLive_OhMyPiSharesThePiProtocol(t *testing.T) {
 		t.Skip("omp not installed")
 	}
 
-	p := NewNamed("oh-my-pi", []string{bin, "--mode", "rpc"}, "")
+	// A model can be named for the run. omp's default on a fresh install may be an ollama model with
+	// no tool support, in which case the turn correctly FAILS and this test asserts the failure is
+	// reported rather than silent. Set OCULUS_OMP_MODEL to a working model to assert real streamed
+	// text instead — that is the stronger claim, and it takes minutes on a local model, so it is
+	// opt-in rather than a tax on every suite run.
+	argv := []string{bin, "--mode", "rpc"}
+	wantText := os.Getenv("OCULUS_OMP_MODEL")
+	if wantText != "" {
+		argv = append(argv, "--model", wantText)
+	}
+	p := NewNamed("oh-my-pi", argv, "")
 	if p.Name() != "oh-my-pi" {
 		t.Fatalf("provider name = %q, want oh-my-pi", p.Name())
 	}
@@ -43,7 +54,14 @@ func TestLive_OhMyPiSharesThePiProtocol(t *testing.T) {
 	var text strings.Builder
 	var failure string
 	done := false
-	deadline := time.After(120 * time.Second)
+	// A local model loaded from disk, running omp's very large tool/system prompt, is slow to first
+	// token — two minutes was not enough on this machine and looked exactly like a protocol
+	// mismatch. Generous when a model is named; short otherwise.
+	limit := 90 * time.Second
+	if wantText != "" {
+		limit = 15 * time.Minute
+	}
+	deadline := time.After(limit)
 	for !done {
 		select {
 		case ev, ok := <-sess.Events():
@@ -75,6 +93,10 @@ func TestLive_OhMyPiSharesThePiProtocol(t *testing.T) {
 	if strings.TrimSpace(text.String()) == "" && failure == "" {
 		t.Fatal("omp finished with neither output nor a reported error — a silent empty turn is the " +
 			"one result that tells the user nothing")
+	}
+	// With a working model named, silence OR a failure is not good enough — real text must stream.
+	if wantText != "" && strings.TrimSpace(text.String()) == "" {
+		t.Fatalf("omp produced no streamed text with model %q (failure=%q)", wantText, failure)
 	}
 	if failure != "" {
 		t.Logf("omp reported a turn failure (expected if no usable model is configured): %s", failure)
