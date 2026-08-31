@@ -1012,16 +1012,37 @@ func (m *managedSession) finalizeTurnTranscript() {
 	if db != nil && !m.asstPersisted && strings.TrimSpace(text) != "" {
 		ev := agent.Event{Type: protocol.TypeSessionMessage, Payload: protocol.SessionMessage{SessionID: m.sess.ID(), Role: "assistant", Text: text}}
 		if raw, err := ev.Encode(); err == nil {
-			// BROADCAST it, don't just write it. Writing to SQLite without broadcasting created a
-			// frame that existed in one source and not the other, and merging the two rendered every
-			// reply twice. Every frame now takes the same path: broadcast (which rings it) and
-			// persist. m.broadcast is the ring; appendDurable is the store.
+			// RING it, don't deliver it. Writing only to SQLite created a frame that existed in one
+			// source and not the other, and merging the two rendered every reply twice — so it has to
+			// reach the ring. But it must NOT reach the clients currently watching, because this frame
+			// is nothing but the deltas they were just sent, concatenated.
+			//
+			// Sending it live doubled a reply on screen whenever the streamed text was not the last
+			// row at turn end. The client only replaces a finalized message onto a still-STREAMING
+			// assistant row, and a generative-UI component seals that row and appends its own — so a
+			// turn that ended with an iron:ui block rendered prose, card, then the same prose again.
+			// Tool cards seal the row the same way. On REPLAY this frame is deduplicated against the
+			// text the deltas rebuild, which is exactly why the fault only ever showed up live.
 			m.appendDurable(m.sess.ID(), "", raw)
-			m.broadcast(raw)
+			m.recordOnly(raw)
 		}
 	}
 	m.asstAccum.Reset()
 	m.asstPersisted = false
+}
+
+// recordOnly appends an event to the replayable ring WITHOUT delivering it to current subscribers.
+//
+// The complement of broadcastTransient, which delivers without recording. Both exist because
+// "record" and "deliver" are separate questions and broadcast answers them together: use this for a
+// frame that belongs in a later attach's history but restates something live watchers already have.
+func (m *managedSession) recordOnly(raw []byte) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.transcript = append(m.transcript, raw)
+	m.transcriptBytes += len(raw)
+	m.lastActivity = time.Now()
+	m.trimTranscript()
 }
 
 // broadcast records the event and enqueues it to every current subscriber without

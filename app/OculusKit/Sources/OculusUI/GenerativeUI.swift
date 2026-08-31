@@ -183,9 +183,22 @@ struct TableProps: Decodable {
 
 /// Internal, not private: the markdown renderer routes GFM pipe tables through this same view so
 /// there is one table implementation rather than two that drift apart.
+/// The width the table has to work with, measured from the scroll viewport.
+///
+/// A Grid inside a horizontal ScrollView sizes to its IDEAL width, so a three-column table sat in a
+/// narrow clump against the leading edge with the rest of the bubble empty — the columns already
+/// carry `maxWidth: .infinity`, but there was nothing telling them how much "infinity" was. Feeding
+/// the viewport's width back in as the Grid's `minWidth` lets them distribute across it, while a
+/// table genuinely wider than the viewport still exceeds the minimum and scrolls as before.
+private struct TableWidthKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
 struct TableView: View {
     let props: TableProps
     let palette: OculusPalette
+    @State private var available: CGFloat = 0
     private static let maxRows = 500, maxCols = 20
 
     var body: some View {
@@ -226,10 +239,16 @@ struct TableView: View {
                         }
                     }
                 }
+                // -2 leaves room for the padding below, so the minimum never itself forces a scroll.
+                .frame(minWidth: max(0, available - 2), alignment: .leading)
                 .overlay(OculusShape.rounded(OculusRadius.sm).strokeBorder(palette.border))
                 .clipShape(OculusShape.rounded(OculusRadius.sm))
                 .padding(1) // keep the hairline stroke inside the scroll viewport
             }
+            .background(GeometryReader { geo in
+                Color.clear.preference(key: TableWidthKey.self, value: geo.size.width)
+            })
+            .onPreferenceChange(TableWidthKey.self) { available = $0 }
             if props.rows.count > Self.maxRows {
                 Text("+\(props.rows.count - Self.maxRows) more rows").font(.caption2).foregroundStyle(palette.mutedForeground).padding(.top, 4)
             }

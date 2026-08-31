@@ -1288,8 +1288,7 @@ struct MessageRow: View, Equatable {
                     ForEach(segments) { segment in
                         switch segment.kind {
                         case .markdown(let text):
-                            ChatMarkdownView(text: text, palette: palette)
-                                .lineSpacing(chatLineSpacing)
+                            CollapsibleProse(text: text, palette: palette, lineSpacing: chatLineSpacing)
                                 .textSelection(.enabled)
                         case .component(let component):
                             UIComponentView(component: component, palette: palette,
