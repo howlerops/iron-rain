@@ -302,6 +302,27 @@ private struct DetailToolbarBackground: ViewModifier {
 }
 #endif
 
+/// Re-evaluates `content` whenever `model` publishes.
+///
+/// RootView observes the STORE — the set of paired Macs — and receives the per-desktop `Model` as a
+/// plain value from `store.active`. So nothing in RootView's own body is invalidated when the Model
+/// publishes, and the deck's detail column chooses between the Code surface and the chat by reading
+/// `model.codeReviewTarget` in exactly that body.
+///
+/// The result was a control that did nothing: "Review changes" (sidebar), "Review" (Fleet card) and
+/// the chat toolbar's "Code & changes" all set the target correctly — a probe confirmed it flipping
+/// from nil to the session id — and the branch that acts on it never ran again, so the pane kept
+/// showing the chat. It looked like a dead menu item rather than a missing dependency.
+///
+/// It went unnoticed because everything else in the detail column observes the Model for itself:
+/// ChatView takes it as an @ObservedObject, so messages stream in fine. Only the CHOICE of which
+/// surface to show lives one level up, in the view that isn't watching.
+private struct ObservingModel<Content: View>: View {
+    @ObservedObject var model: Model
+    @ViewBuilder var content: () -> Content
+    var body: some View { content() }
+}
+
 public struct RootView: View {
     @ObservedObject var store: DesktopStore
     @Environment(\.colorScheme) private var scheme
@@ -563,7 +584,9 @@ public struct RootView: View {
                 .sidebarMaterial()
                 .navigationSplitViewColumnWidth(min: 250, ideal: 290, max: 360)
             } detail: {
-                deckDetail(model)
+                // Wrapped so the detail column actually observes the Model — see ObservingModel.
+                // Without it, "Review changes" set codeReviewTarget and nothing happened.
+                ObservingModel(model: model) { deckDetail(model) }
                     // Clamp the detail column to the window height (see original note): the split view
                     // sizes to its tallest column's ideal; a flexible detail measured as a runaway
                     // ideal and inflated the sidebar. Pinning decouples them.
