@@ -109,6 +109,14 @@ struct HoverCard: View {
         for fence in ["```go", "```typescript", "```javascript", "```python", "```rust", "```c", "```cpp", "```"] {
             s = s.replacingOccurrences(of: fence, with: "")
         }
+        // Un-escape the markdown a language server escaped on the way out. gopls sends a slice type
+        // as `\[]Stop`, because it is writing markdown and `[` starts a link — but this card renders
+        // the text verbatim, so the backslash arrived on screen and the hover for `stops []Stop`
+        // read "\[]Stop". Only the punctuation LSPs actually escape, so a real backslash in a
+        // string literal or a Windows path is left alone.
+        for ch in ["[", "]", "*", "_", "`", "<", ">", "#", "+", "-", "."] {
+            s = s.replacingOccurrences(of: "\\" + ch, with: ch)
+        }
         return s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
@@ -411,6 +419,7 @@ private struct CodeTextView: NSViewRepresentable {
 
         // MARK: hover
 
+        @MainActor
         func hoverMoved(_ tv: HoverTextView, to point: NSPoint) {
             guard let lm = tv.layoutManager, let container = tv.textContainer else { return }
             let ns = tv.string as NSString
@@ -433,7 +442,13 @@ private struct CodeTextView: NSViewRepresentable {
 
             let (line, col) = lineChar(forOffset: charIndex, in: ns)
             hoverTask?.cancel()
-            hoverTask = Task { [weak self, weak tv] in
+            // @MainActor is the whole fix for the hover crash — see showHover.
+            //
+            // A bare `Task {}` here does NOT inherit the main actor: this Coordinator is not
+            // main-actor isolated, so the body ran on a cooperative-pool thread and presented an
+            // NSPopover from it. AppKit builds an NSWindow to host a popover, and instantiating a
+            // window off the main thread is an exception, which is an abort.
+            hoverTask = Task { @MainActor [weak self, weak tv] in
                 try? await Task.sleep(nanoseconds: 300_000_000) // debounce like VSCode
                 guard let self, let tv, !Task.isCancelled else { return }
                 let info = await self.parent.hoverProvider(line, col)
@@ -442,25 +457,34 @@ private struct CodeTextView: NSViewRepresentable {
             }
         }
 
+        @MainActor
         func hoverExited() { hoverTask?.cancel(); hideHover() }
 
+        @MainActor
         private func showHover(_ text: String, at rect: NSRect, in tv: NSTextView, charIndex: Int) {
-            // Hovering a symbol used to CRASH the app: SIGABRT out of
+            // Hovering a symbol CRASHED the app: SIGABRT out of
             // -[NSWindow _initContent:styleMask:backing:defer:contentView:], raised while NSPopover
-            // built its window. Three separate ways to hand AppKit a window it refuses to make, all
-            // closed here — the popover is the only thing standing between an LSP reply and a
-            // process abort, so none of them is worth leaving to chance.
+            // built its window.
             //
-            // 1. The SIZE. HoverCard is a ScrollView, and a ScrollView has no intrinsic content
-            //    height, so `sizingOptions = [.preferredContentSize]` could resolve to a
-            //    non-finite height. An infinite content rect is exactly what NSWindow rejects.
-            //    A measured, clamped size is passed instead, so the popover is never asked to be
-            //    a size that cannot exist.
-            // 2. The VIEW. This runs after a 300ms debounce inside a Task. The text view can be
-            //    out of the window by then — closing the file, or switching session, is enough —
-            //    and showing a popover relative to a window-less view is its own exception.
-            // 3. The RECT. It comes from the layout manager, which can hand back a non-finite
-            //    rect for glyphs it could not lay out.
+            // THE CAUSE IS THE THREAD. The crash report's faulting thread is
+            // com.apple.root.user-initiated-qos.cooperative and the main thread is untriggered:
+            // this is called from the debounce Task in hoverMoved, a bare `Task {}` on a Coordinator
+            // that is not main-actor isolated, so it ran on the cooperative pool. AppKit creates an
+            // NSWindow to host a popover and a window may only be instantiated on the main thread.
+            // @MainActor here and on that Task is the fix; the compiler now enforces it.
+            //
+            // A previous attempt blamed the popover's content SIZE — HoverCard is a ScrollView, so
+            // its fitting height can be unbounded — and passed a measured size instead. That was a
+            // guess, it was wrong, and it appeared to work only because Go has no language server
+            // installed here, so hover returned nothing and never presented at all. The size is
+            // still passed, because an explicit finite size is correct regardless, but it was never
+            // what aborted the process.
+            //
+            // The two guards below are real and stay. This runs 300ms after the pointer moved, on
+            // the main actor but asynchronously: the text view can be out of its window by then
+            // (close the file, switch session) and a popover relative to a window-less view is its
+            // own exception; and the rect comes from the layout manager, which can return a
+            // non-finite rect for glyphs it could not lay out.
             guard tv.window != nil, rect.isFinite else { return }
             hideHover()
             let pop = NSPopover()
@@ -474,6 +498,7 @@ private struct CodeTextView: NSViewRepresentable {
             pop.show(relativeTo: rect, of: tv, preferredEdge: .maxY)
         }
 
+        @MainActor
         private func hideHover() {
             popover?.performClose(nil)
             popover = nil
