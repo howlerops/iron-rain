@@ -16,6 +16,10 @@ Rules:
 - One **valid JSON** object per fence. Put `component` and `id` first.
 - ALWAYS include a short `fallback_text` (markdown) that conveys the same content — clients that can't
   render the component show it instead.
+- `fallback_text` lives INSIDE the JSON and nowhere else. Do NOT also write the same table, list or
+  note as prose around the fence, and do not announce it ("Fallback table:", "Here it again as
+  markdown"). The client shows one or the other, never both, so a repeat renders the same content
+  twice on screen.
 - Prefer normal markdown prose. Use a component ONLY when the data is genuinely clearer as UI. Emit at
   most a few per message.
 
