@@ -129,22 +129,27 @@ struct HoverCard: View {
     static let width: CGFloat = 460
     static let maxHeight: CGFloat = 300
 
-    /// A definite, finite popover size for `text`.
+    /// A definite, finite popover size for `text`, in points.
     ///
     /// The card is a ScrollView, so it has no intrinsic height to hand NSPopover — which is how the
     /// hover came to ask for a window AppKit would not build. Estimating from the wrapped line count
     /// keeps a one-line type signature from getting a 300pt card while still bounding a long doc
     /// comment, and the clamp guarantees the result is always something NSWindow accepts.
-    static func size(for text: String) -> NSSize {
+    ///
+    /// CGSize, not NSSize: only the macOS popover consumes this, but the type has to exist on iOS
+    /// too because the whole card does. NSSize is an AppKit alias and compiles nowhere else — it
+    /// built fine on the Mac and broke the iOS target, which is the failure mode of putting a
+    /// platform type outside the platform guard.
+    static func size(for text: String) -> CGSize {
         let charsPerLine = 62.0 // 460pt at 12pt monospaced, less the padding
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
             .reduce(0.0) { $0 + max(1, (Double($1.count) / charsPerLine).rounded(.up)) }
         let height = min(maxHeight, max(44, lines * 15 + 20))
-        return NSSize(width: width, height: height)
+        return CGSize(width: width, height: height)
     }
 }
 
-extension NSRect {
+extension CGRect {
     /// Every component finite — a rect built from NaN or infinity is one AppKit refuses.
     var isFinite: Bool {
         origin.x.isFinite && origin.y.isFinite && size.width.isFinite && size.height.isFinite
