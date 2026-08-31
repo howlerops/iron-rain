@@ -165,7 +165,7 @@
         </div>
         <figure class="cap-media" aria-label="Multi-provider sessions">
           <video class="media-video" src="./assets/demo-provider-picker.mp4" poster="./assets/demo-provider-picker.jpg"
-             autoplay loop muted playsinline preload="metadata"
+             loop muted playsinline preload="none"
              aria-label="Choosing the agent, model, worktree, mode and YOLO for a new session"></video>
           <figcaption>Per-session provider, model, and account selection</figcaption>
         </figure>
@@ -186,7 +186,7 @@
         </div>
         <figure class="cap-media" aria-label="lock-screen approval">
           <video class="media-video" src="./assets/demo-approval.mp4" poster="./assets/demo-approval.jpg"
-             autoplay loop muted playsinline preload="metadata"
+             loop muted playsinline preload="none"
              aria-label="A shell command held for approval, with Deny, Allow, and scoped Always-allow"></video>
           <figcaption>Push-to-open approval with per-call Allow / Deny</figcaption>
         </figure>
@@ -209,7 +209,7 @@
         </div>
         <figure class="cap-media" aria-label="Generative-UI chat">
           <video class="media-video" src="./assets/demo-ui-blocks.mp4" poster="./assets/demo-ui-blocks.jpg"
-             autoplay loop muted playsinline preload="metadata"
+             loop muted playsinline preload="none"
              aria-label="A tool card, a native severity table, and a code review rendered inline"></video>
           <figcaption>Streaming markdown, tool cards, and inline generative UI</figcaption>
         </figure>
@@ -272,7 +272,7 @@
         </div>
         <figure class="cap-media" aria-label="parallel fan-out">
           <video class="media-video" src="./assets/demo-fanout.mp4" poster="./assets/demo-fanout.jpg"
-             autoplay loop muted playsinline preload="metadata"
+             loop muted playsinline preload="none"
              aria-label="Configuring a fan-out: same task, three agents, each on its own branch"></video>
           <figcaption>Every attempt side by side — summary, diffstat, and one tap to keep</figcaption>
         </figure>
@@ -292,7 +292,7 @@
         </div>
         <figure class="cap-media" aria-label="heartbeat supervision">
           <video class="media-video" src="./assets/demo-usage.mp4" poster="./assets/demo-usage.jpg"
-             autoplay loop muted playsinline preload="metadata"
+             loop muted playsinline preload="none"
              aria-label="Cost and token totals by day, week, provider, model and session"></video>
           <figcaption>Budget-bounded autonomy with self-healing recovery</figcaption>
         </figure>
@@ -312,7 +312,7 @@
         </div>
         <figure class="cap-media" aria-label="command deck">
           <video class="media-video" src="./assets/demo-fleet.mp4" poster="./assets/demo-fleet.jpg"
-             autoplay loop muted playsinline preload="metadata"
+             loop muted playsinline preload="none"
              aria-label="Every session on one board, with a pending approval surfaced on its card"></video>
           <figcaption>Sessions · Loops · Fleet · Issues · Activity, plus Cmd-K</figcaption>
         </figure>
@@ -334,7 +334,7 @@
         </div>
         <figure class="cap-media" aria-label="MCP registry">
           <video class="media-video" src="./assets/demo-mcp.mp4" poster="./assets/demo-mcp.jpg"
-             autoplay loop muted playsinline preload="metadata"
+             loop muted playsinline preload="none"
              aria-label="Importing MCP servers already configured in your agents"></video>
           <figcaption>Import from your agents, supervise once, inject everywhere</figcaption>
         </figure>
@@ -355,7 +355,7 @@
         </div>
         <figure class="cap-media" aria-label="approval rules">
           <video class="media-video" src="./assets/demo-approvals.mp4" poster="./assets/demo-approvals.jpg"
-             autoplay loop muted playsinline preload="metadata"
+             loop muted playsinline preload="none"
              aria-label="Default mode for new sessions, plus the list of standing allow rules"></video>
           <figcaption>Scoped rules, read-only modes, one place to take them back</figcaption>
         </figure>
@@ -376,7 +376,7 @@
         </div>
         <figure class="cap-media" aria-label="sharing a session">
           <video class="media-video" src="./assets/demo-sharing.mp4" poster="./assets/demo-sharing.jpg"
-             autoplay loop muted playsinline preload="metadata"
+             loop muted playsinline preload="none"
              aria-label="Who can steer your agents, and which devices are connected"></video>
           <figcaption>Watch-only by default, revocable, approvals stay with the owner</figcaption>
         </figure>
@@ -712,5 +712,31 @@
 document.querySelectorAll('nav a, .footer-links a').forEach(function(a){
   a.addEventListener('click', function(){var t=document.getElementById('navtoggle');if(t)t.checked=false;});
 });</script>
+<script>
+// Play a clip only while it is on screen.
+//
+// Every card autoplayed with preload="metadata", so opening the page fired nine simultaneous video
+// fetches at GitHub Pages and it answered two of them with 503 — those cards were then stuck on the
+// poster. preload="none" fetches nothing until play() is called, and the observer only calls it for
+// what is actually visible, so a visit costs one or two clips instead of nine.
+//
+// With JS off the poster still renders, which is a still of the same UI the clip shows.
+(function () {
+  var vids = Array.prototype.slice.call(document.querySelectorAll('video.media-video'));
+  if (!vids.length) return;
+  // Honour the OS setting rather than looping anyway — the poster carries the same information.
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  if (!('IntersectionObserver' in window)) {
+    vids.forEach(function (v) { v.play().catch(function () {}); });
+    return;
+  }
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting) { e.target.play().catch(function () {}); } else { e.target.pause(); }
+    });
+  }, { rootMargin: '200px 0px', threshold: 0.15 });
+  vids.forEach(function (v) { io.observe(v); });
+})();
+</script>
 </body>
 </html>
