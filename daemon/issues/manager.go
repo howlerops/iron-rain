@@ -424,6 +424,12 @@ func (m *Manager) Refresh(ctx context.Context) error {
 	var merged []Issue
 	var firstErr error
 	errs := map[string]string{}
+	// Which providers actually ran this round. Only these may have their auth error cleared: a
+	// provider skipped by backoff has proved nothing, and clearing its error made a BROKEN tracker
+	// read as healthy — "connected and responded, but no issues are assigned to you" on a board that
+	// was returning 401. The longer it stayed broken the longer the backoff, so the more convincing
+	// the lie; a failure marked permanent suspends polling outright and cleared the error forever.
+	polled := map[string]bool{}
 	var wg sync.WaitGroup
 	var rmu sync.Mutex
 	for _, np := range provs {
@@ -432,6 +438,7 @@ func (m *Manager) Refresh(ctx context.Context) error {
 		if !m.pollDue(np.name) {
 			continue
 		}
+		polled[np.name] = true
 		wg.Add(1)
 		go func(name string, p Provider) {
 			defer wg.Done()
@@ -447,7 +454,7 @@ func (m *Manager) Refresh(ctx context.Context) error {
 				// pill already carries the state permanently; repeating the same line every minute
 				// adds nothing and costs the operator the log.
 				m.notePollFailure(name, err)
-				errs[name] = name + ": " + err.Error()
+				errs[name] = withoutProviderPrefix(name, err.Error())
 				if firstErr == nil {
 					firstErr = err
 				}
@@ -470,8 +477,8 @@ func (m *Manager) Refresh(ctx context.Context) error {
 	for _, np := range provs {
 		if msg, bad := errs[np.name]; bad {
 			m.authErrors[np.name] = msg
-		} else {
-			delete(m.authErrors, np.name)
+		} else if polled[np.name] {
+			delete(m.authErrors, np.name) // it ran AND succeeded: the error is genuinely over
 		}
 	}
 	m.mu.Unlock()
@@ -484,6 +491,22 @@ func (m *Manager) Refresh(ctx context.Context) error {
 // pollBackoffMax caps how far a failing tracker's retries are spaced out. Long enough that a dead
 // provider is quiet, short enough that a recovered one comes back without a restart.
 const pollBackoffMax = 15 * time.Minute
+
+// withoutProviderPrefix drops a leading "linear: " / "jira: " from an adapter's error.
+//
+// The adapters name themselves, the manager named them again, and the UI labels the card with the
+// tracker as well — so a genuinely useful sentence arrived on screen as "Linear failed: linear:
+// linear: this connection was made before…". The attribution belongs to the UI, which has room for
+// it; the error should be the sentence alone.
+func withoutProviderPrefix(name, msg string) string {
+	for {
+		p := name + ": "
+		if !strings.HasPrefix(strings.ToLower(msg), strings.ToLower(p)) {
+			return msg
+		}
+		msg = msg[len(p):]
+	}
+}
 
 // notePollFailure records a failed poll: logs it only if the message changed (or enough have piled
 // up to be worth a count), spaces out the next attempt, and stops polling entirely when the failure

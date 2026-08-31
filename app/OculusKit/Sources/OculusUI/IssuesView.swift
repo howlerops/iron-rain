@@ -273,6 +273,19 @@ public struct IssuesView: View {
         .overlay(OculusShape.rounded(OculusRadius.md).strokeBorder(palette.primary.opacity(0.4)))
     }
 
+    /// Why the board is empty, in the user's terms.
+    private var emptyStateMessage: String {
+        if !model.trackerAuthErrors.isEmpty {
+            let names = model.trackerAuthErrors.map { $0 == "jira" ? "Jira" : $0.capitalized }
+                .sorted().joined(separator: " and ")
+            return "\(names) couldn't be reached, so this board is incomplete. The reason is below."
+        }
+        if model.jiraSites.count > 1 {
+            return "Your trackers answered, but nothing came back. If you have more than one Jira site, the wrong one may be selected."
+        }
+        return "Your trackers answered, but no issues are assigned to you. Reconnect if you expected some, or disconnect a tracker you no longer use."
+    }
+
     /// Shown when trackers are connected but the board is empty — distinguishes "working, but no
     /// issues assigned to you" from a real failure, and always exposes Disconnect so a broken or
     /// unwanted connection can be removed (previously unreachable once connected).
@@ -281,11 +294,14 @@ public struct IssuesView: View {
             Spacer()
             // The shared empty state, so "you have nothing" says WHY and offers a way forward
             // instead of a bare line of grey text.
-            SheetEmptyState(icon: "tray",
-                            title: "No issues to show",
-                            message: model.jiraSites.count > 1
-                                ? "Your trackers answered, but nothing came back. If you have more than one Jira site, the wrong one may be selected."
-                                : "Your trackers answered, but no issues are assigned to you. Reconnect if you expected some, or disconnect a tracker you no longer use.",
+            // The wording has to follow the actual state. "Your trackers answered" was printed
+            // unconditionally, so a board that was empty BECAUSE every tracker was failing said the
+            // trackers had answered — directly contradicting the error banner sitting above it and
+            // the per-tracker failure below it. An empty board and a broken board are different
+            // things and only one of them is the user's fault.
+            SheetEmptyState(icon: model.trackerAuthErrors.isEmpty ? "tray" : "exclamationmark.triangle",
+                            title: model.trackerAuthErrors.isEmpty ? "No issues to show" : "Couldn't load your issues",
+                            message: emptyStateMessage,
                             palette: palette) {
                 Button { Task { await model.loadIssues() } } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")

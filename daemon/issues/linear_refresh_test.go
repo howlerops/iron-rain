@@ -89,3 +89,46 @@ func TestLinearRetriesOnceAfterRefreshingA401(t *testing.T) {
 		t.Fatalf("rotated credentials were not handed back for persistence: %q %q", savedAccess, savedRefresh)
 	}
 }
+
+// A 401 on a connection with nothing to refresh must say WHY, not retry pointlessly.
+//
+// Linear access tokens last 24 hours. Connections made before this daemon persisted the refresh
+// token kept only the access token, so they expire every single day and no retry can renew them —
+// the "why does Linear keep asking me to log in" loop. The message has to name that and say the
+// reconnect is one-time, or the user does it again tomorrow.
+func TestLinearLegacyOAuthTokenExplainsItself(t *testing.T) {
+	var calls int
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer api.Close()
+
+	l := NewLinear("lin_oauth_legacyvalue") // bare access token: no SetOAuth, nothing to refresh with
+	l.endpoint = api.URL
+
+	err := l.gql(t.Context(), "query{ok}", nil, nil)
+	if err == nil {
+		t.Fatal("expected an error for a token that cannot be renewed")
+	}
+	if !strings.Contains(err.Error(), "reconnect once") {
+		t.Fatalf("the error must explain the one-time reconnect, got: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("must not retry when there is nothing to refresh with, got %d calls", calls)
+	}
+}
+
+// A revoked personal API key is a different situation and must read differently.
+func TestLinearRevokedAPIKeySaysRevoked(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer api.Close()
+	l := NewLinear("lin_api_personalkey")
+	l.endpoint = api.URL
+	err := l.gql(t.Context(), "query{ok}", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "revoked") {
+		t.Fatalf("a rejected API key should say it may have been revoked, got: %v", err)
+	}
+}

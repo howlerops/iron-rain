@@ -61,6 +61,29 @@ func (l *Linear) authToken() string {
 	return l.token
 }
 
+// unrenewable explains WHY a rejected token cannot be refreshed, or "" when a refresh is worth
+// trying. The distinction decides whether the user is told to do something or left alone.
+//
+// Linear access tokens last 24 hours and the authorization-code flow returns a refresh token with
+// them — but connections made before this daemon stored that refresh token kept only the access
+// token. Those credentials expire every day and no amount of retrying can renew them, which is
+// exactly the "why does Linear keep asking me to log in" loop. Naming that, and saying that
+// reconnecting once now stores the refresh token, turns a recurring mystery into a single action.
+func (l *Linear) unrenewable() string {
+	l.mu.Lock()
+	oauth, tok := l.oauth, l.token
+	l.mu.Unlock()
+	if oauth {
+		return "" // has refresh material — a refresh is the right move
+	}
+	if strings.HasPrefix(tok, "lin_oauth_") {
+		return "this connection was made before refresh tokens were stored, so its 24-hour token " +
+			"cannot be renewed — reconnect once and it will keep itself alive from then on"
+	}
+	// A personal API key does not expire, so a 401 means it was revoked or edited.
+	return "the API key was rejected — it may have been revoked; reconnect to restore access"
+}
+
 // gqlOnce performs one GraphQL round trip and hands back the live response for the caller to judge.
 // The body is NOT closed here — gql either drains it to retry or defers the close.
 func (l *Linear) gqlOnce(ctx context.Context, query string, vars map[string]any) (*http.Response, error) {
@@ -92,6 +115,9 @@ func (l *Linear) gql(ctx context.Context, query string, vars map[string]any, out
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		drainClose(resp.Body)
+		if msg := l.unrenewable(); msg != "" {
+			return fmt.Errorf("linear: %s", msg) // nothing to refresh with; retrying would just fail again
+		}
 		if rerr := l.RefreshToken(ctx); rerr != nil {
 			// The refresh itself failed, so reconnecting really is the answer — say which one broke.
 			return fmt.Errorf("linear: authorization expired and could not be renewed: %w", rerr)
