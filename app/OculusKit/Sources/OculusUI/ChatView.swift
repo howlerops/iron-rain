@@ -2853,6 +2853,7 @@ private struct ChatCodeBlockView: View {
     let palette: OculusPalette
     let factor: CGFloat
     @Environment(\.colorScheme) private var colorScheme
+    @State private var available: CGFloat = 0
 
     var body: some View {
         let theme = CodeTheme.current(colorScheme)
@@ -2860,10 +2861,18 @@ private struct ChatCodeBlockView: View {
         ScrollView(.horizontal, showsIndicators: true) {
             Text(attributed)
                 .font(.system(size: 13 * factor, design: .monospaced))
+                // fixedSize, NOT maxWidth .infinity. `.infinity` inside a horizontal ScrollView
+                // resolves to the VIEWPORT width, which caps the content at its own container: a line
+                // longer than the view was clipped and the scroll view had nothing to scroll, so the
+                // rest of that line could not be reached at all. It only looked fine because the
+                // transcript is usually wider than the code — it broke on iPhone, on a narrow window,
+                // and in any sheet. minWidth keeps the background filling the row when code is short.
+                .fixedSize(horizontal: true, vertical: false)
                 .padding(10)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(minWidth: available, alignment: .leading)
                 .textSelection(.enabled)
         }
+        .measuringViewportWidth(into: $available)
         .background(theme.background, in: OculusShape.rounded(8))
         .overlay(OculusShape.rounded(8).strokeBorder(palette.border))
         // A persistent copy control, because `.textSelection` inside a horizontally-scrolling view is
