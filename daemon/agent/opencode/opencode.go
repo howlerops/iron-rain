@@ -692,6 +692,11 @@ type session struct {
 	modelID       string
 	modelProvider string
 
+	// deltaMu guards lastDeltaMsg, the id of the assistant message the text stream is currently
+	// inside — used to put a paragraph break between consecutive messages in one turn.
+	deltaMu      sync.Mutex
+	lastDeltaMsg string
+
 	statusMu   sync.Mutex // guards lastStatus (written by the SSE loop, read by the POST goroutine)
 	lastStatus string     // last session.status emitted — lets the POST-return idle backstop skip when awaiting approval
 
@@ -1127,6 +1132,10 @@ func (s *session) handle(raw []byte) {
 			SessionID string `json:"sessionID"`
 			Field     string `json:"field"`
 			Delta     string `json:"delta"`
+			// The message this delta belongs to. opencode emits SEVERAL assistant messages within one
+			// turn — a short step summary before each phase of work — and the id is the only thing
+			// that distinguishes them in the delta stream.
+			MessageID string `json:"messageID"`
 		}
 		if json.Unmarshal(e.Properties, &pr) != nil || pr.Delta == "" {
 			return
@@ -1143,6 +1152,26 @@ func (s *session) handle(raw []byte) {
 		}
 		switch pr.Field {
 		case "text":
+			// Separate one assistant message from the next.
+			//
+			// The client buffers deltas into a single bubble until the turn goes idle, and opencode
+			// sends no idle between the step messages within a turn. So every step ran into the one
+			// before it with NOTHING between them — the last sentence of one and the first word of
+			// the next were glued into a single word ("…verification now.Reviewing final task"), and
+			// the whole reply collapsed into one run-on paragraph with no headings, no breaks and no
+			// structure for the markdown renderer to work with.
+			//
+			// A blank line is the fix rather than a newline: these steps are separate paragraphs, and
+			// a single newline is a soft break that markdown folds back into one.
+			if pr.MessageID != "" && target == s.id {
+				s.deltaMu.Lock()
+				changed := s.lastDeltaMsg != "" && s.lastDeltaMsg != pr.MessageID
+				s.lastDeltaMsg = pr.MessageID
+				s.deltaMu.Unlock()
+				if changed {
+					s.emit(agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: target, Text: "\n\n"}})
+				}
+			}
 			s.emit(agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: target, Text: pr.Delta}})
 		case "reasoning":
 			if target == s.id { // thinking only surfaced for the parent turn
@@ -1350,6 +1379,11 @@ func (s *session) emit(ev agent.Event) {
 // the very approval the turn is waiting on. Errors surface as an error status event.
 // v0 sends a single text part, sufficient for a default-configured server.
 func (s *session) Prompt(_ context.Context, text string) error {
+	// A new turn starts a fresh message chain. Without clearing this, the first message of the next
+	// turn would differ from the last of the previous one and open with a stray blank line.
+	s.deltaMu.Lock()
+	s.lastDeltaMsg = ""
+	s.deltaMu.Unlock()
 	return s.sendParts([]map[string]any{{"type": "text", "text": text}}, false)
 }
 
