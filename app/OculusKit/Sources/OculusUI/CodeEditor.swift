@@ -121,9 +121,33 @@ struct HoverCard: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(10)
         }
-        .frame(width: 460)
-        .frame(maxHeight: 300)
+        .frame(width: Self.width)
+        .frame(maxHeight: Self.maxHeight)
         .background(palette.card)
+    }
+
+    static let width: CGFloat = 460
+    static let maxHeight: CGFloat = 300
+
+    /// A definite, finite popover size for `text`.
+    ///
+    /// The card is a ScrollView, so it has no intrinsic height to hand NSPopover — which is how the
+    /// hover came to ask for a window AppKit would not build. Estimating from the wrapped line count
+    /// keeps a one-line type signature from getting a 300pt card while still bounding a long doc
+    /// comment, and the clamp guarantees the result is always something NSWindow accepts.
+    static func size(for text: String) -> NSSize {
+        let charsPerLine = 62.0 // 460pt at 12pt monospaced, less the padding
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+            .reduce(0.0) { $0 + max(1, (Double($1.count) / charsPerLine).rounded(.up)) }
+        let height = min(maxHeight, max(44, lines * 15 + 20))
+        return NSSize(width: width, height: height)
+    }
+}
+
+extension NSRect {
+    /// Every component finite — a rect built from NaN or infinity is one AppKit refuses.
+    var isFinite: Bool {
+        origin.x.isFinite && origin.y.isFinite && size.width.isFinite && size.height.isFinite
     }
 }
 
@@ -416,13 +440,30 @@ private struct CodeTextView: NSViewRepresentable {
         func hoverExited() { hoverTask?.cancel(); hideHover() }
 
         private func showHover(_ text: String, at rect: NSRect, in tv: NSTextView, charIndex: Int) {
+            // Hovering a symbol used to CRASH the app: SIGABRT out of
+            // -[NSWindow _initContent:styleMask:backing:defer:contentView:], raised while NSPopover
+            // built its window. Three separate ways to hand AppKit a window it refuses to make, all
+            // closed here — the popover is the only thing standing between an LSP reply and a
+            // process abort, so none of them is worth leaving to chance.
+            //
+            // 1. The SIZE. HoverCard is a ScrollView, and a ScrollView has no intrinsic content
+            //    height, so `sizingOptions = [.preferredContentSize]` could resolve to a
+            //    non-finite height. An infinite content rect is exactly what NSWindow rejects.
+            //    A measured, clamped size is passed instead, so the popover is never asked to be
+            //    a size that cannot exist.
+            // 2. The VIEW. This runs after a 300ms debounce inside a Task. The text view can be
+            //    out of the window by then — closing the file, or switching session, is enough —
+            //    and showing a popover relative to a window-less view is its own exception.
+            // 3. The RECT. It comes from the layout manager, which can hand back a non-finite
+            //    rect for glyphs it could not lay out.
+            guard tv.window != nil, rect.isFinite else { return }
             hideHover()
             let pop = NSPopover()
             pop.behavior = .transient
             pop.animates = false
             let host = NSHostingController(rootView: HoverCard(text: text, theme: parent.theme, palette: parent.palette))
-            host.sizingOptions = [.preferredContentSize]
             pop.contentViewController = host
+            pop.contentSize = HoverCard.size(for: text)
             shownRange = NSRange(location: charIndex, length: 1)
             popover = pop
             pop.show(relativeTo: rect, of: tv, preferredEdge: .maxY)
