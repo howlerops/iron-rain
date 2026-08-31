@@ -138,6 +138,8 @@ rl.on("line", (line) => {
   }
   if (m.t === "prompt") {
     busy = true;
+    lastAssistantMsgId = "";
+    sawAssistantText = false;
     if (Array.isArray(m.images) && m.images.length) {
       // Multimodal turn: a content array of a text block + Anthropic image blocks.
       const content = [];
@@ -281,6 +283,11 @@ process.on("unhandledRejection", (reason) => {
 });
 
 const seenSubAgents = new Set();
+
+// Message-boundary tracking: which assistant message the text stream is inside, and whether this
+// turn has streamed any text yet. Reset per turn so a turn's first message never opens with a break.
+let lastAssistantMsgId = "";
+let sawAssistantText = false;
 function noteSubAgent(parentToolUseID) {
   if (!parentToolUseID || seenSubAgents.has(parentToolUseID)) return;
   seenSubAgents.add(parentToolUseID);
@@ -368,7 +375,10 @@ try {
       case "stream_event": {
         const ev = message.event;
         if (ev?.type === "content_block_delta") {
-          if (ev.delta?.type === "text_delta") send({ t: "text", text: ev.delta.text });
+          if (ev.delta?.type === "text_delta") {
+            if (ev.delta.text) sawAssistantText = true;
+            send({ t: "text", text: ev.delta.text });
+          }
           else if (ev.delta?.type === "thinking_delta") send({ t: "thinking", text: ev.delta.thinking });
         } else if (ev?.type === "content_block_start" && ev.content_block?.type === "tool_use") {
           send({ t: "tool", tool: ev.content_block.name, detail: "" });
@@ -376,6 +386,22 @@ try {
         break;
       }
       case "assistant": {
+        // Separate one assistant message from the next WITHIN a turn.
+        //
+        // The daemon's client buffers text deltas into a single bubble until the turn ends, so two
+        // assistant messages in one turn are concatenated with nothing between them and the last
+        // word of one fuses to the first of the next. Rare here — 4 of ~15,000 turns in the
+        // transcripts on this machine — but the same defect opencode and pi have, and the fix is
+        // cheap. A blank line, because these are separate paragraphs and markdown folds a single
+        // newline back into one.
+        {
+          const id = message.message?.id || message.uuid || "";
+          if (id && lastAssistantMsgId && id !== lastAssistantMsgId && sawAssistantText) {
+            send({ t: "text", text: "\n\n" });
+            sawAssistantText = false;
+          }
+          if (id) lastAssistantMsgId = id;
+        }
         // parent_tool_use_id is set on everything a SUB-AGENT produces (the Task tool's own
         // conversation). opencode already reported sub-agents and claude-code did not, so the
         // richer provider looked like it had none — work would happen with nothing on screen to say

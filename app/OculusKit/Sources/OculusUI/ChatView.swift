@@ -2760,8 +2760,11 @@ struct ChatMarkdownView: View {
 
     private func heading(_ text: String, level: Int) -> AttributedString {
         var a = inline(text)
-        a.font = scaled(headingSize(level)).bold()
+        a.font = scaled(headingSize(level)).weight(headingWeight(level))
         a.kern = level <= 2 ? -0.3 : -0.15
+        // Deep headings sit slightly back from the prose they introduce, so the eye reads them as a
+        // label on the section rather than as another loud line in it.
+        if level >= 4 { a.foregroundColor = palette.mutedForeground }
         return a
     }
 
@@ -2808,7 +2811,11 @@ struct ChatMarkdownView: View {
 
     private func gapHeight(before current: MarkdownBlock, after previous: MarkdownBlock) -> CGFloat {
         switch (previous, current) {
-        case (_, .heading): return 16 * factor
+        // Space BEFORE a heading scales with its rank: a top-level heading opens a section and
+        // wants air, a deep one is a label on the paragraph beneath it and wants to sit close to it.
+        // A flat 16 everywhere made a run of deep headings look like evenly spaced shouting.
+        case (_, .heading(let level, _)): return (level <= 2 ? 20 : 13) * factor
+        // Tight AFTER, always: a heading belongs to what follows it.
         case (.heading, _): return 3 * factor
         // A mixed list must not gain a seam where it switches marker style — these fell to the 9pt
         // default and visibly broke one list into two.
@@ -2824,9 +2831,20 @@ struct ChatMarkdownView: View {
     /// A body-sized font in the user's chosen design + scale.
     private var bodyFont: Font { scaled(chosen.responseSize(15)) }
     private func scaled(_ base: CGFloat) -> Font { .system(size: base * factor, design: design) }
+    /// Heading sizes, against a body of 15.
+    ///
+    /// h4+ used to be 15 — EXACTLY body size — and h3 only 1.5pt above it, with every level bold. A
+    /// level-3 heading was therefore "bold body text", which is why a reply full of them reads as
+    /// undifferentiated shouting rather than as structure: the only signal was weight, and weight
+    /// alone does not make a hierarchy.
     private func headingSize(_ l: Int) -> CGFloat {
-        switch l { case 1: return 22; case 2: return 19; case 3: return 16.5; default: return 15 }
+        switch l { case 1: return 24; case 2: return 20; case 3: return 17; default: return 15 }
     }
+
+    /// Weight falls off with depth so deep headings label their section instead of competing with
+    /// the top of the document. A level-4 heading at body size and full bold is a shout; at body
+    /// size and semibold it is a label.
+    private func headingWeight(_ l: Int) -> Font.Weight { l <= 2 ? .bold : .semibold }
     private func copyAll() { chatCopyToPasteboard(text) }
 }
 

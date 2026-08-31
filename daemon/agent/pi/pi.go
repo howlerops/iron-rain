@@ -202,6 +202,10 @@ type session struct {
 	// it also marks the session as self-replaying (see SelfReplaying).
 	resumedPath string
 
+	// sawText is whether this turn has already streamed assistant text, so a following message_start
+	// knows whether a paragraph break is needed. Only ever touched from the read loop.
+	sawText bool
+
 	// busy is whether a turn is in flight: set when we hand pi a prompt, cleared on its agent_end.
 	// It is the answer to the hub reconciler's Probe, and it is tracked here rather than inferred
 	// from event timing because a turn wedged inside a tool produces no events at all — the exact
@@ -359,6 +363,8 @@ func (s *session) send(v any) error {
 // Prompt sends a user turn into the running pi session.
 func (s *session) Prompt(_ context.Context, text string) error {
 	s.busy.Store(true)
+	// A new turn starts a fresh message chain, so its first message must not open with a break.
+	s.sawText = false
 	return s.send(map[string]any{"type": "prompt", "message": text})
 }
 
@@ -627,11 +633,24 @@ func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool) {
 					}})
 				}
 			}
+		case "message_start":
+			// A NEW assistant message inside the same turn.
+			//
+			// pi sends several of these per turn — measured at 18 of 204 turns across real sessions
+			// here, up to eight in one turn. The client buffers deltas into one bubble until the turn
+			// ends, so without a separator the last sentence of one message and the first word of the
+			// next are glued into a single word and the whole reply collapses into one run-on
+			// paragraph. Same defect opencode had; different frame to hang the boundary off.
+			if messageRole(e.Message) == "assistant" && s.sawText {
+				s.emit(agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: s.id, Text: "\n\n"}})
+				s.sawText = false
+			}
 		case "message_update":
 			switch e.Asst.Type {
 			case "text_delta":
 				if e.Asst.Delta != "" {
 					idle = false
+					s.sawText = true
 					s.emit(agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: s.id, Text: e.Asst.Delta}})
 				}
 			case "thinking_delta":
@@ -761,4 +780,21 @@ func failedTurn(line []byte) (string, bool) {
 		return "the agent's turn ended in an error it did not describe", true
 	}
 	return "", false
+}
+
+// messageRole reads just the role out of a message_start/message_end frame's `message` object.
+//
+// Decoded on demand rather than as a struct field because pi reuses the `message` key for objects of
+// different shapes across frame types — the reason piEvent.Message is a RawMessage at all.
+func messageRole(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var m struct {
+		Role string `json:"role"`
+	}
+	if json.Unmarshal(raw, &m) != nil {
+		return ""
+	}
+	return m.Role
 }
