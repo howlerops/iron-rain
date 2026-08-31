@@ -14,10 +14,12 @@ import (
 )
 
 // Linear OAuth endpoints (docs.linear.app/oauth-2-0-authentication).
-const (
-	linearAuthorizeURL = "https://linear.app/oauth/authorize"
-	linearTokenURL     = "https://api.linear.app/oauth/token"
-)
+//
+// linearTokenURL is a var, not a const, for the same reason jiraTokenURL is: the refresh path is
+// only worth having if it is tested against a server that can actually issue a rotated token.
+const linearAuthorizeURL = "https://linear.app/oauth/authorize"
+
+var linearTokenURL = "https://api.linear.app/oauth/token"
 
 // Atlassian (Jira) OAuth 2.0 3LO endpoints (developer.atlassian.com/cloud/jira/platform/oauth-2-3lo-apps).
 const (

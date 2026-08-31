@@ -61,17 +61,44 @@ func (l *Linear) authToken() string {
 	return l.token
 }
 
-func (l *Linear) gql(ctx context.Context, query string, vars map[string]any, out any) error {
+// gqlOnce performs one GraphQL round trip and hands back the live response for the caller to judge.
+// The body is NOT closed here — gql either drains it to retry or defers the close.
+func (l *Linear) gqlOnce(ctx context.Context, query string, vars map[string]any) (*http.Response, error) {
 	body, _ := json.Marshal(map[string]any{"query": query, "variables": vars})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, l.endpoint, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", l.authToken())
-	resp, err := l.http.Do(req)
+	return l.http.Do(req)
+}
+
+// gql runs a GraphQL request, refreshing the OAuth token once if the call comes back unauthorized.
+//
+// Refresh used to happen ONLY on the Manager's 40-minute timer, so any call landing after the token
+// lapsed and before the next tick failed outright — the board went empty and the app told the user
+// to reconnect Linear, for a token the daemon was perfectly able to renew by itself. That is a
+// self-healing situation being reported as a login problem.
+//
+// One retry, and only for 401/403: anything else is a real error and must surface. RefreshToken is
+// single-flighted internally, so a board load firing many calls at once produces one exchange, not
+// one per request — which matters because Linear treats reuse of a rotated refresh token as theft
+// and revokes the whole family.
+func (l *Linear) gql(ctx context.Context, query string, vars map[string]any, out any) error {
+	resp, err := l.gqlOnce(ctx, query, vars)
 	if err != nil {
 		return err
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		drainClose(resp.Body)
+		if rerr := l.RefreshToken(ctx); rerr != nil {
+			// The refresh itself failed, so reconnecting really is the answer — say which one broke.
+			return fmt.Errorf("linear: authorization expired and could not be renewed: %w", rerr)
+		}
+		if resp, err = l.gqlOnce(ctx, query, vars); err != nil {
+			return err
+		}
 	}
 	defer drainClose(resp.Body)
 	// Check the HTTP status before decoding: a non-2xx gateway/rate-limit
