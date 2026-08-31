@@ -224,6 +224,11 @@ type managedSession struct {
 	replayTotal   int
 	asstAccum     strings.Builder
 	asstPersisted bool
+	// Per-sub-agent text for this turn, keyed by the child session id. Sub-agent output is streamed
+	// as deltas and no provider ever finalizes it into a message, so without this a lane that read
+	// correctly while it ran came back EMPTY after a restart — the lane announcement is durable, its
+	// contents were not. run() goroutine only, like asstAccum.
+	subAccum map[string]*strings.Builder
 
 	// ringFromStart reports whether m.transcript holds the session's history from its FIRST event.
 	// False for any session this process ATTACHED to rather than created — a restored session's ring
@@ -981,8 +986,21 @@ func (m *managedSession) persistDurable(ev agent.Event, raw []byte) {
 		}
 		// error marker: NULL id (each distinct)
 	case protocol.TypeOutputDelta:
-		if d, ok := ev.Payload.(protocol.OutputDelta); ok && d.SessionID == sid {
-			m.asstAccum.WriteString(d.Text) // accumulate the VISIBLE (post-fence) streamed text
+		if d, ok := ev.Payload.(protocol.OutputDelta); ok {
+			if d.SessionID == sid {
+				m.asstAccum.WriteString(d.Text) // accumulate the VISIBLE (post-fence) streamed text
+			} else if d.SessionID != "" {
+				// A sub-agent's stream. Accumulated per lane so the turn can finalize each one.
+				if m.subAccum == nil {
+					m.subAccum = map[string]*strings.Builder{}
+				}
+				b := m.subAccum[d.SessionID]
+				if b == nil {
+					b = &strings.Builder{}
+					m.subAccum[d.SessionID] = b
+				}
+				b.WriteString(d.Text)
+			}
 		}
 		return
 	default:
@@ -1029,6 +1047,23 @@ func (m *managedSession) finalizeTurnTranscript() {
 	}
 	m.asstAccum.Reset()
 	m.asstPersisted = false
+
+	// Same treatment for every sub-agent that spoke this turn: one finalized message per lane, so
+	// the lane still has its report after a restart. Ringed rather than delivered, for the reason
+	// recordOnly exists — live watchers already received these as deltas.
+	for child, b := range m.subAccum {
+		text := b.String()
+		if db == nil || strings.TrimSpace(text) == "" {
+			continue
+		}
+		ev := agent.Event{Type: protocol.TypeSessionMessage,
+			Payload: protocol.SessionMessage{SessionID: child, Role: "assistant", Text: text}}
+		if raw, err := ev.Encode(); err == nil {
+			m.appendDurable(m.sess.ID(), "sub-msg:"+child, raw)
+			m.recordOnly(raw)
+		}
+	}
+	m.subAccum = nil
 }
 
 // recordOnly appends an event to the replayable ring WITHOUT delivering it to current subscribers.

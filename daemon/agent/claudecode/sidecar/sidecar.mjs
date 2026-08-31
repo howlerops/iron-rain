@@ -374,14 +374,27 @@ try {
         break;
       case "stream_event": {
         const ev = message.event;
+        // WHOSE text this is. Every streamed delta carries parent_tool_use_id, and it was being
+        // dropped here — so a sub-agent's entire report was streamed into the PARENT transcript
+        // while its own lane, announced from the assistant branch below, stayed empty and expanded
+        // to "no output". The lane existed, said "done", and had nothing in it, which is worse than
+        // not showing a lane at all: it looks like the sub-agent did nothing.
+        //
+        // noteSubAgent is called here too, not only for whole assistant messages. Streaming starts
+        // before the message that contains it completes, so announcing on the first delta is what
+        // makes the lane appear while the sub-agent is typing rather than after it has finished.
+        const sub = message.parent_tool_use_id ? String(message.parent_tool_use_id) : "";
+        if (sub) noteSubAgent(message.parent_tool_use_id);
         if (ev?.type === "content_block_delta") {
           if (ev.delta?.type === "text_delta") {
-            if (ev.delta.text) sawAssistantText = true;
-            send({ t: "text", text: ev.delta.text });
+            // Only the PARENT's text opens/closes a message boundary; a sub-agent's stream is its
+            // own lane and must not insert breaks into the parent's paragraph flow.
+            if (ev.delta.text && !sub) sawAssistantText = true;
+            send({ t: "text", text: ev.delta.text, sub });
           }
-          else if (ev.delta?.type === "thinking_delta") send({ t: "thinking", text: ev.delta.thinking });
+          else if (ev.delta?.type === "thinking_delta") send({ t: "thinking", text: ev.delta.thinking, sub });
         } else if (ev?.type === "content_block_start" && ev.content_block?.type === "tool_use") {
-          send({ t: "tool", tool: ev.content_block.name, detail: "" });
+          send({ t: "tool", tool: ev.content_block.name, detail: "", sub });
         }
         break;
       }
@@ -408,6 +421,7 @@ try {
         // who was doing it. Announce each parent once; the adapter turns this into the same
         // session.subagent event opencode emits.
         noteSubAgent(message.parent_tool_use_id);
+        const msgSub = message.parent_tool_use_id ? String(message.parent_tool_use_id) : "";
         const blocks = message.message?.content;
         if (Array.isArray(blocks)) {
           let latestTodoBlock = null;
@@ -418,8 +432,11 @@ try {
             // Rich tool card: emit each tool_use with a human command summary (running). The
             // matching output arrives later as a tool_result in a "user" message (see below).
             if (block?.type === "tool_use" && block.id) {
+              // Tagged with its sub-agent for the same reason the text is: a card for work a
+              // sub-agent did belongs in that sub-agent's lane, not loose in the parent transcript
+              // where it reads as something the main agent ran.
               send({ t: "toolcall", id: block.id, tool: String(block.name || "tool"),
-                     detail: toolSummary(block.name, block.input), status: "running" });
+                     detail: toolSummary(block.name, block.input), status: "running", sub: msgSub });
             }
           }
           if (latestTodoBlock) {

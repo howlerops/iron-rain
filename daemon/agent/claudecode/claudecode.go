@@ -813,6 +813,10 @@ type outMsg struct {
 	CWD      string   `json:"cwd,omitempty"`
 	Commands []string `json:"commands,omitempty"`
 	MCP      int      `json:"mcp,omitempty"`
+	// Sub is the parent_tool_use_id of the sub-agent that produced this frame, empty for the
+	// session's own output. Text, thinking and tool cards are all routed by it — see the "text"
+	// case, where dropping it used to send a sub-agent's whole report into the parent transcript.
+	Sub string `json:"sub,omitempty"`
 	// Fork reply (see thread.go).
 	ForkedSessionID string `json:"session_id,omitempty"`
 	Error           string `json:"error,omitempty"`
@@ -821,6 +825,18 @@ type outMsg struct {
 type sidecarTodo struct {
 	Content string `json:"content"`
 	Status  string `json:"status"`
+}
+
+// target is the session id a frame belongs to: the sub-agent that produced it, or this session.
+//
+// Sub-agent ids are the Task tool call's own id, which is exactly what the session.subagent event
+// announced the lane under — so a delta addressed this way lands in the lane the client already
+// opened, with no extra registration step.
+func (s *session) target(sub string) string {
+	if sub != "" {
+		return sub
+	}
+	return s.id
 }
 
 func (s *session) send(m inMsg) error {
@@ -1030,12 +1046,16 @@ func (s *session) readLoop(stdout io.ReadCloser) {
 		case "text":
 			if m.Text != "" {
 				idle = false
-				s.emit(agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: s.id, Text: m.Text}})
+				// Addressed to the sub-agent that wrote it, exactly as opencode addresses its own
+				// child deltas. Without this every sub-agent's output was delivered under the
+				// parent's id: the report landed in the main transcript, and the lane the UI had
+				// already opened for that sub-agent stayed empty and expanded to "no output".
+				s.emit(agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: s.target(m.Sub), Text: m.Text}})
 			}
 		case "thinking":
 			if m.Text != "" {
 				idle = false
-				s.emit(agent.Event{Type: protocol.TypeThinking, Payload: protocol.Thinking{SessionID: s.id, Text: m.Text}})
+				s.emit(agent.Event{Type: protocol.TypeThinking, Payload: protocol.Thinking{SessionID: s.target(m.Sub), Text: m.Text}})
 			}
 		case "tool":
 			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusRunning, Detail: "running " + m.Tool}})
@@ -1060,7 +1080,7 @@ func (s *session) readLoop(stdout io.ReadCloser) {
 			}
 			adds, dels := agent.DiffStatFrom(m.Output, string(m.Input))
 			s.emit(agent.Event{Type: protocol.TypeSessionTool, Payload: protocol.SessionTool{
-				SessionID: s.id, ID: m.ID, Name: name, Title: title, Output: m.Output, Status: m.Status,
+				SessionID: s.target(m.Sub), ID: m.ID, Name: name, Title: title, Output: m.Output, Status: m.Status,
 				Additions: adds, Deletions: dels,
 			}})
 		case "approval":
