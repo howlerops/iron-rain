@@ -990,3 +990,31 @@ pre.cmd code {
 
   .footer-top { flex-direction: column; align-items: flex-start }
 }
+
+/* ── Product media ──────────────────────────────────────────
+   Real captures replacing the dashed placeholders. Muted + autoplay + loop
+   so a card reads like a live screenshot rather than something to click; the
+   poster is the clip's own first frame, so nothing pops in when it loads. */
+.media-video {
+  display: block;
+  width: 100%;
+  /* Captures come in whatever shape the UI they show is — the session sheet is tall
+     and portrait, the fleet board is wide. Letterboxing inside a fixed slot keeps every
+     card the same height instead of one portrait clip making its card three times the
+     others; `contain` means nothing is ever cropped to achieve it. */
+  height: 340px;
+  object-fit: contain;
+  object-position: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+}
+.media-video--tall { height: 420px }
+@media (max-width: 720px) {
+  .media-video, .media-video--tall { height: 260px }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* The clips loop forever, which is exactly what this setting exists to stop.
+     The poster frame still shows what the feature looks like. */
+  .media-video { animation: none }
+}

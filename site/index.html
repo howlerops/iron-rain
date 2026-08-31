@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Iron Rain — the native Apple Agent Development Environment</title>
 <link rel="icon" href="./assets/favicon.png" />
-<meta name="description" content="Iron Rain is a native macOS, iPadOS + iOS Agent Development Environment. Run real coding agents (opencode, claude-code, pi, or any CLI) on your own Mac, then launch, watch, steer, and approve them from anywhere. One MCP registry every agent shares, permissions scoped to the command, and end-to-end encryption. Your hardware, your keys." />
+<meta name="description" content="Iron Rain is a native macOS, iPadOS + iOS Agent Development Environment. Run real coding agents (opencode, claude-code, pi, prime-agent, oh-my-pi, or any CLI) on your own Mac, then launch, watch, steer, and approve them from anywhere. One MCP registry every agent shares, permissions scoped to the command, and end-to-end encryption. Your hardware, your keys." />
 <meta property="og:title" content="Iron Rain — the native Apple Agent Development Environment" />
-<meta property="og:description" content="Run opencode, claude-code, pi, and CLI agents on your Mac. Drive and approve them from your iPhone or iPad, from anywhere. One MCP registry every agent shares, scoped permissions, generative-UI chat, full Jira/Linear editing, a built-in IDE, and fan-out with a real comparison — end-to-end encrypted." />
+<meta property="og:description" content="Run opencode, claude-code, pi, prime-agent, oh-my-pi and CLI agents on your Mac. Drive and approve them from your iPhone or iPad, from anywhere. One MCP registry every agent shares, scoped permissions, generative-UI chat, full Jira/Linear editing, a built-in IDE, and fan-out with a real comparison — end-to-end encrypted." />
 <meta property="og:image" content="./assets/howlerops-icon-dark.png" />
 <meta name="twitter:card" content="summary_large_image" />
 <meta name="twitter:image" content="./assets/howlerops-icon-dark.png" />
@@ -65,7 +65,7 @@
     <em>Drive them from anywhere.</em>
   </h1>
   <p class="hero-lede">
-    Iron Rain is a native Apple ADE for opencode, claude-code, pi, and any CLI agent.
+    Iron Rain is a native Apple ADE for opencode, claude-code, pi, prime-agent, oh-my-pi, and any CLI agent.
     Launch a session on your Mac, then watch it stream, steer it mid-run, and approve
     its tool calls from your iPhone lock screen — over an end-to-end encrypted link.
     Configure an MCP server once and every agent gets it. Your hardware, your
@@ -79,7 +79,7 @@
     </a>
   </div>
   <ul class="hero-chips" aria-label="Key capabilities">
-    <li>opencode · claude-code · pi · CLI</li>
+    <li>opencode · claude-code · pi · prime-agent · oh-my-pi · CLI</li>
     <li>Lock-screen approvals</li>
     <li>One MCP registry for every agent</li>
     <li>Scoped permissions &amp; read-only modes</li>
@@ -116,7 +116,7 @@
         </div>
         <div>
           <h3>Any agent, one interface</h3>
-          <p>opencode over HTTP/SSE, claude-code via the Agent SDK, pi over JSONL, plus any custom CLI — codex, gemini, cursor-agent, aider, goose, crush and more. Detected on install, and verified to be the tool it claims before anything is routed to it.</p>
+          <p>opencode over HTTP/SSE, claude-code via the Agent SDK, pi, prime-agent and oh-my-pi over JSONL-RPC, plus any custom CLI — codex, gemini, cursor-agent, aider, goose, crush and more. Detected on install, and verified to be the tool it claims before anything is routed to it.</p>
         </div>
       </div>
       <div class="problem-card">
@@ -157,16 +157,16 @@
           <span class="cap-num" aria-hidden="true">01</span>
           <h3>Multi-provider sessions</h3>
           <p>
-            Start a session with opencode, claude-code, pi, or a custom CLI agent and
+            Start a session with opencode, claude-code, pi, prime-agent, oh-my-pi, or a custom CLI agent and
             drive them all through the same native interface. Pick or switch the model
             per session, hot-swap between multiple accounts, and let Iron Rain probe
             each provider's remaining quota before you spend a token.
           </p>
         </div>
-        <figure class="cap-media" aria-label="Demo placeholder: multi-provider sessions">
-          <div class="media-placeholder">
-            <span class="media-label">&#9654; demo: provider &amp; model picker</span>
-          </div>
+        <figure class="cap-media" aria-label="Multi-provider sessions">
+          <video class="media-video" src="./assets/demo-provider-picker.mp4" poster="./assets/demo-provider-picker.jpg"
+             autoplay loop muted playsinline preload="metadata"
+             aria-label="Choosing the agent, model, worktree, mode and YOLO for a new session"></video>
           <figcaption>Per-session provider, model, and account selection</figcaption>
         </figure>
       </article>
@@ -184,10 +184,10 @@
             guardrails stop a runaway job before it overspends.
           </p>
         </div>
-        <figure class="cap-media" aria-label="Demo placeholder: lock-screen approval">
-          <div class="media-placeholder">
-            <span class="media-label">&#9654; demo: tap-to-approve a tool call</span>
-          </div>
+        <figure class="cap-media" aria-label="lock-screen approval">
+          <video class="media-video" src="./assets/demo-approval.mp4" poster="./assets/demo-approval.jpg"
+             autoplay loop muted playsinline preload="metadata"
+             aria-label="A shell command held for approval, with Deny, Allow, and scoped Always-allow"></video>
           <figcaption>Push-to-open approval with per-call Allow / Deny</figcaption>
         </figure>
       </article>
@@ -203,13 +203,14 @@
             with rich inline tool cards — the command plus expandable output — across every
             harness. With generative UI (<code>iron:ui</code>), agents render native tables,
             checklists, callouts, diffs, and tappable choices right in the thread, even from
-            a plain CLI.
+            a plain CLI. Long answers fold to a readable preview with the rest one tap away,
+            and a big table or plan collapses to a card instead of a wall of scrolling.
           </p>
         </div>
-        <figure class="cap-media" aria-label="Demo placeholder: generative-UI chat">
-          <div class="media-placeholder">
-            <span class="media-label">&#9654; demo: rich tool cards + native UI blocks</span>
-          </div>
+        <figure class="cap-media" aria-label="Generative-UI chat">
+          <video class="media-video" src="./assets/demo-ui-blocks.mp4" poster="./assets/demo-ui-blocks.jpg"
+             autoplay loop muted playsinline preload="metadata"
+             aria-label="A tool card, a native severity table, and a code review rendered inline"></video>
           <figcaption>Streaming markdown, tool cards, and inline generative UI</figcaption>
         </figure>
       </article>
@@ -269,10 +270,10 @@
             hands-free.
           </p>
         </div>
-        <figure class="cap-media" aria-label="Demo placeholder: parallel fan-out">
-          <div class="media-placeholder">
-            <span class="media-label">&#9654; demo: fan out, compare, keep the winner</span>
-          </div>
+        <figure class="cap-media" aria-label="parallel fan-out">
+          <video class="media-video" src="./assets/demo-fanout.mp4" poster="./assets/demo-fanout.jpg"
+             autoplay loop muted playsinline preload="metadata"
+             aria-label="Configuring a fan-out: same task, three agents, each on its own branch"></video>
           <figcaption>Every attempt side by side — summary, diffstat, and one tap to keep</figcaption>
         </figure>
       </article>
@@ -309,10 +310,10 @@
             your input, and a Cmd-K palette jumps you anywhere in a keystroke.
           </p>
         </div>
-        <figure class="cap-media" aria-label="Demo placeholder: command deck">
-          <div class="media-placeholder">
-            <span class="media-label">&#9654; demo: fleet dashboard + needs-you inbox</span>
-          </div>
+        <figure class="cap-media" aria-label="command deck">
+          <video class="media-video" src="./assets/demo-fleet.mp4" poster="./assets/demo-fleet.jpg"
+             autoplay loop muted playsinline preload="metadata"
+             aria-label="Every session on one board, with a pending approval surfaced on its card"></video>
           <figcaption>Sessions · Loops · Fleet · Issues · Activity, plus Cmd-K</figcaption>
         </figure>
       </article>
@@ -331,10 +332,10 @@
             keep every key on your Mac.
           </p>
         </div>
-        <figure class="cap-media" aria-label="Demo placeholder: MCP registry">
-          <div class="media-placeholder">
-            <span class="media-label">&#9654; demo: import, test, and share MCP servers</span>
-          </div>
+        <figure class="cap-media" aria-label="MCP registry">
+          <video class="media-video" src="./assets/demo-mcp.mp4" poster="./assets/demo-mcp.jpg"
+             autoplay loop muted playsinline preload="metadata"
+             aria-label="Importing MCP servers already configured in your agents"></video>
           <figcaption>Import from your agents, supervise once, inject everywhere</figcaption>
         </figure>
       </article>
@@ -352,10 +353,10 @@
             including the ones that have no permission model of their own, and to MCP tools too.
           </p>
         </div>
-        <figure class="cap-media" aria-label="Demo placeholder: approval rules">
-          <div class="media-placeholder">
-            <span class="media-label">&#9654; demo: scoped &ldquo;always allow&rdquo; + Ask mode</span>
-          </div>
+        <figure class="cap-media" aria-label="approval rules">
+          <video class="media-video" src="./assets/demo-approvals.mp4" poster="./assets/demo-approvals.jpg"
+             autoplay loop muted playsinline preload="metadata"
+             aria-label="Default mode for new sessions, plus the list of standing allow rules"></video>
           <figcaption>Scoped rules, read-only modes, one place to take them back</figcaption>
         </figure>
       </article>
@@ -520,7 +521,7 @@
             <td><span class="cmp-no">—</span></td>
           </tr>
           <tr>
-            <td>Multi-provider — opencode, claude-code, pi, CLI</td>
+            <td>Multi-provider — opencode, claude-code, pi, prime-agent, oh-my-pi, CLI</td>
             <td class="col-ir"><span class="cmp-yes">&#10003;</span></td>
             <td><span class="cmp-dim">single</span></td>
             <td><span class="cmp-dim">varies</span></td>
@@ -590,7 +591,7 @@
     </div>
     <p class="compare-note">
       Comparisons above reflect general categories of tooling, not specific companies.
-      Iron Rain works with opencode, claude-code, pi, and custom CLI agents.
+      Iron Rain works with opencode, claude-code, pi, prime-agent, oh-my-pi, and custom CLI agents.
     </p>
   </div>
 </section>
@@ -661,7 +662,7 @@
         <div class="step-body">
           <h3>Install on your Mac</h3>
           <p>One command installs the Iron Rain Mac app and daemon, then launches the app.
-          It auto-detects opencode, claude-code, and pi, sets up the integration on first run,
+          It auto-detects opencode, claude-code, pi, prime-agent and oh-my-pi, sets up the integration on first run,
           and shows a pairing QR code to scan from your phone.</p>
           <pre class="cmd"><code>curl -fsSL https://howlerops.github.io/iron-rain/install.sh | sh</code></pre>
           <p class="step-note">

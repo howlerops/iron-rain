@@ -71,8 +71,8 @@ Iron Rain runs real coding agents on your own Mac and lets you drive them from y
 It's a native Apple app, not a web wrapper. The agents run on your hardware, using your own subscriptions and keys. Traffic between your devices is end-to-end encrypted (X25519 / ChaCha20-Poly1305); the relay only ever forwards ciphertext, so it can't read your code or your prompts. No analytics or tracking by default.
 
 WORKS WITH THE AGENTS YOU ALREADY USE
-- opencode, Claude Code, and pi out of the box, plus any custom CLI agent (codex, gemini, aider, and friends).
-- Pick or switch the model per session. Providers are auto-detected.
+- opencode, Claude Code, pi, prime-agent, and oh-my-pi out of the box, plus any custom CLI agent (codex, gemini, aider, and friends) and any AG-UI endpoint.
+- Pick or switch the model per session. Providers are auto-detected and verified to be the tool they claim before anything is routed to them.
 
 APPROVE FROM ANYWHERE
 - A tool call that needs sign-off pushes to your iPhone. Tap the notification, read the command, approve or deny.
@@ -82,6 +82,8 @@ A REAL CHAT SURFACE
 - Native composer with slash-command completion, per-session drafts, and no smart-quotes mangling your code.
 - Streaming markdown and thinking, rich inline tool cards with expandable output, and collapsible sub-agents that stream their own work.
 - Generative UI: agents render native tables, checklists, callouts, diffs, and tappable choices inline — even on a plain CLI agent.
+- Long answers fold to a readable preview with the whole thing one tap away in a sheet, and big tables or plans collapse to a card instead of a wall of scrolling.
+- One session mode everywhere — Normal, Read-only, Plan, or YOLO — set per session or as the default for every new one, enforced by the daemon rather than the agent.
 
 TICKETS AND CODE, NOT JUST CHAT
 - Two-way Jira and Linear editing: assignee, labels, sprint or cycle, estimate, due date, comments. A real-status Kanban board with drag-drop transitions, plus issue-to-PR loops.
@@ -90,6 +92,7 @@ TICKETS AND CODE, NOT JUST CHAT
 
 ORCHESTRATION FOR REAL WORK
 - Fan out N agents on the same prompt in isolated worktrees, then compare and merge the winner.
+- Go back to any earlier point in a conversation and branch from it, on every provider that can actually do it — and the app only offers what the provider really supports.
 - Delegate scoped sub-agents, and let an autonomous heartbeat nudge a session to completion inside a cost budget.
 - Checkpoint a worktree to snapshot or roll back, and set up Loops for recurring ticket workflows.
 
@@ -141,15 +144,15 @@ Iron Rain <VERSION>
 Full notes: github.com/howlerops/iron-rain/releases
 ```
 
-Worked example (for reference — replace before shipping):
+Shipped for 0.2.192 (the text uploaded with TestFlight build 119):
 
 ```
-Iron Rain 0.2.93
+Iron Rain 0.2.192
 
-- Sub-agents now stream their own work inline and collapse when they're done, so a big delegation doesn't bury the main thread.
-- Worktrees share node_modules instead of reinstalling, so fanning out N agents is fast and doesn't fill your disk.
-- The no-response watchdog now self-heals: if an agent's stream drops mid-turn, the session recovers instead of hanging.
-- Kanban board gained drag-drop transitions and inline ticket creation for Jira and Linear.
+- Long replies now fold to a readable preview, with the full response one tap away in a sheet — no more scrolling past a thousand words to reach the composer.
+- Tables use the full width of the bubble instead of huddling against the left edge, and large ones collapse to a card you open when you want them.
+- Fixed: a reply that contained a generated table, plan, or tool card could render its text twice.
+- Fixed: a long line inside a code block was clipped with no way to scroll to the rest of it — most visible on iPhone and in narrow windows.
 
 Full notes: github.com/howlerops/iron-rain/releases
 ```
