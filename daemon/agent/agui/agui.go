@@ -212,9 +212,16 @@ func (s *session) Prompt(ctx context.Context, text string) error {
 // a matching `resume` entry. The follow-up run is kicked off here so the user experiences it as an
 // in-place answer.
 func (s *session) Respond(ctx context.Context, approvalID, decision string) error {
-	status := "resolved"
-	if decision != protocol.DecisionAllow {
-		status = "cancelled"
+	// "Always allow" IS an allow. Every other adapter says so explicitly
+	// (`decision == DecisionAllow || decision == DecisionAlways`); this one tested for DecisionAllow
+	// alone and cancelled everything else, so pressing "Always allow" DENIED the tool. The hub records
+	// a persistent always-allow rule for that decision (hub.go, autoAllowApproval), so from then on
+	// every matching tool was auto-answered "always" — and auto-cancelled here. One tap converted a
+	// permanent allow into a permanent silent denial.
+	allowed := decision == protocol.DecisionAllow || decision == protocol.DecisionAlways
+	status := "cancelled"
+	if allowed {
+		status = "resolved"
 	}
 	s.mu.Lock()
 	s.pendingResume = append(s.pendingResume, resumeEntry{
@@ -223,7 +230,7 @@ func (s *session) Respond(ctx context.Context, approvalID, decision string) erro
 		// The payload shape is the interrupt's own responseSchema, which for the confirmation case
 		// AG-UI documents is {approved: bool}. Sending it for every reason is harmless — a backend
 		// that declared a different schema reads the fields it asked for.
-		Payload: map[string]any{"approved": decision == protocol.DecisionAllow},
+		Payload: map[string]any{"approved": allowed},
 	})
 	busy := s.running
 	s.mu.Unlock()

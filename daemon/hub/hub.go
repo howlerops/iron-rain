@@ -948,6 +948,28 @@ func (h *Hub) EnableLoops(path string) {
 	eng.StartScheduler(context.Background(), 60*time.Second)
 }
 
+// retireLoopRun tells the loop engine that a session it started has reached a terminal state.
+//
+// Nothing did this. loops.SetRunStatus — the only writer that retires a run — had exactly two callers
+// in the entire tree, both in its own package's tests, so in production every Run row stayed "running"
+// forever. The scheduler gates on activeRunCount() >= MaxConcurrent (default 1), so after a loop's
+// FIRST run it silently skipped every subsequent tick: ticket loops `break`, task loops `continue`,
+// neither logs. The loop still reported Enabled, the deck still drew a live "running" chip, and the
+// rows persist across restarts — so a recurring autonomous workflow fired exactly once, ever, and
+// every surface said it was active. The package's own test passes only because the TEST makes the
+// call production never made.
+//
+// Keyed by SESSION ID rather than the loop name: sessionMeta.loopName is not reliable for ticket
+// loops, and the id is what the run row already stores. SetRunStatus no-ops when no run matches, so
+// calling it for every finished session is free.
+func (h *Hub) retireLoopRun(sessionID, status string) {
+	eng := h.loops()
+	if eng == nil || sessionID == "" {
+		return
+	}
+	eng.SetRunStatus(sessionID, status)
+}
+
 func (h *Hub) loops() *loops.Engine {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -1011,7 +1033,10 @@ func (h *Hub) spawnLoopRun(lp loops.Loop, iss *loops.Issue) (string, error) {
 	meta := sessionMeta{issueKey: iss.Key, loopName: lp.Name}
 	if full != nil {
 		prompt = fmt.Sprintf("You are running autonomously as part of a loop. Work on %s — %s\n\n%s\n\n%s\n\nPlan the approach first, then implement it end to end and open a PR when done.", full.Key, full.Title, full.Body, full.URL)
-		meta = sessionMeta{issueID: full.ID, issueKey: full.Key, issueProvider: full.Provider}
+		// Keep loopName. Reassigning the whole struct here dropped it, and `full != nil` is the NORMAL
+		// path (the issue came from the tracker manager that just fed OnIssues) — so essentially every
+		// ticket-loop session forgot it belonged to a loop, and the LOOP_DONE push never fired.
+		meta = sessionMeta{issueID: full.ID, issueKey: full.Key, issueProvider: full.Provider, loopName: lp.Name}
 		if full.BranchName != "" {
 			branch = full.BranchName
 		}

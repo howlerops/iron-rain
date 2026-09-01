@@ -512,3 +512,61 @@ func TestPromptNeverSilentlyDropsAMessage(t *testing.T) {
 		}
 	}
 }
+
+// "Always allow" must allow.
+//
+// Respond tested `decision != protocol.DecisionAllow` and cancelled everything else, so DecisionAlways
+// — the "Always allow" button — was delivered to the backend as a CANCELLATION. The hub also records a
+// persistent always-allow rule for that decision, so every later matching tool was auto-answered
+// "always" and auto-cancelled here: one tap turned a permanent allow into a permanent silent denial.
+// Every other adapter spells this out as `DecisionAllow || DecisionAlways`.
+func TestAlwaysAllowIsAnAllow(t *testing.T) {
+	for _, tc := range []struct {
+		decision   string
+		wantStatus string
+		wantOK     bool
+	}{
+		{protocol.DecisionAllow, "resolved", true},
+		{protocol.DecisionAlways, "resolved", true},
+		{protocol.DecisionDeny, "cancelled", false},
+	} {
+		t.Run(tc.decision, func(t *testing.T) {
+			got := make(chan runInput, 4)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var in runInput
+				_ = json.NewDecoder(r.Body).Decode(&in)
+				got <- in
+				sse(w, map[string]any{"type": "RUN_FINISHED", "threadId": "t", "runId": "r",
+					"outcome": map[string]any{"type": "success"}})
+			}))
+			defer srv.Close()
+
+			p := New(Config{Name: "agui", Endpoint: srv.URL})
+			sess, err := p.Create(context.Background(), t.TempDir(), "")
+			if err != nil {
+				t.Fatalf("Create: %v", err)
+			}
+			defer func() { _ = sess.Close() }()
+
+			if err := sess.Respond(context.Background(), "int_1", tc.decision); err != nil {
+				t.Fatalf("Respond: %v", err)
+			}
+
+			select {
+			case in := <-got:
+				if len(in.Resume) != 1 {
+					t.Fatalf("expected one resume entry, got %+v", in.Resume)
+				}
+				r := in.Resume[0]
+				if r.Status != tc.wantStatus {
+					t.Errorf("%s delivered status %q, want %q", tc.decision, r.Status, tc.wantStatus)
+				}
+				if approved, _ := r.Payload["approved"].(bool); approved != tc.wantOK {
+					t.Errorf("%s delivered approved=%v, want %v", tc.decision, approved, tc.wantOK)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("the resume run never reached the backend")
+			}
+		})
+	}
+}

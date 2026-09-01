@@ -540,10 +540,18 @@ func (m *managedSession) onStatus(ss protocol.SessionStatus) {
 		if loopDone {
 			m.hub.pushLoopDone(m.sess.ID(), loopName) // the loop run's work completed
 		}
+		if finished {
+			// Retire the loop run, or the scheduler's concurrency gate never reopens and the loop
+			// never fires again. Unconditional: it no-ops for a session no loop started.
+			m.hub.retireLoopRun(m.sess.ID(), "done")
+		}
 	case protocol.StatusError:
 		m.wasRunning = false
 		m.mu.Unlock()
 		m.hub.pushAgentError(m.sess.ID(), label, ss.Detail)
+		// A failed run is a FINISHED run as far as the loop scheduler is concerned; leaving it
+		// "running" wedges the loop exactly as an unretired success does.
+		m.hub.retireLoopRun(m.sess.ID(), "error")
 	default:
 		m.mu.Unlock()
 	}
