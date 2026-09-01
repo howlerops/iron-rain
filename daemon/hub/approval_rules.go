@@ -1,7 +1,6 @@
 package hub
 
 import (
-	"context"
 	"encoding/json"
 	"log"
 	"os"
@@ -301,7 +300,10 @@ func (h *Hub) autoAllowApproval(m *managedSession, ar protocol.ApprovalRequest) 
 		return false
 	}
 	log.Printf("approvals: auto-%sed %s (%s) via persisted rule", decision, ar.Tool, m.sess.Provider())
-	go func() { _ = m.sess.Respond(context.Background(), ar.ApprovalID, decision) }()
+	// Not fire-and-forget. A persisted rule suppresses the card entirely, so if Respond fails the
+	// harness waits on a decision it never got and the user has nothing on screen to answer. autoAnswer
+	// retries and, if it still cannot deliver, surfaces the request instead.
+	m.autoAnswer(ar, decision, "")
 	return true
 }
 

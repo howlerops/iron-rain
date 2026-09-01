@@ -458,7 +458,18 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 			text = firstTurnPrefix + text
 			firstTurnPrefix = ""
 		}
-		_ = promptSession(ctx, sess, text, req.Images, false) // brand-new session: there is no prior turn to unstick
+		// brand-new session: there is no prior turn to unstick.
+		//
+		// This is the ONLY delivery of the user's first message when images are attached — createPrompt
+		// was blanked above precisely so the prompt could travel with them. Discarding the error here
+		// meant a failure produced a live, empty session and a reported success, with the user's whole
+		// first message gone. Tear the session down and report it, the same as any other create failure.
+		if err := promptSession(ctx, sess, text, req.Images, false); err != nil {
+			_ = sess.Close()
+			h.discardMCPToken(mcpToken)
+			log.Printf("session.create: FAILED — %s could not accept the first prompt: %v", req.Provider, err)
+			return nil, fmt.Errorf("could not send your message: %w", err)
+		}
 	}
 	if req.Model != "" {
 		if setter, ok := sess.(agent.ModelSetter); ok {
@@ -600,9 +611,17 @@ func (h *Hub) writeBackPR(provider, issueID, prURL string) {
 // stuck agent and destroying a working one.
 func promptSession(ctx context.Context, sess agent.Session, text string, images []protocol.ImageAttachment, unstick bool) error {
 	if len(images) > 0 {
-		if ip, ok := sess.(agent.ImagePrompter); ok {
-			return ip.PromptImages(ctx, text, images)
+		ip, ok := sess.(agent.ImagePrompter)
+		if !ok {
+			// REFUSE rather than quietly downgrade. Only claude-code, opencode and pi implement
+			// ImagePrompter; for anything else this fell through to the text-only Prompt below and
+			// returned ITS nil, so attaching a screenshot to a cli or AG-UI session sent the words
+			// without the picture and reported success. The agent then answered a question about an
+			// image it had never been given, and nothing anywhere said an attachment had been dropped.
+			return fmt.Errorf("%s cannot take image attachments — send the text on its own, or use a "+
+				"provider that supports images", sess.Provider())
 		}
+		return ip.PromptImages(ctx, text, images)
 	}
 	if unstick {
 		if u, ok := sess.(agent.Unsticker); ok {
@@ -1497,6 +1516,28 @@ func (h *Hub) addSession(sess agent.Session, meta sessionMeta) *managedSession {
 	// actually stops the second stream; dropping the map entry alone would leave it pumping.
 	if prev != nil && prev != m {
 		log.Printf("session %s: replacing a live binding — closing the previous one", sess.ID())
+		// MIGRATE THE WATCHERS. Subscriptions live on the managedSession, and newManagedSession always
+		// builds an empty subs map — so every rebind (recover, restore-after-race, take-over) silently
+		// stranded everyone who had the session open. Their app kept rendering the transcript it
+		// already had, with no error and no reconnect, while every new frame went to a map they were
+		// no longer in: the session simply stopped updating, on every device except the one that
+		// caused the rebind. Nothing re-subscribes them, because from the client's point of view
+		// nothing happened.
+		prev.mu.Lock()
+		carried := make(map[*transport.Conn]*subscriber, len(prev.subs))
+		for c, sub := range prev.subs {
+			carried[c] = sub
+		}
+		prev.subs = map[*transport.Conn]*subscriber{}
+		prev.mu.Unlock()
+		if len(carried) > 0 {
+			m.mu.Lock()
+			for c, sub := range carried {
+				m.subs[c] = sub
+			}
+			m.mu.Unlock()
+			log.Printf("session %s: carried %d watcher(s) across the rebind", sess.ID(), len(carried))
+		}
 		go func() {
 			_ = prev.sess.Close()
 		}()
@@ -2709,6 +2750,14 @@ func (h *Hub) dropClient(conn *transport.Conn) {
 	h.roles.forget(conn) // a role belongs to a live connection, not a name
 	if c != nil {
 		c.close()
+		// Close the SOCKET too, not just our side of the queue.
+		//
+		// Dropping a client only removed it from h.clients, and Serve is the one and only writer to
+		// that map — so there was no path back in. The socket stayed open and healthy, the app saw a
+		// live connection and never reconnected, and the device simply went deaf to every hub-level
+		// broadcast for the rest of its life. Tearing the connection down hands the problem to the
+		// client's existing reconnect path, which is the one thing that can actually fix it.
+		_ = conn.Close()
 		h.broadcastParticipants() // presence: everyone sees who left
 	}
 }

@@ -973,6 +973,85 @@ func (m *managedSession) flushUI(sessionID string) {
 	}
 }
 
+// surfaceApproval puts an approval in front of the user: enriched with the scopes an ALWAYS could
+// narrow to, recorded, counted, and broadcast hub-wide as well as to this session's subscribers.
+//
+// Extracted so the auto-answer paths have somewhere to FALL BACK to. Those paths answer on the user's
+// behalf and suppress the card, and they used to discard the provider's error — so a Respond that
+// failed left the harness waiting on a decision it never received, for an approval no human was ever
+// shown. The turn hung with nothing on screen to act on.
+func (m *managedSession) surfaceApproval(ar *protocol.ApprovalRequest) {
+	// Offer the scopes an ALWAYS could narrow to. Computed here, once, from what this
+	// harness actually told us, so the client never has to parse a command itself.
+	m.mu.Lock()
+	projectID := m.meta.projectID
+	m.mu.Unlock()
+	ar.SuggestedScopes = suggestScopes(*ar, ar.Patterns, projectID)
+	// (the caller's event payload is replaced by the enriched request below)
+	m.hub.recordApproval(*ar, m)
+	m.mu.Lock()
+	m.pendingApprovals++
+	m.mu.Unlock()
+	// Tell EVERY client, not just this session's subscribers.
+	//
+	// A client subscribes to a session when it opens it, so a request raised by a session
+	// nobody is looking at reached nobody — and that is precisely the session you need to
+	// be told about. The Fleet renders approval controls per card so you can answer
+	// without opening anything; it could never show them for an unopened session, which
+	// is backwards, since triaging agents you are NOT watching is what the fleet is for.
+	//
+	// Observed: three fan-out agents sat blocked on a Write for thirteen minutes while
+	// their cards read "On track". Opening one made its approval appear instantly; the
+	// other two stayed silent.
+	//
+	// The asymmetry is what gives it away — RESOLUTION was already broadcast hub-wide
+	// (TypeApprovalResolved via h.broadcast), so clients were told an approval had been
+	// ANSWERED while never being told it had been ASKED.
+	//
+	// Subscribers of this session are SKIPPED: they already receive it through the
+	// per-session fan-out below, and delivering twice is not harmless. A client that
+	// merely stores the event is idempotent, but one that ACTS on it acts twice — the
+	// full-stack E2E test answers each approval it sees, and a duplicate made it respond
+	// twice, the second failing with "no such approval" about one run in three.
+	m.mu.Lock()
+	subscribed := make(map[*transport.Conn]bool, len(m.subs))
+	for c := range m.subs {
+		subscribed[c] = true
+	}
+	m.mu.Unlock()
+	m.hub.broadcastExcept(protocol.TypeApprovalRequest, *ar, subscribed)
+	m.hub.pushApproval(*ar)
+}
+
+// autoAnswer responds to an approval on the user's behalf, and surfaces it if that fails.
+//
+// Respond reaches the harness over a real transport (opencode POSTs; a non-2xx is an error), so it
+// can fail — and every caller here suppresses the approval card on the assumption that it won't. The
+// answer stays asynchronous because Respond can block and the pump must not stall, but a failure now
+// falls back to asking the human instead of vanishing.
+func (m *managedSession) autoAnswer(ar protocol.ApprovalRequest, decision, note string) {
+	go func() {
+		var err error
+		for attempt := 0; attempt < 3; attempt++ {
+			if attempt > 0 {
+				time.Sleep(time.Duration(attempt) * 250 * time.Millisecond)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			err = m.sess.Respond(ctx, ar.ApprovalID, decision)
+			cancel()
+			if err == nil {
+				if note != "" {
+					m.emitTool(note)
+				}
+				return
+			}
+		}
+		log.Printf("session %s: could not auto-%s %s (%v) — surfacing it instead, or the turn waits "+
+			"forever on a decision nobody was asked for", m.sess.ID(), decision, ar.Tool, err)
+		m.surfaceApproval(&ar)
+	}()
+}
+
 // ownEvent reports whether a delta/thinking event belongs to the session itself (not a sub-agent).
 func ownEvent(ev agent.Event, sid string) bool {
 	switch p := ev.Payload.(type) {
@@ -1352,8 +1431,7 @@ func (m *managedSession) run() {
 				// standing "always allow bash" must not punch a hole through Ask mode.
 				if mode := m.sessionMode(); modeDeniesTool(mode, ar.Tool) {
 					log.Printf("session %s: denied %s — %s mode is read-only", m.sess.ID(), ar.Tool, mode)
-					go func(id string) { _ = m.sess.Respond(context.Background(), id, protocol.DecisionDeny) }(ar.ApprovalID)
-					m.emitTool("⊘ " + ar.Tool + " blocked — " + mode + " mode is read-only")
+					m.autoAnswer(ar, protocol.DecisionDeny, "⊘ "+ar.Tool+" blocked — "+mode+" mode is read-only")
 					continue
 				}
 				// Repository metadata is refused before ANY rule is consulted, and before the user is
@@ -1363,8 +1441,7 @@ func (m *managedSession) run() {
 				// See guardApproval.
 				if g := guardApproval(ar); g.reason != "" {
 					log.Printf("session %s: denied %s — %s", m.sess.ID(), ar.Tool, g.reason)
-					go func(id string) { _ = m.sess.Respond(context.Background(), id, protocol.DecisionDeny) }(ar.ApprovalID)
-					m.emitTool("⊘ " + ar.Tool + " blocked — " + g.reason)
+					m.autoAnswer(ar, protocol.DecisionDeny, "⊘ "+ar.Tool+" blocked — "+g.reason)
 					continue
 				}
 				// YOLO answers everything itself — but only from HERE, after guardApproval.
@@ -1377,7 +1454,7 @@ func (m *managedSession) run() {
 				// injected instruction, to install a persistence mechanism silently — and the block
 				// is still surfaced as a visible tool note rather than a silent refusal.
 				if modeAutoApproves(m.sessionMode()) {
-					go func(id string) { _ = m.sess.Respond(context.Background(), id, protocol.DecisionAllow) }(ar.ApprovalID)
+					m.autoAnswer(ar, protocol.DecisionAllow, "")
 					continue
 				}
 				// A persisted rule answers it silently — permissions are asked ONCE, ever, not once
@@ -1385,46 +1462,8 @@ func (m *managedSession) run() {
 				if m.hub.autoAllowApproval(m, ar) {
 					continue
 				}
-				// Offer the scopes an ALWAYS could narrow to. Computed here, once, from what this
-				// harness actually told us, so the client never has to parse a command itself.
-				m.mu.Lock()
-				projectID := m.meta.projectID
-				m.mu.Unlock()
-				ar.SuggestedScopes = suggestScopes(ar, ar.Patterns, projectID)
-				ev.Payload = ar // forward the enriched request to clients, not the bare one
-				m.hub.recordApproval(ar, m)
-				m.mu.Lock()
-				m.pendingApprovals++
-				m.mu.Unlock()
-				// Tell EVERY client, not just this session's subscribers.
-				//
-				// A client subscribes to a session when it opens it, so a request raised by a session
-				// nobody is looking at reached nobody — and that is precisely the session you need to
-				// be told about. The Fleet renders approval controls per card so you can answer
-				// without opening anything; it could never show them for an unopened session, which
-				// is backwards, since triaging agents you are NOT watching is what the fleet is for.
-				//
-				// Observed: three fan-out agents sat blocked on a Write for thirteen minutes while
-				// their cards read "On track". Opening one made its approval appear instantly; the
-				// other two stayed silent.
-				//
-				// The asymmetry is what gives it away — RESOLUTION was already broadcast hub-wide
-				// (TypeApprovalResolved via h.broadcast), so clients were told an approval had been
-				// ANSWERED while never being told it had been ASKED.
-				//
-				// Subscribers of this session are SKIPPED: they already receive it through the
-				// per-session fan-out below, and delivering twice is not harmless. A client that
-				// merely stores the event is idempotent, but one that ACTS on it acts twice — the
-				// full-stack E2E test answers each approval it sees, and a duplicate made it respond
-				// twice, the second failing with "no such approval" about one run in three.
-				m.mu.Lock()
-				subscribed := make(map[*transport.Conn]bool, len(m.subs))
-				for c := range m.subs {
-					subscribed[c] = true
-				}
-				m.mu.Unlock()
-				m.hub.broadcastExcept(protocol.TypeApprovalRequest, ar, subscribed)
-				m.hub.pushApproval(ar)
+				ev.Payload = ar
+				m.surfaceApproval(&ar)
 			}
 		}
 		if ev.Type == protocol.TypeSessionUsage {

@@ -1253,7 +1253,24 @@ func (s *session) handle(raw []byte) {
 		// approvals (they'd pop a spurious card); the list arrives via todo.updated.
 		if tool == "todowrite" || tool == "todoread" {
 			if perm.ID != "" {
-				go func() { _ = s.Respond(context.Background(), perm.ID, protocol.DecisionAllow) }()
+				// Retry rather than fire-and-forget. This path SUPPRESSES the approval card on the
+				// grounds that bookkeeping is not worth asking about — so a Respond that fails leaves
+				// opencode blocked on a permission the user was deliberately never shown, and the turn
+				// sits there with nothing on screen to act on. Respond is an HTTP POST here, and any
+				// non-2xx is an error, so failing is a real possibility rather than a theoretical one.
+				go func(id string) {
+					var err error
+					for attempt := 0; attempt < 3; attempt++ {
+						if attempt > 0 {
+							time.Sleep(time.Duration(attempt) * 250 * time.Millisecond)
+						}
+						if err = s.Respond(context.Background(), id, protocol.DecisionAllow); err == nil {
+							return
+						}
+					}
+					log.Printf("opencode: sid=%s could not auto-allow %s (%v) — the turn is blocked on a "+
+						"permission that was never shown to anyone", s.id, tool, err)
+				}(perm.ID)
 			}
 			return
 		}

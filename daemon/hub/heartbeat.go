@@ -137,24 +137,45 @@ func (h *Hub) heartbeatTick() {
 				m.mu.Lock()
 				stillIdle := deriveState(m, time.Now()) == hbIdleIncomplete
 				if stillIdle {
-					m.lastCheckpoint = tokens
-					m.lastNudge = now
+					m.lastNudge = now // claim the tick either way, so a failing provider isn't hot-looped
 				}
 				m.mu.Unlock()
 				if stillIdle {
-					_ = m.sess.Prompt(context.Background(), checkpointNudge(handoff))
+					// Record the checkpoint only if the ask actually got there. Marking it first meant a
+					// refused Prompt still counted as "state externalized", and the agent was never
+					// asked again until another checkpointTokens had gone by.
+					if err := m.sess.Prompt(context.Background(), checkpointNudge(handoff)); err != nil {
+						log.Printf("heartbeat: could not ask %s to checkpoint: %v", m.sess.ID(), err)
+					} else {
+						m.mu.Lock()
+						m.lastCheckpoint = tokens
+						m.mu.Unlock()
+					}
 				}
 			default:
 				m.mu.Lock()
 				stillIdle := deriveState(m, time.Now()) == hbIdleIncomplete
 				if stillIdle {
-					m.nudgeCount++
-					m.lastNudge = now
+					m.lastNudge = now // claim the tick either way, so a failing provider isn't hot-looped
 				}
 				m.mu.Unlock()
 				if stillIdle {
-					_ = m.sess.Prompt(context.Background(), continueNudge(todos, handoff))
-					log.Printf("heartbeat: nudged %s (%d/%d)", m.sess.ID(), nudgeN+1, maxN)
+					// Charge the budget only for a nudge that was actually DELIVERED.
+					//
+					// The counter was incremented first and the Prompt error discarded, so a provider
+					// that refused every nudge still spent the whole allowance and logged "nudged" each
+					// time. After maxN the session was declared exhausted and its autonomy switched off
+					// — for an agent that had never once been nudged. The budget is meant to bound how
+					// much we spend prodding an agent, not how many times we failed to reach it.
+					if err := m.sess.Prompt(context.Background(), continueNudge(todos, handoff)); err != nil {
+						log.Printf("heartbeat: could not nudge %s: %v — not charging it against the "+
+							"%d-nudge budget", m.sess.ID(), err, maxN)
+					} else {
+						m.mu.Lock()
+						m.nudgeCount++
+						m.mu.Unlock()
+						log.Printf("heartbeat: nudged %s (%d/%d)", m.sess.ID(), nudgeN+1, maxN)
+					}
 				}
 			}
 		case hbStalled:
