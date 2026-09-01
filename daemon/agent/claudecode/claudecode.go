@@ -584,8 +584,22 @@ func (p *Provider) start(ctx context.Context, cwd, id, mode, prompt string, plan
 	// it returns reaps the child and releases the stdin/stdout pipe fds without racing
 	// the scanner. Without this the process lingers as a zombie and its fds/goroutine leak.
 	go func() {
-		s.readLoop(stdout)
-		_ = cmd.Wait()
+		sawIdle := s.readLoop(stdout)
+		err := cmd.Wait()
+		// The exit status is the only evidence of HOW the sidecar went. It used to be discarded, and
+		// readLoop emitted a clean idle on any stream end — so a crashed, OOM-killed or
+		// oversized-frame sidecar was reported as a turn that finished normally: the spinner stopped,
+		// the transcript was persisted and "agent finished" was pushed, for work that never
+		// completed. Only a stream that ended AFTER a real idle frame is a clean finish.
+		if !sawIdle {
+			detail := "the agent process exited unexpectedly"
+			if err != nil {
+				detail += ": " + err.Error()
+			}
+			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{
+				SessionID: s.id, Status: protocol.StatusError, Detail: detail}})
+		}
+		s.closeEvents()
 	}()
 	if prompt != "" {
 		_ = s.Prompt(ctx, prompt)
@@ -1008,8 +1022,10 @@ func (s *session) closeEvents() {
 	close(s.events)
 }
 
-func (s *session) readLoop(stdout io.ReadCloser) {
-	defer s.closeEvents()
+// readLoop consumes the sidecar's frames and reports whether it saw a genuine idle before the stream
+// ended. closeEvents is NOT deferred here: the caller closes the channel after cmd.Wait(), so the
+// exit status can still be turned into an event.
+func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool) {
 	// stdout EOF means the sidecar is gone (normal exit, stop, kill, crash), so this is the one
 	// teardown path every session takes — release any card that never got its terminal frame here.
 	defer s.forgetToolCards()
@@ -1138,9 +1154,19 @@ func (s *session) readLoop(stdout io.ReadCloser) {
 			s.emit(agent.Event{Type: protocol.TypeSessionFacts, Payload: snapshot})
 		}
 	}
-	if !idle {
-		s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusIdle}})
+	// A scanner error (a frame past the 8MB cap, a read failure) is a broken stream, not an ending.
+	if err := sc.Err(); err != nil {
+		s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{
+			SessionID: s.id, Status: protocol.StatusError,
+			Detail: "lost the agent's output stream: " + err.Error()}})
+		return false
 	}
+	if !idle {
+		// Not an idle of our own invention any more — the caller decides, once it knows how the
+		// process exited. Reporting idle here is what made a crash look like a finished turn.
+		return false
+	}
+	return true
 }
 
 func randID() string {

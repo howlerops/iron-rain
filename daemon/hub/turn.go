@@ -425,7 +425,8 @@ func (m *managedSession) publishVerdict(state, reason string, providerDriven boo
 	stopped := m.userStopped || m.userInterrupted
 	m.mu.Unlock()
 
-	m.publishSessionState(status, reason)
+	// Recorded: this is the daemon ending the turn on its own, so nothing else puts it in the ring.
+	m.publishStateRecorded(status, reason)
 	if stopped {
 		return
 	}
@@ -489,10 +490,30 @@ func (m *managedSession) publishVerdict(state, reason string, providerDriven boo
 // So subscribers get this through the SESSION queue, behind that turn's content, and everyone else
 // keeps getting it hub-level. broadcastExcept already exists for exactly this shape of problem.
 func (m *managedSession) publishSessionState(status, detail string) {
+	m.publishState(status, detail, false)
+}
+
+// publishStateRecorded is for an edge the DAEMON owns outright — an abandoned turn, a needs-you the
+// nudge ladder gave up on, a reconciled idle. Those have no provider frame behind them, so unlike
+// every other status there is no ringed twin: sent transiently they reached whoever happened to be
+// attached at that instant and nobody else. A phone that was asleep, or any device attaching a
+// second later, replayed a turn that simply stopped mid-sentence with no explanation of why.
+//
+// Ringed as well as delivered, so the reason survives to the next attach.
+func (m *managedSession) publishStateRecorded(status, detail string) {
+	m.publishState(status, detail, true)
+}
+
+func (m *managedSession) publishState(status, detail string, record bool) {
 	if m.hub == nil || status == "" {
 		return
 	}
 	payload := protocol.SessionStatus{SessionID: m.sess.ID(), Status: status, Detail: detail}
+	if record {
+		if raw, err := (agent.Event{Type: protocol.TypeSessionStatus, Payload: payload}).Encode(); err == nil {
+			m.recordOnly(raw) // ring it even when nobody is subscribed — that is the case it exists for
+		}
+	}
 
 	// Subscribers first, in the same queue as the content they are watching.
 	skip := map[*transport.Conn]bool{}

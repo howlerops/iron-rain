@@ -247,6 +247,12 @@ func (m *Manager) SetJiraSite(ctx context.Context, cloudID string) error {
 	cfg := m.cfg
 	m.mu.Unlock()
 	m.save(cfg)
+	// The WRONG site's 404s parked jira in backoff — up to 15 minutes, or forever if the failure was
+	// classed permanent. Picking a site is the human action that says "try again now", so clear the
+	// backoff before refreshing; otherwise the Refresh below skips jira entirely and the board the
+	// user just fixed stays empty for another quarter of an hour. Connect already does this; the
+	// site switch is the same event by another name. Taken outside the lock: ResumePolling locks.
+	m.ResumePolling("jira")
 	return m.Refresh(ctx)
 }
 
@@ -578,6 +584,13 @@ func (m *Manager) pollDue(name string) bool {
 
 // ResumePolling clears a provider's suspension, so reconnecting actually retries rather than
 // leaving it silently parked until the daemon restarts.
+// failingFetch reports whether the provider's last POLL failed — state a token refresh says nothing
+// about. Callers must already hold m.mu.
+func (m *Manager) failingFetch(name string) bool {
+	st := m.pollFail[name]
+	return st != nil && st.lastErr != ""
+}
+
 func (m *Manager) ResumePolling(name string) {
 	m.mu.Lock()
 	delete(m.pollFail, name)
@@ -655,7 +668,11 @@ func (m *Manager) refreshTokens(ctx context.Context) {
 				m.authErrors[name] = msg
 				changed = true
 			}
-		} else if had {
+		} else if had && !m.failingFetch(name) {
+			// Only clear what a token refresh could actually have owned. authErrors has two writers:
+			// this loop and the poll path. A Jira token can refresh perfectly while every fetch still
+			// 404s on a wrong cloud id — and that cleared the fetch error every 40 minutes, so the
+			// reconnect pill blinked out and the board silently claimed to be fine while it was not.
 			delete(m.authErrors, name)
 			changed = true
 		}

@@ -935,6 +935,18 @@ func (m *managedSession) flushUI(sessionID string) {
 	m.emitUIComponents(sessionID, comps)
 	if fwd != "" {
 		if raw, err := (agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: sessionID, Text: fwd}}).Encode(); err == nil {
+			// Accumulated as well as broadcast. The segmenter holds a line until it is
+			// newline-terminated, and models routinely end a reply without a trailing newline — so
+			// for the delta-only providers this residual IS the last line of most replies. It went
+			// out live but bypassed persistDurable, so the synthetic end-of-turn message written a
+			// moment later was missing its final line: the transcript on screen and the transcript on
+			// disk disagreed about where the answer ended, and only the stored one was truncated.
+			//
+			// Same goroutine as persistDurable (the pump, directly or via onPump), so the
+			// unsynchronized write matches the invariant asstAccum already relies on.
+			if sessionID == m.sess.ID() {
+				m.asstAccum.WriteString(fwd)
+			}
 			m.broadcast(raw)
 		}
 	}
