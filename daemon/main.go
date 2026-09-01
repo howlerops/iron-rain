@@ -549,6 +549,35 @@ func serve(args []string) error {
 		return err // the listener failed on its own (port in use, etc.)
 	case sig := <-stop:
 		log.Printf("daemon: %s received — shutting down", sig)
+		// A LAST-RESORT exit, so "shutting down" can never mean "alive forever, unreachable".
+		//
+		// This happened: a daemon took SIGTERM, stopped accepting (so the app reported "Can't reach
+		// your Mac"), and then blocked in teardown — still running 90 minutes later, still holding the
+		// state lock, so every restart failed with "another oculusd is already using …". Only SIGKILL
+		// cleared it. The individual waits are bounded now, but a bound that has to be remembered at
+		// every future teardown site is a bound that will eventually be forgotten.
+		//
+		// Safe to exit hard: the state lock is an flock on an open descriptor, released by the KERNEL
+		// on process death, so this cannot strand it. The generous budget means a healthy shutdown
+		// always finishes on its own and this never fires.
+		go func() {
+			time.Sleep(shutdownDeadline)
+			// The note is BEST EFFORT and must never be what prevents the exit. The first version of
+			// this backstop called log.Printf directly and blocked there — a goroutine dump showed it
+			// parked on the log mutex behind the very deadlock it was meant to escape, so the process
+			// stayed alive anyway. Logging is attempted on its own goroutine, briefly; the exit
+			// happens regardless.
+			noted := make(chan struct{})
+			go func() {
+				log.Printf("daemon: shutdown still unfinished after %s — exiting anyway", shutdownDeadline)
+				close(noted)
+			}()
+			select {
+			case <-noted:
+			case <-time.After(2 * time.Second):
+			}
+			os.Exit(1)
+		}()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		// Stop accepting first, then let the deferred Shutdown/Close chain above unwind.
@@ -563,6 +592,10 @@ func serve(args []string) error {
 		return nil
 	}
 }
+
+// shutdownDeadline is the outer bound on teardown before the process exits regardless. Comfortably
+// larger than every inner budget, so it is a backstop rather than a second, competing timeout.
+const shutdownDeadline = 30 * time.Second
 
 // relayHost keeps a single host registration on the shared relay so the app can bridge to this
 // daemon from anywhere. relay.ServeHost registers, waits for one client, serves it (blocking until

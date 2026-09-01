@@ -268,7 +268,30 @@ func (m *Manager) Shutdown() {
 			s.stop()
 		}(s)
 	}
-	wg.Wait()
+	// BOUNDED, for the same reason hub.closeSessions is: shutdown has to finish whatever a child
+	// does. A bare wg.Wait() here hung the whole daemon on a language server that would not exit —
+	// the process had already stopped listening, so it was unreachable, yet it stayed alive holding
+	// the state lock and every restart failed with "another oculusd is already using …". Observed at
+	// 90 minutes, cleared only by SIGKILL. The straggler is named rather than hidden: it is a child
+	// we are about to leak, and this line is the only evidence anyone gets.
+	if !waitBounded(&wg, shutdownBudget) {
+		log.Printf("lsp: gave up after %s waiting on %d language server(s) to exit", shutdownBudget, len(servers))
+	}
+}
+
+// shutdownBudget caps how long teardown may take before the process gives up on a child.
+const shutdownBudget = 5 * time.Second
+
+// waitBounded reports whether wg finished within d.
+func waitBounded(wg *sync.WaitGroup, d time.Duration) bool {
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		return false
+	}
 }
 
 // --- LSP protocol parameter / result types (0-based positions) ---

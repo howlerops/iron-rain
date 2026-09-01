@@ -102,6 +102,9 @@ func (h *Hub) persistSessionAt(m *managedSession, updatedAt int64) {
 // broadcastSessionList pushes the current session list to every client (after restore,
 // delete, or rename) so all devices converge on the same set.
 func (h *Hub) broadcastSessionList() {
+	if h.shuttingDown.Load() {
+		return // exiting: this is O(sessions) under h.mu and no client will live to render it
+	}
 	h.broadcast(protocol.TypeSessionList, protocol.SessionList{Sessions: h.sessionList()})
 }
 

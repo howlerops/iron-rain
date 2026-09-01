@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/howlerops/oculus/daemon/accounts"
@@ -64,29 +65,35 @@ type Hub struct {
 	approvals map[string]*managedSession // approvalID -> owning session
 	discover  DiscoverFunc
 
-	notifier      push.Notifier // optional: push actionable approvals to a device
-	slack         *slack.Client // optional: mirror agent events to a Slack channel
-	pushTokens    []string      // registered device tokens
-	attach        AttacherFactory
-	clients       map[*transport.Conn]*hubClient // all connected clients (for global broadcasts)
-	projects      *project.Registry              // optional: registered folders sessions spawn in
-	autoProjects  bool                           // auto-register projects from active agents' cwds
-	issues        *issues.Manager                // optional: connected trackers (Linear/Jira)
-	telemetry     *telemetry.Client              // optional: anonymized diagnostics shipping
-	logHub        *loghub.Hub                    // optional: live daemon-log stream (Developer log panel)
-	logSubs       map[*transport.Conn]bool       // clients subscribed to the log stream
-	transcripts   *transcript.Store              // optional: durable append-only per-session transcript (never-lose-work)
-	activity      *activity.Store                // optional: cross-session activity feed (Activity destination backbone)
-	accounts      *accounts.Registry             // optional: multi-account credentials + active selection per provider
-	remotes       *sshremote.Registry            // optional: registered SSH remote hosts (remote worktrees)
-	sshRunner     *sshremote.Runner              // optional: executes git/agent ops on remotes over SSH
-	redetect      func()                         // optional: re-run agent-harness detection (provider.refresh)
-	loopEngine    *loops.Engine                  // optional: recurring autonomous ticket workflows
-	agentsPath    string                         // path to ~/.oculus/agents.json (custom CLI agents)
-	agentHidePath string                         // path to ~/.oculus/agent-visibility.json (hidden names)
-	agentHidden   map[string]bool                // agent names hidden from the session pickers
-	oauthAddr     string                         // loopback host:port for tracker OAuth callbacks (per-provider path)
-	worktreeBase  string                         // base dir for worktrees ("" = worktree.DefaultBase)
+	notifier     push.Notifier // optional: push actionable approvals to a device
+	slack        *slack.Client // optional: mirror agent events to a Slack channel
+	pushTokens   []string      // registered device tokens
+	attach       AttacherFactory
+	clients      map[*transport.Conn]*hubClient // all connected clients (for global broadcasts)
+	projects     *project.Registry              // optional: registered folders sessions spawn in
+	autoProjects bool                           // auto-register projects from active agents' cwds
+	issues       *issues.Manager                // optional: connected trackers (Linear/Jira)
+	telemetry    *telemetry.Client              // optional: anonymized diagnostics shipping
+	logHub       *loghub.Hub                    // optional: live daemon-log stream (Developer log panel)
+	// logLines carries daemon log lines to the fan-out goroutine. Buffered and lossy on purpose, and
+	// held in an ATOMIC rather than under h.mu: the logging path must not touch that mutex at all —
+	// see enqueueLogLine.
+	logLines atomic.Pointer[chan string]
+	// shuttingDown suppresses work that exists only to inform clients. See Shutdown.
+	shuttingDown  atomic.Bool
+	logSubs       map[*transport.Conn]bool // clients subscribed to the log stream
+	transcripts   *transcript.Store        // optional: durable append-only per-session transcript (never-lose-work)
+	activity      *activity.Store          // optional: cross-session activity feed (Activity destination backbone)
+	accounts      *accounts.Registry       // optional: multi-account credentials + active selection per provider
+	remotes       *sshremote.Registry      // optional: registered SSH remote hosts (remote worktrees)
+	sshRunner     *sshremote.Runner        // optional: executes git/agent ops on remotes over SSH
+	redetect      func()                   // optional: re-run agent-harness detection (provider.refresh)
+	loopEngine    *loops.Engine            // optional: recurring autonomous ticket workflows
+	agentsPath    string                   // path to ~/.oculus/agents.json (custom CLI agents)
+	agentHidePath string                   // path to ~/.oculus/agent-visibility.json (hidden names)
+	agentHidden   map[string]bool          // agent names hidden from the session pickers
+	oauthAddr     string                   // loopback host:port for tracker OAuth callbacks (per-provider path)
+	worktreeBase  string                   // base dir for worktrees ("" = worktree.DefaultBase)
 	// preview routes http://<name>.localhost:<port> to each session's own dev server, so several
 	// sessions can run one at a time without fighting over :3000 and without the user having to
 	// remember which number belongs to which agent. See package preview.
@@ -849,11 +856,50 @@ func (h *Hub) SetLogHub(lh *loghub.Hub) {
 	h.logHub = lh
 	h.mu.Unlock()
 	if lh != nil {
-		lh.SetListener(func(line string) { h.broadcastLogLine(line) })
+		h.startLogFanout()
+		lh.SetListener(h.enqueueLogLine)
 	}
 }
 
-// broadcastLogLine fans a single log line out to every log-subscribed client.
+// enqueueLogLine hands a line to the fan-out without blocking and without touching h.mu.
+//
+// This is the fix for a shutdown that hung forever. The listener runs on the goroutine that called
+// log.Printf, and it used to take h.mu — so any code logging while holding or contending that mutex
+// deadlocked against itself. Shutdown did exactly that: closeSessions logs "shutdown closed N agent
+// session(s)" while session teardown goroutines sit in detachSession competing for the same lock. The
+// daemon stopped accepting, never exited, and held the state lock until SIGKILL; every restart failed
+// with "another oculusd is already using …". A goroutine dump named it exactly — main parked in
+// broadcastLogLine's h.mu.Lock, underneath log.Printf, underneath closeSessions.
+//
+// Not even a brief lock to read the channel: when h.mu is held by a goroutine that is itself stuck,
+// "brief" is forever. This path has to work when every lock in the hub is jammed, because that is
+// precisely when the log matters. A dropped diagnostic beats a wedged process.
+func (h *Hub) enqueueLogLine(line string) {
+	ch := h.logLines.Load()
+	if ch == nil {
+		return
+	}
+	select {
+	case *ch <- line:
+	default: // full: drop rather than block the logger
+	}
+}
+
+// startLogFanout runs the single consumer that does the locking the logger no longer may.
+func (h *Hub) startLogFanout() {
+	ch := make(chan string, 256)
+	if !h.logLines.CompareAndSwap(nil, &ch) {
+		return // already running
+	}
+	go func() {
+		for line := range ch {
+			h.broadcastLogLine(line)
+		}
+	}()
+}
+
+// broadcastLogLine fans a single log line out to every log-subscribed client. Runs ONLY on the
+// fan-out goroutine — never on a caller of log.Printf, for the reason in enqueueLogLine.
 func (h *Hub) broadcastLogLine(line string) {
 	h.mu.Lock()
 	subs := make([]*transport.Conn, 0, len(h.logSubs))
@@ -1207,6 +1253,18 @@ const shutdownCloseBudget = 5 * time.Second
 // record and the transcript are PRESERVED (removeSession, which drops them, runs only for a
 // user-initiated stop), so a restart restores exactly what it restores today.
 func (h *Hub) Shutdown() {
+	// Set FIRST, before anything takes h.mu.
+	//
+	// Closing the sessions makes every one of them detach, and each detach broadcast the full session
+	// list — which rebuilds a list over all sessions while holding h.mu. With 60 live sessions that is
+	// a thundering herd on the one mutex the shutdown itself needs: goroutine dumps showed 21 waiters
+	// in tel, 22 more in sessionList/broadcastSessionList, and main starved in silenceNotifications
+	// until the 30s backstop shot the process. Not a deadlock — nobody held the lock forever — but
+	// indistinguishable from one from outside, and it held the state lock long enough that restarts
+	// failed with "another oculusd is already using …".
+	//
+	// None of that work has a consumer: the clients are about to lose the connection anyway.
+	h.shuttingDown.Store(true)
 	h.silenceNotifications()
 	if h.lsp != nil {
 		h.lsp.Shutdown()

@@ -211,7 +211,15 @@ func (m *Manager) Shutdown() {
 			s.client.Close()
 		}(s)
 	}
-	wg.Wait()
+	// Bounded — see the same change in lsp.Manager.Shutdown. An MCP server that ignores its stdin
+	// closing would otherwise hold the daemon open forever, unreachable and still holding the lock.
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		log.Printf("mcp: gave up after 5s waiting on %d server(s) to close", len(conns))
+	}
 }
 
 // isClosed reports whether the client's read loop has exited.
