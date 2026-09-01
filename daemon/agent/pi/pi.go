@@ -673,7 +673,7 @@ func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool) {
 				title = c.title
 			}
 			s.emit(agent.Event{Type: protocol.TypeSessionTool, Payload: protocol.SessionTool{
-				SessionID: s.id, ID: e.ID, Name: name, Title: title, Output: e.Output, Status: "completed"}})
+				SessionID: s.id, ID: e.ID, Name: name, Title: title, Output: e.Output, Status: protocol.ToolCompleted}})
 		case "tool_execution_start":
 			// pi has no native to-do tool; a valhalla-style extension can add one, and its
 			// call arrives here — surface it as the normalized session.todos.
@@ -688,7 +688,7 @@ func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool) {
 			}
 			s.rememberToolCard(e.ID, e.ToolName, title)
 			s.emit(agent.Event{Type: protocol.TypeSessionTool, Payload: protocol.SessionTool{
-				SessionID: s.id, ID: e.ID, Name: e.ToolName, Title: title, Status: "running"}})
+				SessionID: s.id, ID: e.ID, Name: e.ToolName, Title: title, Status: protocol.ToolRunning}})
 		case "extension_ui_request":
 			// EVERY request must be answered, not just the ones that gate an action. pi blocks the
 			// run until it receives an extension_ui_response for each request it sends, and its

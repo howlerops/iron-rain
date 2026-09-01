@@ -176,12 +176,12 @@ func (m *managedSession) turnOnStatus(ss protocol.SessionStatus) {
 
 // turnOnChild folds a sub-agent lifecycle event into the turn's children.
 func (m *managedSession) turnOnChild(sa protocol.SubAgent) {
-	state := "running"
+	state := protocol.SubAgentRunning
 	switch sa.Status {
-	case "done":
-		state = "done"
-	case "error":
-		state = "error"
+	case protocol.SubAgentDone:
+		state = protocol.SubAgentDone
+	case protocol.SubAgentError:
+		state = protocol.SubAgentError
 	}
 	now := time.Now()
 	m.mu.Lock()
@@ -267,8 +267,8 @@ func (m *managedSession) turnOnTool(t protocol.SessionTool) {
 	if m.turnTools == nil {
 		m.turnTools = map[string]*protocol.TurnTool{}
 	}
-	switch t.Status {
-	case "completed", "error":
+	switch {
+	case protocol.IsToolFinished(t.Status):
 		delete(m.turnTools, t.ID)
 	default: // running (or any status a provider invents): it is outstanding until proven otherwise
 		// Say so when the word is not one we know. Treating an unrecognised status as "still running"
@@ -278,7 +278,7 @@ func (m *managedSession) turnOnTool(t protocol.SessionTool) {
 		// well. The AG-UI adapter said "done" (a TURN status) instead of "completed" and did this to
 		// every successful tool call it ever made; nothing anywhere reported it. Once per session per
 		// word, so a genuinely chatty provider cannot flood the log.
-		if t.Status != "" && t.Status != "running" {
+		if t.Status != "" && t.Status != protocol.ToolRunning {
 			if m.unknownToolStatus == nil {
 				m.unknownToolStatus = map[string]bool{}
 			}
@@ -346,13 +346,13 @@ func (m *managedSession) closeTurnFrom(state, reason string, providerDriven bool
 	// to recover short of restarting the app. The parent's turn being over means no child can still
 	// be running, whatever state we last heard for it; this is the one choke point every close path
 	// shares, so the invariant lives here.
-	sealed := "done"
+	sealed := protocol.SubAgentDone
 	if state == protocol.StatusError || state == protocol.StatusAbandoned || state == protocol.StatusNeedsYou {
-		sealed = "error" // don't dress a dead turn's children as cleanly finished
+		sealed = protocol.SubAgentError // don't dress a dead turn's children as cleanly finished
 	}
 	var toSeal []protocol.SubAgent
 	for _, k := range m.turnKids {
-		if k.State != "done" && k.State != "error" {
+		if !protocol.IsSubAgentFinished(k.State) {
 			k.State = sealed
 			toSeal = append(toSeal, protocol.SubAgent{ParentID: m.sess.ID(), ID: k.ID, Status: sealed})
 		}
@@ -365,7 +365,7 @@ func (m *managedSession) closeTurnFrom(state, reason string, providerDriven bool
 	for _, t := range m.turnTools {
 		toolSeal = append(toolSeal, protocol.SessionTool{
 			SessionID: m.sess.ID(), ID: t.ID, Name: t.Name, Title: t.Title,
-			Status: "error", Output: toolSealNote(state, reason),
+			Status: protocol.ToolError, Output: toolSealNote(state, reason),
 		})
 	}
 	m.turnTools = nil

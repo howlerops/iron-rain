@@ -62,10 +62,6 @@ const (
 	evToolEnd    = "TOOL_CALL_END"
 	evToolResult = "TOOL_CALL_RESULT"
 
-	// toolCompleted is the terminal status of a tool CARD, distinct from protocol.StatusDone which
-	// belongs to a turn. The hub keys its outstanding-tool bookkeeping on this exact string.
-	toolCompleted = "completed"
-
 	evReasoningContent = "REASONING_MESSAGE_CONTENT"
 	// Superseded by REASONING_* upstream but still emitted by older integrations, and free to accept.
 	evThinkingContent = "THINKING_TEXT_MESSAGE_CONTENT"
@@ -477,7 +473,7 @@ func (s *session) handle(raw string) (done bool, terminal string, err error) {
 		s.mu.Lock()
 		s.tools[ev.ToolCallID] = &toolCall{name: ev.ToolCallName}
 		s.mu.Unlock()
-		s.emitTool(ev.ToolCallID, protocol.StatusRunning, "")
+		s.emitTool(ev.ToolCallID, protocol.ToolRunning, "")
 
 	case evToolArgs:
 		s.mu.Lock()
@@ -485,10 +481,10 @@ func (s *session) handle(raw string) (done bool, terminal string, err error) {
 			tc.args.WriteString(ev.Delta)
 		}
 		s.mu.Unlock()
-		s.emitTool(ev.ToolCallID, protocol.StatusRunning, "")
+		s.emitTool(ev.ToolCallID, protocol.ToolRunning, "")
 
 	case evToolEnd:
-		s.emitTool(ev.ToolCallID, protocol.StatusRunning, "")
+		s.emitTool(ev.ToolCallID, protocol.ToolRunning, "")
 
 	case evToolResult:
 		// "completed", NOT protocol.StatusDone. StatusDone ("done") is a TURN status; a finished tool
@@ -497,7 +493,7 @@ func (s *session) handle(raw string) (done bool, terminal string, err error) {
 		// for the whole turn — and turn close then SEALED it as Status "error" with the seal note in
 		// place of its output. Every successful tool call ended up rendered, and persisted, as a
 		// failure that had eaten its own result.
-		s.emitTool(ev.ToolCallID, toolCompleted, ev.Content)
+		s.emitTool(ev.ToolCallID, protocol.ToolCompleted, ev.Content)
 
 	case evRunError:
 		msg := ev.Message
@@ -558,7 +554,7 @@ func (s *session) emitTool(id, status, output string) {
 	if tc != nil {
 		name, args = tc.name, tc.args.String()
 	}
-	if status == toolCompleted {
+	if status == protocol.ToolCompleted {
 		delete(s.tools, id)
 	}
 	s.mu.Unlock()

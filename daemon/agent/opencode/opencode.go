@@ -1084,7 +1084,7 @@ func (s *session) handle(raw []byte) {
 		case "tool":
 			toolName := firstNonEmpty(pu.Part.Tool, pu.Part.Name, pu.Part.ToolName, "tool")
 			st := firstNonEmpty(pu.Part.State.Status, pu.Part.Status)
-			if st == "running" || st == "completed" || st == "error" {
+			if st == protocol.ToolRunning || protocol.IsToolFinished(st) {
 				// Keep the top activity chip for the parent's current tool.
 				if st != "error" {
 					s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{
@@ -1327,7 +1327,7 @@ func (s *session) handle(raw []byte) {
 		if pr.SessionID != s.id {
 			if s.childIDs[pr.SessionID] {
 				s.emit(agent.Event{Type: protocol.TypeSessionSubAgent, Payload: protocol.SubAgent{
-					ParentID: s.id, ID: pr.SessionID, Status: "done"}})
+					ParentID: s.id, ID: pr.SessionID, Status: protocol.SubAgentDone}})
 			}
 			return
 		}

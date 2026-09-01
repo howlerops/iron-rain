@@ -219,6 +219,42 @@ const (
 	TypeError = "error"
 )
 
+// Tool-card and sub-agent statuses.
+//
+// These are THREE separate vocabularies that share a namespace in the reader's head and diverge in
+// exactly one word each, which is how they get confused:
+//
+//	turn/session : running | idle | done  | error | awaiting_approval | stalled | needs_you
+//	tool card    : running | completed    | error
+//	sub-agent    : running | done         | error
+//
+// A tool is "completed"; a sub-agent is "done". Reporting a finished tool as StatusDone therefore
+// looked right and was not: the hub retires a tool card on ToolCompleted/ToolError only, and its
+// default treats every other word as STILL RUNNING — so the card stayed outstanding for the whole
+// turn and turn close sealed it as an error with the seal note written over its real output. That was
+// silent for the entire life of the AG-UI adapter. Use these constants rather than literals, so the
+// next mistake is a compile error instead of a tool call that reports success as failure.
+const (
+	ToolRunning   = "running"
+	ToolCompleted = "completed"
+	ToolError     = "error"
+
+	SubAgentRunning = "running"
+	SubAgentDone    = "done"
+	SubAgentError   = "error"
+)
+
+// IsToolFinished reports whether a tool-card status is terminal — the exact test the hub uses to
+// retire a card from the turn's outstanding set.
+func IsToolFinished(status string) bool {
+	return status == ToolCompleted || status == ToolError
+}
+
+// IsSubAgentFinished reports whether a sub-agent status is terminal.
+func IsSubAgentFinished(status string) bool {
+	return status == SubAgentDone || status == SubAgentError
+}
+
 // Session statuses.
 const (
 	StatusRunning          = "running"

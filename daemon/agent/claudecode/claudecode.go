@@ -348,7 +348,7 @@ func (s *session) replayTranscript(uuid string) {
 							continue
 						}
 						delete(pending, b.ToolUseID)
-						state := "completed"
+						state := protocol.ToolCompleted
 						if b.IsError {
 							state = "error"
 						}
@@ -1082,7 +1082,7 @@ func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool) {
 			// Rich inline tool card: running carries the command (Detail), the later result carries
 			// Output. Same event the app renders for opencode, so claude-code gets card parity.
 			name, title := m.Tool, m.Detail
-			if m.Status != "" && m.Status != "running" {
+			if m.Status != "" && m.Status != protocol.ToolRunning {
 				s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusRunning, Detail: ""}})
 				// This is the frame the hub PERSISTS, and the sidecar sends it without tool/detail —
 				// so put the identity back before it becomes the only durable record of the card.
