@@ -195,6 +195,7 @@ extension Model {
             // frames away — keeping any of them would poison the next open too.
             messages.removeAll()
             clearChildState()
+            turnStreamedText = "" // the rows that streamed are gone; so is their accumulation
             resetDaemonEventCount()
             transcriptPainted = arrived
             for raw in buffer {
@@ -268,6 +269,7 @@ extension Model {
     /// to replay the transcript from the top must call this, or the replay is appended to what is
     /// already painted instead of reconciled against it.
     func resetTranscriptCacheState() {
+        turnStreamedText = "" // nothing on screen streamed for the session we're about to paint
         transcriptPainted = []
         transcriptReconciling = false
         transcriptReplayBuffer = []

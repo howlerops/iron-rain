@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -68,7 +69,18 @@ func newTestSession(t *testing.T, h http.HandlerFunc) (agent.Session, *httptest.
 	return s, srv
 }
 
-func TestStreamsTextAsDeltasAndFinalMessage(t *testing.T) {
+// The reply is streamed ONCE, as deltas.
+//
+// This adapter also emitted a finalized session.message holding the concatenation of those same
+// deltas — its buffer had no other writer, so the frame could not contain anything the client had
+// not already been sent. The client only REPLACES a finalized message onto an assistant row that is
+// still streaming; a tool card or a generative-UI block seals that row, and the restatement was then
+// appended instead. The reply rendered twice, adjacent and identical.
+//
+// Durability does not depend on it: the hub concatenates the deltas itself and persists them at turn
+// end for any provider that never finalizes a message (finalizeTurnTranscript), ringing the frame
+// without delivering it — which is precisely the guard this adapter lacked.
+func TestStreamsTextOnceAsDeltas(t *testing.T) {
 	s, _ := newTestSession(t, func(w http.ResponseWriter, r *http.Request) {
 		sse(w,
 			map[string]any{"type": "RUN_STARTED", "threadId": "t", "runId": "r"},
@@ -81,42 +93,104 @@ func TestStreamsTextAsDeltasAndFinalMessage(t *testing.T) {
 	})
 
 	var deltas []string
-	var final protocol.SessionMessage
 	for _, ev := range collect(t, s, idleReached) {
 		switch p := ev.Payload.(type) {
 		case protocol.OutputDelta:
 			deltas = append(deltas, p.Text)
 		case protocol.SessionMessage:
-			final = p
+			if p.Role == "assistant" {
+				t.Fatalf("the adapter restated the streamed text as a finalized message: %+v", p)
+			}
 		}
 	}
 	if strings.Join(deltas, "") != "Hello world" {
-		t.Errorf("deltas = %q, want the streamed text", deltas)
-	}
-	// The finalized message matters independently of the deltas: it is what the durable transcript
-	// stores, so losing it means the turn replays as empty after a restart.
-	if final.Text != "Hello world" || final.Role != "assistant" || final.MsgID != "m1" {
-		t.Errorf("final message = %+v, want the assembled assistant text under m1", final)
+		t.Errorf("deltas = %q, want the streamed text exactly once", deltas)
 	}
 }
 
-// The turn must still close when a backend never sends TEXT_MESSAGE_END — otherwise the message is
-// never finalized and the turn engine waits on a completion that isn't coming.
-func TestRunEndFlushesUnterminatedMessage(t *testing.T) {
+// TEXT_MESSAGE_END is a MESSAGE BOUNDARY, and dropping the restatement must not drop it.
+//
+// The client folds every delta of a turn into one bubble, so two messages in a single run arrive as
+// one run of text: without a separator the last word of the first fuses to the first word of the
+// second ("...done.Next I will..."). opencode, claude-code and pi each had to fix this same defect.
+// A blank line, not a single newline, because markdown folds a lone newline back into one paragraph.
+func TestConsecutiveMessagesAreSeparated(t *testing.T) {
+	s, _ := newTestSession(t, func(w http.ResponseWriter, r *http.Request) {
+		sse(w,
+			map[string]any{"type": "RUN_STARTED", "threadId": "t", "runId": "r"},
+			map[string]any{"type": "TEXT_MESSAGE_START", "messageId": "m1", "role": "assistant"},
+			map[string]any{"type": "TEXT_MESSAGE_CONTENT", "messageId": "m1", "delta": "First."},
+			map[string]any{"type": "TEXT_MESSAGE_END", "messageId": "m1"},
+			map[string]any{"type": "TEXT_MESSAGE_START", "messageId": "m2", "role": "assistant"},
+			map[string]any{"type": "TEXT_MESSAGE_CONTENT", "messageId": "m2", "delta": "Second."},
+			map[string]any{"type": "TEXT_MESSAGE_END", "messageId": "m2"},
+			map[string]any{"type": "RUN_FINISHED", "threadId": "t", "runId": "r", "outcome": map[string]any{"type": "success"}},
+		)
+	})
+
+	var text strings.Builder
+	for _, ev := range collect(t, s, idleReached) {
+		if p, ok := ev.Payload.(protocol.OutputDelta); ok {
+			text.WriteString(p.Text)
+		}
+	}
+	if got := text.String(); got != "First.\n\nSecond." {
+		t.Errorf("assembled text = %q, want the two messages separated by a blank line", got)
+	}
+}
+
+// A trailing boundary must not leave a dangling separator: the break is only spent when more text
+// actually follows, so a run whose last event is TEXT_MESSAGE_END ends with the text, not whitespace.
+func TestTrailingBoundaryEmitsNothing(t *testing.T) {
+	s, _ := newTestSession(t, func(w http.ResponseWriter, r *http.Request) {
+		sse(w,
+			map[string]any{"type": "TEXT_MESSAGE_CONTENT", "messageId": "m1", "delta": "Only."},
+			map[string]any{"type": "TEXT_MESSAGE_END", "messageId": "m1"},
+			map[string]any{"type": "RUN_FINISHED", "threadId": "t", "runId": "r", "outcome": map[string]any{"type": "success"}},
+		)
+	})
+	var text strings.Builder
+	for _, ev := range collect(t, s, idleReached) {
+		if p, ok := ev.Payload.(protocol.OutputDelta); ok {
+			text.WriteString(p.Text)
+		}
+	}
+	if got := text.String(); got != "Only." {
+		t.Errorf("assembled text = %q, want no trailing separator", got)
+	}
+}
+
+// The turn must still close when a backend never sends TEXT_MESSAGE_END — otherwise the turn engine
+// waits on a completion that isn't coming. The text still has to arrive, and still only once: this
+// truncated path is where the removed flush was load-bearing in appearance only.
+func TestRunEndClosesAnUnterminatedMessage(t *testing.T) {
 	s, _ := newTestSession(t, func(w http.ResponseWriter, r *http.Request) {
 		sse(w,
 			map[string]any{"type": "TEXT_MESSAGE_CONTENT", "messageId": "m1", "delta": "partial"},
 			map[string]any{"type": "RUN_FINISHED", "threadId": "t", "runId": "r", "outcome": map[string]any{"type": "success"}},
 		)
 	})
-	var final protocol.SessionMessage
+	var text strings.Builder
+	sawIdle := false
 	for _, ev := range collect(t, s, idleReached) {
-		if p, ok := ev.Payload.(protocol.SessionMessage); ok {
-			final = p
+		switch p := ev.Payload.(type) {
+		case protocol.OutputDelta:
+			text.WriteString(p.Text)
+		case protocol.SessionMessage:
+			if p.Role == "assistant" {
+				t.Fatalf("the truncated stream was restated as a finalized message: %+v", p)
+			}
+		case protocol.SessionStatus:
+			if p.Status == protocol.StatusIdle {
+				sawIdle = true
+			}
 		}
 	}
-	if final.Text != "partial" {
-		t.Errorf("run end should flush the buffered message, got %+v", final)
+	if text.String() != "partial" {
+		t.Errorf("assembled text = %q, want the partial message", text.String())
+	}
+	if !sawIdle {
+		t.Error("the turn never reached idle, so the turn engine would wait forever")
 	}
 }
 
@@ -148,7 +222,11 @@ func TestToolCallFoldsIntoOneCard(t *testing.T) {
 		}
 	}
 	last := tools[len(tools)-1]
-	if last.Status != protocol.StatusDone || last.Output != "3 passing" {
+	// "completed", not protocol.StatusDone: a finished tool CARD is "completed" across every adapter,
+	// and the hub retires it from the turn's outstanding set on that exact word. Reporting the turn
+	// status "done" here left the card outstanding until turn close, which then sealed it as an error
+	// over its own output.
+	if last.Status != "completed" || last.Output != "3 passing" {
 		t.Errorf("final frame = %+v, want a completed card carrying the result", last)
 	}
 	// The title comes from args that were only valid JSON once fully assembled — a mid-stream
@@ -317,5 +395,120 @@ func TestMalformedFrameIsSkipped(t *testing.T) {
 	}
 	if text != "survived" {
 		t.Errorf("text after a malformed frame = %q, want the following event to still arrive", text)
+	}
+}
+
+// The message boundary is per-TURN state. A turn that ends on TEXT_MESSAGE_END owes a separator that
+// is never spent; the client renders each turn as its own row, so carrying that debt into the next
+// turn opened the following reply with a blank line.
+func TestBoundaryDoesNotLeakAcrossTurns(t *testing.T) {
+	s, _ := newTestSession(t, func(w http.ResponseWriter, r *http.Request) {
+		sse(w,
+			map[string]any{"type": "TEXT_MESSAGE_CONTENT", "messageId": "m1", "delta": "Turn one."},
+			map[string]any{"type": "TEXT_MESSAGE_END", "messageId": "m1"},
+			map[string]any{"type": "RUN_FINISHED", "threadId": "t", "runId": "r", "outcome": map[string]any{"type": "success"}},
+		)
+	})
+	collect(t, s, idleReached) // first turn, ends owing a break
+
+	if err := s.Prompt(context.Background(), "again"); err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	var text strings.Builder
+	for _, ev := range collect(t, s, idleReached) {
+		if p, ok := ev.Payload.(protocol.OutputDelta); ok {
+			text.WriteString(p.Text)
+		}
+	}
+	if got := text.String(); strings.HasPrefix(got, "\n") {
+		t.Errorf("second turn opened with the previous turn's separator: %q", got)
+	}
+}
+
+// Prompt must never report success for a message it did not send.
+//
+// It used to sample `running`, drop the lock, return nil, and leave runTurn to re-check — so when
+// several callers sampled an IDLE session at once they were all told the prompt was accepted, and
+// then all but one hit runTurn's re-check and returned silently. Those messages were gone:
+// acknowledged by the API, never sent to the backend, and nothing anywhere reported it. Either the
+// run starts or Prompt returns an error.
+func TestPromptNeverSilentlyDropsAMessage(t *testing.T) {
+	var mu sync.Mutex
+	var sent []string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&in)
+		mu.Lock()
+		for _, m := range in.Messages {
+			sent = append(sent, m.Content)
+		}
+		mu.Unlock()
+		sse(w, map[string]any{"type": "RUN_FINISHED", "threadId": "t", "runId": "r",
+			"outcome": map[string]any{"type": "success"}})
+	}))
+	defer srv.Close()
+
+	prov := New(Config{Name: "agui", Endpoint: srv.URL})
+	// No creating prompt: the session starts IDLE, which is what opens the window.
+	sess, err := prov.Create(context.Background(), t.TempDir(), "")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	const callers = 16
+	var wg sync.WaitGroup
+	var accMu sync.Mutex
+	accepted := make([]string, 0, callers)
+	start := make(chan struct{})
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			text := fmt.Sprintf("follow-up-%d", i)
+			<-start // release them together, so they sample `running` at the same instant
+			if err := sess.Prompt(context.Background(), text); err == nil {
+				accMu.Lock()
+				accepted = append(accepted, text)
+				accMu.Unlock()
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	accMu.Lock()
+	want := append([]string(nil), accepted...)
+	accMu.Unlock()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(sent)
+		mu.Unlock()
+		if n >= len(want) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for _, w := range want {
+		found := false
+		for _, got := range sent {
+			if got == w {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("Prompt accepted %q but it never reached the backend (accepted %d, delivered %d): %q",
+				w, len(want), len(sent), sent)
+		}
 	}
 }

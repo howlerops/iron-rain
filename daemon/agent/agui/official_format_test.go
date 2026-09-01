@@ -79,7 +79,7 @@ func TestDecodesOfficialSDKWireFormat(t *testing.T) {
 		t.Fatal("no tool frames decoded from the official format")
 	}
 	last := tools[len(tools)-1]
-	if last.ID != "tc1" || last.Name != "bash" || last.Status != protocol.StatusDone || last.Output != "3 passing" {
+	if last.ID != "tc1" || last.Name != "bash" || last.Status != "completed" || last.Output != "3 passing" {
 		t.Errorf("final tool card = %+v", last)
 	}
 	// The title comes from argument fragments that are only valid JSON once reassembled.

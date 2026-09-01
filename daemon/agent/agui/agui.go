@@ -62,6 +62,10 @@ const (
 	evToolEnd    = "TOOL_CALL_END"
 	evToolResult = "TOOL_CALL_RESULT"
 
+	// toolCompleted is the terminal status of a tool CARD, distinct from protocol.StatusDone which
+	// belongs to a turn. The hub keys its outstanding-tool bookkeeping on this exact string.
+	toolCompleted = "completed"
+
 	evReasoningContent = "REASONING_MESSAGE_CONTENT"
 	// Superseded by REASONING_* upstream but still emitted by older integrations, and free to accept.
 	evThinkingContent = "THINKING_TEXT_MESSAGE_CONTENT"
@@ -153,14 +157,23 @@ type session struct {
 	threadID string
 	running  bool
 	cancel   context.CancelFunc
-	tools    map[string]*toolCall
+	// runGen identifies the run that currently owns `running`. A run's release must free ONLY its own
+	// claim: the release is called explicitly before the terminal status is emitted (so the hub can
+	// send the next prompt immediately) and again by defer, and a successor can have claimed the
+	// session in between. Without an owner check that second release cleared the SUCCESSOR's claim,
+	// letting a third run start concurrently with it.
+	runGen uint64
+	tools  map[string]*toolCall
 	// pendingResume holds answers to interrupts raised by the last run. AG-UI resolves an interrupt
 	// by ENDING the run and having the client start a new one carrying `resume`, so an approval
 	// cannot be answered in place — it is banked here and replayed on the next run.
 	pendingResume []resumeEntry
-	// msg accumulates the current assistant message so a finalized session.message can be emitted at
-	// TEXT_MESSAGE_END. Providers that never send END are covered by the run-end flush.
-	msg strings.Builder
+	// sawText / pendingBreak carry the MESSAGE BOUNDARY across a TEXT_MESSAGE_END. The accumulated
+	// text buffer that used to live here is gone: it was written only from the delta handler and read
+	// only to re-emit the same bytes as a finalized message, so it could never hold anything the
+	// client had not already received.
+	sawText      bool
+	pendingBreak bool
 }
 
 func (s *session) ID() string       { return s.id }
@@ -181,14 +194,18 @@ func (s *session) emit(ev agent.Event) {
 }
 
 // Prompt starts a new run carrying the user's text.
+//
+// The claim is made HERE, synchronously, not inside the goroutine. Sampling `running`, dropping the
+// lock and then letting runTurn re-check it meant a run that started in the gap made runTurn return
+// silently — while Prompt had already reported success. The user's message was gone: accepted by the
+// API, never sent to the backend, and nothing anywhere said so. Claiming before returning makes the
+// answer honest either way.
 func (s *session) Prompt(ctx context.Context, text string) error {
-	s.mu.Lock()
-	busy := s.running
-	s.mu.Unlock()
-	if busy {
+	req, rctx, release, ok := s.beginRun(text)
+	if !ok {
 		return fmt.Errorf("%s: a run is already in flight", s.provider)
 	}
-	go s.runTurn(text)
+	go s.execRun(rctx, req, release)
 	return nil
 }
 
@@ -259,14 +276,38 @@ func (s *session) Probe(ctx context.Context) (bool, error) {
 
 // runTurn performs one AG-UI run start to finish.
 func (s *session) runTurn(input string) {
+	req, ctx, release, ok := s.beginRun(input)
+	if !ok {
+		return
+	}
+	s.execRun(ctx, req, release)
+}
+
+// beginRun claims the session for one run and builds that run's request, atomically. ok is false if a
+// run is already in flight; on true the caller owns the returned release and must call it.
+func (s *session) beginRun(input string) (runInput, context.Context, func(), bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
 	s.mu.Lock()
 	if s.running {
 		s.mu.Unlock()
 		cancel()
-		return
+		return runInput{}, nil, nil, false
 	}
 	s.running, s.cancel = true, cancel
+	s.runGen++
+	gen := s.runGen
+	// Message-boundary state is per-TURN. A turn that ends on TEXT_MESSAGE_END leaves a break owed,
+	// and the client renders each turn as its own row — so carrying it over would open the next reply
+	// with a blank line. sawText likewise, or a turn whose first event is a stray END owes a break it
+	// earned in the previous turn.
+	//
+	// A RESUME run is the exception: AG-UI answers an approval by ending the run and starting a new
+	// one carrying `resume`, so the two runs are one logical turn and the client folds them into one
+	// bubble. Clearing the debt there would fuse the text after the approval onto the sentence before
+	// it ("...I'll need approval to run this.Done, it succeeded.").
+	if s.pendingResume == nil {
+		s.sawText, s.pendingBreak = false, false
+	}
 	if s.threadID == "" {
 		s.threadID = s.id // the Iron Rain session id IS the thread id
 	}
@@ -281,13 +322,21 @@ func (s *session) runTurn(input string) {
 	}
 	s.mu.Unlock()
 
-	// Idempotent, so the explicit release below is safe and a panic still frees the session.
+	// Safe to call more than once, and safe to call late: it frees the session only while THIS run
+	// still owns the claim, so a release racing a successor cannot free the successor's.
 	release := func() {
 		cancel()
 		s.mu.Lock()
-		s.running, s.cancel = false, nil
+		if s.runGen == gen {
+			s.running, s.cancel = false, nil
+		}
 		s.mu.Unlock()
 	}
+	return req, ctx, release, true
+}
+
+// execRun streams one claimed run to completion and reports its terminal status.
+func (s *session) execRun(ctx context.Context, req runInput, release func()) {
 	defer release()
 
 	s.emit(agent.Event{Type: protocol.TypeSessionStatus,
@@ -381,7 +430,7 @@ func (s *session) stream(ctx context.Context, in runInput) (string, error) {
 	// The stream ended without a terminal event. Treat it as the run finishing rather than as an
 	// error: a truncated stream with output already delivered is far more usefully shown as a
 	// completed turn the turn engine can reconcile than as a failure.
-	s.flushMessage("")
+	s.endMessage()
 	return protocol.StatusIdle, nil
 }
 
@@ -400,13 +449,23 @@ func (s *session) handle(raw string) (done bool, terminal string, err error) {
 			return false, "", nil
 		}
 		s.mu.Lock()
-		s.msg.WriteString(ev.Delta)
+		brk := s.pendingBreak
+		s.pendingBreak = false
+		s.sawText = true
 		s.mu.Unlock()
+		// Separate one assistant message from the next WITHIN a turn. The client folds deltas into a
+		// single bubble until the turn ends, so without this the last word of one message fuses to the
+		// first of the next — the same defect opencode, claude-code and pi each had to fix. A blank
+		// line, because these are separate paragraphs and markdown folds a single newline back into one.
+		if brk {
+			s.emit(agent.Event{Type: protocol.TypeOutputDelta,
+				Payload: protocol.OutputDelta{SessionID: s.id, Text: "\n\n"}})
+		}
 		s.emit(agent.Event{Type: protocol.TypeOutputDelta,
 			Payload: protocol.OutputDelta{SessionID: s.id, Text: ev.Delta}})
 
 	case evTextEnd:
-		s.flushMessage(ev.MessageID)
+		s.endMessage()
 
 	case evReasoningContent, evThinkingContent:
 		if ev.Delta != "" {
@@ -432,7 +491,13 @@ func (s *session) handle(raw string) (done bool, terminal string, err error) {
 		s.emitTool(ev.ToolCallID, protocol.StatusRunning, "")
 
 	case evToolResult:
-		s.emitTool(ev.ToolCallID, protocol.StatusDone, ev.Content)
+		// "completed", NOT protocol.StatusDone. StatusDone ("done") is a TURN status; a finished tool
+		// card is "completed" everywhere else (pi, claude-code, opencode). The hub clears a card from
+		// turnTools on `case "completed", "error"` only, so "done" left every AG-UI tool outstanding
+		// for the whole turn — and turn close then SEALED it as Status "error" with the seal note in
+		// place of its output. Every successful tool call ended up rendered, and persisted, as a
+		// failure that had eaten its own result.
+		s.emitTool(ev.ToolCallID, toolCompleted, ev.Content)
 
 	case evRunError:
 		msg := ev.Message
@@ -455,24 +520,32 @@ func (s *session) handle(raw string) (done bool, terminal string, err error) {
 			}
 			return true, protocol.StatusAwaitingApproval, nil
 		}
-		s.flushMessage("")
+		s.endMessage()
 		return true, protocol.StatusIdle, nil
 	}
 	return false, "", nil
 }
 
-// flushMessage emits the accumulated assistant text as a finalized message and resets the buffer.
-func (s *session) flushMessage(msgID string) {
+// endMessage closes an assistant message without re-sending it.
+//
+// It used to emit the accumulated text as a finalized session.message — a verbatim restatement of the
+// output.delta frames it had just sent, since the buffer had no other writer. That frame arrives after
+// the client may already have sealed the streamed row, and the client only REPLACES a row that is
+// still streaming, so it was appended instead: the same reply twice, adjacent and identical. Exactly
+// the bug fixed in opencode's adapter, here with no guard at all.
+//
+// Durability is unaffected. The hub synthesizes and persists the turn's assistant text at idle for
+// any provider that never finalizes one (hub.finalizeTurnTranscript), which is how claude-code, pi and
+// the CLI family have always been stored — AG-UI simply joins them.
+//
+// What DOES have to survive is the boundary: TEXT_MESSAGE_END means "that message is complete", and
+// the next one must not be glued to it.
+func (s *session) endMessage() {
 	s.mu.Lock()
-	text := s.msg.String()
-	s.msg.Reset()
-	s.mu.Unlock()
-	if strings.TrimSpace(text) == "" {
-		return
+	if s.sawText {
+		s.pendingBreak = true
 	}
-	s.emit(agent.Event{Type: protocol.TypeSessionMessage, Payload: protocol.SessionMessage{
-		SessionID: s.id, Role: "assistant", Text: text, MsgID: msgID,
-	}})
+	s.mu.Unlock()
 }
 
 // emitTool re-sends a tool card under its stable id. Our protocol updates one frame in place rather
@@ -485,7 +558,7 @@ func (s *session) emitTool(id, status, output string) {
 	if tc != nil {
 		name, args = tc.name, tc.args.String()
 	}
-	if status == protocol.StatusDone {
+	if status == toolCompleted {
 		delete(s.tools, id)
 	}
 	s.mu.Unlock()

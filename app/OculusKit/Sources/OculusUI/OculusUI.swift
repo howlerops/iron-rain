@@ -273,6 +273,11 @@ public final class Model: ObservableObject {
     /// While true, skip replayed transcript messages that duplicate ones already shown
     /// (set briefly around a live re-attach so reviving a session doesn't double the chat).
     var dedupReplay = false
+    /// Everything the assistant has STREAMED (as output.delta) since the last finalized assistant
+    /// message — i.e. the client's copy of the daemon's `asstAccum`. A synthetic end-of-turn message
+    /// is exactly this text, so it can be recognised no matter how many rows the deltas were split
+    /// across by a tool card or a generative-UI block.
+    var turnStreamedText = ""
     /// Child sessions we've already sent a sessionSubscribe for — so expanding a card twice (or
     /// collapse+re-expand) doesn't re-subscribe. Kept across collapse; cleared on parent switch.
     private var subscribedChildIDs: Set<String> = []
@@ -3980,6 +3985,7 @@ public final class Model: ObservableObject {
             messages.append(ChatMessage(role: .assistant, text: "", streaming: true))
         }
         streamBuffer += text
+        turnStreamedText += text // the client's copy of the daemon's per-turn accumulation
         scheduleFlush()
     }
 
@@ -4019,6 +4025,23 @@ public final class Model: ObservableObject {
             flushStream() // fold any buffered thinking tokens before sealing the message
             messages[messages.count - 1].streaming = false
         }
+    }
+
+    /// Is `text` a restatement of prose this turn already streamed onto the screen?
+    ///
+    /// Two shapes have to match. The daemon's synthetic end-of-turn message is the WHOLE turn, so it
+    /// equals the accumulation outright. But opencode's `resyncLast` re-fetches only the turn's LAST
+    /// assistant message — and opencode emits several inside one turn (a step summary before each
+    /// phase), separating them with a "\n\n" delta. Against a multi-message turn the whole-turn
+    /// comparison therefore misses, and the duplicate this guard exists to stop survives.
+    ///
+    /// So a trailing message counts too — but only a WHOLE one, anchored at the "\n\n" boundary the
+    /// daemon injects. A bare `hasSuffix` would swallow any genuinely new short reply that happened to
+    /// end the same way as the stream.
+    private func restatesWhatWasStreamed(_ text: String) -> Bool {
+        let streamed = turnStreamedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !streamed.isEmpty else { return false }
+        return streamed == text || streamed.hasSuffix("\n\n" + text)
     }
 
     private func finalizeStreaming() {
@@ -4394,6 +4417,17 @@ public final class Model: ObservableObject {
                         break
                     }
                 }
+                // The daemon's synthetic end-of-turn message (claude-code/pi/cli stream deltas and
+                // never a finalized message) is the WHOLE turn's visible text concatenated. On screen
+                // those same deltas are NOT one row: a tool card or an iron:ui block seals the row
+                // mid-turn and the next delta opens a fresh one — so the text scan above matches no
+                // single row and the streaming-replace below has nothing streaming to replace. Compare
+                // against what the deltas actually streamed this turn, which is what the frame IS.
+                if role == .assistant, !trimmed.isEmpty, restatesWhatWasStreamed(trimmed) {
+                    finalizeStreaming() // fold the stream's tail into its row and seal it
+                    turnStreamedText = ""
+                    break
+                }
                 // A full-text assistant message that arrives while an assistant message is still
                 // streaming is the daemon's authoritative end-of-turn RESYNC (opencode's SSE
                 // dropped mid-turn, so it re-sends the completed text) — REPLACE the partial
@@ -4402,6 +4436,7 @@ public final class Model: ObservableObject {
                     streamBuffer = ""; cancelFlush() // drop the partial; the resync text is authoritative
                     messages[messages.count - 1].text = shown
                     messages[messages.count - 1].streaming = false
+                    turnStreamedText = ""
                     break
                 }
                 finalizeStreaming()
@@ -4409,13 +4444,33 @@ public final class Model: ObservableObject {
                 // deduped above, so anything reaching here with an author is someone else's.
                 let author = (role == .user && m.author != identity) ? m.author : nil
                 messages.append(ChatMessage(role: role, text: shown, author: author))
+                turnStreamedText = "" // a finalized message closes the streamed segment it belongs to
             } else if let m = try? env.payload(as: SessionMessage.self), childMessages[m.sessionID] != nil {
                 // A sub-agent's message — route into its own buffer, never the main transcript.
                 // Tool calls arrive as role=="tool" with Text=the tool name; keep them.
                 noteActivity() // the active session's sub-agent is alive → parent isn't dead
                 let role: ChatMessage.Role = m.role == "user" ? .user : (m.role == "tool" ? .tool : .assistant)
+                let shown = Self.stripUIGuide(m.text)
+                // The daemon rings ONE synthetic finalized message per lane at turn end
+                // (finalizeTurnTranscript) on top of the deltas it already broadcast, so a REPLAY
+                // carries the lane's report twice — deltas first, then the whole thing. The parent
+                // branch survives this by replacing a still-streaming row; a lane cannot, because a
+                // lane's text is split across rows by tool cards while the synthetic message is the
+                // whole turn's accumulation. Compare against what the lane already streamed: the
+                // synthetic message is exactly that accumulation, hence a SUFFIX of it.
+                if role == .assistant {
+                    flushChild(m.sessionID) // fold pending deltas before comparing
+                    let streamed = (childMessages[m.sessionID] ?? [])
+                        .filter { $0.role == .assistant }.map(\.text).joined()
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                    let t = shown.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !t.isEmpty, streamed.hasSuffix(t) {
+                        finalizeChildStreaming(m.sessionID)
+                        break // already on screen as the deltas it was built from
+                    }
+                }
                 finalizeChildStreaming(m.sessionID)
-                childMessages[m.sessionID, default: []].append(ChatMessage(role: role, text: Self.stripUIGuide(m.text)))
+                childMessages[m.sessionID, default: []].append(ChatMessage(role: role, text: shown))
             }
         case MessageType.thinking:
             if let t = try? env.payload(as: Thinking.self), t.sessionID == sessionID {

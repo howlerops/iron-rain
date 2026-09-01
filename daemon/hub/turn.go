@@ -271,6 +271,24 @@ func (m *managedSession) turnOnTool(t protocol.SessionTool) {
 	case "completed", "error":
 		delete(m.turnTools, t.ID)
 	default: // running (or any status a provider invents): it is outstanding until proven otherwise
+		// Say so when the word is not one we know. Treating an unrecognised status as "still running"
+		// is the safe default, but it is SILENT — and a provider that reports a finished tool with the
+		// wrong word therefore looks exactly like a tool that never finished. The turn then seals the
+		// card as an error at close, writing the seal note over a result that had arrived perfectly
+		// well. The AG-UI adapter said "done" (a TURN status) instead of "completed" and did this to
+		// every successful tool call it ever made; nothing anywhere reported it. Once per session per
+		// word, so a genuinely chatty provider cannot flood the log.
+		if t.Status != "" && t.Status != "running" {
+			if m.unknownToolStatus == nil {
+				m.unknownToolStatus = map[string]bool{}
+			}
+			if !m.unknownToolStatus[t.Status] {
+				m.unknownToolStatus[t.Status] = true
+				log.Printf("turn: session %s (%s): unknown tool status %q — treating the tool as still "+
+					"running; a finished tool must report \"completed\" or \"error\"",
+					m.sess.ID(), m.sess.Provider(), t.Status)
+			}
+		}
 		tt := m.turnTools[t.ID]
 		if tt == nil {
 			tt = &protocol.TurnTool{ID: t.ID, StartedAt: now.Unix()}
@@ -310,6 +328,15 @@ func (m *managedSession) closeTurnFrom(state, reason string, providerDriven bool
 	m.turnPhase = ""
 	stop := m.turnStopLoop
 	m.turnStopLoop = nil
+	// Persist the turn's streamed reply HERE, on the one path every terminal state passes through,
+	// rather than only on the provider's idle. finalizeTurnTranscript used to hang off the pump's
+	// idle/done branch alone, and it is also the only thing that clears the accumulator — so a turn
+	// that ended any other way (RUN_ERROR, a dead stream, probe abandonment, a reconciled close, an
+	// unanswered approval) lost its reply from the durable transcript AND left it in the accumulator,
+	// where it was prepended to the NEXT turn's synthetic message. The previous turn's answer then
+	// reappeared on screen below a later prompt, attributed to the wrong turn. That hit every
+	// delta-only provider — claude-code, pi, cli and now AG-UI, which no longer finalizes a message
+	// of its own. The call is idempotent, so the pump's existing one on the idle path is harmless.
 	if m.hub != nil && m.hub.awake != nil {
 		defer m.hub.awake.Release() // balanced with the Hold in openTurn
 	}
@@ -343,6 +370,11 @@ func (m *managedSession) closeTurnFrom(state, reason string, providerDriven bool
 	}
 	m.turnTools = nil
 	m.mu.Unlock()
+	// flushUI first: the segmenter holds a line until it is newline-terminated, and that residual IS
+	// the last line of most replies. It writes into the accumulator, so it has to land before the
+	// accumulator is drained.
+	m.flushUI(m.sess.ID())
+	m.finalizeTurnTranscript()
 	if stop != nil {
 		close(stop)
 	}

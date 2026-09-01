@@ -176,6 +176,9 @@ type managedSession struct {
 	// used to be fire-and-forget, so one whose completion event was lost span forever; knowing what is
 	// outstanding is what lets closeTurn seal them.
 	turnTools map[string]*protocol.TurnTool
+	// unknownToolStatus remembers which unrecognised tool statuses we have already complained about,
+	// so the warning in turnOnTool fires once per word rather than once per frame.
+	unknownToolStatus map[string]bool
 	// turnToolAt is the last time any tool STARTED or FINISHED. It is the turn's real progress signal:
 	// a provider can report "busy" indefinitely while wedged inside a single tool call (opencode's
 	// probe reads an incomplete assistant message, which is exactly what a hung tool looks like), so
@@ -219,15 +222,20 @@ type managedSession struct {
 	// transcriptTrimmed records that the in-memory ring has DROPPED events. Once true, the ring is no
 	// longer a complete record of the session and must not be replayed as if it were.
 	transcriptTrimmed bool
-	// replayTotal is how many events the last assembled history held, so a page request knows how far
-	// back it can go without re-deciding what "the history" is.
-	replayTotal   int
+	// accMu guards asstAccum, asstPersisted and subAccum.
+	//
+	// These used to be pump-goroutine-only, unsynchronized. That invariant held exactly as long as the
+	// turn was finalized only from the pump — and it no longer is: a turn now finalizes from whichever
+	// path closes it, including the reconciler's direct close when the onPump queue is full. Rather
+	// than make every future caller prove which goroutine it is on, the accumulator carries its own
+	// lock. It is taken only on delta boundaries and at turn close, never around I/O.
+	accMu         sync.Mutex
 	asstAccum     strings.Builder
 	asstPersisted bool
 	// Per-sub-agent text for this turn, keyed by the child session id. Sub-agent output is streamed
 	// as deltas and no provider ever finalizes it into a message, so without this a lane that read
 	// correctly while it ran came back EMPTY after a restart — the lane announcement is durable, its
-	// contents were not. run() goroutine only, like asstAccum.
+	// contents were not. Guarded by accMu, like asstAccum.
 	subAccum map[string]*strings.Builder
 
 	// ringFromStart reports whether m.transcript holds the session's history from its FIRST event.
@@ -942,10 +950,10 @@ func (m *managedSession) flushUI(sessionID string) {
 			// moment later was missing its final line: the transcript on screen and the transcript on
 			// disk disagreed about where the answer ended, and only the stored one was truncated.
 			//
-			// Same goroutine as persistDurable (the pump, directly or via onPump), so the
-			// unsynchronized write matches the invariant asstAccum already relies on.
 			if sessionID == m.sess.ID() {
+				m.accMu.Lock()
 				m.asstAccum.WriteString(fwd)
+				m.accMu.Unlock()
 			}
 			m.broadcast(raw)
 		}
@@ -983,7 +991,9 @@ func (m *managedSession) persistDurable(ev agent.Event, raw []byte) {
 		}
 		msgID = msg.MsgID
 		if msg.Role == "assistant" {
+			m.accMu.Lock()
 			m.asstPersisted = true // a real assistant message → skip the synthetic delta one at turn end
+			m.accMu.Unlock()
 		}
 	case protocol.TypeSessionTool:
 		t, ok := ev.Payload.(protocol.SessionTool)
@@ -1010,6 +1020,7 @@ func (m *managedSession) persistDurable(ev agent.Event, raw []byte) {
 		// error marker: NULL id (each distinct)
 	case protocol.TypeOutputDelta:
 		if d, ok := ev.Payload.(protocol.OutputDelta); ok {
+			m.accMu.Lock()
 			if d.SessionID == sid {
 				m.asstAccum.WriteString(d.Text) // accumulate the VISIBLE (post-fence) streamed text
 			} else if d.SessionID != "" {
@@ -1024,6 +1035,7 @@ func (m *managedSession) persistDurable(ev agent.Event, raw []byte) {
 				}
 				b.WriteString(d.Text)
 			}
+			m.accMu.Unlock()
 		}
 		return
 	default:
@@ -1049,8 +1061,19 @@ func (m *managedSession) persistDurable(ev agent.Event, raw []byte) {
 // state. NULL msg id — those providers never re-stream history, so there's nothing to dedup against.
 func (m *managedSession) finalizeTurnTranscript() {
 	db := m.hub.db
+	// Take the whole turn's accumulation and CLEAR it under one lock, then do the durable writes
+	// outside it. Clearing here rather than at the end is what makes this safe to call from every
+	// close path: a second call finds an empty accumulator and does nothing.
+	m.accMu.Lock()
 	text := m.asstAccum.String()
-	if db != nil && !m.asstPersisted && strings.TrimSpace(text) != "" {
+	persisted := m.asstPersisted
+	subs := m.subAccum
+	m.asstAccum.Reset()
+	m.asstPersisted = false
+	m.subAccum = nil
+	m.accMu.Unlock()
+
+	if db != nil && !persisted && strings.TrimSpace(text) != "" {
 		ev := agent.Event{Type: protocol.TypeSessionMessage, Payload: protocol.SessionMessage{SessionID: m.sess.ID(), Role: "assistant", Text: text}}
 		if raw, err := ev.Encode(); err == nil {
 			// RING it, don't deliver it. Writing only to SQLite created a frame that existed in one
@@ -1068,13 +1091,10 @@ func (m *managedSession) finalizeTurnTranscript() {
 			m.recordOnly(raw)
 		}
 	}
-	m.asstAccum.Reset()
-	m.asstPersisted = false
-
 	// Same treatment for every sub-agent that spoke this turn: one finalized message per lane, so
 	// the lane still has its report after a restart. Ringed rather than delivered, for the reason
 	// recordOnly exists — live watchers already received these as deltas.
-	for child, b := range m.subAccum {
+	for child, b := range subs {
 		text := b.String()
 		if db == nil || strings.TrimSpace(text) == "" {
 			continue
@@ -1086,7 +1106,6 @@ func (m *managedSession) finalizeTurnTranscript() {
 			m.recordOnly(raw)
 		}
 	}
-	m.subAccum = nil
 }
 
 // recordOnly appends an event to the replayable ring WITHOUT delivering it to current subscribers.
