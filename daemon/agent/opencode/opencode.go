@@ -711,6 +711,12 @@ type session struct {
 	// mid-turn SSE reconnect resyncs the latest assistant text (recovering anything produced during
 	// the silent gap) instead of only resuming live from the reconnect point.
 	turnActive atomic.Bool
+	// sawDelta: did this turn's reply actually reach us over the stream? resyncLast exists to recover
+	// a turn whose streaming was MISSED, and this is the only honest test of that. Using "has idle
+	// arrived yet" instead re-fetched and re-emitted the reply on every fast turn — the POST can
+	// return before the SSE delivers session.idle — and the client appended that copy as a second
+	// bubble. Set on the first parent delta, cleared when a turn starts.
+	sawDelta atomic.Bool
 
 	// True from when a turn is SENT until it reaches idle — NOT cleared when the POST returns (unlike
 	// turnActive). So if opencode wedges a turn server-side (e.g. an agent bash step like `git merge`
@@ -1172,6 +1178,9 @@ func (s *session) handle(raw []byte) {
 					s.emit(agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: target, Text: "\n\n"}})
 				}
 			}
+			if target == s.id {
+				s.sawDelta.Store(true) // the parent's reply is arriving over the stream; nothing to recover
+			}
 			s.emit(agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: target, Text: pr.Delta}})
 		case "reasoning":
 			if target == s.id { // thinking only surfaced for the parent turn
@@ -1501,6 +1510,7 @@ func (s *session) sendParts(parts []map[string]any, abortStuck bool) error {
 		defer cancel()
 		s.turnActive.Store(true)
 		defer s.turnActive.Store(false)
+		s.sawDelta.Store(false) // a fresh turn has streamed nothing yet
 		start := time.Now()
 		log.Printf("opencode: POST message sid=%s (turn start)", s.id)
 		err := s.p.doPost(pctx, withDir("/session/"+s.id+"/message", s.dir), body, nil, s.p.http) // pctx bounds it
@@ -1520,7 +1530,25 @@ func (s *session) sendParts(parts []map[string]any, abortStuck bool) error {
 			s.statusMu.Unlock()
 			if !parked {
 				s.turnPending.Store(false) // turn completed cleanly → not wedged
-				s.resyncLast(ctx)          // recover the turn's result if its streaming was missed, then seal it
+				// Resync ONLY when the stream delivered no reply at all.
+				//
+				// Calling it unconditionally re-emitted the last assistant message on EVERY turn, and
+				// that frame arrives after the client has already sealed the streamed row — so the
+				// client's "replace a still-streaming row" rule missed and it APPENDED the text
+				// instead. Two identical blocks, adjacent, on screen.
+				//
+				// The test is "did we stream this turn's reply", not "has idle arrived yet": gating on
+				// turnActive looked right and still duplicated, because on a fast turn the POST
+				// returns before the SSE gets round to session.idle. Verified against the durable
+				// store, which held the streamed copy and the re-fetched one side by side.
+				//
+				// It was invisible to both the store and replay-probe — the resync frame carries a
+				// msg id and is stored exactly once, so nothing was duplicated on disk or in the ring.
+				// The doubling existed only in the live client's message list, which is why it
+				// survived a search for duplicated frames.
+				if !s.sawDelta.Load() {
+					s.resyncLast(ctx) // the stream delivered no reply — recover it
+				}
 				s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusIdle}})
 			}
 		case pctx.Err() == context.DeadlineExceeded:

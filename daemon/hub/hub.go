@@ -1399,8 +1399,25 @@ func (h *Hub) addSession(sess agent.Session, meta sessionMeta) *managedSession {
 	}
 	m := newManagedSession(h, sess, meta)
 	h.mu.Lock()
+	prev := h.sessions[sess.ID()]
 	h.sessions[sess.ID()] = m
 	h.mu.Unlock()
+	// Evict a binding this id already had, rather than overwriting it and walking away.
+	//
+	// The map assignment replaced the entry but left the OLD managedSession's pump running, still
+	// subscribed to the provider and still broadcasting to the same subscribers. Two pumps for one
+	// conversation means every frame is delivered twice: the reply rendered doubled on screen, and
+	// one turn logged "turn end (idle)" three times. It reproduced whenever anything attached an id
+	// the daemon already owned — the restore and a take-over of the same session was enough.
+	//
+	// Closing the provider session ends that goroutine at its source, which is the only thing that
+	// actually stops the second stream; dropping the map entry alone would leave it pumping.
+	if prev != nil && prev != m {
+		log.Printf("session %s: replacing a live binding — closing the previous one", sess.ID())
+		go func() {
+			_ = prev.sess.Close()
+		}()
+	}
 	// Give the session's dev server a NAME. Only sessions that actually got a port have anything to
 	// serve, so this is a no-op for the rest. The name is derived from whatever the user would
 	// recognise the session by — its label, workspace or branch — falling back to the id.
