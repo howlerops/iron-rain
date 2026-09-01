@@ -125,10 +125,11 @@ func (h *Hub) adoptForkedSession(ctx context.Context, parent *managedSession, ne
 	if err != nil {
 		return err
 	}
-	m := newManagedSession(h, sess, meta)
-	h.mu.Lock()
-	h.sessions[sess.ID()] = m
-	h.mu.Unlock()
-	h.persistSession(m)
+	// addSession, not a hand-rolled copy of it. This did the map write itself and so skipped
+	// everything addSession does around it: evicting a binding the id already had (so a fork landing
+	// on a live id would leave two pumps broadcasting the same conversation), healing the cwd from the
+	// provider's own directory, and registering the preview server. Three behaviours that existed
+	// only in the other copy of this code.
+	h.addSession(sess, meta)
 	return nil
 }
