@@ -169,6 +169,28 @@ func (h *Hub) RestoreSessions(ctx context.Context, ttl time.Duration) {
 		if cwd == "" {
 			cwd = r.Cwd
 		}
+		// Never re-attach an id the daemon is ALREADY bound to.
+		//
+		// This runs in a background goroutine while the websocket listener is already accepting, so a
+		// client that reconnects and re-opens its session binds that id before restore reaches its
+		// record. The client handler checks h.managed() first; this loop checked nothing, so one
+		// conversation ended up with two provider subscriptions and two history replays — visible in
+		// the log as the same id logging "opencode: attach" twice and one turn logging "turn end
+		// (idle)" three times. addSession's eviction made that survivable, not correct.
+		//
+		// The persisted meta is merged onto the live binding rather than discarded: the client attach
+		// path carries only cwd and provider URL, so skipping outright would leave the user's open
+		// session on the provider's default model and with no mode — which is the very thing
+		// applyRestoredModel exists to restore.
+		if m := h.managed(r.ID); m != nil {
+			h.applyRestoredModel(m, pm)
+			m.mu.Lock()
+			if m.mode == "" {
+				m.mode = pm.Mode
+			}
+			m.mu.Unlock()
+			continue
+		}
 		att := h.attacherFor(r.Provider, pm.ProviderURL)
 		// Drop unrecoverable HUSKS: the provider says this id can't actually resume (e.g. a
 		// claude-code session that never completed a first turn, so no UUID was ever recorded) AND we
