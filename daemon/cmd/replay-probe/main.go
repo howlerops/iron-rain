@@ -124,7 +124,10 @@ func probe(conn *transport.Conn, rd *reader, id string, quiet time.Duration) boo
 		log.Fatal(err)
 	}
 	byType := map[string]int{}
-	seen := map[string]int{} // frame hash -> count, to catch a doubled replay
+	seen := map[string]int{}             // frame hash -> count, to catch a doubled replay
+	kindOf := map[string]string{}        // frame hash -> its type, so repeats can be judged by what they draw
+	sample := map[string][]byte{}        // frame hash -> the raw frame, for reporting a real duplicate
+	var dupSamples [][]byte
 	visible, total := 0, 0
 	last := time.Now()
 	for time.Since(last) < quiet {
@@ -150,7 +153,12 @@ func probe(conn *transport.Conn, rd *reader, id string, quiet time.Duration) boo
 		total++
 		byType[f.Type]++
 		h := sha256.Sum256(raw)
-		seen[hex.EncodeToString(h[:8])]++
+		key := hex.EncodeToString(h[:8])
+		seen[key]++
+		kindOf[key] = f.Type
+		if n := seen[key]; n == 2 {
+			sample[key] = raw // keep the first repeat for the report
+		}
 		// What the user would actually SEE. Status and turn frames render nothing, which is exactly
 		// how a "connected but empty" conversation looks from the inside.
 		switch f.Type {
@@ -158,10 +166,24 @@ func probe(conn *transport.Conn, rd *reader, id string, quiet time.Duration) boo
 			visible++
 		}
 	}
-	dupes := 0
-	for _, n := range seen {
-		if n > 1 {
-			dupes += n - 1
+	// Duplicates that MATTER are duplicates of frames that render. Status and turn frames repeat
+	// byte-for-byte all the time — several idles in a turn are normal and draw nothing — so counting
+	// them as "the transcript would double" produced a standing false alarm that buried the signal
+	// this probe exists to give.
+	dupes, visibleDupes := 0, 0
+	dupTypes := map[string]int{}
+	for k, n := range seen {
+		if n <= 1 {
+			continue
+		}
+		dupes += n - 1
+		dupTypes[kindOf[k]] += n - 1
+		switch kindOf[k] {
+		case protocol.TypeSessionMessage, protocol.TypeSessionTool, protocol.TypeUIComponent:
+			visibleDupes += n - 1
+			if len(dupSamples) < 4 {
+				dupSamples = append(dupSamples, sample[k])
+			}
 		}
 	}
 	kinds := make([]string, 0, len(byType))
@@ -178,7 +200,21 @@ func probe(conn *transport.Conn, rd *reader, id string, quiet time.Duration) boo
 		return false
 	}
 	if dupes > 0 {
-		fmt.Printf("  >> %d frame(s) sent twice — the transcript would double\n", dupes)
+		for k, n := range dupTypes {
+			fmt.Printf("    repeated: %-18s %d\n", k, n)
+		}
+	}
+	if visibleDupes > 0 {
+		fmt.Printf("  >> %d RENDERING frame(s) sent twice — the transcript would double\n", visibleDupes)
+		for _, raw := range dupSamples {
+			one := string(raw)
+			if len(one) > 220 {
+				one = one[:220] + "…"
+			}
+			fmt.Printf("     %s\n", one)
+		}
+	} else if dupes > 0 {
+		fmt.Printf("  (%d non-rendering repeat(s) — status/turn frames, which draw nothing)\n", dupes)
 	}
 	return true
 }
