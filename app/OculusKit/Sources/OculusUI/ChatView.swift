@@ -1469,12 +1469,63 @@ enum AssistantContentParser {
         return out
     }
 
+    /// The closed component catalog, and the caps on each — a mirror of daemon/genui's `catalog`,
+    /// `validateTable`, `validateOptions` and `validateForm`.
+    ///
+    /// It has to be a mirror. Two independent recognizers with different rules is not a redundancy,
+    /// it is a disagreement: the daemon's is deliberately strict (closed catalog, size and shape caps)
+    /// and forwards anything it refuses as ordinary text, on the stated principle that an over-cap
+    /// payload is "meant to be dropped SILENTLY and left as plain text". This one accepted ANY object
+    /// carrying component/id/props — no catalog, no caps, no size limit — so a payload the daemon had
+    /// judged unsafe and passed through as prose was picked up here and rendered as a live card. The
+    /// closed-catalog safety model only holds if both ends agree on what is in the catalog.
+    ///
+    /// If you add a component, add it in daemon/genui/genui.go AND here.
+    private enum Catalog {
+        static let maxPayloadBytes = 64 * 1024
+        static let maxRows = 500
+        static let maxCols = 20
+        static let maxOptions = 50
+        static let maxFields = 20
+        static let fieldTypes: Set<String> = ["text", "textarea", "select", "toggle", "number"]
+        static let names: Set<String> = [
+            "table", "checklist", "plan", "callout", "diff", "choice", "confirm", "form",
+        ]
+
+        /// Mirrors the per-component `validate` funcs. Components with no validator accept anything.
+        static func validate(_ name: String, props: Any?) -> Bool {
+            switch name {
+            case "table":
+                guard let p = props as? [String: Any] else { return false }
+                let cols = (p["columns"] as? [Any])?.count ?? 0
+                let rows = (p["rows"] as? [Any])?.count ?? 0
+                return cols <= maxCols && rows <= maxRows
+            case "choice", "confirm":
+                // Matches the daemon, which ignores a decode failure here and only caps the count.
+                let opts = (props as? [String: Any])?["options"] as? [Any]
+                return (opts?.count ?? 0) <= maxOptions
+            case "form":
+                guard let p = props as? [String: Any], let fields = p["fields"] as? [[String: Any]],
+                      !fields.isEmpty, fields.count <= maxFields else { return false }
+                for f in fields {
+                    guard let id = f["id"] as? String, !id.isEmpty,
+                          let type = f["type"] as? String, fieldTypes.contains(type) else { return false }
+                    if let opts = f["options"] as? [Any], opts.count > maxOptions { return false }
+                }
+                return true
+            default:
+                return true
+            }
+        }
+    }
+
     private static func decodeComponent(_ json: String, sessionID: String, messageID: String) -> UIComponent? {
-        guard let data = json.data(using: .utf8),
+        guard let data = json.data(using: .utf8), data.count <= Catalog.maxPayloadBytes,
               var object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              object["component"] is String,
-              object["id"] is String,
-              object["props"] != nil else { return nil }
+              let name = object["component"] as? String, Catalog.names.contains(name),
+              let id = object["id"] as? String, !id.isEmpty,
+              object["props"] != nil,
+              Catalog.validate(name, props: object["props"]) else { return nil }
         object["session_id"] = object["session_id"] ?? sessionID
         object["message_id"] = object["message_id"] ?? messageID
         object["schema_v"] = object["schema_v"] ?? 1
