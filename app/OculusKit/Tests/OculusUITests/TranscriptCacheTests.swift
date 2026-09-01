@@ -286,3 +286,32 @@ final class TranscriptCacheTests: XCTestCase {
         await cache.forgetDaemon("unit-B")
     }
 }
+
+/// Leaving a session must clear the frame-level record, or the NEXT session is reconciled against it.
+///
+/// `resetTranscriptCacheState()` had exactly ONE call site in the whole app — openSession's. attach()
+/// and newSession() cleared `messages` and nothing in the transcript-cache group, so
+/// `transcriptPainted` kept the previous session's frames and the next reconcile compared a fresh
+/// session's replay against a transcript that was never its own. Stashing first is what keeps the
+/// outgoing session's warm cache intact, so this asserts both halves.
+@MainActor
+final class LeavingASessionClearsTheCacheTests: XCTestCase {
+
+    private func frame(_ session: String, _ text: String) -> Data {
+        Data(#"{"type":"session.message","payload":{"session_id":"\#(session)","role":"assistant","text":"\#(text)"}}"#.utf8)
+    }
+
+    func testNewSessionClearsPaintedFramesAndKeepsTheOldCache() {
+        let m = Model()
+        m.sessionID = "a"
+        m.transcriptPainted = [frame("a", "session A said this")]
+
+        m.newSession()
+
+        XCTAssertTrue(m.transcriptPainted.isEmpty,
+                      "the previous session's frames survived into a new session; the next reconcile "
+                      + "compares a fresh replay against them")
+        XCTAssertEqual(m.transcriptHydrated["a"]?.count, 1,
+                       "the outgoing session's warm cache was thrown away instead of stashed")
+    }
+}

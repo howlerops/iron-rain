@@ -471,9 +471,19 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 			return nil, fmt.Errorf("could not send your message: %w", err)
 		}
 	}
+	// modelAccepted stays false when the provider refused the model, so the session does not go on to
+	// report one it is not using. claude-code's SetModel is a write to the sidecar's stdin: it returns
+	// EPIPE once that process has exited and os.ErrClosed after Close, both of which mean the switch
+	// did not happen. The error was discarded here and the model recorded regardless, so the app's
+	// model picker, the usage rows and the session list all named a model the agent never had.
+	modelAccepted := req.Model != ""
 	if req.Model != "" {
 		if setter, ok := sess.(agent.ModelSetter); ok {
-			_ = setter.SetModel(req.ModelProvider, req.Model)
+			if err := setter.SetModel(req.ModelProvider, req.Model); err != nil {
+				modelAccepted = false
+				log.Printf("session.create: %s did not accept model %q: %v — the session keeps its default",
+					req.Provider, req.Model, err)
+			}
 		}
 	}
 	ms := h.addSession(sess, meta)
@@ -482,7 +492,7 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 	}
 	h.mcpTokens.bind(mcpToken, sess.ID()) // the token now identifies this session to the gateway
 	ms.mu.Lock()
-	if req.Model != "" {
+	if modelAccepted {
 		ms.model, ms.modelProvider = req.Model, req.ModelProvider
 	}
 	ms.mode = mode
@@ -4517,7 +4527,10 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		// fails (wrong directory → opencode 2xx-no-op, provider outage), the text is already on disk
 		// and recoverable — it can never vaporize the way it did in the 6-hour-loss incident.
 		author := h.clientName(conn)
-		_ = h.tr().Append(req.SessionID, transcript.Entry{Kind: "user", Text: text, Author: author})
+		// The write-AHEAD, and the guarantee the whole transcript package exists for. Its error used to
+		// be discarded, so a prompt that never reached disk was indistinguishable from one that did —
+		// and the no-response path then told the user it had been saved.
+		m.noteWriteAhead(h.tr().Append(req.SessionID, transcript.Entry{Kind: "user", Text: text, Author: author}))
 		// Ask the turn engine — the only thing here with actual evidence — whether the turn this
 		// prompt is landing on is wedged, and clear the stall bookkeeping so the new turn starts fresh.
 		unstick := m.resumeStalledTurn()
@@ -4595,7 +4608,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 				h.sendErr(conn, env.ID, "ui action has no prompt")
 				return
 			}
-			_ = h.tr().Append(req.SessionID, transcript.Entry{Kind: "user", Text: text})
+			m.noteWriteAhead(h.tr().Append(req.SessionID, transcript.Entry{Kind: "user", Text: text}))
 			unstick := m.resumeStalledTurn() // a UI action is a user turn like any other
 			m.openTurn("")
 			log.Printf("session %s (%s): ui.action %q -> prompt (%d chars)", req.SessionID, m.sess.Provider(), req.ActionID, len(text))
@@ -4927,12 +4940,24 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			// goroutine before Stop even returns, and a verdict published in that window would page
 			// the user about their own interrupt.
 			m.markUserInterrupted()
-			_ = m.sess.Stop(ctx) // interrupt the current turn; the session stays open for a redirect
 			// Close the turn ourselves rather than waiting for the provider to say something. Some
 			// providers answer an abort with an error status, some with idle, and some (a wedged one —
 			// the very case people hit Stop for) with nothing at all, which left the UI spinning on a
 			// turn the user had already killed.
+			//
+			// And close it BEFORE the abort, not after. Stop is a real round trip — opencode POSTs
+			// /abort with a 30s unary timeout — while session.prompt is dispatched on its own
+			// goroutine. A redirect typed in that window (the whole point of stopping: "no, do this
+			// instead") opened a NEW turn, and this close then sealed THAT turn as "interrupted by
+			// you" while the agent was already working on it. Closing first means this verdict can
+			// only ever land on the turn the user actually interrupted.
 			m.closeTurn(protocol.StatusIdle, "interrupted by you")
+			// Bounded: the session stays open for a redirect, and nothing here needs the abort's
+			// answer. Waiting the provider's full timeout only delays the reply to a user who has
+			// already been told the turn is over.
+			sctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			_ = m.sess.Stop(sctx)
+			cancel()
 		}
 		h.sendOK(conn, env.ID, nil)
 

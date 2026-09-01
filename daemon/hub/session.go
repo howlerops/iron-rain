@@ -66,7 +66,16 @@ func (m *managedSession) armResponseWatchdog() {
 		if !fired {
 			return
 		}
+		m.mu.Lock()
+		lost := m.promptWriteAheadFailed
+		m.mu.Unlock()
 		detail := "No response from the agent — your message may not have reached it (a directory mismatch can accept the send but route it nowhere). Your prompt was saved; try “Recover session”, then resend."
+		if lost {
+			// Do not promise a recovery that cannot happen. If the write-ahead failed, the text exists
+			// only in the client's own transcript, and "try Recover session" would send them looking
+			// for something that was never written.
+			detail = "No response from the agent — your message may not have reached it. It could NOT be saved to the daemon's transcript either, so copy your message before retrying."
+		}
 		log.Printf("session %s (%s): NO RESPONSE within %s of a prompt — surfacing to clients", m.sess.ID(), m.sess.Provider(), responseTimeout)
 		if t := m.hub.tel(); t != nil {
 			t.Record("session.no_response", m.sess.Provider(), responseTimeout, fmt.Errorf("no event after prompt"))
@@ -176,6 +185,13 @@ type managedSession struct {
 	// used to be fire-and-forget, so one whose completion event was lost span forever; knowing what is
 	// outstanding is what lets closeTurn seal them.
 	turnTools map[string]*protocol.TurnTool
+	// promptWriteAheadFailed records that the last write-AHEAD of a user prompt did not reach disk.
+	//
+	// The write-ahead IS the "never lose work" guarantee: the prompt is written before it is sent, so
+	// a send that vanishes can still be recovered. Its error was discarded — and the no-response
+	// message then told the user "Your prompt was saved; try Recover session, then resend", which is
+	// the single worst moment to be wrong about it. They act on that sentence.
+	promptWriteAheadFailed bool
 	// unknownToolStatus remembers which unrecognised tool statuses we have already complained about,
 	// so the warning in turnOnTool fires once per word rather than once per frame.
 	unknownToolStatus map[string]bool
@@ -932,6 +948,20 @@ func (m *managedSession) drop(s *subscriber) {
 	}
 	m.mu.Unlock()
 	s.close()
+	// Tear the connection down too, for the same reason dropClient does.
+	//
+	// A severed per-session subscription is INVISIBLE to the client: its socket is still healthy,
+	// hub-level frames still arrive, and nothing re-subscribes it because from its side nothing
+	// happened. The turn heartbeat does stop — but the client's only staleness detector is
+	// `self.busy && ...`, so it cannot fire for a session with no turn in flight. Someone reading a
+	// finished session, or one that goes idle a moment later, simply watches it stop updating forever.
+	// The reconnect path is the only thing that can actually re-subscribe them.
+	//
+	// Asynchronous because this runs from the broadcast path and dropClient takes the hub lock; the
+	// teardown is not ordered with respect to anything here.
+	if m.hub != nil && s.conn != nil {
+		go m.hub.dropClient(s.conn)
+	}
 }
 
 // emitUIComponents broadcasts each generative-UI component the segmenter produced as its own
@@ -1050,6 +1080,22 @@ func (m *managedSession) autoAnswer(ar protocol.ApprovalRequest, decision, note 
 			"forever on a decision nobody was asked for", m.sess.ID(), decision, ar.Tool, err)
 		m.surfaceApproval(&ar)
 	}()
+}
+
+// noteWriteAhead records whether a user prompt reached the durable transcript before it was sent.
+//
+// A failure here is not fatal to the turn — the prompt still goes to the provider — but it voids the
+// "never lose work" guarantee, and the daemon must stop claiming otherwise. Logged loudly because an
+// operator can act on it (a full disk, a bad permission on ~/.oculus/transcripts) and nothing else
+// would ever mention it.
+func (m *managedSession) noteWriteAhead(err error) {
+	m.mu.Lock()
+	m.promptWriteAheadFailed = err != nil
+	m.mu.Unlock()
+	if err != nil {
+		log.Printf("session %s: WRITE-AHEAD FAILED for a user prompt: %v — the text is not in the "+
+			"durable transcript, so it cannot be recovered if the send is lost", m.sess.ID(), err)
+	}
 }
 
 // ownEvent reports whether a delta/thinking event belongs to the session itself (not a sub-agent).

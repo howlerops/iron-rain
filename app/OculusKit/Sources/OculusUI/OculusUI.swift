@@ -270,6 +270,9 @@ public final class Model: ObservableObject {
     /// "No updates — Reconnect" hint in the working bar. Flips back to false the instant activity
     /// resumes (or on a manual resync).
     @Published public var streamMaybeStalled = false
+    /// Monotonic id for connect attempts, so a late-finishing older attempt can tell that a newer one
+    /// has already installed a connection and step aside instead of replacing it.
+    private var connectGeneration = 0
     /// While true, skip replayed transcript messages that duplicate ones already shown
     /// (set briefly around a live re-attach so reviving a session doesn't double the chat).
     var dedupReplay = false
@@ -553,6 +556,13 @@ public final class Model: ObservableObject {
             status = "Invalid daemon public key"
             return
         }
+        // Stamp this attempt. Foregrounding, a manual reconnect and a scheduled retry can all be in
+        // flight at once, and the install below closes whatever is already there — so an OLDER attempt
+        // that happened to finish last replaced a newer, healthy connection with its own. The socket
+        // churned and every in-flight request on the replaced one was failed, for no reason the user
+        // could see. An attempt that is no longer the current one now discards its own winner instead.
+        connectGeneration &+= 1
+        let generation = connectGeneration
         connecting = true
         status = "Connecting…"
         defer { connecting = false }
@@ -610,6 +620,12 @@ public final class Model: ObservableObject {
         }
 
         if let c = winner {
+            // Superseded while we were dialling: a newer attempt owns the connection now. Close what
+            // we won rather than installing it over theirs.
+            guard generation == connectGeneration else {
+                c.close()
+                return
+            }
             // Cancelling a backoff loop mid-dial (what foregrounding does) can leave an older attempt
             // still finishing its handshake. Whoever assigns `client` last wins, so close the loser's
             // socket here or it lingers open, receiving frames nobody reads.
@@ -1515,6 +1531,10 @@ public final class Model: ObservableObject {
     /// continues it live. opencode sessions only (claude-code transcripts are view-only).
     /// Clears the current conversation to start a fresh session on the next message.
     public func newSession() {
+        // Same reason as attach: the frame-level record belongs to the session being left, and a
+        // brand-new session must not be reconciled against it.
+        if let prev = sessionID, !transcriptPainted.isEmpty { transcriptHydrated[prev] = transcriptPainted }
+        resetTranscriptCacheState()
         sessionID = nil
         currentSession = nil
         messages.removeAll()
@@ -3486,7 +3506,16 @@ public final class Model: ObservableObject {
     /// The daemon replies "provider cannot attach" for providers without resume support.
     public func attach(_ d: Discovered) async {
         guard let client, let sid = d.sessionID else { return }
+        // Leave the OUTGOING session cleanly, exactly as openSession does (see its stash + reset).
+        //
+        // This cleared `messages` and nothing in the transcript-cache group, and
+        // resetTranscriptCacheState() had a single call site in the whole app — openSession's. So
+        // attaching left `transcriptPainted` holding the PREVIOUS session's frames, and the next
+        // reconcile compared a fresh session's replay against them. Stashing first also keeps the
+        // outgoing session's warm cache, so returning to it still paints instantly.
+        if let prev = sessionID, !transcriptPainted.isEmpty { transcriptHydrated[prev] = transcriptPainted }
         messages.removeAll()
+        resetTranscriptCacheState()
         sessionID = nil
         busy = false
         pendingApproval = nil
@@ -4342,7 +4371,16 @@ public final class Model: ObservableObject {
 
     private func receiveLoop() async {
         guard let client else { return }
-        while connected {
+        // This loop keeps ITS OWN socket (the guard binds a local copy that shadows the property), but
+        // every piece of state it touches on the way out is SHARED. A newer connect can replace and
+        // close our socket while we are parked in recv(); the throw that follows is then about a
+        // connection nobody is using any more — and unguarded it set connected=false, wrote
+        // "Disconnected", failed every in-flight request and scheduled a reconnect, all against the
+        // healthy connection that superseded us. A stale loop could tear down the live one.
+        //
+        // So the identity is checked on every state-mutating path: while we still own the model's
+        // connection we behave exactly as before; once superseded we own nothing and say nothing.
+        while connected, self.client === client {
             do {
                 let data = try await client.recv()
                 // Parse the envelope once; env.payload(as:) then decodes only the payload
@@ -4366,6 +4404,8 @@ public final class Model: ObservableObject {
                 applyEvent(env, raw: data)
                 captureFrame(data, env: env)
             } catch {
+                // Superseded: our socket died because someone replaced it. Not a disconnection.
+                guard self.client === client else { return }
                 connected = false
                 status = "Disconnected"
                 busy = false
@@ -4374,7 +4414,10 @@ public final class Model: ObservableObject {
             }
         }
         // Connection dropped — fail any in-flight fs requests and auto-reconnect (unless the
-        // user disconnected).
+        // user disconnected). Only if we are still the current connection: pendingRequests is a
+        // single shared map, so a stale loop doing this failed the LIVE connection's in-flight
+        // requests, and its scheduleReconnect raced a connection that was already up.
+        guard self.client === client else { return }
         failPendingRequests(NSError(domain: "Oculus", code: -3, userInfo: [NSLocalizedDescriptionKey: "disconnected"]))
         scheduleReconnect()
     }

@@ -154,6 +154,14 @@ type Segmenter struct {
 	// Tracked so the fence's terminal frame — ready or error — reuses the same id and replaces the
 	// skeleton in place instead of leaving it on screen forever.
 	placeholderID string
+	// inCode tracks an ORDINARY code fence — ```json, ```go, ``` — which is not ours and must be
+	// forwarded verbatim. Without it the segmenter had no concept of any fence but its own, so it
+	// reached inside other people's code blocks: an agent explaining the iron:ui grammar had its
+	// EXAMPLE executed as a live card and the example deleted from its own code block, leaving an
+	// empty ``` pair in the prose. codeTicks is the opener's backtick count, so a ```` wrapper (the
+	// documentation idiom for showing a ``` block) closes on its own run and not on the inner one.
+	inCode    bool
+	codeTicks int
 	// Set on a Segmenter driven by FINALIZED text (Extract) rather than a live stream. A "running"
 	// placeholder only means something while the user is watching the model type; replaying history
 	// through the same code would emit running+ready back to back for every stored component, which
@@ -267,11 +275,27 @@ func (s *Segmenter) consumeLine(line string) (string, protocol.UIComponent, bool
 		}
 		return "", protocol.UIComponent{}, false
 	}
+	// Inside somebody else's code block: forward everything untouched until it closes. Checked before
+	// our own opener so a ```iron:ui line QUOTED inside a ```` block stays quoted rather than running.
+	if s.inCode {
+		if isTickRun(fence) && len(fence) >= s.codeTicks {
+			s.inCode = false
+			s.codeTicks = 0
+		}
+		return line, protocol.UIComponent{}, false
+	}
 	if isFenceOpener(fence) {
 		s.inFence = true
 		s.fenceBuf.Reset()
 		s.placeholderID = ""
 		return "", protocol.UIComponent{}, false
+	}
+	// An ordinary code fence opens here. Everything to its close is someone else's content — prose,
+	// an example, a quoted payload — and none of it is ours to interpret.
+	if strings.HasPrefix(fence, "```") {
+		s.inCode = true
+		s.codeTicks = tickRunLen(fence)
+		return line, protocol.UIComponent{}, false
 	}
 	// Lenient catch: a BARE one-line component JSON outside any fence. Models sometimes emit the
 	// iron:ui payload without the fence (seen in the wild: a raw {"component":"table",...} line
@@ -325,6 +349,20 @@ func sniffHeader(body string) (component, id string, ok bool) {
 
 // isFenceOpener reports whether a trimmed line opens an iron:ui fence (```iron:ui, tolerating extra
 // backticks/whitespace).
+// tickRunLen returns the length of the leading backtick run.
+func tickRunLen(fence string) int {
+	n := 0
+	for n < len(fence) && fence[n] == '`' {
+		n++
+	}
+	return n
+}
+
+// isTickRun reports whether the line is nothing but backticks — a closing fence.
+func isTickRun(fence string) bool {
+	return len(fence) >= 3 && tickRunLen(fence) == len(fence)
+}
+
 func isFenceOpener(fence string) bool {
 	if !strings.HasPrefix(fence, "```") {
 		return false
