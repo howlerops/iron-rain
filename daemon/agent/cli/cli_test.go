@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -262,5 +263,50 @@ func TestBuiltinsDeclareIdentityForCollisionProneNames(t *testing.T) {
 		if risky[b.cfg.Command] && b.identity == "" {
 			t.Errorf("builtin %q has a collision-prone command name but declares no identity marker", b.cfg.Name)
 		}
+	}
+}
+
+// Two prompts racing on an idle session must not both start a turn.
+//
+// Prompt sampled `running`, dropped the lock, and then called a startTurn that claimed
+// unconditionally — so both callers saw the session free, both were told they had been accepted, and
+// both spawned a subprocess. The second overwrote s.cancel, leaving the first process running with
+// nothing holding its handle: Stop could no longer reach it, and it went on writing output into the
+// same conversation. Two agents answering one session, from the guard whose whole job was to prevent
+// that.
+func TestConcurrentPromptsStartExactlyOneTurn(t *testing.T) {
+	dir := t.TempDir()
+	p := NewProvider(Config{Name: "fake", Command: "/bin/sh", Args: []string{"/bin/sh", "-c", "sleep 0.5"}})
+	sess, err := p.Create(context.Background(), dir, "")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	const callers = 16
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	accepted := 0
+	start := make(chan struct{})
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if err := sess.Prompt(context.Background(), "go"); err == nil {
+				mu.Lock()
+				accepted++
+				mu.Unlock()
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if accepted != 1 {
+		t.Errorf("%d callers were told their prompt was accepted; only one turn can run, so %d "+
+			"subprocess(es) are orphaned beyond Stop's reach", accepted, accepted-1)
 	}
 }

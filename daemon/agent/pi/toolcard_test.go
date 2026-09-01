@@ -123,3 +123,50 @@ func startFakePiToolcardSession(t *testing.T) agent.Session {
 	}
 	return sess
 }
+
+// A pi tool that FAILED must not render as a successful card.
+//
+// The adapter hardcoded ToolCompleted for every tool_execution_end, so a failure was drawn with a
+// green checkmark carrying its own error text as output — the one status a user reads a tool card for
+// was the one it could never report. pi's core emits isError on the event; we simply weren't reading
+// it. Shapes that don't carry the flag are unchanged, rather than inventing a failure.
+func TestFailedPiToolIsNotReportedAsCompleted(t *testing.T) {
+	const failingRPC = `#!/bin/sh
+echo '{"type":"tool_execution_start","id":"t1","toolName":"bash","args":{"command":"false"}}'
+echo '{"type":"tool_execution_end","id":"t1","output":"exit status 1","isError":true}'
+echo '{"type":"agent_end"}'
+while IFS= read -r line; do :; done
+`
+	dir := t.TempDir()
+	script := filepath.Join(dir, "fake-pi-failing.sh")
+	if err := os.WriteFile(script, []byte(failingRPC), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := New([]string{script}).Create(context.Background(), dir, "run the tests")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	var terminal *protocol.SessionTool
+	timeout := time.After(10 * time.Second)
+	for terminal == nil {
+		select {
+		case ev, ok := <-sess.Events():
+			if !ok {
+				t.Fatal("stream ended before the tool reported a terminal status")
+			}
+			st, isTool := ev.Payload.(protocol.SessionTool)
+			if !isTool || st.ID != "t1" || st.Status == protocol.ToolRunning {
+				continue
+			}
+			terminal = &st
+		case <-timeout:
+			t.Fatal("timeout waiting for the tool's terminal frame")
+		}
+	}
+	if terminal.Status != protocol.ToolError {
+		t.Errorf("a failed tool ended as %q — it renders as a success carrying its own error text",
+			terminal.Status)
+	}
+}

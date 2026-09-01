@@ -455,7 +455,13 @@ type piEvent struct {
 	// actually expected.
 	Message json.RawMessage `json:"message"`
 	Output  string          `json:"output"`
-	Args    map[string]any  `json:"args"`
+	// IsError is pi's own per-tool failure flag (pi-agent-core emits it on tool_execution_end, and
+	// agent-session forwards it under this name). We were not reading it, and reported EVERY tool as
+	// completed — so a pi tool that failed rendered as a successful card carrying its error text as
+	// output. Absent on wire shapes that don't carry it, which degrades to the old behaviour rather
+	// than inventing a failure.
+	IsError bool           `json:"isError"`
+	Args    map[string]any `json:"args"`
 	Asst    struct {
 		Type  string `json:"type"`
 		Delta string `json:"delta"`
@@ -672,8 +678,12 @@ func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool) {
 			if title == "" {
 				title = c.title
 			}
+			st := protocol.ToolCompleted
+			if e.IsError {
+				st = protocol.ToolError
+			}
 			s.emit(agent.Event{Type: protocol.TypeSessionTool, Payload: protocol.SessionTool{
-				SessionID: s.id, ID: e.ID, Name: name, Title: title, Output: e.Output, Status: protocol.ToolCompleted}})
+				SessionID: s.id, ID: e.ID, Name: name, Title: title, Output: e.Output, Status: st}})
 		case "tool_execution_start":
 			// pi has no native to-do tool; a valhalla-style extension can add one, and its
 			// call arrives here — surface it as the normalized session.todos.

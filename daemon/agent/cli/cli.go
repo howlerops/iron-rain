@@ -125,7 +125,7 @@ func (p *Provider) Create(ctx context.Context, cwd, prompt string) (agent.Sessio
 	}
 	go s.pump()
 	if strings.TrimSpace(prompt) != "" {
-		s.startTurn(prompt)
+		s.startTurn(prompt) // a session this new cannot already be running, so the claim always wins
 	}
 	return s, nil
 }
@@ -218,18 +218,28 @@ func (s *session) emit(ev agent.Event) {
 // Prompt runs a turn. It rejects overlapping turns (a CLI agent handles one request at a time);
 // the UI serializes on the resulting busy error.
 func (s *session) Prompt(_ context.Context, text string) error {
-	s.mu.Lock()
-	if s.running {
-		s.mu.Unlock()
+	// The claim happens inside startTurn, under ONE lock.
+	//
+	// This used to sample `running`, drop the lock, return, and then call a startTurn that claimed
+	// unconditionally — so two prompts arriving on an idle session both saw it free, both were told
+	// they had been accepted, and both spawned a subprocess. The second overwrote s.cancel, which left
+	// the first process running with nothing holding its handle: Stop could no longer reach it, and it
+	// kept writing output into the same session. Two agents answering one conversation, from a
+	// function whose only job was to prevent exactly that.
+	if !s.startTurn(text) {
 		return fmt.Errorf("%s is still working — interrupt it first", s.cfg.Name)
 	}
-	s.mu.Unlock()
-	s.startTurn(text)
 	return nil
 }
 
-func (s *session) startTurn(text string) {
+// startTurn claims the session and launches one turn. It reports false — having done nothing — if a
+// turn is already in flight, so the claim and the check cannot be separated by a caller.
+func (s *session) startTurn(text string) bool {
 	s.mu.Lock()
+	if s.running {
+		s.mu.Unlock()
+		return false
+	}
 	tmpl := s.cfg.Args
 	if s.turns > 0 && len(s.cfg.ResumeArgs) > 0 {
 		tmpl = s.cfg.ResumeArgs
@@ -242,6 +252,7 @@ func (s *session) startTurn(text string) {
 	s.cancel = cancel
 	s.mu.Unlock()
 	go s.runTurn(ctx, substitute(tmpl, text, s.cwd, model, mcpPath))
+	return true
 }
 
 func (s *session) runTurn(ctx context.Context, argv []string) {
