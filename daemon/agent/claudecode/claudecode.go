@@ -1058,7 +1058,10 @@ func (s *session) readLoop(stdout io.ReadCloser) {
 				s.emit(agent.Event{Type: protocol.TypeThinking, Payload: protocol.Thinking{SessionID: s.target(m.Sub), Text: m.Text}})
 			}
 		case "tool":
-			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusRunning, Detail: "running " + m.Tool}})
+			// s.target, not s.id: while a Task sub-agent runs, the PARENT is blocked inside the Task
+			// tool and is not running anything. Addressing the chip to the session made the parent
+			// read "running Bash" for work it was not doing, and left the lane's own chip blank.
+			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.target(m.Sub), Status: protocol.StatusRunning, Detail: "running " + m.Tool}})
 		case "toolcall":
 			// Rich inline tool card: running carries the command (Detail), the later result carries
 			// Output. Same event the app renders for opencode, so claude-code gets card parity.
@@ -1110,6 +1113,13 @@ func (s *session) readLoop(stdout io.ReadCloser) {
 		case "facts":
 			s.emit(agent.Event{Type: protocol.TypeSessionFacts, Payload: s.mergeFacts(m)})
 		case "subagent":
+			// A terminal status closes the lane; anything else opens it. Without the terminal frame a
+			// finished sub-agent spun until the whole parent turn ended.
+			if m.Status == "done" || m.Status == "error" {
+				s.emit(agent.Event{Type: protocol.TypeSessionSubAgent, Payload: protocol.SubAgent{
+					ParentID: s.id, ID: m.ID, Title: s.peekToolCard(m.ID).title, Status: m.Status}})
+				continue
+			}
 			// parent_tool_use_id IS the Task tool call's id, so the card we already remembered for
 			// that tool carries the human description ("Review the auth flow") the model gave it.
 			// Peek rather than take: the tool card still needs its own terminal frame.

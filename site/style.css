@@ -128,7 +128,10 @@ section[id] { scroll-margin-top: 80px }
 
 /* Limit total header content width to align with page sections */
 .site-header {
-  padding-inline: max(20px, calc((100vw - var(--max-w)) / 2 + 28px));
+  /* 100% of the header, not 100vw. 100vw INCLUDES the classic scrollbar gutter while the .wrap
+     content below is centred inside clientWidth, which excludes it — so on any platform that
+     reserves a gutter the header sat a few pixels off from every section under it. */
+  padding-inline: max(20px, calc((100% - var(--max-w)) / 2 + 28px));
 }
 
 .brand {
@@ -1023,3 +1026,19 @@ pre.cmd code {
 }
 /* prefers-reduced-motion is honoured in JS, where it can actually stop playback — the CSS rule that
    used to live here set `animation: none` on an element that has no animation, and did nothing. */
+
+/* ── Long unbreakable strings ───────────────────────────────
+   An inline <code> holding a URL or an install command has no break opportunity, so it cannot be
+   wrapped and simply pushes its paragraph wider than the phone. The docs install line
+   (`curl -fsSL … | sh`) was held back from overflowing only by happening to fit. */
+code {
+  overflow-wrap: anywhere;
+}
+pre {
+  overflow-x: auto;
+  max-width: 100%;
+}
+/* Media never exceeds its column, whatever its intrinsic size. */
+img, video {
+  max-width: 100%;
+}

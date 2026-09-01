@@ -586,7 +586,16 @@ public struct RootView: View {
             } detail: {
                 // Wrapped so the detail column actually observes the Model — see ObservingModel.
                 // Without it, "Review changes" set codeReviewTarget and nothing happened.
-                ObservingModel(model: model) { deckDetail(model) }
+                ObservingModel(model: model) {
+                    deckDetail(model)
+                        // INSIDE the wrapper. pageTitle branches on codeReviewTarget and
+                        // currentSession, and as an argument evaluated in RootView's body it was
+                        // computed before the observation applied — so the window title lagged:
+                        // opening a session kept the old name, and entering Review kept showing the
+                        // session instead of "Sessions". Only the detail's CONTENT was observed.
+                        .navigationTitle(pageTitle(model))
+                        .toolbarTitleMenu { deckDesktopMenu }
+                }
                     // Clamp the detail column to the window height (see original note): the split view
                     // sizes to its tallest column's ideal; a flexible detail measured as a runaway
                     // ideal and inflated the sidebar. Pinning decouples them.
@@ -602,11 +611,6 @@ public struct RootView: View {
                     #if os(macOS)
                     .frame(height: proxy.size.height)
                     #endif
-                    // The window title belongs to the DETAIL, which is what macOS titles a window
-                    // after. It used to hang off the sidebar column, which is why the sidebar had to
-                    // know which session the detail had open.
-                    .navigationTitle(pageTitle(model))
-                    .toolbarTitleMenu { deckDesktopMenu }
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
             .onChange(of: selection) { handleSelection($0, model) }
@@ -634,6 +638,16 @@ public struct RootView: View {
     @ViewBuilder private func tab(_ d: Destination, _ model: Model) -> some View {
         switch d {
         case .sessions:
+            // Wrapped in ObservingModel for the same reason the macOS detail column is, and for the
+            // same symptom: every .onChange below keys off a @Published on the Model, and RootView
+            // observes the STORE. So on iPhone the whole set only re-evaluated when unrelated @State
+            // happened to re-render RootView — "Review changes" and "Code & changes" did nothing when
+            // tapped and then pushed the diff at some arbitrary later moment, and a session opened by
+            // a push-notification tap or a handoff left you sitting on the list.
+            //
+            // Scoped to this tab rather than the whole TabView so the other four are not re-evaluated
+            // on every streamed token.
+            ObservingModel(model: model) {
             // The ONLY navigation stack with a path. Both the chat and the code surface are routes on
             // it, so a back-swipe pops exactly one thing and nothing else in the app moves.
             NavigationStack(path: $sessionsPath) {
@@ -668,6 +682,7 @@ public struct RootView: View {
             .onChange(of: sessionsPath) { path in
                 if model.codeReviewTarget != nil, !path.contains(where: \.isCode) { model.codeReviewTarget = nil }
             }
+            }
 
         case .loops:
             NavigationStack {
@@ -679,11 +694,18 @@ public struct RootView: View {
         case .activity:
             // A jump-off point, not an owner of the chat: opening an item switches to Sessions and
             // pushes there. (It used to bind the same push flag as Sessions and Fleet.)
-            NavigationStack {
-                ActivityView(model: model, palette: palette, onOpen: { sid in openSessionNav(sid, model) })
-                    .navigationTitle("Activity")
+            // Observed for the badge: needsYouCount is derived from @Published activityFeed, so read
+            // from RootView's body it froze at whatever it was on the last unrelated re-render — an
+            // agent asking for approval while you sat on another tab never badged Activity, and
+            // clearing the items never cleared the badge. DestinationRail gets this right on macOS
+            // precisely because it declares @ObservedObject var model.
+            ObservingModel(model: model) {
+                NavigationStack {
+                    ActivityView(model: model, palette: palette, onOpen: { sid in openSessionNav(sid, model) })
+                        .navigationTitle("Activity")
+                }
+                .badge(model.needsYouCount)
             }
-            .badge(model.needsYouCount)
 
         case .fleet:
             NavigationStack {

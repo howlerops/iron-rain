@@ -455,12 +455,26 @@ try {
       case "user": {
         // Tool results arrive as tool_result blocks in a user message — pair them to their tool_use
         // by id and fill in the card's output.
+        //
+        // Tagged with `sub` for the same reason the RUNNING half is. Tagging only the opening half
+        // was worse than tagging neither: the card was created in the sub-agent's lane and its
+        // completion was addressed to the parent, so the lane's card span forever with no output
+        // while a second, fully populated card appeared in the main transcript.
+        const resultSub = message.parent_tool_use_id ? String(message.parent_tool_use_id) : "";
         const blocks = message.message?.content;
         if (Array.isArray(blocks)) {
           for (const block of blocks) {
             if (block?.type === "tool_result" && block.tool_use_id) {
-              send({ t: "toolcall", id: block.tool_use_id, output: toolResultText(block.content),
-                     status: block.is_error ? "error" : "completed" });
+              const rid = String(block.tool_use_id);
+              send({ t: "toolcall", id: rid, output: toolResultText(block.content),
+                     status: block.is_error ? "error" : "completed", sub: resultSub });
+              // A Task tool's OWN result is the sub-agent finishing. Close the lane here rather than
+              // leaving it to the parent turn ending: a sub-agent that finishes 30 seconds into a
+              // ten-minute turn otherwise spins for the remaining nine and a half, and the hub's
+              // turn-close seal then dresses it as "error" because nothing ever said it was done.
+              if (seenSubAgents.has(rid)) {
+                send({ t: "subagent", id: rid, status: block.is_error ? "error" : "done" });
+              }
             }
           }
         }

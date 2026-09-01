@@ -120,7 +120,11 @@ func (l *Linear) gql(ctx context.Context, query string, vars map[string]any, out
 		}
 		if rerr := l.RefreshToken(ctx); rerr != nil {
 			// The refresh itself failed, so reconnecting really is the answer — say which one broke.
-			return fmt.Errorf("linear: authorization expired and could not be renewed: %w", rerr)
+			// RefreshToken names itself, so its prefix is dropped before wrapping: nesting them put
+			// the second "linear:" in the MIDDLE of the sentence, where a leading-only strip cannot
+			// reach it and the card read "…could not be renewed: linear: no refresh token".
+			return fmt.Errorf("linear: authorization expired and could not be renewed: %s",
+				strings.TrimPrefix(rerr.Error(), "linear: "))
 		}
 		if resp, err = l.gqlOnce(ctx, query, vars); err != nil {
 			return err

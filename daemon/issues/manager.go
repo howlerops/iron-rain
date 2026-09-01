@@ -647,7 +647,10 @@ func (m *Manager) refreshTokens(ctx context.Context) {
 		m.mu.Lock()
 		prev, had := m.authErrors[name]
 		if err != nil {
-			msg := err.Error()
+			// Sanitized like the poll path. There are TWO writers to authErrors and only one of them
+			// was stripping the adapter's self-naming, so "Linear failed: linear: no refresh token"
+			// still reached the card by the other route.
+			msg := withoutProviderPrefix(name, err.Error())
 			if !had || prev != msg {
 				m.authErrors[name] = msg
 				changed = true

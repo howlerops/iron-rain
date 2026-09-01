@@ -102,7 +102,15 @@ func (j *Jira) do(ctx context.Context, method, path string, body any, out any) e
 	}
 	defer drainClose(resp.Body)
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("jira %s %s: HTTP %s", method, path, resp.Status)
+		// "jira: " with the colon, so withoutProviderPrefix can strip it — the old "jira GET /path"
+		// form self-named in a shape the stripper does not match, and the card read "Jira failed:
+		// jira GET …". The query string is dropped from the user-facing sentence too: it carried the
+		// whole URL-encoded JQL, which told the reader nothing and buried the status code.
+		p := path
+		if i := strings.IndexByte(p, '?'); i >= 0 {
+			p = p[:i]
+		}
+		return fmt.Errorf("jira: HTTP %s (%s %s)", resp.Status, method, p)
 	}
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)

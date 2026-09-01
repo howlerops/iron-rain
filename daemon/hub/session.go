@@ -975,10 +975,21 @@ func (m *managedSession) persistDurable(ev agent.Event, raw []byte) {
 		}
 	case protocol.TypeSessionTool:
 		t, ok := ev.Payload.(protocol.SessionTool)
-		if !ok || t.SessionID != sid || (t.Status != "completed" && t.Status != "error") {
+		if !ok || t.SessionID == "" || (t.Status != "completed" && t.Status != "error") {
 			return // only the final tool state is durable
 		}
+		// Child-addressed cards are durable too. The guard used to be `t.SessionID != sid`, which
+		// dropped every sub-agent's tool cards on the floor: opencode's lanes rendered them live and
+		// replayed with only their text, and once claude-code started addressing its cards to the
+		// lane it would have lost them the same way. A lane that shows its work while you watch and
+		// forgets it on reload is the same "no output" complaint one reconnect later.
+		//
+		// Keyed per lane so a child's card cannot collide with a parent card that shares its id —
+		// the store's unique index would otherwise treat the second one as a duplicate and drop it.
 		msgID = "tool:" + t.ID
+		if t.SessionID != sid {
+			msgID = "tool:" + t.SessionID + ":" + t.ID
+		}
 	case protocol.TypeSessionStatus:
 		ss, ok := ev.Payload.(protocol.SessionStatus)
 		if !ok || ss.SessionID != sid || ss.Status != protocol.StatusError {
