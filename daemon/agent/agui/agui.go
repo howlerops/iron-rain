@@ -346,6 +346,15 @@ func (s *session) execRun(ctx context.Context, req runInput, release func()) {
 		Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusRunning}})
 
 	status, err := s.stream(ctx, req)
+	// Close out any tool card the run left open, before the terminal status goes out.
+	//
+	// TOOL_CALL_RESULT is OPTIONAL in AG-UI: a backend that emits START/ARGS/END and nothing else is
+	// well-formed. Without this, every one of those cards was still outstanding at turn close, and the
+	// hub sealed it — status "error", with "the turn ended before this tool reported a result" written
+	// where its output should be. A backend that simply doesn't report results had every tool it ever
+	// ran painted red. The adapter is the only layer that knows this is normal for AG-UI, so it is the
+	// layer that has to say so.
+	s.sweepOpenTools(err != nil)
 	// Sampled BEFORE release, which cancels this very context: reading ctx.Err() afterwards always
 	// reports Canceled, which would misclassify every genuine failure as a user-initiated Stop and
 	// silently swallow it as a normal idle turn.
@@ -380,6 +389,28 @@ func (s *session) execRun(ctx context.Context, req runInput, release func()) {
 		}
 		s.emit(agent.Event{Type: protocol.TypeSessionStatus,
 			Payload: protocol.SessionStatus{SessionID: s.id, Status: status}})
+	}
+}
+
+// sweepOpenTools gives every tool card still open at the end of a run a terminal status.
+//
+// failed distinguishes the two honest answers. A run that ended normally completed its calls, and we
+// simply never received results for them — the card carries no output, which is true. A run that
+// ERRORED cannot claim that, so its open calls are marked failed, which is also true.
+func (s *session) sweepOpenTools(failed bool) {
+	s.mu.Lock()
+	open := make([]string, 0, len(s.tools))
+	for id := range s.tools {
+		open = append(open, id)
+	}
+	s.mu.Unlock()
+
+	st := protocol.ToolCompleted
+	if failed {
+		st = protocol.ToolError
+	}
+	for _, id := range open {
+		s.emitTool(id, st, "")
 	}
 }
 
@@ -561,7 +592,7 @@ func (s *session) emitTool(id, status, output string) {
 	if tc != nil {
 		name, args = tc.name, tc.args.String()
 	}
-	if status == protocol.ToolCompleted {
+	if protocol.IsToolFinished(status) { // completed OR error retires the card
 		delete(s.tools, id)
 	}
 	s.mu.Unlock()

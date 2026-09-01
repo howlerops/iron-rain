@@ -106,3 +106,31 @@ func TestParseHandoffKeepsTextIntact(t *testing.T) {
 		t.Errorf("summary %q collapsed its list items", summary)
 	}
 }
+
+// needs_you must not be reported as done.
+//
+// It is the terminal state of the nudge ladder — a turn that stayed stuck after the daemon spent
+// every nudge — and it exists specifically to page a human. deriveState had no case for it: it is
+// not StatusError, its turn is closed so turnPhase is empty, and a session with no outstanding
+// to-dos then satisfied "nothing outstanding AND the turn is over" and returned hbDone. The one
+// status that means a person is needed rendered on the fleet card as a grey checkmark reading "Done".
+func TestNeedsYouIsNotReportedAsDone(t *testing.T) {
+	old := time.Now().Add(-2 * time.Hour)
+	todo := func(status string) []protocol.Todo {
+		return []protocol.Todo{{Content: "ship it", Status: status}}
+	}
+	for _, tc := range []struct {
+		name string
+		sess *managedSession
+	}{
+		{"with no todos at all", &managedSession{lastStatus: protocol.StatusNeedsYou, lastActivity: old, turnEnded: true}},
+		{"with every todo finished", &managedSession{lastStatus: protocol.StatusNeedsYou, lastActivity: old, turnEnded: true, latestTodos: todo("completed")}},
+		{"with work outstanding", &managedSession{lastStatus: protocol.StatusNeedsYou, lastActivity: old, turnEnded: true, latestTodos: todo("in_progress")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := deriveState(tc.sess, time.Now()); got != hbNeedsYou {
+				t.Errorf("deriveState = %q, want %q — a session waiting on a human must not report as %q", got, hbNeedsYou, got)
+			}
+		})
+	}
+}

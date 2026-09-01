@@ -217,7 +217,7 @@ private struct FleetCard: View {
     private var stateColor: Color {
         switch hb?.state {
         case "working", "idle_incomplete": return palette.success
-        case "awaiting_input": return palette.warning
+        case "awaiting_input", "needs_you": return palette.warning
         case "stalled", "exhausted": return palette.warning
         case "errored": return palette.destructive
         case "done": return palette.mutedForeground
@@ -231,6 +231,7 @@ private struct FleetCard: View {
         case "working": return "bolt.fill"
         case "idle_incomplete": return "hourglass"
         case "awaiting_input": return "questionmark.circle.fill"
+        case "needs_you": return "hand.raised.fill"
         case "stalled": return "pause.circle"
         case "exhausted": return "dollarsign.circle.fill"
         case "errored": return "exclamationmark.triangle.fill"
@@ -243,6 +244,9 @@ private struct FleetCard: View {
         case "working": return "On track"
         case "idle_incomplete": return "Nudging"
         case "awaiting_input": return "Needs you"
+        // Distinct from awaiting_input: that is the agent asking a question, this is the daemon
+        // giving up after spending its nudges on a turn that never got moving.
+        case "needs_you": return "Stuck — needs you"
         case "stalled": return "Stalled"
         case "exhausted": return "Budget used"
         case "errored": return "Error"

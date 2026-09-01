@@ -570,3 +570,40 @@ func TestAlwaysAllowIsAnAllow(t *testing.T) {
 		})
 	}
 }
+
+// A backend that never sends TOOL_CALL_RESULT must not have its tools painted as failures.
+//
+// TOOL_CALL_RESULT is OPTIONAL in AG-UI — START/ARGS/END and nothing else is well-formed. Those cards
+// were still outstanding at turn close, so the hub sealed each one as status "error" with "the turn
+// ended before this tool reported a result" written over its output. A backend that simply doesn't
+// report results had every tool it ever ran rendered, and stored, as a failure.
+func TestToolWithNoResultEndsCompletedNotFailed(t *testing.T) {
+	s, _ := newTestSession(t, func(w http.ResponseWriter, r *http.Request) {
+		sse(w,
+			map[string]any{"type": "RUN_STARTED", "threadId": "t", "runId": "r"},
+			map[string]any{"type": "TOOL_CALL_START", "toolCallId": "tc1", "toolCallName": "bash"},
+			map[string]any{"type": "TOOL_CALL_ARGS", "toolCallId": "tc1", "delta": `{"command":"ls"}`},
+			map[string]any{"type": "TOOL_CALL_END", "toolCallId": "tc1"},
+			map[string]any{"type": "RUN_FINISHED", "threadId": "t", "runId": "r",
+				"outcome": map[string]any{"type": "success"}},
+		)
+	})
+
+	var last protocol.SessionTool
+	seen := false
+	for _, ev := range collect(t, s, idleReached) {
+		if tl, ok := ev.Payload.(protocol.SessionTool); ok && tl.ID == "tc1" {
+			last, seen = tl, true
+		}
+	}
+	if !seen {
+		t.Fatal("no tool frame was emitted at all")
+	}
+	if !protocol.IsToolFinished(last.Status) {
+		t.Errorf("the run ended with tc1 still %q — the hub will seal it as a failure and write the "+
+			"seal note over its output", last.Status)
+	}
+	if last.Status != protocol.ToolCompleted {
+		t.Errorf("tc1 ended as %q; a run that finished normally did not fail its tools", last.Status)
+	}
+}

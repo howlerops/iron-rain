@@ -42,3 +42,22 @@ func TestTurnStatusIsNotAToolStatus(t *testing.T) {
 		t.Error("the tool and sub-agent terminal words have converged; the hub keys on them separately")
 	}
 }
+
+// "Finished" is not "succeeded".
+//
+// The fan-out completion gate asked every variant for StatusIdle or StatusDone, so one variant that
+// errored — or ended needing a human, or was abandoned — held the group open forever and the
+// "fan-out finished" push never fired for any of them. A fan-out where one arm fails is the normal
+// case, not an exception.
+func TestTerminalMeansStoppedNotSucceeded(t *testing.T) {
+	for _, st := range []string{StatusIdle, StatusDone, StatusError, StatusNeedsYou, StatusAbandoned} {
+		if !IsTerminalSessionStatus(st) {
+			t.Errorf("%q is a turn that is over and must count as terminal", st)
+		}
+	}
+	for _, st := range []string{StatusRunning, StatusAwaitingApproval, StatusStalled} {
+		if IsTerminalSessionStatus(st) {
+			t.Errorf("%q is still in flight and must not count as terminal", st)
+		}
+	}
+}

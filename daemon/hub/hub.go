@@ -1766,8 +1766,12 @@ func (h *Hub) forgetFanoutIfEmpty(group string) {
 	delete(h.fanoutPrompt, group)
 }
 
-// checkFanoutDone fires the "fan-out finished" push once, when EVERY variant in the group has reached
-// idle/done. Called when any grouped session goes idle.
+// checkFanoutDone fires the "fan-out finished" push once, when EVERY variant in the group has stopped
+// running — whatever the outcome. Called when any grouped session reaches a terminal status.
+//
+// It used to demand idle/done from every member, so one errored variant suppressed the notification
+// for the whole group permanently; and it was only CALLED from the idle branch, so that variant's own
+// failure never even re-ran the check. A fan-out where one arm fails is the normal case.
 func (h *Hub) checkFanoutDone(group string) {
 	if group == "" {
 		return
@@ -1788,7 +1792,7 @@ func (h *Hub) checkFanoutDone(group string) {
 		m.mu.Lock()
 		st := m.lastStatus
 		m.mu.Unlock()
-		if st != protocol.StatusIdle && st != protocol.StatusDone {
+		if !protocol.IsTerminalSessionStatus(st) {
 			allIdle = false
 			break
 		}

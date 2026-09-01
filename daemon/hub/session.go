@@ -549,6 +549,11 @@ func (m *managedSession) onStatus(ss protocol.SessionStatus) {
 		m.wasRunning = false
 		m.mu.Unlock()
 		m.hub.pushAgentError(m.sess.ID(), label, ss.Detail)
+		// A failed variant still ENDED, so the group may now be complete. Without this the fan-out
+		// notification waited on a session that was never going to report idle.
+		if g := m.meta.fanoutGroup; g != "" {
+			m.hub.checkFanoutDone(g)
+		}
 		// A failed run is a FINISHED run as far as the loop scheduler is concerned; leaving it
 		// "running" wedges the loop exactly as an unretired success does.
 		m.hub.retireLoopRun(m.sess.ID(), "error")

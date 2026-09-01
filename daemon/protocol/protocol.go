@@ -239,6 +239,9 @@ const (
 	ToolCompleted = "completed"
 	ToolError     = "error"
 
+	// SubAgentRunning is the daemon's INTERNAL word for an open lane (TurnChild.State). Adapters
+	// announce a lane on the wire as "started" instead; both are non-terminal, and every consumer
+	// tests for the terminal words rather than for this one, which is why the two have coexisted.
 	SubAgentRunning = "running"
 	SubAgentDone    = "done"
 	SubAgentError   = "error"
@@ -253,6 +256,21 @@ func IsToolFinished(status string) bool {
 // IsSubAgentFinished reports whether a sub-agent status is terminal.
 func IsSubAgentFinished(status string) bool {
 	return status == SubAgentDone || status == SubAgentError
+}
+
+// IsTerminalSessionStatus reports whether a session's turn is OVER, however it ended.
+//
+// "Finished" is not the same as "succeeded", and conflating them cost the fan-out notification: its
+// gate asked for StatusIdle or StatusDone from every variant, so a single variant that errored — or
+// stopped needing a human, or was abandoned — held the group open forever and the "fan-out finished"
+// push never fired for any of them. A variant that failed is still a variant that is no longer
+// running.
+func IsTerminalSessionStatus(status string) bool {
+	switch status {
+	case StatusIdle, StatusDone, StatusError, StatusNeedsYou, StatusAbandoned:
+		return true
+	}
+	return false
 }
 
 // Session statuses.

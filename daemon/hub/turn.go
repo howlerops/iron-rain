@@ -354,7 +354,14 @@ func (m *managedSession) closeTurnFrom(state, reason string, providerDriven bool
 	for _, k := range m.turnKids {
 		if !protocol.IsSubAgentFinished(k.State) {
 			k.State = sealed
-			toSeal = append(toSeal, protocol.SubAgent{ParentID: m.sess.ID(), ID: k.ID, Status: sealed})
+			// Carry the TITLE. This seal is written with advanceDurable under the lane's stable id, so
+			// it REPLACES the lane's stored row rather than adding one — and a seal built without the
+			// title overwrote the only durable record of what the sub-agent was for. Re-opening the
+			// session showed an untitled lane: the right status on a card that no longer said what it
+			// had been asked to do.
+			toSeal = append(toSeal, protocol.SubAgent{
+				ParentID: m.sess.ID(), ID: k.ID, Title: k.Title, Status: sealed,
+			})
 		}
 	}
 	// Seal the outstanding TOOL calls for the same reason, and it is the same bug: a tool card is only

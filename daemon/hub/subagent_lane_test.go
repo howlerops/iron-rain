@@ -113,3 +113,62 @@ func TestSubAgentOutputSurvivesTheTurn(t *testing.T) {
 		t.Fatal("the sub-agent's report is not in the replayable history — the lane will read as empty")
 	}
 }
+
+// A sealed lane must keep its title.
+//
+// The turn-close seal is written with advanceDurable under the lane's stable id, so it REPLACES the
+// lane's stored row rather than appending one. Built without the Title, it overwrote the only durable
+// record of what the sub-agent was for — re-opening the session showed a correctly-sealed lane that
+// no longer said what it had been asked to do.
+func TestSealedSubAgentLaneKeepsItsTitle(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	sess := &subSess{ch: make(chan agent.Event, 16)}
+	h := &Hub{db: db, sessions: map[string]*managedSession{}}
+	m := newManagedSession(h, sess, sessionMeta{})
+	m.mu.Lock()
+	m.subs[subscriberConnID] = &subscriber{conn: subscriberConnID, ch: make(chan []byte, 256), done: make(chan struct{})}
+	m.mu.Unlock()
+
+	go m.run()
+	for i := 0; i < 500 && !m.pumpAlive.Load(); i++ {
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	const child, title = "toolu_kid", "Review the store"
+	sess.ch <- agent.Event{Type: protocol.TypeSessionStatus,
+		Payload: protocol.SessionStatus{SessionID: sess.ID(), Status: protocol.StatusRunning}}
+	sess.ch <- agent.Event{Type: protocol.TypeSessionSubAgent,
+		Payload: protocol.SubAgent{ParentID: sess.ID(), ID: child, Title: title, Status: "started"}}
+	// The turn ends without the lane ever reporting done — the case the seal exists for.
+	sess.ch <- agent.Event{Type: protocol.TypeSessionStatus,
+		Payload: protocol.SessionStatus{SessionID: sess.ID(), Status: protocol.StatusIdle}}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var sealed *protocol.SubAgent
+		for _, raw := range m.fullHistory() {
+			var f struct {
+				Type    string            `json:"type"`
+				Payload protocol.SubAgent `json:"payload"`
+			}
+			if json.Unmarshal(raw, &f) == nil && f.Type == protocol.TypeSessionSubAgent && f.Payload.ID == child {
+				cp := f.Payload
+				sealed = &cp
+			}
+		}
+		if sealed != nil && protocol.IsSubAgentFinished(sealed.Status) {
+			if sealed.Title != title {
+				t.Fatalf("the sealed lane's title is %q, want %q — the seal overwrote the lane's only "+
+					"durable row and the replayed card no longer says what it was for", sealed.Title, title)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("the lane was never sealed")
+}

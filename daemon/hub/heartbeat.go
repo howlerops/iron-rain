@@ -40,6 +40,13 @@ const (
 	hbDone           = "done"
 	hbErrored        = "errored"
 	hbExhausted      = "exhausted"
+	// hbNeedsYou is the turn engine's needs_you, surfaced rather than re-derived. The whole nudge
+	// ladder exists to produce that state — a turn that stayed stuck after the daemon spent its
+	// nudges — and this supervisor had no case for it: needs_you is not StatusError, the turn is
+	// closed so turnPhase is empty, and a session with no outstanding to-dos then satisfied the
+	// "nothing outstanding AND the turn is over" test and reported hbDone. The one status that means
+	// "a human is required" was rendered on the fleet card as a grey checkmark reading "Done".
+	hbNeedsYou = "needs_you"
 )
 
 // StartHeartbeat launches the supervision ticker (runs until ctx is cancelled). Call once at
@@ -332,6 +339,11 @@ func toHandoffEntries(rs []store.HandoffRecord) []protocol.HandoffEntry {
 func deriveState(m *managedSession, now time.Time) string {
 	if m.lastStatus == protocol.StatusError {
 		return hbErrored
+	}
+	// Before anything else, and before the turn-open check: needs_you is terminal and deliberately
+	// NOT an error (the agent didn't fail, it got stuck), so it must not be flattened into done.
+	if m.lastStatus == protocol.StatusNeedsYou {
+		return hbNeedsYou
 	}
 	// A turn is OPEN: the turn engine owns this session's liveness, so stay out of it.
 	//
