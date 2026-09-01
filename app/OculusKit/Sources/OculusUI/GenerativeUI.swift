@@ -59,7 +59,7 @@ struct UIComponentView: View {
             return (p.caption ?? "Table", "\(p.rows.count) rows · \(p.columns.count) columns", "tablecells")
         case "checklist", "plan":
             guard let p = component.props?.decoded(ChecklistProps.self), p.items.count > 10 else { return nil }
-            let done = p.items.filter { ($0.status ?? "") == "completed" || ($0.status ?? "") == "done" }.count
+            let done = p.items.filter { checklistItemState($0.status) == "done" }.count
             let word = component.component == "plan" ? "Plan" : "Checklist"
             return (p.title ?? word, "\(p.items.count) items · \(done) done", "checklist")
         case "diff":
@@ -265,20 +265,37 @@ private struct ChecklistView: View {
                 HStack(alignment: .top, spacing: 7) {
                     Image(systemName: symbol(it.status)).font(.caption).foregroundStyle(color(it.status)).padding(.top, 1)
                     Text(it.text).font(.callout).foregroundStyle(palette.foreground)
-                        .strikethrough(it.status == "done", color: palette.mutedForeground)
+                        .strikethrough(checklistItemState(it.status) == "done", color: palette.mutedForeground)
                     Spacer(minLength: 0)
                 }
             }
         }
     }
     private func symbol(_ s: String?) -> String {
-        switch s { case "done": return "checkmark.circle.fill"; case "active": return "circle.dotted"
+        switch checklistItemState(s) { case "done": return "checkmark.circle.fill"; case "active": return "circle.dotted"
         case "failed": return "xmark.circle.fill"; default: return "circle" }
     }
     private func color(_ s: String?) -> Color {
-        switch s { case "done": return palette.success; case "active": return palette.primary
+        switch checklistItemState(s) { case "done": return palette.success; case "active": return palette.primary
         case "failed": return palette.destructive
         default: return palette.mutedForeground }
+    }
+}
+
+/// One vocabulary for checklist item statuses, because there are at least three upstream.
+///
+/// A model writing an ```iron:ui``` block picks its own word, and the daemon also forwards to-do
+/// statuses verbatim from three providers ("pending" / "in_progress" / "completed"). The two
+/// consumers here disagreed: the collapsed summary counted "completed" OR "done", while the expanded
+/// list understood only "done" — so a checklist written with "completed" summarised as "7 of 10 done"
+/// and then rendered all ten as empty circles, none struck through. Whichever way the user read it,
+/// the other view contradicted it.
+func checklistItemState(_ raw: String?) -> String {
+    switch (raw ?? "").lowercased() {
+    case "done", "completed", "complete", "finished": return "done"
+    case "active", "in_progress", "in-progress", "running", "current": return "active"
+    case "failed", "error", "blocked", "cancelled", "canceled": return "failed"
+    default: return "pending"
     }
 }
 

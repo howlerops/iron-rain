@@ -4556,8 +4556,8 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		//
 		// Values carries a form's collected answers and is appended to the prompt (see formValuesText).
 		// kind "permission" remains DECLARED BUT UNIMPLEMENTED: it would need an approval id that
-		// fenced components don't carry. A client sending it gets the no-op fallthrough below, not an
-		// error — don't read that as working-but-untested.
+		// fenced components don't carry. A client sending it now gets an explicit error rather than a
+		// silent no-op that reported success.
 		var req protocol.UIActionInvoke
 		if err := env.Unmarshal(&req); err != nil {
 			h.sendErr(conn, env.ID, "bad ui.action")
@@ -4568,7 +4568,19 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, "no such session")
 			return
 		}
-		if req.Kind == "prompt" || req.Kind == "answer" {
+		// Refuse anything this does not actually implement, rather than answering OK and doing nothing.
+		//
+		// Every other kind used to fall straight through to the sendOK below, so a client was told its
+		// action had been performed when nothing had happened — and the client marks the user's echoed
+		// submission delivered on that reply. "permission" is the concrete case: it is declared in the
+		// component grammar but cannot work here, because a fenced component carries no approval id.
+		// Saying so is the difference between an unimplemented feature and a broken one.
+		if req.Kind != "prompt" && req.Kind != "answer" {
+			log.Printf("session %s: refused ui.action kind %q (%s) — not implemented", req.SessionID, req.Kind, req.ActionID)
+			h.sendErr(conn, env.ID, "this action type isn't supported: "+req.Kind)
+			return
+		}
+		{
 			text := req.Prompt
 			// A form submits its collected values alongside the action's prompt. Rendering them
 			// daemon-side keeps one canonical phrasing rather than each client inventing its own.

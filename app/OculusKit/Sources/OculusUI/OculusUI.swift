@@ -1176,25 +1176,38 @@ public final class Model: ObservableObject {
         if let sid = sessionID {
             await deliverPrompt(sessionID: sid, text: trimmed, images: imgs, allowReattach: true, messageID: msgID)
         } else {
-            do {
-                let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.sessionCreate,
-                                              payload: SessionCreate(provider: newSessionProvider,
-                                                                     projectID: pendingProjectID,
-                                                                     projectIDs: pendingProjectIDs,
-                                                                     prompt: trimmed,
-                                                                     images: imgs.isEmpty ? nil : imgs,
-                                                                     worktree: pendingWorktree ? true : nil,
-                                                                     workspaceName: pendingWorkspaceName,
-                                                                     plan: pendingPlan ? true : nil))
-                try await client.send(env)
-                markDelivery(msgID, .ok)
-                noteActivity()
-            } catch {
-                markDelivery(msgID, .failed)
-                setError("Couldn’t start the session", error.localizedDescription)
-                status = "Send failed: \(error.localizedDescription)"
-                busy = false
-            }
+            await createSessionCarrying(text: trimmed, images: imgs, messageID: msgID)
+        }
+    }
+
+    /// Starts a session whose FIRST turn is the user's message, and marks that message delivered only
+    /// once the daemon says so.
+    ///
+    /// This used to encode the envelope, `client.send` it, and mark `.ok` on the very next line. That
+    /// send is a local socket write: it returns as soon as the frame is handed to the transport, so
+    /// the ✓ meant "your device wrote some bytes", not "the agent has your message". Every other send
+    /// in the app goes through `request()` and awaits the daemon's reply — including `createSession`,
+    /// which does exactly this and explains why. The first message of a session was the one that
+    /// didn't, so a create the daemon rejected (unreachable provider backend, bad project, images the
+    /// provider can't take) showed a delivered message and an agent that never answered.
+    private func createSessionCarrying(text: String, images: [ImageAttachment], messageID: UUID) async {
+        do {
+            _ = try await request(MessageType.sessionCreate,
+                                  payload: SessionCreate(provider: newSessionProvider,
+                                                         projectID: pendingProjectID,
+                                                         projectIDs: pendingProjectIDs,
+                                                         prompt: text,
+                                                         images: images.isEmpty ? nil : images,
+                                                         worktree: pendingWorktree ? true : nil,
+                                                         workspaceName: pendingWorkspaceName,
+                                                         plan: pendingPlan ? true : nil))
+            markDelivery(messageID, .ok)
+            noteActivity()
+        } catch {
+            markDelivery(messageID, .failed)
+            setError("Couldn’t start the session", error.localizedDescription)
+            status = "Send failed: \(error.localizedDescription)"
+            busy = false
         }
     }
 
@@ -1238,12 +1251,20 @@ public final class Model: ObservableObject {
     public func retryFailedMessage() async {
         guard let r = pendingRetry, let idx = messages.firstIndex(where: { $0.id == r.id }) else { return }
         messages[idx].delivery = .sending
-        guard let sid = sessionID, client != nil else {
+        // Split what used to be one fused guard. `sessionID == nil` is not "not connected" — it is a
+        // FIRST message, which has no session yet, and the old guard failed every retry of one with a
+        // connection error that was simply untrue. Retrying the very message most likely to have
+        // failed (a create the daemon rejected) was impossible, and the reason given was wrong.
+        guard client != nil else {
             messages[idx].delivery = .failed
             setError("Not connected", "Still not connected to the daemon. Reconnect and try again.")
             return
         }
         busy = true
+        guard let sid = sessionID else {
+            await createSessionCarrying(text: r.text, images: r.images, messageID: r.id)
+            return
+        }
         await deliverPrompt(sessionID: sid, text: r.text, images: r.images, allowReattach: true, messageID: r.id)
     }
 
@@ -1791,25 +1812,40 @@ public final class Model: ObservableObject {
     /// Toggles autonomous heartbeat supervision for the active session. Re-arming (autonomous =
     /// true) also resets the daemon's nudge counter so a previously-exhausted session runs again.
     public func setAutonomy(_ on: Bool) async {
+        // Guard BEFORE flipping, and await the daemon's reply — the shape setSessionMode already uses.
+        //
+        // `autonomous = on` used to run ahead of the guard, so switching autonomy while disconnected
+        // moved the switch on screen and returned; and the send itself was `try?`, so a failure did
+        // the same. The user saw supervision enabled while the daemon never enabled it — and autonomy
+        // is exactly the setting you check once and then trust for hours.
+        guard client != nil, let sid = sessionID else { return }
+        let previous = autonomous
         autonomous = on
-        guard let client, let sid = sessionID else { return }
-        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.sessionAutonomy,
-                                          payload: SessionAutonomy(sessionID: sid, autonomous: on)) {
-            try? await client.send(env)
+        if (try? await request(MessageType.sessionAutonomy,
+                               payload: SessionAutonomy(sessionID: sid, autonomous: on))) == nil {
+            autonomous = previous
+            actionError = on
+                ? "Couldn't turn on autonomy. The agent is still unsupervised."
+                : "Couldn't turn off autonomy. The agent is still running supervised."
+            return
         }
     }
 
     /// Runs the session's tests/build (daemon auto-detects the command, or pass one). Output
     /// streams into testOutput; the outcome lands in testResult.
     public func runTests(command: String? = nil) async {
-        guard let client, let sid = sessionID else { return }
+        guard client != nil, let sid = sessionID else { return }
         testOutput = []
         testResult = nil
         testRunning = true
         showTests = true
-        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.runTest,
-                                          payload: RunTest(sessionID: sid, command: command)) {
-            try? await client.send(env)
+        // Await the ack. `testRunning` is only ever cleared by the daemon's test.result, so latching
+        // it on a fire-and-forget send meant an encode failure, a dropped frame or a daemon that
+        // refused the request left the panel spinning with no result and no way back — and the button
+        // stays disabled while it spins, so the user cannot even retry.
+        if (try? await request(MessageType.runTest, payload: RunTest(sessionID: sid, command: command))) == nil {
+            testRunning = false
+            actionError = "Couldn't start the test run."
         }
     }
 
@@ -2756,11 +2792,16 @@ public final class Model: ObservableObject {
     public func loadEarlierHistory() async {
         guard let client, let sid = sessionID, !loadingEarlier, hasEarlierHistory else { return }
         loadingEarlier = true
-        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.transcriptPage,
-                                          payload: TranscriptPage(sessionID: sid, loaded: daemonEventsRendered)) {
-            try? await client.send(env)
-        } else {
+        // Await the ack, and clear the latch on ANY failure — not just an encode failure.
+        //
+        // `loadingEarlier` is otherwise only ever cleared by the daemon's transcript.page reply, and
+        // the send was `try?`. A throw left it latched true forever, and the guard at the top of this
+        // method tests it — so "Load earlier" was permanently dead for the rest of the session, with
+        // no error and no spinner to explain why.
+        if (try? await request(MessageType.transcriptPage,
+                               payload: TranscriptPage(sessionID: sid, loaded: daemonEventsRendered))) == nil {
             loadingEarlier = false
+            actionError = "Couldn't load earlier messages."
         }
     }
 
@@ -4203,12 +4244,25 @@ public final class Model: ObservableObject {
             }
             if !lines.isEmpty { echo = echo.isEmpty ? lines.joined(separator: "\n") : echo + "\n\n" + lines.joined(separator: "\n") }
         }
+        var echoed: UUID?
         if (a.kind == "prompt" || a.kind == "answer"), !echo.isEmpty {
-            messages.append(ChatMessage(role: .user, text: echo, delivery: .sending))
+            let msg = ChatMessage(role: .user, text: echo, delivery: .sending)
+            echoed = msg.id
+            messages.append(msg)
             busy = true
         }
-        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.uiAction, payload: invoke) {
-            try? await client.send(env)
+        // Await the daemon's reply rather than firing and forgetting.
+        //
+        // The echo above is written into the transcript BEFORE the send, so a `try?` that threw left
+        // the user looking at a form submission that reads as sent, stuck at .sending forever, with
+        // busy latched true — while the agent never received it. Tapping a button in a generative-UI
+        // card is a real message; it earns the same delivery accounting as one typed in the composer.
+        if (try? await request(MessageType.uiAction, payload: invoke)) == nil {
+            if let id = echoed { markDelivery(id, .failed) }
+            busy = false
+            actionError = "Couldn't send that action."
+        } else if let id = echoed {
+            markDelivery(id, .ok)
         }
     }
 
