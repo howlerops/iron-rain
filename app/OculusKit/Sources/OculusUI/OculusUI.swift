@@ -4028,6 +4028,15 @@ public final class Model: ObservableObject {
         if let last = messages.last, last.role == .assistant, last.streaming {
             messages[messages.count - 1].streaming = false
         }
+        // Seal every sub-agent lane too. A message renders PLAIN while it is streaming (re-parsing
+        // markdown on every ~40ms flush stalls the main thread) and snaps to markdown once sealed —
+        // but only the parent was ever sealed, so a lane's report kept its raw source forever:
+        // "**Listing current directory contents**" with the asterisks still in it, headings that
+        // stayed hashes, links that stayed brackets. The lane uses the same MessageRow as the
+        // parent; it was simply never told the turn had ended.
+        for sid in childMessages.keys {
+            finalizeChildStreaming(sid)
+        }
     }
 
     private func appendTool(_ text: String) {
@@ -4236,8 +4245,19 @@ public final class Model: ObservableObject {
     /// Seals any in-flight streaming assistant message in a child's buffer (folding pending deltas first).
     private func finalizeChildStreaming(_ sid: String) {
         flushChild(sid) // don't lose buffered text at the boundary
-        guard var buf = childMessages[sid], let last = buf.last, last.role == .assistant, last.streaming else { return }
-        buf[buf.count - 1].streaming = false
+        guard var buf = childMessages[sid] else { return }
+        // EVERY streaming row, not just the last. A lane accumulates several assistant messages —
+        // one per tool boundary — and sealing only the tail left all the earlier ones rendering as
+        // raw source: the final paragraph came out as markdown while the narration above it still
+        // read "**Planning precise final inspection**". The parent does not have this problem only
+        // because appending a tool or UI row seals the message before it; nothing does that for a
+        // lane.
+        var changed = false
+        for i in buf.indices where buf[i].role == .assistant && buf[i].streaming {
+            buf[i].streaming = false
+            changed = true
+        }
+        guard changed else { return }
         childMessages[sid] = buf
     }
 
