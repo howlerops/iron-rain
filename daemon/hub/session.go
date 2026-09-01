@@ -1604,6 +1604,22 @@ func (m *managedSession) broadcastUserEcho(text, author string) {
 }
 
 // appendDurable writes one frame to the durable transcript under the sequence lock.
+// advanceDurable rewrites an already-stored renderable in place — a card moving running → done.
+// Uses a fresh seq only for the row that does not exist yet; an existing row keeps its position.
+func (m *managedSession) advanceDurable(sid, msgID string, raw []byte) {
+	db := m.hub.db
+	if db == nil || m.meta.ephemeral || msgID == "" {
+		return
+	}
+	m.txMu.Lock()
+	m.txSeq++
+	seq := m.txSeq
+	m.txMu.Unlock()
+	if err := db.UpsertRenderable(sid, seq, msgID, raw); err != nil {
+		log.Printf("transcript: advance %s failed: %v", sid, err)
+	}
+}
+
 func (m *managedSession) appendDurable(sid, msgID string, raw []byte) {
 	db := m.hub.db
 	if db == nil || m.meta.ephemeral {

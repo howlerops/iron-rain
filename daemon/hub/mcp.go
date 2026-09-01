@@ -243,7 +243,10 @@ func (h *Hub) handleMCP(ctx context.Context, conn *transport.Conn, env protocol.
 		_ = env.Unmarshal(&req)
 		entries, err := mcp.BrowseDirectory(ctx, req.Query)
 		if err != nil {
-			h.sendErr(conn, env.ID, "couldn't reach the MCP registry: "+err.Error())
+			// BrowseDirectory names the registry itself ("the MCP registry returned HTTP 503"), so
+			// prefixing named it twice in one sentence. Pass the error through; it is already a
+			// complete thought.
+			h.sendErr(conn, env.ID, err.Error())
 			return
 		}
 		out := protocol.MCPDirectory{Entries: make([]protocol.MCPDirectoryEntry, 0, len(entries))}

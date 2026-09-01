@@ -11,6 +11,29 @@ const maxTranscriptRows = 5000
 // session. When msgID != "" the write is idempotent on (session_id, msg_id) — so a provider that
 // re-replays its history on re-attach doesn't duplicate rows. seq orders events within a session.
 // Returns whether a row was actually inserted (false = deduped).
+// UpsertRenderable writes a row that ADVANCES an existing one rather than duplicating it.
+//
+// AppendTranscript is INSERT OR IGNORE, which is exactly right for dedup — a re-streamed message
+// must not append twice. But a card is not a message: a sub-agent lane is written as "running" and
+// later sealed "done", under the same stable id. IGNORE silently dropped the seal, so on reload the
+// lane replayed in the state it STARTED in and spun forever for a sub-agent that had finished.
+//
+// The row keeps its original seq, because seq is its position in the conversation and the card
+// belongs where it first appeared, not at the end.
+func (s *Store) UpsertRenderable(sessionID string, seq int64, msgID string, raw []byte) error {
+	if s == nil || s.db == nil || msgID == "" {
+		return nil
+	}
+	// The partial index's WHERE clause is required in the conflict target for SQLite to match it.
+	_, err := s.db.Exec(
+		`INSERT INTO transcript_events(session_id, seq, msg_id, raw, ts) VALUES(?, ?, ?, ?, ?)
+		 ON CONFLICT(session_id, msg_id) WHERE msg_id IS NOT NULL
+		 DO UPDATE SET raw = excluded.raw, ts = excluded.ts`,
+		sessionID, seq, msgID, raw, time.Now().Unix(),
+	)
+	return err
+}
+
 func (s *Store) AppendTranscript(sessionID string, seq int64, msgID string, raw []byte) (bool, error) {
 	if s == nil || s.db == nil {
 		return false, nil

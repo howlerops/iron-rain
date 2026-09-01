@@ -227,8 +227,13 @@ func (r *Registry) Check(ctx context.Context, name string) Status {
 	info, err := c.Probe(ctx)
 	if err != nil {
 		st.Error = err.Error()
-		if tail := strings.TrimSpace(c.Stderr()); tail != "" && !strings.Contains(st.Error, tail) {
-			st.Error += " — " + lastLine(tail)
+		// Compare against the LINE that would be appended, not the whole multi-line stderr. Client.call
+		// already appends that last line, and a multi-line tail never matches Contains — so the same
+		// line was appended a second time and the reason appeared twice in one message.
+		if tail := strings.TrimSpace(c.Stderr()); tail != "" {
+			if line := lastLine(tail); line != "" && !strings.Contains(st.Error, line) {
+				st.Error += " — " + line
+			}
 		}
 		r.record(st)
 		return st

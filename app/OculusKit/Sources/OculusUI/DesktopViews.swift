@@ -443,8 +443,14 @@ public struct RootView: View {
                                     // Access — the scrim is the dismiss control, so name it as one.
                                     .accessibilityAddTraits(.isButton)
                                     .accessibilityLabel("Close command palette")
-                                CommandPalette(model: model, palette: palette,
-                                               items: paletteItems(model), onClose: { showPalette = false })
+                                // Observed: paletteItems reads @Published sessions / loops / agents /
+                                // needsYouCount, and built in RootView's body it froze at whatever
+                                // those were when the palette opened — a session started while it was
+                                // open, or one that finished, never appeared or never updated.
+                                ObservingModel(model: model) {
+                                    CommandPalette(model: model, palette: palette,
+                                                   items: paletteItems(model), onClose: { showPalette = false })
+                                }
                                     .padding(.top, 80)
                                     .frame(maxHeight: .infinity, alignment: .top)
                             }
@@ -966,9 +972,15 @@ public struct RootView: View {
     /// Desktop (paired-Mac) switcher, shown as the window-title dropdown.
     @ViewBuilder private var deckDesktopMenu: some View {
         ForEach(store.models, id: \.id) { m in
-            Button { store.selectedID = m.id } label: {
-                Label(m.name.isEmpty ? "Desktop" : m.name,
-                      systemImage: m.id == store.selectedID ? "checkmark" : (m.connected ? "circle.fill" : "circle"))
+            // Each row observes ITS OWN model. `connected` and `name` are @Published on the
+            // per-desktop Model, and this menu is built by a view that observes only the store — so a
+            // Mac dropping off or coming back never changed its dot until something unrelated
+            // re-rendered, and the switcher quietly showed the wrong machine as reachable.
+            ObservingModel(model: m) {
+                Button { store.selectedID = m.id } label: {
+                    Label(m.name.isEmpty ? "Desktop" : m.name,
+                          systemImage: m.id == store.selectedID ? "checkmark" : (m.connected ? "circle.fill" : "circle"))
+                }
             }
         }
         Divider()

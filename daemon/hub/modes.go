@@ -130,5 +130,9 @@ func (m *managedSession) emitTool(text string) {
 	}}
 	if raw, err := ev.Encode(); err == nil {
 		m.broadcast(raw)
+		// Persisted too. These synthetic notes — a mode block, a .git guard denial — are the ONLY
+		// record that something was refused and why; ring-only meant the explanation vanished on
+		// reload and the transcript showed a gap where a refusal had been.
+		m.persistDurable(ev, raw)
 	}
 }

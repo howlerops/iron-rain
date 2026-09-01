@@ -351,6 +351,11 @@ func (m *managedSession) closeTurnFrom(state, reason string, providerDriven bool
 	for _, sa := range toSeal {
 		if raw, err := (agent.Event{Type: protocol.TypeSessionSubAgent, Payload: sa}).Encode(); err == nil {
 			m.broadcast(raw)
+			// ADVANCE the stored row rather than appending. The pump wrote this lane as "running"
+			// under the same stable id, and an INSERT OR IGNORE seal is silently dropped — so the
+			// lane replayed in the state it started in and spun forever for a sub-agent that had
+			// already finished.
+			m.advanceDurable(m.sess.ID(), "sub:"+sa.ID, raw)
 		}
 	}
 	if len(toSeal) > 0 {
@@ -359,6 +364,10 @@ func (m *managedSession) closeTurnFrom(state, reason string, providerDriven bool
 	for _, st := range toolSeal {
 		if raw, err := (agent.Event{Type: protocol.TypeSessionTool, Payload: st}).Encode(); err == nil {
 			m.broadcast(raw)
+			// The seal is the card's only terminal state, and persistDurable stores exactly that —
+			// it was simply never called here, so an interrupted turn's cards came back on reload
+			// still spinning.
+			m.persistDurable(agent.Event{Type: protocol.TypeSessionTool, Payload: st}, raw)
 		}
 	}
 	if len(toolSeal) > 0 {
