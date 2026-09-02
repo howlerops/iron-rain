@@ -40,7 +40,17 @@ type builtin struct {
 // gets EOF rather than blocking — belt and braces, because these flags are third-party surface that
 // can change under us.)
 var builtinAgents = []builtin{
-	{cfg: Config{Name: "codex", Command: "codex", Args: []string{"exec", "{prompt}"}}},
+	// --skip-git-repo-check is REQUIRED for the same reason gemini needs --skip-trust below: codex
+	// now refuses to run outside a Git repository —
+	//
+	//   "Not inside a trusted directory and --skip-git-repo-check was not specified."
+	//
+	// An Iron Rain session runs wherever the user pointed it, which is very often a plain directory
+	// (a scratch folder, a docs tree, a freshly-made project), and there is no interactive way to
+	// answer the gate from behind the daemon's pipe. Without this, codex failed in every such
+	// directory regardless of authentication. Verified against codex-cli 0.152.1, whose own help
+	// documents the flag as "Allow running Codex outside a Git repository".
+	{cfg: Config{Name: "codex", Command: "codex", Args: []string{"exec", "--skip-git-repo-check", "{prompt}"}}},
 	// --skip-trust is REQUIRED, not a preference. Headless gemini refuses to run in a directory it
 	// hasn't been told to trust:
 	//
