@@ -455,6 +455,18 @@ type piEvent struct {
 	// actually expected.
 	Message json.RawMessage `json:"message"`
 	Output  string          `json:"output"`
+	// toolCallId / result are what pi ACTUALLY sends for tool frames — verified against a live
+	// `pi --mode rpc` session (0.80.2), whose tool_execution_start carries {toolCallId,toolName,args}
+	// and whose tool_execution_end carries {toolCallId,toolName,result,isError}. It once used
+	// id/output, which is what the fields above (and our fixtures) were written against; the rename
+	// happened upstream and nothing here noticed, because a missing JSON key decodes to "" rather
+	// than failing. So every pi tool card was emitted with an EMPTY id and NO output: the client keys
+	// cards by id, so a turn's cards all collapsed onto one blank card that never showed a result.
+	//
+	// Both spellings are accepted rather than swapped, because oh-my-pi and older pi builds are still
+	// on the old names and this adapter serves all of them.
+	ToolCallID string          `json:"toolCallId"`
+	Result     json.RawMessage `json:"result"`
 	// IsError is pi's own per-tool failure flag (pi-agent-core emits it on tool_execution_end, and
 	// agent-session forwards it under this name). We were not reading it, and reported EVERY tool as
 	// completed — so a pi tool that failed rendered as a successful card carrying its error text as
@@ -466,6 +478,43 @@ type piEvent struct {
 		Type  string `json:"type"`
 		Delta string `json:"delta"`
 	} `json:"assistantMessageEvent"`
+}
+
+// toolID is the tool call's identity, under whichever key this pi speaks. NOT a general alias for
+// ID: `id` still means the frame id on extension_ui_request and on RPC responses, which are
+// different things entirely.
+func (e piEvent) toolID() string {
+	if e.ToolCallID != "" {
+		return e.ToolCallID
+	}
+	return e.ID
+}
+
+// toolOutput is the tool's textual result. Newer pi wraps it as {"content":[{"type":"text",...}]},
+// older pi sent a bare "output" string.
+func (e piEvent) toolOutput() string {
+	if e.Output != "" {
+		return e.Output
+	}
+	if len(e.Result) == 0 {
+		return ""
+	}
+	var r struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if json.Unmarshal(e.Result, &r) != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, c := range r.Content {
+		if c.Text != "" {
+			b.WriteString(c.Text)
+		}
+	}
+	return b.String()
 }
 
 // messageText returns the "message" field when it is a plain string (a confirm/select prompt), and
@@ -671,7 +720,7 @@ func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool) {
 			// carries no title at all (and not always a toolName), so emitting it as-is is what
 			// silently strips the card's command summary from history.
 			name, title := e.ToolName, e.Title
-			c := s.takeToolCard(e.ID)
+			c := s.takeToolCard(e.toolID())
 			if name == "" {
 				name = c.name
 			}
@@ -683,7 +732,7 @@ func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool) {
 				st = protocol.ToolError
 			}
 			s.emit(agent.Event{Type: protocol.TypeSessionTool, Payload: protocol.SessionTool{
-				SessionID: s.id, ID: e.ID, Name: name, Title: title, Output: e.Output, Status: st}})
+				SessionID: s.id, ID: e.toolID(), Name: name, Title: title, Output: e.toolOutput(), Status: st}})
 		case "tool_execution_start":
 			// pi has no native to-do tool; a valhalla-style extension can add one, and its
 			// call arrives here — surface it as the normalized session.todos.
@@ -696,9 +745,9 @@ func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool) {
 			if title == "" {
 				title = piToolSummary(e.Args)
 			}
-			s.rememberToolCard(e.ID, e.ToolName, title)
+			s.rememberToolCard(e.toolID(), e.ToolName, title)
 			s.emit(agent.Event{Type: protocol.TypeSessionTool, Payload: protocol.SessionTool{
-				SessionID: s.id, ID: e.ID, Name: e.ToolName, Title: title, Status: protocol.ToolRunning}})
+				SessionID: s.id, ID: e.toolID(), Name: e.ToolName, Title: title, Status: protocol.ToolRunning}})
 		case "extension_ui_request":
 			// EVERY request must be answered, not just the ones that gate an action. pi blocks the
 			// run until it receives an extension_ui_response for each request it sends, and its

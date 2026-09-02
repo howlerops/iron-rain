@@ -170,3 +170,73 @@ while IFS= read -r line; do :; done
 			terminal.Status)
 	}
 }
+
+// pi's REAL tool wire, captured from a live `pi --mode rpc` session (0.80.2).
+//
+// tool_execution_start carries {toolCallId, toolName, args} and tool_execution_end carries
+// {toolCallId, toolName, result, isError} — NOT the {id, output} this adapter was written against.
+// pi renamed them upstream and nothing here noticed, because a missing JSON key decodes to "" rather
+// than failing: every pi tool card was emitted with an EMPTY id and NO output. The client keys cards
+// by id, so a whole turn's tools collapsed onto one blank card that never showed a result.
+func TestPiRealWireToolFramesCarryIDAndOutput(t *testing.T) {
+	const realRPC = `#!/bin/sh
+echo '{"type":"tool_execution_start","toolCallId":"call_abc|fc_123","toolName":"bash","args":{"command":"echo hello"}}'
+echo '{"type":"tool_execution_end","toolCallId":"call_abc|fc_123","toolName":"bash","result":{"content":[{"type":"text","text":"hello"}]},"isError":false}'
+echo '{"type":"agent_end"}'
+while IFS= read -r line; do :; done
+`
+	dir := t.TempDir()
+	script := filepath.Join(dir, "fake-pi-realwire.sh")
+	if err := os.WriteFile(script, []byte(realRPC), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := New([]string{script}).Create(context.Background(), dir, "run it")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	var running, done *protocol.SessionTool
+	timeout := time.After(10 * time.Second)
+	for done == nil {
+		select {
+		case ev, ok := <-sess.Events():
+			if !ok {
+				t.Fatal("stream ended before the tool completed")
+			}
+			st, isTool := ev.Payload.(protocol.SessionTool)
+			if !isTool {
+				continue
+			}
+			if st.Status == protocol.ToolRunning {
+				cp := st
+				running = &cp
+			} else {
+				cp := st
+				done = &cp
+			}
+		case <-timeout:
+			t.Fatal("timeout waiting for the tool frames")
+		}
+	}
+
+	if running == nil || running.ID != "call_abc|fc_123" {
+		t.Errorf("running card id = %q, want the toolCallId — an empty id collapses every card in the turn into one", idOf(running))
+	}
+	if done.ID != "call_abc|fc_123" {
+		t.Errorf("completed card id = %q, want the toolCallId", done.ID)
+	}
+	if done.Output != "hello" {
+		t.Errorf("output = %q, want the text from result.content — the card showed nothing", done.Output)
+	}
+	if done.Status != protocol.ToolCompleted {
+		t.Errorf("status = %q, want completed", done.Status)
+	}
+}
+
+func idOf(t *protocol.SessionTool) string {
+	if t == nil {
+		return "<no running frame>"
+	}
+	return t.ID
+}
