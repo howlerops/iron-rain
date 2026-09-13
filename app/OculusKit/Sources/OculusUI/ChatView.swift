@@ -1121,6 +1121,23 @@ public struct ChatView: View {
 
 // MARK: - Message row
 
+/// Decodes image bytes to at most `maxPixel` on the long edge.
+///
+/// Free and nonisolated so it can be run off the main actor, and testable without a view. Falls back
+/// to a full decode only when the source has no thumbnail path at all — a decoded image is better
+/// than a broken one, and the fallback is bounded by the daemon's own read limit.
+func downsampledCGImage(_ data: Data, maxPixel: Int) -> CGImage? {
+    guard let src = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+    let opts: [CFString: Any] = [
+        kCGImageSourceCreateThumbnailFromImageAlways: true,
+        kCGImageSourceCreateThumbnailWithTransform: true, // honour EXIF rotation, as a full decode does
+        kCGImageSourceShouldCacheImmediately: true,       // pay the decode here, not on the render pass
+        kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+    ]
+    return CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary)
+        ?? CGImageSourceCreateImageAtIndex(src, 0, nil)
+}
+
 /// Renders the images a message REFERENCES by path ("[Image: source: /abs/path.png]" — the shape
 /// claude transcripts use for pasted screenshots) as inline thumbnails, loaded through the daemon
 /// (fs.readbytes) so they work from any device, not just the Mac that owns the files.
@@ -1129,6 +1146,15 @@ struct InlineImagesView: View {
     let palette: OculusPalette
     let load: (String) async -> Data?
     @State private var images: [String: CGImage] = [:]
+
+    /// Long-edge budget for a decoded inline image.
+    ///
+    /// The thumbnail below is drawn at most 420×280 points, so a 3× panel needs ~1260 pixels. Decoding
+    /// at the file's own resolution instead — which is what CGImageSourceCreateImageAtIndex does —
+    /// costs width × height × 4 bytes for as long as the row exists: an ordinary macOS screenshot is
+    /// 3024×1964, so 23 MB of resident memory to fill a 420-point box. Six per row is the declared
+    /// bound, and the rows are retained for the whole conversation.
+    fileprivate static let maxInlinePixel = 1280
 
     static func imagePaths(in text: String) -> [String] {
         guard text.contains("[Image: source: ") else { return [] }
@@ -1161,11 +1187,14 @@ struct InlineImagesView: View {
                     }
                     .foregroundStyle(palette.mutedForeground)
                     .task {
-                        if images[p] == nil, let data = await load(p),
-                           let src = CGImageSourceCreateWithData(data as CFData, nil),
-                           let cg = CGImageSourceCreateImageAtIndex(src, 0, nil) {
-                            images[p] = cg
-                        }
+                        guard images[p] == nil, let data = await load(p) else { return }
+                        // Off the main actor. `.task` inherits the view's actor, so the decode used to
+                        // run on the main thread — a full-resolution screenshot stalls the UI for the
+                        // whole of it, on the frame where the row appears.
+                        let cg = await Task.detached(priority: .userInitiated) {
+                            downsampledCGImage(data, maxPixel: InlineImagesView.maxInlinePixel)
+                        }.value
+                        if let cg { images[p] = cg }
                     }
                 }
             }
@@ -2490,7 +2519,10 @@ struct InlineSubAgentCard: View {
                     // never balloons the parent chat. The header stays put (one tap to collapse).
                     ScrollView {
                         VStack(alignment: .leading, spacing: 8) {
-                            ForEach(msgs) { m in MessageRow(message: m, palette: palette) }
+                            // .equatable() for the same reason the parent transcript has it: without
+                            // it every Model publish — one per streamed delta, on any lane — rebuilds
+                            // every row in this one, markdown parse and syntax highlighting included.
+                            ForEach(msgs) { m in MessageRow(message: m, palette: palette).equatable() }
                         }
                         .padding(.leading, 4).padding(.trailing, 2)
                     }
@@ -2649,7 +2681,9 @@ struct SubAgentsStrip: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(msgs) { m in
-                            MessageRow(message: m, palette: palette)
+                            // See InlineSubAgentCard: a lane's rows must not re-render because some
+                            // OTHER lane streamed a token.
+                            MessageRow(message: m, palette: palette).equatable()
                         }
                     }
                     .padding(.vertical, 4).padding(.horizontal, 6)

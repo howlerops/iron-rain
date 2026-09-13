@@ -121,6 +121,7 @@ type managedSession struct {
 	subs            map[*transport.Conn]*subscriber
 	transcript      [][]byte  // encoded protocol events, replayed to new subscribers
 	transcriptBytes int       // running size of transcript (for the byte cap)
+	ringSeq         uint64    // bumped on every ring write; half of the fullHistory cache key
 	lastActivity    time.Time // last event time; surfaced as Session.UpdatedAt for sorting/relative time
 	// pumpSeq counts events the pump has fully processed. See the bump site for why it exists.
 	pumpSeq atomic.Uint64
@@ -259,6 +260,28 @@ type managedSession struct {
 	// False for any session this process ATTACHED to rather than created — a restored session's ring
 	// starts empty and then fills with only what happens from now on, which is not the conversation.
 	ringFromStart bool
+
+	// Memoized fullHistory, for the path that has to merge the durable store into the ring.
+	//
+	// Assembling that costs a whole-transcript SQL read, a sha256 of every frame on both sides and a
+	// JSON unmarshal of most of them. Subscribe paid it, and then every "show earlier messages" page
+	// paid it AGAIN — so reading back through a long conversation re-derived the entire conversation
+	// once per page, and switching between two restored sessions did it on every switch.
+	//
+	// Keyed by two monotonic counters, one per source: ringSeq moves on any ring write, txSeq on any
+	// durable write. Deriving the key from the sources is the point. Hand-invalidating at each of the
+	// call sites that write either one would be a single forgotten site away from replaying a
+	// conversation that is missing its most recent message, which is the failure this file has already
+	// shipped twice and commented at length about.
+	//
+	// Guarded by its own lock, taken only after m.mu is released, and released by the heartbeat sweep
+	// so a session nobody is reading stops holding a second copy of its own transcript.
+	histMu     sync.Mutex
+	histCache  [][]byte
+	histRing   uint64
+	histTx     int64
+	histAt     time.Time
+	histBuilds atomic.Uint64 // rebuilds; read by the test that proves the memo is actually consulted
 
 	// createdAt is when this binding was made (create or attach). It bounds the window in which a
 	// self-replaying provider might still be re-streaming its history — see subscribe().
@@ -1257,6 +1280,7 @@ func (m *managedSession) recordOnly(raw []byte) {
 	defer m.mu.Unlock()
 	m.transcript = append(m.transcript, raw)
 	m.transcriptBytes += len(raw)
+	m.ringSeq++
 	m.lastActivity = time.Now()
 	m.trimTranscript()
 }
@@ -1268,6 +1292,7 @@ func (m *managedSession) broadcast(raw []byte) {
 	m.mu.Lock()
 	m.transcript = append(m.transcript, raw)
 	m.transcriptBytes += len(raw)
+	m.ringSeq++
 	m.lastActivity = time.Now()
 	m.trimTranscript()
 	subs := make([]*subscriber, 0, len(m.subs))
@@ -1303,6 +1328,7 @@ func (m *managedSession) fullHistory() [][]byte {
 	ring := append([][]byte(nil), m.transcript...)
 	trimmed := m.transcriptTrimmed
 	fromStart := m.ringFromStart
+	ringSeq := m.ringSeq
 	m.mu.Unlock()
 	if fromStart && !trimmed {
 		return ring // this process saw the session from its first event: the ring is the whole story
@@ -1311,11 +1337,55 @@ func (m *managedSession) fullHistory() [][]byte {
 	if db == nil {
 		return ring
 	}
+	m.txMu.Lock()
+	txSeq := m.txSeq
+	m.txMu.Unlock()
+
+	if cached := m.cachedHistory(ringSeq, txSeq); cached != nil {
+		return cached
+	}
+	m.histBuilds.Add(1)
 	durable, err := db.Transcript(m.sess.ID())
 	if err != nil || len(durable) == 0 {
 		return ring
 	}
-	return joinHistory(durable, ring)
+	joined := joinHistory(durable, ring)
+	m.rememberHistory(joined, ringSeq, txSeq)
+	return append([][]byte(nil), joined...)
+}
+
+// histCacheTTL is how long an unread memo survives the heartbeat sweep. Long enough to cover a
+// subscribe and the burst of history pages that follows it; short enough that a session the user
+// opened once and left is not still holding a second copy of its transcript a minute later.
+const histCacheTTL = 30 * time.Second
+
+// cachedHistory returns the memo if it was built from exactly this pair of source versions.
+// The returned slice is a fresh header over shared frames: callers sub-slice and append to what
+// fullHistory hands back, and appending into spare capacity would otherwise overwrite the memo.
+func (m *managedSession) cachedHistory(ringSeq uint64, txSeq int64) [][]byte {
+	m.histMu.Lock()
+	defer m.histMu.Unlock()
+	if m.histCache == nil || m.histRing != ringSeq || m.histTx != txSeq {
+		return nil
+	}
+	m.histAt = time.Now()
+	return append([][]byte(nil), m.histCache...)
+}
+
+func (m *managedSession) rememberHistory(joined [][]byte, ringSeq uint64, txSeq int64) {
+	m.histMu.Lock()
+	defer m.histMu.Unlock()
+	m.histCache, m.histRing, m.histTx, m.histAt = joined, ringSeq, txSeq, time.Now()
+}
+
+// expireHistoryCache drops a memo nobody has read for histCacheTTL. Called from the heartbeat tick,
+// which is the only thing that visits every session on a timer.
+func (m *managedSession) expireHistoryCache(now time.Time) {
+	m.histMu.Lock()
+	defer m.histMu.Unlock()
+	if m.histCache != nil && now.Sub(m.histAt) > histCacheTTL {
+		m.histCache = nil
+	}
 }
 
 // historyPage returns the events immediately BEFORE the newest `loaded` ones, oldest-first, plus
@@ -1378,6 +1448,7 @@ func (m *managedSession) trimTranscript() {
 		m.transcriptBytes -= len(m.transcript[0])
 		m.transcript[0] = nil // release the backing bytes for GC
 		m.transcript = m.transcript[1:]
+		m.ringSeq++                // dropping the front changes the history as much as appending to the back
 		m.transcriptTrimmed = true // the ring is now a WINDOW, not the whole session
 	}
 }

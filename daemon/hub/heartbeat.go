@@ -76,6 +76,7 @@ func (h *Hub) heartbeatTick() {
 
 	now := time.Now()
 	for _, m := range sessions {
+		m.expireHistoryCache(now) // release the memoized transcript of a session nobody is reading
 		m.mu.Lock()
 		st := deriveState(m, now)
 		changed := st != m.hbState
