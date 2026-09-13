@@ -540,6 +540,11 @@ func (h *Hub) attacherFor(provider, url string) agent.Attacher {
 	return att
 }
 
+// usageRetention is how long per-turn usage rows are kept. Longer than any period usageReport can
+// ask for (the calendar month is the widest), so pruning can never silently change a number the user
+// is looking at.
+const usageRetention = 365 * 24 * time.Hour
+
 // StartSessionPruning periodically touches live sessions (so they never expire while
 // running) then prunes records older than the TTL, reclaiming freed pages. Runs until ctx
 // is cancelled.
@@ -643,6 +648,18 @@ func (h *Hub) touchAndPrune(ttl time.Duration) {
 		log.Printf("prune: %v", err)
 	} else if n > 0 {
 		log.Printf("prune: removed %d stale session record(s)", n)
+	}
+	// Bound usage_events too. store.PruneUsage is documented as "so the table doesn't grow without
+	// bound" and had no caller anywhere, so the bound did not exist: a row is appended per usage
+	// event, forever, and PruneSessions does not touch that table.
+	//
+	// Its retention is deliberately NOT the session TTL. These rows are what make "today", "this
+	// week" and "this month" answerable (hub/usage.go), and what a finished job cost — history that
+	// must outlive the session it came from. A year keeps every period the report can ask for, plus
+	// room to look back, while still bounding the table.
+	usageCutoff := time.Now().Add(-usageRetention).Unix()
+	if err := db.PruneUsage(usageCutoff); err != nil {
+		log.Printf("prune: usage: %v", err)
 	}
 }
 

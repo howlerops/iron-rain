@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1384,6 +1385,37 @@ func (m *managedSession) trimTranscript() {
 // run pumps the session's events until it ends: records approval ownership + pushes,
 // then broadcasts every event to all subscribers.
 func (m *managedSession) run() {
+	// Contain a panic to THIS session.
+	//
+	// A panic in any goroutine takes the whole process with it, and this one runs per session,
+	// parsing whatever a third-party harness chose to send. So a single malformed frame from one
+	// provider could kill the daemon — every other session dies with it, the app shows a dead
+	// connection with no reason, and the only evidence is a stack trace in a log file the user has
+	// never heard of. The blast radius should be the session that caused it.
+	//
+	// The session is then reported as errored rather than left silently stopped, because a turn that
+	// is never going to produce another event must not render as "working" forever.
+	// Captured ONCE, up front. The recover handler must not call back into the session: it is
+	// running because that session just demonstrated it can panic, and a panic inside a deferred
+	// recover takes the process down anyway — defeating the whole guard.
+	sid, provider := m.sess.ID(), m.sess.Provider()
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		log.Printf("session %s (%s): PANIC in the event pump: %v\n%s", sid, provider, r, debug.Stack())
+		if t := m.hub.tel(); t != nil {
+			t.Record("session.panic", provider, 0, fmt.Errorf("%v", r))
+		}
+		detail := "This session stopped unexpectedly (internal error). Its transcript is saved; start a new session to carry on."
+		_ = m.hub.tr().Append(sid, transcript.Entry{Kind: "status", Text: "error", Detail: detail})
+		ss := protocol.SessionStatus{SessionID: sid, Status: protocol.StatusError, Detail: detail}
+		if raw, err := (agent.Event{Type: protocol.TypeSessionStatus, Payload: ss}).Encode(); err == nil {
+			m.broadcast(raw)
+		}
+		m.closeTurn(protocol.StatusError, "panic in the event pump")
+	}()
 	// A worktree session is the only kind that can have a PR, so it is the only kind whose CI is
 	// worth watching. Starting the hub's watcher from here (rather than from main) means a daemon
 	// that never opens a worktree never runs the ticker — and because ensurePRWatch is idempotent

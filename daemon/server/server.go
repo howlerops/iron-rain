@@ -4,6 +4,7 @@ package server
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"io"
 	"log"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/howlerops/oculus/daemon/crypto"
@@ -82,9 +84,28 @@ func (s *Server) ServeConn(ctx context.Context, mc transport.MsgConn) error {
 		_ = mc.Close()
 		return err
 	}
-	log.Printf("server: client connected (handshake ok)")
-	defer conn.Close()
+	// Identify the peer. "client connected" with no identity, and no disconnect line at all, made
+	// the log useless for the question it gets asked: which device did this, and was it still
+	// connected when the thing happened? The key is already in hand from the handshake; a short
+	// prefix is enough to tell devices apart without putting a full key in a log file.
+	peer := peerLabel(conn)
+	t0 := time.Now()
+	log.Printf("server: client %s connected", peer)
+	defer func() {
+		log.Printf("server: client %s disconnected after %s", peer, time.Since(t0).Round(time.Second))
+		conn.Close()
+	}()
 	return s.hub.Serve(ctx, conn)
+}
+
+// peerLabel is a short, stable, non-secret identifier for a connected client: the first bytes of its
+// public key. Enough to tell two devices apart in a log; not enough to be a credential.
+func peerLabel(conn *transport.Conn) string {
+	pk := conn.PeerPublicKey()
+	if len(pk) == 0 {
+		return "unknown"
+	}
+	return hex.EncodeToString(pk)[:8]
 }
 
 func isBenignHandshakeClose(err error) bool {

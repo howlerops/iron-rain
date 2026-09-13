@@ -389,7 +389,16 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 		}
 	}
 	createPrompt := req.Prompt
-	if len(req.Images) > 0 {
+	// Hold the first prompt back when the session needs setting up before it runs.
+	//
+	// Images: they can only travel via PromptImages, so the prompt must go with them.
+	// Model: SetModel happens after Create, and Create with a prompt STARTS the first turn — so a
+	// session created with a model ran its opening turn on the provider's default and only switched
+	// from turn two. The user picked a model, watched the first answer come from another one, and
+	// nothing said so. (claude-code's sidecar reads OCULUS_MODEL for exactly this, and nothing has
+	// ever set it; ordering the calls correctly fixes every provider instead of just that one.)
+	deferPrompt := len(req.Images) > 0 || req.Model != ""
+	if deferPrompt {
 		createPrompt = ""
 	}
 	// One-shot prefix folded into the session's FIRST user turn only: the generative-UI guide (teaches
@@ -452,30 +461,13 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 			meta.providerURL = ur.BaseURL()
 		}
 	}
-	if len(req.Images) > 0 {
-		text := req.Prompt
-		if firstTurnPrefix != "" {
-			text = firstTurnPrefix + text
-			firstTurnPrefix = ""
-		}
-		// brand-new session: there is no prior turn to unstick.
-		//
-		// This is the ONLY delivery of the user's first message when images are attached — createPrompt
-		// was blanked above precisely so the prompt could travel with them. Discarding the error here
-		// meant a failure produced a live, empty session and a reported success, with the user's whole
-		// first message gone. Tear the session down and report it, the same as any other create failure.
-		if err := promptSession(ctx, sess, text, req.Images, false); err != nil {
-			_ = sess.Close()
-			h.discardMCPToken(mcpToken)
-			log.Printf("session.create: FAILED — %s could not accept the first prompt: %v", req.Provider, err)
-			return nil, fmt.Errorf("could not send your message: %w", err)
-		}
-	}
 	// modelAccepted stays false when the provider refused the model, so the session does not go on to
 	// report one it is not using. claude-code's SetModel is a write to the sidecar's stdin: it returns
 	// EPIPE once that process has exited and os.ErrClosed after Close, both of which mean the switch
 	// did not happen. The error was discarded here and the model recorded regardless, so the app's
 	// model picker, the usage rows and the session list all named a model the agent never had.
+	//
+	// BEFORE the first prompt: see deferPrompt above.
 	modelAccepted := req.Model != ""
 	if req.Model != "" {
 		if setter, ok := sess.(agent.ModelSetter); ok {
@@ -484,6 +476,25 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 				log.Printf("session.create: %s did not accept model %q: %v — the session keeps its default",
 					req.Provider, req.Model, err)
 			}
+		}
+	}
+	if deferPrompt && strings.TrimSpace(req.Prompt) != "" {
+		text := req.Prompt
+		if firstTurnPrefix != "" {
+			text = firstTurnPrefix + text
+			firstTurnPrefix = ""
+		}
+		// brand-new session: there is no prior turn to unstick.
+		//
+		// This is the ONLY delivery of the user's first message on this path — createPrompt was
+		// blanked above. Discarding the error here meant a failure produced a live, empty session and
+		// a reported success, with the user's whole first message gone. Tear the session down and
+		// report it, the same as any other create failure.
+		if err := promptSession(ctx, sess, text, req.Images, false); err != nil {
+			_ = sess.Close()
+			h.discardMCPToken(mcpToken)
+			log.Printf("session.create: FAILED — %s could not accept the first prompt: %v", req.Provider, err)
+			return nil, fmt.Errorf("could not send your message: %w", err)
 		}
 	}
 	ms := h.addSession(sess, meta)
@@ -1442,8 +1453,17 @@ func (h *Hub) watchPreviewPorts() {
 				names[id] = previewName(m.meta)
 			}
 		}
+		watchers := len(h.clients)
 		h.mu.Unlock()
 		if len(paths) == 0 {
+			continue
+		}
+		// Nobody is connected: a preview NAME exists to be displayed, so with no client there is
+		// nothing to display it to. Restored sessions kept this scanning two lsof processes every
+		// four seconds for the life of the daemon on a machine nobody was even looking at. The next
+		// tick after someone connects picks it straight back up, so the cost of being wrong is ≤4s
+		// of a dev server going unnamed.
+		if watchers == 0 {
 			continue
 		}
 		t0 := time.Now()
@@ -1654,7 +1674,14 @@ func (h *Hub) detachSession(id string, owner *managedSession) {
 		// restart mints a fresh one) and its unanswered approvals can never be answered.
 		h.revokeMCPToken(id)
 		h.sweepSessionApprovals(id)
-		log.Printf("session %s: provider stream ended unexpectedly — kept as stopped/restartable (record preserved)", id)
+		if h.shuttingDown.Load() {
+			// Expected: Shutdown closes every provider session, and each one's stream ending arrives
+			// here. Logging those as "ended unexpectedly" wrote dozens of alarming lines on every
+			// clean quit and buried whatever the operator was actually looking for.
+			log.Printf("session %s: closed on shutdown (record preserved)", id)
+		} else {
+			log.Printf("session %s: provider stream ended unexpectedly — kept as stopped/restartable (record preserved)", id)
+		}
 		h.broadcastSessionList()
 	}
 }
