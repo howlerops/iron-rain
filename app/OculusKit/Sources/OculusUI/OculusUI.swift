@@ -4542,7 +4542,15 @@ public final class Model: ObservableObject {
                 // arriving AFTER the assistant text + tool cards, so a `messages.last` check
                 // missed it and the prompt duplicated. Match against ANY user message already
                 // on screen (live path only; replayed history is handled by dedupReplay below).
-                if role == .user, !trimmed.isEmpty, !dedupReplay,
+                //
+                // Only OUR OWN echo. This had no author check, so it matched on text alone — and a
+                // collaborator agreeing with "yes", "continue" or "go ahead" says exactly what is
+                // already on screen. Their message was dropped silently: never rendered, never
+                // stored, with the sender's own client showing it as sent. The echo this exists to
+                // suppress is by definition ours, and a message carrying someone else's author can
+                // never be it.
+                let isOwnEcho = (m.author ?? "").isEmpty || m.author == identity
+                if role == .user, !trimmed.isEmpty, !dedupReplay, isOwnEcho,
                    messages.contains(where: { $0.role == .user && $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed }) {
                     break
                 }
