@@ -1457,8 +1457,16 @@ public final class Model: ObservableObject {
             if messages.last?.text != note { messages.append(ChatMessage(role: .system, text: note)) }
             setError("No response from the agent", reason)
             status = "No response"
-        default: // idle | error — session.status events already finalize the UI for these
+        case SessionStatusValue.idle, SessionStatusValue.error:
+            // session.status events already finalize the UI for these.
             busy = false
+        default:
+            // A state this build does not know. Leave the composer exactly as it is rather than
+            // unlocking it: an unknown value is far more likely to be a NEWER daemon's new
+            // non-terminal state than a terminal one, and guessing "terminal" unlocks the composer
+            // mid-turn and lets a send race a running agent. Same reasoning as the daemon's own
+            // normalizeMode, which refuses to silently upgrade an unrecognised mode.
+            break
         }
         // Terminal turn ⇒ no sub-agent can still be running. The daemon now seals children on every
         // close path too; this is the client-side backstop for an OLDER daemon (and for any seal
@@ -1467,11 +1475,14 @@ public final class Model: ObservableObject {
         //
         // `stalled` is explicitly NOT terminal: the turn is still open and the children may still
         // come back, so sealing here would be a lie that the nudge is about to contradict.
-        let stillOpen = ts.state == SessionStatusValue.running
-            || ts.state == SessionStatusValue.awaitingApproval
-            || ts.state == SessionStatusValue.stalled
-            || ts.state == SessionStatusValue.recovering
-        if !stillOpen {
+        // TERMINAL is the allowlist, not "open". Testing for open-ness and treating everything else
+        // as finished meant an unrecognised state — a newer daemon's addition — sealed every
+        // sub-agent lane on a turn that was still running.
+        let terminal = ts.state == SessionStatusValue.idle
+            || ts.state == SessionStatusValue.error
+            || ts.state == SessionStatusValue.needsYou
+            || ts.state == "abandoned"
+        if terminal {
             let failed = ts.state == "abandoned"
                 || ts.state == SessionStatusValue.error
                 || ts.state == SessionStatusValue.needsYou
@@ -4030,11 +4041,28 @@ public final class Model: ObservableObject {
     /// Cache-path entry to the same buffered-text fold the live path uses.
     func flushStreamForCache() { flushStream() }
 
+    /// Test seam: the flush is otherwise driven by a timer, and the defect it guards against is a
+    /// race between that timer and a row being appended.
+    func flushStreamForTests() { flushStream() }
+
     private func flushStream() {
         guard !streamBuffer.isEmpty else { return }
-        if let last = messages.last, last.streaming {
-            messages[messages.count - 1].text += streamBuffer
+        // Find the row these tokens BELONG to, rather than assuming it is the last one.
+        //
+        // The buffer was cleared unconditionally but only written when `messages.last` was streaming,
+        // so anything that appended a non-streaming row between a delta and its flush silently
+        // deleted up to a flush interval of the agent's output — permanently, since the daemon does
+        // not resend. Two user-triggered paths do exactly that: sending a follow-up appends the user
+        // row, and a generative-UI action appends its optimistic echo. Sending mid-stream is normal
+        // (the composer stays live during a run), so this was reachable by typing.
+        if let idx = messages.lastIndex(where: { $0.role == .assistant && $0.streaming }) {
+            messages[idx].text += streamBuffer
+            streamBuffer = ""
+            return
         }
+        // Nothing is streaming — the row was sealed while these tokens were in flight. Open one
+        // rather than dropping them: losing the agent's words is never the better outcome.
+        messages.append(ChatMessage(role: .assistant, text: streamBuffer, streaming: true))
         streamBuffer = ""
     }
 
