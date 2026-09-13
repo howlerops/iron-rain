@@ -8,8 +8,11 @@ package selfupdate
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -132,13 +135,77 @@ func latestRelease(ctx context.Context) (tag, assetURL string, err error) {
 		return "", "", err
 	}
 	want := fmt.Sprintf("oculusd_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+	var found, sumsURL string
 	for _, a := range rel.Assets {
-		if a.Name == want {
-			return strings.TrimPrefix(rel.Tag, "v"), a.URL, nil
+		switch a.Name {
+		case want:
+			found = a.URL
+		case "checksums.txt":
+			sumsURL = a.URL
 		}
 	}
-	return strings.TrimPrefix(rel.Tag, "v"), "", nil
+	latestSums = sumsURL
+	latestAsset = want
+	return strings.TrimPrefix(rel.Tag, "v"), found, nil
 }
+
+// latestSums / latestAsset carry the checksum manifest for the release we just resolved, so the
+// download can authenticate what it got. Package-level rather than threaded through every caller,
+// because `latest` already returns two values and its signature is load-bearing in tests.
+var (
+	latestSums  string
+	latestAsset string
+)
+
+// verifyChecksum authenticates downloaded bytes against the release's own checksums.txt.
+//
+// This is what makes the update trustworthy, and it did not exist. The old code downloaded a tarball
+// over TLS and then "verified a code signature" that it had, a few lines earlier, APPLIED ITSELF with
+// `codesign --sign -`: an ad-hoc signature attests to nothing about the publisher, so the check could
+// only ever pass. Anything that could put bytes in front of the updater — a compromised release
+// asset, a proxy that terminates TLS — was accepted and swapped in as the daemon.
+//
+// Checksums rather than notarization because this must also hold on Linux, where there is no
+// codesign at all and the old path did nothing whatsoever.
+func verifyChecksum(ctx context.Context, sumsURL, assetName string, got []byte) error {
+	if sumsURL == "" {
+		return fmt.Errorf("release publishes no checksums.txt — refusing to install an unauthenticated binary")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sumsURL, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("checksums.txt: HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return err
+	}
+	h := sha256.Sum256(got)
+	want := hex.EncodeToString(h[:])
+	for _, line := range strings.Split(string(body), "\n") {
+		f := strings.Fields(line)
+		if len(f) != 2 {
+			continue
+		}
+		if strings.TrimPrefix(f[1], "*") == assetName {
+			if !strings.EqualFold(f[0], want) {
+				return fmt.Errorf("checksum mismatch for %s: the downloaded file is not the published one", assetName)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("checksums.txt does not list %s — refusing to install an unauthenticated binary", assetName)
+}
+
+// maxArchiveBytes bounds what the updater will read before authenticating it.
+const maxArchiveBytes = 128 << 20
 
 // downloadBinary fetches the tar.gz, extracts the "oculusd" entry to a temp file in dir (so the
 // later rename is atomic on the same filesystem), makes it executable, and returns its path.
@@ -155,7 +222,16 @@ func downloadBinary(ctx context.Context, url, dir string) (string, error) {
 	if resp.StatusCode != 200 {
 		return "", fmt.Errorf("download: HTTP %d", resp.StatusCode)
 	}
-	gz, err := gzip.NewReader(resp.Body)
+	// Read the archive whole and AUTHENTICATE it before a single byte is decompressed. Streaming
+	// straight into gzip meant the first thing done with unverified bytes was parsing them.
+	archive, err := io.ReadAll(io.LimitReader(resp.Body, maxArchiveBytes))
+	if err != nil {
+		return "", err
+	}
+	if err := verifyChecksum(ctx, latestSums, latestAsset, archive); err != nil {
+		return "", err
+	}
+	gz, err := gzip.NewReader(bytes.NewReader(archive))
 	if err != nil {
 		return "", err
 	}
@@ -205,6 +281,12 @@ func downloadBinary(ctx context.Context, url, dir string) (string, error) {
 // Releases are signed in CI now, so the common path is "already valid" and this only strips the
 // quarantine xattr. It still repairs an unsigned binary (an older release, or a signature lost in
 // transit) — but it now VERIFIES the result and refuses to swap in a binary that won't validate.
+//
+// This is NOT the authenticity check, and must never be mistaken for one: an ad-hoc signature is
+// applied by this very function, so verifying it afterwards proves only that codesign succeeded.
+// Authenticity comes from verifyChecksum, which runs against the release's published checksums.txt
+// before anything here is reached. What remains here is a macOS exec-ability repair on bytes that
+// have already been authenticated.
 //
 // The old version signed and moved on. If codesign failed, the update proceeded and installed a
 // binary that Apple Silicon SIGKILLs at exec: the daemon then crash-loops under launchd with no
