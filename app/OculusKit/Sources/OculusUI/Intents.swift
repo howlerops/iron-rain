@@ -12,8 +12,22 @@ public final class OculusStore: ObservableObject {
     @Published public var handoffSessionID: String?
     /// APNs device token (hex) captured by the app delegate once the OS grants one.
     @Published public var deviceToken: String?
-    /// A decision (allow/deny) chosen from a notification action, to apply on connect.
-    @Published public var pendingDecision: String?
+    /// A decision (allow/deny) chosen from a notification action or an intent, to apply on connect.
+    ///
+    /// It carries the approval it was MEANT for, when the answer came from somewhere that knew
+    /// (a push notification does — the daemon puts `approval_id` in the payload). Answering is a
+    /// privilege grant, so it must land on the request the user actually saw and nothing else.
+    public struct PendingDecision: Equatable {
+        public let decision: String
+        /// The approval this answer was given for, or nil when the source could not know — Siri and
+        /// Shortcuts say "approve what you're waiting on" with no request in hand.
+        public let approvalID: String?
+        public init(decision: String, approvalID: String?) {
+            self.decision = decision
+            self.approvalID = approvalID
+        }
+    }
+    @Published public var pendingDecision: PendingDecision?
     private var decisionExpiry: Task<Void, Never>?
     private init() {}
 
@@ -26,8 +40,14 @@ public final class OculusStore: ObservableObject {
     /// possibly a different session, silently inherits it. That is an auto-approve of something
     /// the user never saw. An answer only ever means anything for the request that prompted it, so
     /// an unconsumed one is discarded rather than left armed.
-    public func queueDecision(_ decision: String, expiresIn seconds: UInt64 = 90) {
-        pendingDecision = decision
+    ///
+    /// EVERY producer must come through here. The push-notification action — by far the most common
+    /// way an approval is actually answered — used to assign the property directly and so had no
+    /// expiry at all, which is the precise hazard described above, on the one path that matters
+    /// most. Pass `approvalID` whenever the source knows it: the expiry bounds the window, but only
+    /// the id makes the answer land on the right request.
+    public func queueDecision(_ decision: String, approvalID: String? = nil, expiresIn seconds: UInt64 = 90) {
+        pendingDecision = PendingDecision(decision: decision, approvalID: approvalID)
         decisionExpiry?.cancel()
         decisionExpiry = Task { [weak self] in // inherits @MainActor from the enclosing class
             try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)

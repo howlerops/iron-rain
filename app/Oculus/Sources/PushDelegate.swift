@@ -69,9 +69,17 @@ final class PushDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCen
         }
         // Any tap (approval or "agent finished"/"error") that carries a session id opens
         // that session on the next connect — tap the notification, land in the session.
-        let sid = response.notification.request.content.userInfo["session_id"] as? String
+        let info = response.notification.request.content.userInfo
+        let sid = info["session_id"] as? String
+        // The daemon puts `approval_id` in every approval push (hub.pushApproval). It was being
+        // thrown away here, and the decision assigned straight to the property — so the answer was
+        // untargeted AND unexpiring: tap Allow, have that approval answered some other way (at the
+        // Mac, by a standing rule, or by the turn failing), and the "allow" stayed armed until the
+        // app next connected, where it was applied to whatever approval happened to be open by then
+        // — a different tool, in a different session, that the user had never seen.
+        let approvalID = info["approval_id"] as? String
         Task { @MainActor in
-            if let decision { OculusStore.shared.pendingDecision = decision }
+            if let decision { OculusStore.shared.queueDecision(decision, approvalID: approvalID) }
             if let sid, decision == nil { OculusStore.shared.handoffSessionID = sid }
         }
         completionHandler()

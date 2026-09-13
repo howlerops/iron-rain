@@ -811,9 +811,17 @@ public final class Model: ObservableObject {
             OculusStore.shared.pendingPrompt = nil
             await send(queued)
         }
-        if let decision = OculusStore.shared.pendingDecision, pendingApproval != nil {
+        if let queued = OculusStore.shared.pendingDecision, let open = pendingApproval {
+            // Consume it either way: an answer that cannot be applied must never stay armed for the
+            // next request to inherit.
             OculusStore.shared.pendingDecision = nil
-            await respond(decision)
+            if let meant = queued.approvalID, meant != open.approvalID {
+                // The user answered a DIFFERENT request — that one was resolved elsewhere while this
+                // one was raised. Applying it here would grant a privilege for a tool they never saw.
+                actionError = "That approval was already handled. The request now waiting is different, so it's still up to you."
+            } else {
+                await respond(queued.decision)
+            }
         }
         // Tapped a notification (agent finished / error / approval) → open that session.
         if let sid = OculusStore.shared.handoffSessionID {
