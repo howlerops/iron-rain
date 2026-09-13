@@ -590,3 +590,10 @@ var ansiRE = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\r
 // stripANSI removes ANSI escape/color sequences and bare carriage returns so a non-interactive
 // agent's output renders cleanly in the chat surface.
 func stripANSI(s string) string { return ansiRE.ReplaceAllString(s, "") }
+
+// HasContinuity implements agent.ContinuityReporter.
+//
+// False unless the config declares ResumeArgs: without them startTurn spawns a cold process for
+// every turn (see the tmpl switch), so the agent has no memory of anything it said before. None of
+// the ten built-in agents declares them today.
+func (s *session) HasContinuity() bool { return len(s.cfg.ResumeArgs) > 0 }

@@ -191,3 +191,17 @@ type ModelSetter interface {
 type ModeSetter interface {
 	SetMode(ctx context.Context, mode string) error
 }
+
+// ContinuityReporter is implemented by a provider that can say whether a session REMEMBERS its own
+// previous turns.
+//
+// Most harnesses do — they own a conversation and we hand them one message at a time. The generic
+// CLI adapter usually does not: unless its config declares ResumeArgs, every turn is a fresh
+// process with no history, so the second message in a session arrives at an agent that has never
+// seen the first. The transcript on screen makes it look otherwise, which is exactly why this has
+// to be reported rather than assumed.
+//
+// Not implementing it means "yes, I have continuity" — the safe default for every native adapter.
+type ContinuityReporter interface {
+	HasContinuity() bool
+}

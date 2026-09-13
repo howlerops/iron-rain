@@ -310,3 +310,34 @@ func TestConcurrentPromptsStartExactlyOneTurn(t *testing.T) {
 			"subprocess(es) are orphaned beyond Stop's reach", accepted, accepted-1)
 	}
 }
+
+// A built-in agent must be honest about whether it remembers anything.
+//
+// startTurn switches to ResumeArgs for turn 2+ only when the config declares them, and not one of
+// the ten built-ins does — so every codex/gemini/aider/copilot turn is a cold process with no
+// history. The client renders a full transcript regardless, so the conversation LOOKS continuous;
+// the hub now uses this to decide whether to hand the agent its own conversation back.
+func TestBuiltinCLIAgentsReportNoContinuity(t *testing.T) {
+	for _, cfg := range Detect() {
+		s := &session{cfg: cfg}
+		if s.HasContinuity() != (len(cfg.ResumeArgs) > 0) {
+			t.Errorf("%s: continuity report disagrees with its own config", cfg.Name)
+		}
+	}
+	// The shipped configuration, independent of what happens to be installed on this machine.
+	for _, name := range []string{"codex", "gemini", "aider", "copilot"} {
+		cfg := builtinConfig(name)
+		if cfg.Name == "" {
+			continue
+		}
+		s := &session{cfg: cfg}
+		if s.HasContinuity() {
+			t.Errorf("%s declares no ResumeArgs, so it cannot have continuity", name)
+		}
+	}
+	// And one that DOES declare them must report true, or the flag is decorative.
+	s := &session{cfg: Config{Name: "x", ResumeArgs: []string{"x", "--continue", "{prompt}"}}}
+	if !s.HasContinuity() {
+		t.Error("an agent with ResumeArgs resumes, and must say so")
+	}
+}

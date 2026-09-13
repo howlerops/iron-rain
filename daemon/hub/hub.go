@@ -4613,7 +4613,22 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		// raised immediately) can emit their first event before Prompt returns; arming afterwards races
 		// that event and can later surface a false "No response" while the session is awaiting approval.
 		m.armResponseWatchdog()
-		if err := promptSession(ctx, m.sess, text, req.Images, unstick); err != nil {
+		// Give an amnesiac provider its own conversation back.
+		//
+		// Ten of the built-in CLI agents spawn a cold process per turn, so without this the second
+		// message in a session reaches an agent that has never seen the first — while the client
+		// renders a full transcript that says otherwise. Built from the durable transcript we already
+		// keep, and only for providers that report no continuity, so nothing changes for opencode,
+		// claude-code or pi.
+		outbound := text
+		if !hasContinuity(m.sess) {
+			if entries, err := h.tr().Read(req.SessionID); err == nil {
+				if recap := buildRecap(entries); recap != "" {
+					outbound = recap + text
+				}
+			}
+		}
+		if err := promptSession(ctx, m.sess, outbound, req.Images, unstick); err != nil {
 			m.disarmResponseWatchdog()
 			log.Printf("session %s: prompt send FAILED: %v", req.SessionID, err)
 			if t := h.tel(); t != nil {
