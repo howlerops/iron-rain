@@ -212,7 +212,14 @@ public final class Model: ObservableObject {
     // Live daemon log (Developer bottom panel). Populated on subscribe (replay + streamed lines).
     @Published public var daemonLog: [String] = []
     @Published public var showLogPanel = false
-    private var logSubscribed = false
+    /// Whether the DAEMON currently holds a log subscription for this client.
+    ///
+    /// Per-connection state, not per-panel state, and the distinction is the whole bug: the
+    /// subscription dies with the socket while this flag survived it, so `openLogPanel`'s idempotence
+    /// guard then refused to re-subscribe. A panel opened before a reconnect kept showing the old
+    /// connection's lines and never received another one — and a daemon restart is precisely when
+    /// someone has the log open. Internal rather than private so the reconnect path can be tested.
+    var logSubscribed = false
     // Title for the actionError alert, so a send/no-response failure isn't mislabeled "Couldn't start the session".
     @Published public var actionErrorTitle = "Something went wrong"
     // Per-session error detail for BACKGROUND (non-active) sessions, so a session whose sends stopped
@@ -804,6 +811,12 @@ public final class Model: ObservableObject {
             group.addTask { await self.loadTelemetryStatus() } // diagnostics toggle
             group.addTask { await self.loadNotifyPrefs() }     // per-type push toggles
         }
+        // Re-arm a log panel that was already open. The subscription is per-connection, so an open
+        // panel is otherwise detached from the daemon it is supposedly tailing — and the run someone
+        // opened it to diagnose is usually the one on the far side of this reconnect.
+        if showLogPanel {
+            openLogPanel()
+        }
         if let token = OculusStore.shared.deviceToken {
             await registerDevice(token: token)
         }
@@ -934,11 +947,14 @@ public final class Model: ObservableObject {
 
     /// Tears down a connection we no longer believe in and hands control to the backoff loop.
     /// `close()` also makes the in-flight `recv()` throw, so `receiveLoop` unwinds behind us.
-    private func dropConnection(_ reason: String) {
+    func dropConnection(_ reason: String) {
         guard connected || client != nil else { return }
         client?.close()
         client = nil
         connected = false
+        // The daemon's log subscription went with the socket. Leaving this set would make the reopen
+        // below a no-op and strand an open panel on a connection that no longer exists.
+        logSubscribed = false
         // The next attempt races from scratch and may well land somewhere else, so the old route is
         // not a fact any more — leaving it up would keep claiming "LAN" while we dial a relay.
         connectionRoute = ""

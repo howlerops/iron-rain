@@ -149,6 +149,10 @@ func serve(args []string) error {
 	lh := loghub.New(1000)
 	log.SetOutput(io.MultiWriter(os.Stderr, lh))
 	rollLogIfLarge(logPath()) // bound the on-disk log before this run starts adding to it
+	// Carry the previous run's tail into the ring. Without this the panel could only ever show the
+	// process that is currently healthy — a daemon that crashed took its own evidence out of reach,
+	// even though the lines were sitting in the log file the whole time.
+	lh.SeedFromFile(logPath(), 300)
 
 	// Under launchd the daemon inherits a minimal PATH, so agent harnesses installed via nvm /
 	// homebrew (which live in ~/.zshrc, not the login-only path) aren't found — the "native agents
