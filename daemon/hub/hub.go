@@ -2785,6 +2785,13 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, "bad session.create")
 			return
 		}
+		// A session may not be BORN with approvals off either — otherwise the gate on session.mode.set
+		// is just a detour: create it in yolo instead of switching it.
+		if modeNeedsOwner(normalizeMode(req.Mode, req.Plan)) && !h.requireCapabilityBecause(conn, env.ID, capOwner,
+			"start a session with approvals turned off",
+			"yolo answers every approval automatically, so starting in it is the same authority as answering one") {
+			return
+		}
 		// Bound the whole create so a hung worktree/provider start surfaces as an error the app can
 		// show, instead of leaving it forever on the "starting session" spinner.
 		cctx, ccancel := context.WithTimeout(ctx, 3*time.Minute)
@@ -2982,6 +2989,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, "bad session.defaults.set")
 			return
 		}
+		// And by the same reasoning as the comment above: a yolo DEFAULT turns approvals off for every
+		// session created from here on, and it persists to disk. If switching one session needs the
+		// owner, arming all future ones certainly does.
+		if modeNeedsOwner(req.Mode) && !h.requireCapabilityBecause(conn, env.ID, capOwner,
+			"make approvals-off the default for new sessions",
+			"yolo answers every approval automatically, so defaulting to it is the same authority as answering one") {
+			return
+		}
 		h.sendOK(conn, env.ID, h.setSessionDefaults(req))
 
 	case protocol.TypeUsageReport:
@@ -3008,6 +3023,11 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		var req protocol.SessionModeSet
 		if err := env.Unmarshal(&req); err != nil {
 			h.sendErr(conn, env.ID, "bad session.mode.set")
+			return
+		}
+		if modeNeedsOwner(req.Mode) && !h.requireCapabilityBecause(conn, env.ID, capOwner,
+			"turn approvals off for this session",
+			"yolo answers every approval automatically, so switching into it is the same authority as answering one") {
 			return
 		}
 		m := h.managed(req.SessionID)

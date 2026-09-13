@@ -1,6 +1,10 @@
 package hub
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/howlerops/oculus/daemon/protocol"
+)
 
 // TestSoloUserIsNeverGated is the property that matters most for the default deployment: one person
 // on their own machine must never acquire permission friction they didn't ask for.
@@ -76,5 +80,42 @@ func TestRoleToggle(t *testing.T) {
 	r.SetEnabled(false)
 	if r.role(nil) != RoleOwner {
 		t.Fatal("disabling enforcement must restore owner access")
+	}
+}
+
+// Turning approvals OFF must cost the same authority as answering one.
+//
+// approval.respond is capApprove — owner-only — because, as its handler says, "only the person whose
+// credentials are at stake may authorize a tool that acts with them". But yolo mode answers every
+// approval automatically, and every path that could switch into it was capSteer. So a steerer could
+// not answer the question and did not need to: flipping the mode deleted it, handing them exactly the
+// shell/write/network execution the owner-only gate exists to withhold. The boundary was defeated by
+// ordering — set the mode, then steer — and the owner's only signal was a mode chip.
+//
+// The three doors are session.mode.set (one live session), session.create (born that way) and
+// session.defaults.set (every future session, persisted to disk). This asserts the shared predicate
+// they all now consult, so a fourth door has one obvious thing to call.
+func TestSwitchingIntoYoloNeedsOwnerAuthority(t *testing.T) {
+	if !modeNeedsOwner(protocol.ModeYolo) {
+		t.Error("yolo turns approvals off; switching into it must require the owner")
+	}
+	// Every other mode stays at capSteer — a steerer must keep being able to do their job.
+	for _, m := range []string{protocol.ModeCode, protocol.ModeAsk, protocol.ModeArchitect, "plan", "build", ""} {
+		if modeNeedsOwner(m) {
+			t.Errorf("mode %q does not turn approvals off and must not need owner authority", m)
+		}
+	}
+	// It normalizes, so the gate cannot be walked past with different casing or padding.
+	for _, spelling := range []string{"YOLO", " yolo ", "Yolo"} {
+		if !modeNeedsOwner(spelling) {
+			t.Errorf("%q normalizes to yolo and must be gated the same way", spelling)
+		}
+	}
+	// The capability being demanded is strictly above the one a steerer holds.
+	if roleAllows(RoleSteerer, capOwner) {
+		t.Error("a steerer must not hold capOwner, or the gate is decorative")
+	}
+	if !roleAllows(RoleOwner, capOwner) {
+		t.Error("the owner must still be able to turn approvals off")
 	}
 }

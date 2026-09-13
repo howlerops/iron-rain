@@ -65,6 +65,21 @@ func modeDeniesTool(mode, tool string) bool {
 // approval path is how one of them ends up missing.
 func modeAutoApproves(mode string) bool { return mode == protocol.ModeYolo }
 
+// modeNeedsOwner reports whether switching INTO a mode requires OWNER authority rather than the
+// capSteer that changing any other mode takes.
+//
+// Only yolo does, and the reason is the whole point of the role split. Answering an approval is
+// capApprove — owner-only — because, as the handler says, "only the person whose credentials are at
+// stake may authorize a tool that acts with them". But yolo answers every approval automatically, so
+// a steerer who could flip it would not need to answer the question: they could delete it, and get
+// exactly the shell/write/network execution the owner-only gate exists to withhold. The boundary was
+// defeated by ORDERING — set the mode, then steer — with the owner's only signal being a mode chip.
+//
+// Enforced on every path that can set a mode (session.mode.set, session.create, session.defaults.set)
+// rather than inside setSessionMode, because that is where the connection — and therefore the role —
+// is still in hand.
+func modeNeedsOwner(mode string) bool { return normalizeMode(mode, false) == protocol.ModeYolo }
+
 // normalizeMode maps input (including the legacy Plan bool) onto a known mode.
 //
 // Unknown input falls back to code, NOT to the most recently added mode: an old client sending a
