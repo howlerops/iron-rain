@@ -4,7 +4,7 @@ import OculusKit
 // MARK: - Diff model
 
 /// The classification of a single unified-diff line, driving its background tint.
-private enum DiffLineKind { case add, del, context, meta }
+enum DiffLineKind { case add, del, context, meta }
 
 /// One parsed diff line: its kind, the original text (prefix included), and the file line numbers
 /// it occupies on each side.
@@ -12,7 +12,7 @@ private enum DiffLineKind { case add, del, context, meta }
 /// The numbers are what make a review comment addressable. Without them the only things a reviewer
 /// could point at were "this file" and "this hunk", so a note about one wrong line arrived at the
 /// agent attached to forty lines of context and it had to guess which.
-private struct DiffLineModel: Identifiable {
+struct DiffLineModel: Identifiable {
     let id = UUID()
     let kind: DiffLineKind
     let text: String
@@ -27,7 +27,7 @@ private struct DiffLineModel: Identifiable {
 }
 
 /// A single hunk (`@@ … @@` block) with its lines.
-private struct DiffHunkModel: Identifiable {
+struct DiffHunkModel: Identifiable {
     let id = UUID()
     let header: String
     let lines: [DiffLineModel]
@@ -45,7 +45,7 @@ private struct DiffHunkModel: Identifiable {
 }
 
 /// One file's section of the diff: its path and hunks (add/del counts are derived).
-private struct DiffFileModel: Identifiable {
+struct DiffFileModel: Identifiable {
     let id = UUID()
     let path: String
     let hunks: [DiffHunkModel]
@@ -71,7 +71,7 @@ private struct DiffFileModel: Identifiable {
 
 /// Parses a unified git diff into per-file sections. Splits on `diff --git a/… b/…`,
 /// falling back to `+++ b/<path>` for the file path when no git header is present.
-private enum DiffParser {
+enum DiffParser {
     static func parse(_ diff: String) -> [DiffFileModel] {
         var files: [DiffFileModel] = []
         var curPath: String? = nil
@@ -102,13 +102,20 @@ private enum DiffParser {
             if line.hasPrefix("diff --git") {
                 closeFile()
                 curPath = gitPath(from: line) ?? ""   // may be filled in by a later +++ line
-            } else if line.hasPrefix("+++ ") {
+            } else if line.hasPrefix("+++ ") && hunkHeader == nil {
                 // Fall back to the `+++ b/<path>` header when `diff --git` gave no path.
+                //
+                // `hunkHeader == nil` is load-bearing: these are FILE headers, which only appear
+                // before a hunk starts. Matching them anywhere swallowed real content — a deleted
+                // line whose text begins with "-- " arrives as "--- ", and "-- " starts every SQL
+                // comment and plenty of prose. The line was dropped, the side counters never
+                // advanced, and every subsequent line number in that hunk was wrong: the review UI
+                // then pointed a comment at the wrong line, which is worse than not showing one.
                 if curPath == nil || (curPath?.isEmpty ?? true), let p = plusPath(from: line) {
                     curPath = p
                 }
                 // `+++` never counts as an addition line.
-            } else if line.hasPrefix("--- ") {
+            } else if line.hasPrefix("--- ") && hunkHeader == nil {
                 continue
             } else if line.hasPrefix("@@") {
                 if curPath == nil { curPath = "(changes)" }
