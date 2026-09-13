@@ -691,6 +691,14 @@ type NotifyPref struct {
 }
 type NotifyPrefs struct {
 	Prefs []NotifyPref `json:"prefs"`
+	// PushEnabled reports whether the daemon can actually deliver a push at all — i.e. whether APNs
+	// credentials were configured. Without it the app showed a full set of working-looking toggles
+	// on a daemon that could never fire one, and a notification that never arrives is
+	// indistinguishable from an agent that never finished.
+	PushEnabled bool `json:"push_enabled"`
+	// Devices is how many devices have registered for push. Zero with PushEnabled true means the
+	// daemon could send but nobody has asked to receive.
+	Devices int `json:"devices"`
 }
 type NotifyPrefSet struct {
 	Key     string `json:"key"`

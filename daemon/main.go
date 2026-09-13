@@ -368,12 +368,34 @@ func serve(args []string) error {
 		slackEnabled = true
 	}
 
+	// APNs can also be configured from a FILE, like the Slack webhook above it.
+	//
+	// Flags were the only way in, and the two ways a real user's daemon actually starts both hardcode
+	// their argv with no APNs flags (DaemonLauncher for the app-managed child, LoginItemManager for
+	// the launchd agent). So push — the core promise that your phone tells you when an agent finishes
+	// or needs you — could never work for anyone who installed via the app, while the Notifications
+	// screen showed them a full set of working-looking toggles.
+	apnsKeyPath, apnsCfgKeyID, apnsCfgTeamID, apnsCfgBundle := *apnsKey, *apnsKeyID, *apnsTeamID, *apnsBundle
+	apnsCfgSandbox := *apnsSandbox
+	if apnsKeyPath == "" {
+		if c := loadAPNs(apnsConfigPath()); c.KeyPath != "" {
+			apnsKeyPath, apnsCfgKeyID, apnsCfgTeamID = c.KeyPath, c.KeyID, c.TeamID
+			if c.Bundle != "" {
+				apnsCfgBundle = c.Bundle
+			}
+			apnsCfgSandbox = apnsCfgSandbox || c.Sandbox
+			log.Printf("push: configured from %s", apnsConfigPath())
+		}
+	}
 	pushEnabled := false
-	if *apnsKey != "" {
-		if err := enablePush(h, *apnsKey, *apnsKeyID, *apnsTeamID, *apnsBundle, *apnsSandbox); err != nil {
+	if apnsKeyPath != "" {
+		if err := enablePush(h, apnsKeyPath, apnsCfgKeyID, apnsCfgTeamID, apnsCfgBundle, apnsCfgSandbox); err != nil {
 			return err
 		}
 		pushEnabled = true
+	} else {
+		log.Printf("push: not configured — no --apns-key and no %s; the app will say so rather than "+
+			"offering notification toggles that cannot fire", apnsConfigPath())
 	}
 
 	// The daemon accepts a device's own credential, a single-use pairing code, a live invite, or —
@@ -1079,6 +1101,40 @@ func slackWebhookPath() string {
 
 // loadSlackWebhook reads {"webhook_url":"..."} from path (missing file → ""), for a persisted
 // Slack webhook so the app can enable Slack without re-passing a flag.
+// apnsConfig mirrors the Slack webhook file: the daemon is usually started by the app or by launchd
+// with a fixed argv, so anything that must be configurable has to be readable from disk.
+type apnsConfig struct {
+	KeyPath string `json:"key_path"`
+	KeyID   string `json:"key_id"`
+	TeamID  string `json:"team_id"`
+	Bundle  string `json:"bundle"`
+	Sandbox bool   `json:"sandbox"`
+}
+
+func apnsConfigPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "oculus-apns.json"
+	}
+	return filepath.Join(home, ".oculus", "apns.json")
+}
+
+// loadAPNs reads the APNs credentials from disk. A missing or malformed file simply means push stays
+// off — it must never stop the daemon starting.
+func loadAPNs(path string) apnsConfig {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return apnsConfig{}
+	}
+	var c apnsConfig
+	if json.Unmarshal(data, &c) != nil {
+		log.Printf("push: %s is not valid JSON — ignoring it", path)
+		return apnsConfig{}
+	}
+	c.KeyPath = strings.TrimSpace(c.KeyPath)
+	return c
+}
+
 func loadSlackWebhook(path string) string {
 	data, err := os.ReadFile(path)
 	if err != nil {

@@ -193,6 +193,28 @@ private struct DaemonPrefsSections: View {
                             .font(.callout).foregroundStyle(palette.mutedForeground)
                     }
                 } else {
+                    // Say plainly when none of these can fire.
+                    //
+                    // Push is only on when the daemon was given APNs credentials, and the two ways a
+                    // real user's daemon starts both hardcode their argv without them — so for most
+                    // installs every toggle below was decoration. A notification that never arrives
+                    // is indistinguishable from an agent that never finished, which is the worst
+                    // possible thing for this feature to be ambiguous about.
+                    if model.pushDeliverable == false {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Push isn't set up on this Mac")
+                                .font(.callout.weight(.medium))
+                            Text("These choices are saved, and still control what's mirrored to Slack — "
+                                 + "but nothing can reach your phone until the daemon has an APNs key. "
+                                 + "Add one at ~/.oculus/apns.json.")
+                                .font(.caption).foregroundStyle(palette.mutedForeground)
+                        }
+                        .padding(.vertical, 2)
+                    } else if model.pushDeliverable == true && model.pushDeviceCount == 0 {
+                        Text("No devices are registered for notifications yet — open Iron Rain on your "
+                             + "phone and allow notifications.")
+                            .font(.caption).foregroundStyle(palette.mutedForeground)
+                    }
                     ForEach(model.notifyPrefs) { pref in
                         Toggle(isOn: Binding(get: { pref.enabled },
                                              set: { on in Task { await model.setNotifyPref(pref.key, enabled: on) } })) {

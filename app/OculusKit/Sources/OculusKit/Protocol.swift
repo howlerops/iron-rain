@@ -1688,7 +1688,12 @@ public struct NotifyPref: Codable, Identifiable {
 }
 public struct NotifyPrefs: Codable {
     public var prefs: [NotifyPref]
-    enum CodingKeys: String, CodingKey { case prefs }
+    /// Whether the daemon can deliver a push at all (APNs credentials configured). Optional so an
+    /// older daemon, which does not send it, is treated as "we cannot tell" rather than "off".
+    public var pushEnabled: Bool?
+    /// How many devices have registered to receive one.
+    public var devices: Int?
+    enum CodingKeys: String, CodingKey { case prefs; case pushEnabled = "push_enabled"; case devices }
 }
 public struct NotifyPrefSet: Codable {
     public var key: String

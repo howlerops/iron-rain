@@ -2661,12 +2661,19 @@ public final class Model: ObservableObject {
 
     /// Per-type push-notification toggles (loaded from the daemon; edited in Settings → Notifications).
     @Published public var notifyPrefs: [NotifyPref] = []
+    /// nil = this daemon is too old to say. false = it has no APNs credentials, so no toggle here can
+    /// ever fire and the UI must say so instead of pretending.
+    @Published public var pushDeliverable: Bool?
+    /// Devices registered to receive a push.
+    @Published public var pushDeviceCount = 0
 
     public func loadNotifyPrefs() async {
         guard client != nil else { return }
         if let env = try? await request(MessageType.notifyPrefsGet, payload: Optional<Int>.none),
            let np = try? env.payload(as: NotifyPrefs.self) {
             notifyPrefs = np.prefs
+            pushDeliverable = np.pushEnabled
+            pushDeviceCount = np.devices ?? 0
         }
     }
 

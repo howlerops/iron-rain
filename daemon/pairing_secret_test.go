@@ -97,3 +97,37 @@ func TestDaemonLogIsRolledInPlaceWhenItGrows(t *testing.T) {
 		t.Error("the tail kept aside does not contain the most recent lines")
 	}
 }
+
+// APNs must be configurable from a file, not only from flags.
+//
+// Flags were the only way in, and the two ways a real user's daemon actually starts both hardcode
+// their argv with no APNs flags — DaemonLauncher for the app-managed child, LoginItemManager for the
+// launchd agent. So the core mobile promise ("walk away, your phone tells you when it needs you")
+// could never work for anyone who installed via the app. The Slack webhook beside it has read from
+// a file all along; this is the same shape.
+func TestAPNsCanBeConfiguredFromAFile(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/apns.json"
+	body := `{"key_path":"/keys/AuthKey_ABC.p8","key_id":"ABC123","team_id":"TEAM7","bundle":"com.howlerops.oculus","sandbox":true}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := loadAPNs(path)
+	if c.KeyPath != "/keys/AuthKey_ABC.p8" || c.KeyID != "ABC123" || c.TeamID != "TEAM7" {
+		t.Errorf("credentials not read back: %+v", c)
+	}
+	if c.Bundle != "com.howlerops.oculus" || !c.Sandbox {
+		t.Errorf("optional fields not read back: %+v", c)
+	}
+
+	// A missing or malformed file must leave push off rather than stop the daemon starting.
+	if got := loadAPNs(dir + "/nope.json"); got.KeyPath != "" {
+		t.Error("a missing file should yield no credentials")
+	}
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadAPNs(path); got.KeyPath != "" {
+		t.Error("a malformed file should yield no credentials, not a partial config")
+	}
+}

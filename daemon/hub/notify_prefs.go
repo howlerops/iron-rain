@@ -52,7 +52,11 @@ func (h *Hub) SetNotifyPrefsPath(path string) {
 func (h *Hub) notifyPrefs() protocol.NotifyPrefs {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	out := protocol.NotifyPrefs{Prefs: make([]protocol.NotifyPref, 0, len(notifyCatalog))}
+	out := protocol.NotifyPrefs{
+		Prefs:       make([]protocol.NotifyPref, 0, len(notifyCatalog)),
+		PushEnabled: h.notifier != nil,
+		Devices:     len(h.pushTokens),
+	}
 	for _, c := range notifyCatalog {
 		out.Prefs = append(out.Prefs, protocol.NotifyPref{
 			Key: c.Key, Label: c.Label, Detail: c.Detail, Enabled: !h.notifyOff[c.Key],
