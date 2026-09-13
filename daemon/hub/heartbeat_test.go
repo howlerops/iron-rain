@@ -134,3 +134,33 @@ func TestNeedsYouIsNotReportedAsDone(t *testing.T) {
 		})
 	}
 }
+
+// The budget must stop WORK, not merely stop nudging.
+//
+// The cost test lived inside `case hbIdleIncomplete:` — the only state where the daemon was about to
+// spend a nudge — so it capped what the DAEMON costs and never what the AGENT does. A session making
+// steady progress is hbWorking on every tick, never reaches that branch, and runs past its budget
+// indefinitely. That is the one surface where the number is real money, on the feature built to run
+// unattended, where nobody is watching the meter.
+//
+// deriveState is the gate: as long as it returns hbWorking for a busy session, the old code could
+// never consult the budget at all. That is what this pins.
+func TestABusyOverBudgetSessionIsNotLeftToDeriveStateAlone(t *testing.T) {
+	now := time.Now()
+	over := &managedSession{
+		lastActivity: now, // recent activity ⇒ hbWorking
+		turnPhase:    "",  // no open turn
+		costUSD:      999, // far past any budget
+		budgetUSD:    5,
+		autonomous:   true,
+		latestTodos:  []protocol.Todo{{Content: "keep going", Status: "in_progress"}},
+	}
+	if got := deriveState(over, now); got != hbWorking {
+		t.Fatalf("precondition: a session with recent activity derives as %q, expected %q", got, hbWorking)
+	}
+	// ...and hbWorking never reached the old budget test, which is the whole defect. The tick now
+	// checks cost before the state switch, so being hbWorking is no longer a way to spend forever.
+	if over.costUSD < over.budgetUSD {
+		t.Fatal("fixture error: the session should be over budget")
+	}
+}

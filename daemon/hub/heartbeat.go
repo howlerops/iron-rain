@@ -118,6 +118,42 @@ func (h *Hub) heartbeatTick() {
 			continue // opt-in supervision — never nudge a session the user didn't enroll
 		}
 
+		// The budget stops WORK, not just nudging.
+		//
+		// This test lived inside `case hbIdleIncomplete:` — the only state where the daemon was
+		// about to spend a nudge — so it capped what the DAEMON costs and never what the AGENT does.
+		// A session that keeps making progress is hbWorking on every tick, never reaches that branch,
+		// and runs past its budget indefinitely. That is the one surface where the number is denominated
+		// in real money, on the feature (loops) built to run unattended, where nobody is watching the
+		// meter. A budget that only applies while the agent is idle is not a budget.
+		//
+		// Stopping mid-turn is the point: the user set a ceiling on what this session may spend, and
+		// the work in flight is what is spending it. Autonomy is disarmed too, so the session is not
+		// immediately nudged back into spending.
+		if cost >= budget && st != hbDone && st != hbErrored {
+			m.mu.Lock()
+			alreadyStopped := m.hbState == hbExhausted
+			if !alreadyStopped {
+				m.autonomous = false
+				m.hbState = hbExhausted
+			}
+			m.mu.Unlock()
+			if !alreadyStopped {
+				log.Printf("heartbeat: session %s reached its $%.2f budget (spent $%.2f) — stopping the turn",
+					m.sess.ID(), budget, cost)
+				sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				if err := m.sess.Stop(sctx); err != nil {
+					log.Printf("heartbeat: could not stop %s at its budget: %v", m.sess.ID(), err)
+				}
+				cancel()
+				m.closeTurn(protocol.StatusNeedsYou, "reached its spend budget")
+				h.broadcastHeartbeat(m, hbExhausted, nudgeN, done, total, cost, budget)
+				h.pushAgentStalled(m.sess.ID(), label,
+					fmt.Sprintf("stopped at its $%.2f budget (spent $%.2f)", budget, cost))
+			}
+			continue
+		}
+
 		switch st {
 		case hbIdleIncomplete:
 			switch {
