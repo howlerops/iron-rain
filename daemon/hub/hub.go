@@ -4064,11 +4064,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			SessionID: req.SessionID, Branch: m.meta.branch, State: info.State, URL: info.URL,
 			HasRemote: worktree.HasRemote(m.meta.worktreePath),
 		}
-		if c := info.Checks; c != nil {
-			res.Checks = &protocol.PRChecks{
-				State: c.State, Passed: c.Passed, Failed: c.Failed, Pending: c.Pending, Failing: c.Failing,
-			}
-		}
+		res.Checks = toProtoChecks(info.Checks)
 		h.sendOK(conn, env.ID, res)
 
 	case protocol.TypeWorktreeConflicts:

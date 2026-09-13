@@ -2506,11 +2506,23 @@ type WorktreeStatus struct {
 // checks passed, failed or are still running, plus the names of the failing ones (capped). Absent
 // when the PR has no checks at all — a repo without CI is not a failure.
 type PRChecks struct {
-	State   string   `json:"state,omitempty"` // SUCCESS | FAILURE | PENDING
-	Passed  int      `json:"passed,omitempty"`
-	Failed  int      `json:"failed,omitempty"`
-	Pending int      `json:"pending,omitempty"`
-	Failing []string `json:"failing,omitempty"`
+	State   string `json:"state,omitempty"` // SUCCESS | FAILURE | PENDING
+	Passed  int    `json:"passed,omitempty"`
+	Failed  int    `json:"failed,omitempty"`
+	Pending int    `json:"pending,omitempty"`
+	// Failing is the failing check NAMES. Kept as a plain string array, and kept in step with
+	// FailingChecks below, because an app built before failing_checks existed decodes this key and
+	// would fail the whole worktree.status message if its type changed under it.
+	Failing       []string       `json:"failing,omitempty"`
+	FailingChecks []FailingCheck `json:"failing_checks,omitempty"`
+}
+
+// FailingCheck is a failed check and the page that says why it failed. Without the URL the phone can
+// report that CI is red and then offer nothing to do about it — which is where this stopped for as
+// long as the feature has existed, even though every check already arrives carrying its own link.
+type FailingCheck struct {
+	Name string `json:"name"`
+	URL  string `json:"url,omitempty"` // empty when the provider supplied none; render no link
 }
 
 // WorktreeStatusResult reports the branch's pull-request state. State is "" when there is no PR (or

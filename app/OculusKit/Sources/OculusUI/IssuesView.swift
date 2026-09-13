@@ -476,7 +476,12 @@ public struct IssuesView: View {
                         }
                     }
                 }
-                if !availableAssignees.isEmpty {
+                // Only worth showing when there is a choice to make. The board is fed by the tracker's
+                // "assigned to me" query, so in the ordinary single-user case every ticket on it has
+                // the same assignee and this menu could do nothing but filter everything or nothing —
+                // a control that is never anything but a no-op teaches people the filters don't work.
+                // It appears for a shared board, where the query really does return several people.
+                if availableAssignees.count > 1 {
                     Menu("Assignee") {
                         Button { assigneeFilter = nil } label: { filterRow("Anyone", assigneeFilter == nil) }
                         ForEach(availableAssignees, id: \.self) { a in

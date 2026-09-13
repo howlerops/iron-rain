@@ -2752,6 +2752,39 @@ public final class Model: ObservableObject {
         }
     }
 
+    /// Whether the pre-upgrade PERMANENT pairing secret still opens this daemon, and until when.
+    ///
+    /// Every device enrolled since the upgrade holds its own revocable credential. The old shared
+    /// secret does not belong to any device, so revoking devices one by one does not retire it —
+    /// anything that ever saw that secret still gets in. Nothing in the app asked, so nobody could
+    /// find out, and `pair.retire_legacy` had no caller at all.
+    @Published public var pairStatus: PairStatus? = nil
+
+    public func loadPairStatus() async {
+        guard client != nil else { return }
+        if let env = try? await request(MessageType.pairStatus, payload: Optional<Int>.none),
+           let st = try? env.payload(as: PairStatus.self) {
+            pairStatus = st
+        }
+    }
+
+    /// Kills the old shared secret now. Returns false if it did not actually go: on this screen a
+    /// silent failure would report the daemon as locked down while the secret still admits anyone
+    /// holding it, which is the one direction this must not fail in.
+    @discardableResult
+    public func retireLegacySecret() async -> Bool {
+        guard client != nil else { return false }
+        do {
+            let env = try await request(MessageType.pairRetireLegacy, payload: Optional<Int>.none)
+            if let st = try? env.payload(as: PairStatus.self) { pairStatus = st }
+            await loadPairStatus()
+            return pairStatus?.legacyLive == false
+        } catch {
+            setError("Couldn't retire the old pairing secret", error.localizedDescription)
+            return false
+        }
+    }
+
     public func labelDevice(_ pub: String, label: String) async {
         guard client != nil else { return }
         if let env = try? await request(MessageType.deviceLabel, payload: DeviceRef(pub: pub, label: label)),

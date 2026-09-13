@@ -25,8 +25,15 @@ func TestParsePRView(t *testing.T) {
 			]}`,
 			state: "OPEN", url: "https://github.com/o/r/pull/7",
 			// A failure outranks the in-flight run: pending work can't un-fail a broken build.
+			//
+			// The URLs were in this fixture from the day it was written and the parser dropped them,
+			// which is how the phone came to report a red build and offer nothing to do about it.
+			// CheckRun spells the link detailsUrl; the older StatusContext spells it targetUrl.
 			checks: &PRChecks{State: "FAILURE", Passed: 2, Failed: 2, Pending: 1,
-				Failing: []string{"test (macos)", "license/cla"}},
+				Failing: []FailingCheck{
+					{Name: "test (macos)", URL: "https://x/2"},
+					{Name: "license/cla", URL: "https://x/5"},
+				}},
 		},
 		{
 			name: "all green",
@@ -85,7 +92,7 @@ func TestParsePRView(t *testing.T) {
 			]}`,
 			state: "OPEN", url: "u",
 			checks: &PRChecks{State: "FAILURE", Failed: 7,
-				Failing: []string{"f1", "f2", "f3", "f4", "f5"}},
+				Failing: []FailingCheck{{Name: "f1"}, {Name: "f2"}, {Name: "f3"}, {Name: "f4"}, {Name: "f5"}}},
 		},
 		{
 			name:    "malformed gh output",
@@ -128,7 +135,8 @@ func TestParsePRView(t *testing.T) {
 			}
 			for i := range w.Failing {
 				if c.Failing[i] != w.Failing[i] {
-					t.Errorf("failing = %v, want %v", c.Failing, w.Failing)
+					t.Errorf("failing = %v, want %v — the name says WHAT broke; without the URL "+
+						"the phone cannot show why", c.Failing, w.Failing)
 					break
 				}
 			}

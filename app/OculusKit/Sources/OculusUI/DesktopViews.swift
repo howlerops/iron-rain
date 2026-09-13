@@ -207,7 +207,7 @@ struct SoftwareUpdateModifier: ViewModifier {
 #endif
 
 /// The management panels reachable from the sidebar and the palette.
-private enum PanelSheet: Int, Identifiable { case loops, agents, accounts, remotes, sessions, approvalRules, mcp, sharing, dictionary, usage; var id: Int { rawValue } }
+private enum PanelSheet: Int, Identifiable { case loops, agents, accounts, remotes, sessions, approvalRules, mcp, sharing, devices, dictionary, usage; var id: Int { rawValue } }
 
 /// EVERY modal this surface presents, in ONE `.sheet(item:)` slot.
 ///
@@ -843,6 +843,7 @@ public struct RootView: View {
                        onOpenApprovalRules: { sheet = .panel(.approvalRules) },
                        onOpenMCP: { sheet = .panel(.mcp) },
                        onOpenSharing: { sheet = .panel(.sharing) },
+                       onOpenDevices: { sheet = .panel(.devices) },
                        onOpenDictionary: { sheet = .panel(.dictionary) },
                        onOpenUsage: { sheet = .panel(.usage) },
                        onOpenAccounts: { sheet = .panel(.accounts) },
@@ -857,6 +858,7 @@ public struct RootView: View {
                        onOpenApprovalRules: { sheet = .panel(.approvalRules) },
                        onOpenMCP: { sheet = .panel(.mcp) },
                        onOpenSharing: { sheet = .panel(.sharing) },
+                       onOpenDevices: { sheet = .panel(.devices) },
                        onOpenDictionary: { sheet = .panel(.dictionary) },
                        onOpenUsage: { sheet = .panel(.usage) },
                        onOpenAccounts: { sheet = .panel(.accounts) },
@@ -1062,6 +1064,8 @@ public struct RootView: View {
             MCPServersView(model: model, palette: palette, onClose: { sheet = nil })
         case .sharing:
             SharingView(model: model, palette: palette, onClose: { sheet = nil })
+        case .devices:
+            DevicesView(model: model, palette: palette, onClose: { sheet = nil })
         case .dictionary:
             DictionaryView(palette: palette, onClose: { sheet = nil })
         case .usage:

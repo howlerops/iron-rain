@@ -340,7 +340,7 @@ func prFailureSummary(c *worktree.PRChecks) string {
 	if len(c.Failing) == 0 {
 		return fmt.Sprintf("CI failed (%d checks)", c.Failed)
 	}
-	s := "CI failed: " + strings.Join(c.Failing, ", ")
+	s := "CI failed: " + strings.Join(c.Names(), ", ")
 	if c.Failed > len(c.Failing) {
 		s += fmt.Sprintf(" +%d more", c.Failed-len(c.Failing))
 	}
@@ -367,12 +367,26 @@ func (m *managedSession) broadcastPRStatus(info worktree.PRInfo) {
 		SessionID: m.sess.ID(), Branch: branch, State: info.State, URL: info.URL,
 		HasRemote: worktree.HasRemote(path),
 	}
-	if c := info.Checks; c != nil {
-		res.Checks = &protocol.PRChecks{
-			State: c.State, Passed: c.Passed, Failed: c.Failed, Pending: c.Pending, Failing: c.Failing,
-		}
-	}
+	res.Checks = toProtoChecks(info.Checks)
 	m.hub.broadcast(protocol.TypeWorktreeStatus, res)
+}
+
+// toProtoChecks carries a CI rollup onto the wire, names and log links both.
+//
+// One function rather than the two identical struct literals this used to be: the request reply and
+// the proactive broadcast render the same panel, and a field added to one of them and not the other
+// makes the panel's content depend on which message happened to deliver it.
+func toProtoChecks(c *worktree.PRChecks) *protocol.PRChecks {
+	if c == nil {
+		return nil
+	}
+	out := &protocol.PRChecks{
+		State: c.State, Passed: c.Passed, Failed: c.Failed, Pending: c.Pending, Failing: c.Names(),
+	}
+	for _, f := range c.Failing {
+		out.FailingChecks = append(out.FailingChecks, protocol.FailingCheck{Name: f.Name, URL: f.URL})
+	}
+	return out
 }
 
 // prFingerprint is the part of a poll a client would render, so an identical poll can be dropped.
@@ -382,5 +396,5 @@ func prFingerprint(info worktree.PRInfo) string {
 	}
 	c := info.Checks
 	return fmt.Sprintf("%s|%s|%d/%d/%d|%s", info.State, c.State, c.Passed, c.Failed, c.Pending,
-		strings.Join(c.Failing, ","))
+		strings.Join(c.Names(), ","))
 }

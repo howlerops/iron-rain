@@ -377,7 +377,30 @@ type PRChecks struct {
 	Passed  int
 	Failed  int
 	Pending int
-	Failing []string // names of the failing checks, capped at maxFailingChecks
+	Failing []FailingCheck // the failing checks, capped at maxFailingChecks
+}
+
+// FailingCheck is one failed check and where to read it.
+//
+// The name alone says WHAT broke, which is where this stopped. Every failing check already arrives
+// with a URL to its own log — detailsUrl on a CheckRun, targetUrl on the older StatusContext — and
+// dropping it meant the phone could tell you CI was red and then offer nothing to do about it. URL
+// is empty when the provider did not supply one; the app must not render a dead link.
+type FailingCheck struct {
+	Name string
+	URL  string
+}
+
+// Names returns just the check names, for the places that render a sentence rather than a list.
+func (c *PRChecks) Names() []string {
+	if c == nil {
+		return nil
+	}
+	out := make([]string, 0, len(c.Failing))
+	for _, f := range c.Failing {
+		out = append(out, f.Name)
+	}
+	return out
 }
 
 // PRInfo is a branch's pull-request state, URL and CI rollup. State is "" when there is no PR (or gh
@@ -420,8 +443,10 @@ func parsePRView(data []byte) (PRInfo, error) {
 			Name       string `json:"name"`       // CheckRun
 			Status     string `json:"status"`     // CheckRun: QUEUED | IN_PROGRESS | COMPLETED | …
 			Conclusion string `json:"conclusion"` // CheckRun, only once COMPLETED
+			DetailsURL string `json:"detailsUrl"` // CheckRun: the run's own log page
 			Context    string `json:"context"`    // StatusContext
 			State      string `json:"state"`      // StatusContext
+			TargetURL  string `json:"targetUrl"`  // StatusContext: the same thing, older name
 		} `json:"statusCheckRollup"`
 	}
 	if err := json.Unmarshal(data, &res); err != nil {
@@ -454,7 +479,11 @@ func parsePRView(data []byte) (PRInfo, error) {
 		case "fail":
 			checks.Failed++
 			if name != "" && len(checks.Failing) < maxFailingChecks {
-				checks.Failing = append(checks.Failing, name)
+				url := n.DetailsURL
+				if url == "" {
+					url = n.TargetURL // StatusContext spells it differently
+				}
+				checks.Failing = append(checks.Failing, FailingCheck{Name: name, URL: url})
 			}
 		case "pending":
 			checks.Pending++

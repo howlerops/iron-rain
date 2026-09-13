@@ -10,6 +10,7 @@ struct WorktreePanel: View {
 
     @State private var prTitle = ""
     @State private var prBody = ""
+    @State private var mergeMessage = ""
     @State private var confirmRemove = false
 
     private var session: Session? { model.currentSession }
@@ -110,15 +111,47 @@ struct WorktreePanel: View {
                     }
                 }
 
-                Section("Open a pull request") {
-                    TextField("Title", text: $prTitle).textFieldStyle(.roundedBorder)
-                    TextField("Description (optional)", text: $prBody, axis: .vertical)
-                        .lineLimit(2...5).textFieldStyle(.roundedBorder)
-                    Button {
-                        Task { await model.createPR(title: prTitle.isEmpty ? (session?.workspaceName ?? "Iron Rain changes") : prTitle,
-                                                    body: prBody.isEmpty ? nil : prBody) }
-                    } label: {
-                        Label("Commit, push & open PR", systemImage: "arrow.up.forward.square")
+                // A repo with no remote cannot have a pull request, and until now that was the end of
+                // the road: the agent's work sat on a worktree branch with nothing in the app able to
+                // land it. `worktree.merge` has been implemented end to end the whole time with no
+                // caller. Gated on has_remote, which already arrives on every status poll, so the
+                // ordinary GitHub flow below is untouched.
+                if model.worktreeStatus?.hasRemote == false {
+                    Section {
+                        TextField("Merge message (optional)", text: $mergeMessage)
+                            .textFieldStyle(.roundedBorder)
+                        Button {
+                            Task {
+                                if await model.mergeWorktree(message: mergeMessage.isEmpty ? nil : mergeMessage) {
+                                    onClose()
+                                }
+                            }
+                        } label: {
+                            Label("Land on the default branch", systemImage: "arrow.triangle.merge")
+                        }
+                        .disabled(model.busy)
+                    } header: {
+                        Text("Land locally")
+                    } footer: {
+                        Text("This repo has no remote, so there is nothing to open a pull request against. This merges the branch into the repo's default branch on this machine.")
+                            .font(.caption)
+                    }
+                }
+
+                // Hidden when we KNOW there is no remote — offering to push to one that does not
+                // exist is an error message with extra steps, and it would contradict the section
+                // above. Shown while the status is still unknown, which is the pre-poll state.
+                if model.worktreeStatus?.hasRemote != false {
+                    Section("Open a pull request") {
+                        TextField("Title", text: $prTitle).textFieldStyle(.roundedBorder)
+                        TextField("Description (optional)", text: $prBody, axis: .vertical)
+                            .lineLimit(2...5).textFieldStyle(.roundedBorder)
+                        Button {
+                            Task { await model.createPR(title: prTitle.isEmpty ? (session?.workspaceName ?? "Iron Rain changes") : prTitle,
+                                                        body: prBody.isEmpty ? nil : prBody) }
+                        } label: {
+                            Label("Commit, push & open PR", systemImage: "arrow.up.forward.square")
+                        }
                     }
                 }
 
@@ -163,14 +196,26 @@ struct WorktreePanel: View {
                 Text("\(checksStateWord(c)) · \(checksSummary(c))").font(.caption)
             }
             // Indexed: two CI apps can report the same check name, and \.self would collapse them.
-            ForEach(Array((c.failing ?? []).enumerated()), id: \.offset) { _, name in
-                Label(name, systemImage: "xmark.octagon")
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(palette.destructive)
+            ForEach(Array(c.failures.enumerated()), id: \.offset) { _, f in
+                // Each failure links to its own log where the provider gave us one. Naming the check
+                // says WHAT broke; this is the only thing on the screen that can say why, and its
+                // absence is what made a red build on a phone something you could only wait out.
+                if let link = f.link {
+                    Link(destination: link) {
+                        Label(f.name, systemImage: "arrow.up.right.square")
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(palette.destructive)
+                    }
+                    .accessibilityLabel("\(f.name) failed. Open its log.")
+                } else {
+                    Label(f.name, systemImage: "xmark.octagon")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(palette.destructive)
+                }
             }
             // The daemon caps the names it sends, so say so rather than implying only these failed.
-            if c.failedCount > (c.failing?.count ?? 0) {
-                Text("+\(c.failedCount - (c.failing?.count ?? 0)) more failing")
+            if c.failedCount > c.failures.count {
+                Text("+\(c.failedCount - c.failures.count) more failing")
                     .font(.caption2).foregroundStyle(palette.mutedForeground)
             }
         }

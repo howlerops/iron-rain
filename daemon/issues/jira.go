@@ -257,41 +257,30 @@ func jiraCategory(key string) string {
 func (j *Jira) ListAssigned(ctx context.Context) ([]Issue, error) {
 	q := url.Values{}
 	q.Set("jql", "assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC")
-	// NB: Jira's /search/jql 400s the ENTIRE request if `fields` names a field id that doesn't exist
-	// on the instance — so we must NOT hardcode the sprint custom field here (its id varies per
-	// instance; customfield_10020 is only the *default*). Sprint needs dynamic field-id discovery
-	// (GET /rest/api/3/field → the gh-sprint field) before it can be requested safely; until then we
-	// omit it so tickets always load. See Sprint parsing below (stays empty for now).
-	q.Set("fields", "summary,status,priority,project,updated,assignee,issuetype,description")
+	// Jira's /search/jql 400s the ENTIRE request if `fields` names a field id that does not exist on
+	// the instance, so the sprint custom field cannot be hardcoded — its id varies per instance and
+	// customfield_10020 is only the default. That is what discoverFields is for, and Detail has used
+	// it for this exact purpose the whole time. This function's comment claimed the discovery was
+	// still unbuilt, so the board requested no sprint field, hardcoded a guess at the id to decode,
+	// and rendered every ticket without the sprint it was in.
+	//
+	// Best-effort: a discovery that fails leaves the id empty and we ask for the same field list as
+	// before rather than failing the board.
+	_ = j.discoverFields(ctx)
+	fieldList := "summary,status,priority,project,updated,assignee,issuetype,description"
+	if j.sprintFieldID != "" {
+		fieldList += "," + j.sprintFieldID
+	}
+	q.Set("fields", fieldList)
 	q.Set("maxResults", "50")
+	// The fields blob stays raw at this level and is decoded twice per issue, exactly as Detail does
+	// it: once into the typed struct for the fields we know by name, and once into a map so the
+	// sprint can be read by an id that is only known at runtime. A struct tag cannot name it.
 	var data struct {
 		Issues []struct {
-			ID     string `json:"id"`
-			Key    string `json:"key"`
-			Fields struct {
-				Summary     string          `json:"summary"`
-				Updated     string          `json:"updated"`
-				Description json.RawMessage `json:"description"` // ADF object on Jira Cloud
-				Sprint      json.RawMessage `json:"customfield_10020"`
-				Status      struct {
-					Name           string `json:"name"`
-					StatusCategory struct {
-						Key string `json:"key"`
-					} `json:"statusCategory"`
-				} `json:"status"`
-				Priority struct {
-					Name string `json:"name"`
-				} `json:"priority"`
-				Assignee struct {
-					DisplayName string `json:"displayName"`
-				} `json:"assignee"`
-				IssueType struct {
-					Name string `json:"name"`
-				} `json:"issuetype"`
-				Project struct {
-					ID, Key, Name string
-				} `json:"project"`
-			} `json:"fields"`
+			ID     string          `json:"id"`
+			Key    string          `json:"key"`
+			Fields json.RawMessage `json:"fields"`
 		} `json:"issues"`
 	}
 	if err := j.do(ctx, http.MethodGet, "/rest/api/3/search/jql?"+q.Encode(), nil, &data); err != nil {
@@ -299,15 +288,42 @@ func (j *Jira) ListAssigned(ctx context.Context) ([]Issue, error) {
 	}
 	out := make([]Issue, 0, len(data.Issues))
 	for _, is := range data.Issues {
-		sprintName, sprintState := jiraSprint(is.Fields.Sprint)
+		var f struct {
+			Summary     string          `json:"summary"`
+			Updated     string          `json:"updated"`
+			Description json.RawMessage `json:"description"` // ADF object on Jira Cloud
+			Status      struct {
+				Name           string `json:"name"`
+				StatusCategory struct {
+					Key string `json:"key"`
+				} `json:"statusCategory"`
+			} `json:"status"`
+			Priority struct {
+				Name string `json:"name"`
+			} `json:"priority"`
+			Assignee struct {
+				DisplayName string `json:"displayName"`
+			} `json:"assignee"`
+			IssueType struct {
+				Name string `json:"name"`
+			} `json:"issuetype"`
+			Project struct {
+				ID, Key, Name string
+			} `json:"project"`
+		}
+		_ = json.Unmarshal(is.Fields, &f)
+		var custom map[string]json.RawMessage
+		_ = json.Unmarshal(is.Fields, &custom)
+
+		sprintName, sprintState := jiraSprint(custom[j.sprintFieldID])
 		out = append(out, Issue{
-			ID: is.Key, Key: is.Key, Title: is.Fields.Summary,
-			Body:   adfToText(is.Fields.Description),
-			Status: is.Fields.Status.Name, Category: jiraCategory(is.Fields.Status.StatusCategory.Key),
-			Assignee: is.Fields.Assignee.DisplayName, Priority: jiraPriority(is.Fields.Priority.Name),
-			Provider: "jira", TeamID: is.Fields.Project.Key, TeamName: is.Fields.Project.Name,
-			BranchName: branchNameFor(is.Key, is.Fields.Summary),
-			URL:        j.base + "/browse/" + is.Key, UpdatedAt: is.Fields.Updated,
+			ID: is.Key, Key: is.Key, Title: f.Summary,
+			Body:   adfToText(f.Description),
+			Status: f.Status.Name, Category: jiraCategory(f.Status.StatusCategory.Key),
+			Assignee: f.Assignee.DisplayName, Priority: jiraPriority(f.Priority.Name),
+			Provider: "jira", TeamID: f.Project.Key, TeamName: f.Project.Name,
+			BranchName: branchNameFor(is.Key, f.Summary),
+			URL:        j.base + "/browse/" + is.Key, UpdatedAt: f.Updated,
 			SprintName: sprintName, SprintState: sprintState,
 		})
 	}

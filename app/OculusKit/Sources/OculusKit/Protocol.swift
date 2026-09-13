@@ -2705,10 +2705,38 @@ public struct PRChecks: Codable, Equatable {
     public var failed: Int?
     public var pending: Int?
     public var failing: [String]?
+    /// The failing checks WITH a link to each one's log. Sent by daemons new enough to carry it;
+    /// `failing` remains the name-only form so an older app still decodes the message.
+    public var failingChecks: [FailingCheck]?
+    /// The failing checks as the UI wants them: linked when the daemon supplied links, name-only when
+    /// it is an older daemon that only ever sent names.
+    public var failures: [FailingCheck] {
+        if let fc = failingChecks, !fc.isEmpty { return fc }
+        return (failing ?? []).map { FailingCheck(name: $0, url: nil) }
+    }
     public var passedCount: Int { passed ?? 0 }
     public var failedCount: Int { failed ?? 0 }
     public var pendingCount: Int { pending ?? 0 }
     public var total: Int { passedCount + failedCount + pendingCount }
+    enum CodingKeys: String, CodingKey {
+        case state, passed, failed, pending, failing
+        case failingChecks = "failing_checks"
+    }
+}
+
+/// A failed CI check and the page that says why. The name alone tells you WHAT broke, which is where
+/// this used to stop — a red build on a phone with nothing to tap.
+public struct FailingCheck: Codable, Equatable, Identifiable {
+    public var name: String
+    public var url: String?
+    /// Not the name: two CI apps can report a check with the same name, and collapsing them would
+    /// hide one of the two failures.
+    public var id: String { (url ?? "") + "\u{1F}" + name }
+    public var link: URL? { url.flatMap(URL.init(string:)) }
+    public init(name: String, url: String?) {
+        self.name = name
+        self.url = url
+    }
 }
 
 /// A worktree's pull-request state, so the app can tell the user their work landed and offer to clean

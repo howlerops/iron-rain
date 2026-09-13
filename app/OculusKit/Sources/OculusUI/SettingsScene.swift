@@ -21,7 +21,7 @@ public struct SettingsView: View {
 
     public init(store: DesktopStore) { self.store = store }
 
-    enum Tab: Hashable { case general, agents, mcp, approvals, sharing, accounts, remotes, usage }
+    enum Tab: Hashable { case general, agents, mcp, approvals, sharing, devices, accounts, remotes, usage }
 
     public var body: some View {
         TabView(selection: $tab) {
@@ -46,6 +46,13 @@ public struct SettingsView: View {
             pane { SharingView(model: $0, palette: palette) }
                 .tabItem { Label("Sharing", systemImage: "person.2") }
                 .tag(Tab.sharing)
+
+            // Devices is beside Sharing on purpose: Sharing is what a connected device may DO,
+            // Devices is which ones may connect at all. Someone looking for "cut off the phone I
+            // lost" will look in one of the two and must not have to guess right.
+            pane { DevicesView(model: $0, palette: palette) }
+                .tabItem { Label("Devices", systemImage: "iphone") }
+                .tag(Tab.devices)
 
             // `onClose` is optional now; omitting it suppresses the Done button, which is what a
             // Settings pane wants — the window has its own close.

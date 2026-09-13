@@ -1121,6 +1121,18 @@ public struct ChatView: View {
 
 // MARK: - Message row
 
+/// Long-edge budget for a decoded inline image.
+///
+/// An inline thumbnail is drawn at most 420×280 points, so a 3× panel needs ~1260 pixels. Decoding at
+/// the file's own resolution instead — which is what CGImageSourceCreateImageAtIndex does — costs
+/// width × height × 4 bytes for as long as the row exists: an ordinary macOS screenshot is 3024×1964,
+/// so 23 MB of resident memory to fill a 420-point box. Six per row is the declared bound, and the
+/// rows are retained for the whole conversation.
+///
+/// File scope rather than a member of the view, because the decode runs OFF the main actor and a
+/// static on a @MainActor type cannot be read from there.
+let maxInlineImagePixel = 1280
+
 /// Decodes image bytes to at most `maxPixel` on the long edge.
 ///
 /// Free and nonisolated so it can be run off the main actor, and testable without a view. Falls back
@@ -1147,14 +1159,6 @@ struct InlineImagesView: View {
     let load: (String) async -> Data?
     @State private var images: [String: CGImage] = [:]
 
-    /// Long-edge budget for a decoded inline image.
-    ///
-    /// The thumbnail below is drawn at most 420×280 points, so a 3× panel needs ~1260 pixels. Decoding
-    /// at the file's own resolution instead — which is what CGImageSourceCreateImageAtIndex does —
-    /// costs width × height × 4 bytes for as long as the row exists: an ordinary macOS screenshot is
-    /// 3024×1964, so 23 MB of resident memory to fill a 420-point box. Six per row is the declared
-    /// bound, and the rows are retained for the whole conversation.
-    fileprivate static let maxInlinePixel = 1280
 
     static func imagePaths(in text: String) -> [String] {
         guard text.contains("[Image: source: ") else { return [] }
@@ -1192,7 +1196,7 @@ struct InlineImagesView: View {
                         // run on the main thread — a full-resolution screenshot stalls the UI for the
                         // whole of it, on the frame where the row appears.
                         let cg = await Task.detached(priority: .userInitiated) {
-                            downsampledCGImage(data, maxPixel: InlineImagesView.maxInlinePixel)
+                            downsampledCGImage(data, maxPixel: maxInlineImagePixel)
                         }.value
                         if let cg { images[p] = cg }
                     }

@@ -538,9 +538,17 @@ public struct MCPServersView: View {
         .toggleStyle(.switch).tint(palette.primary)
     }
 
+    /// Says which harnesses this actually governs.
+    ///
+    /// The on-state used to read "your agents ignore their own MCP config", which is true of exactly
+    /// one of them. Claude Code is passed an explicit exclusive flag and obeys it. opencode is handed
+    /// the same servers but MERGES them with its own config — it has no exclusive mode to ask for.
+    /// Every other harness only receives them if its command line includes the {mcp_config} token,
+    /// and no built-in agent's does. Promising all of them made a doubled server look like a bug in
+    /// Iron Rain rather than the documented behaviour of the agent.
     private var exclusiveNote: some View {
         Text(model.mcpExclusive
-             ? "Your agents ignore their own MCP config and use only the servers above — one process per server."
+             ? "Claude Code will use only the servers above. opencode adds them to its own config, so a server configured in both places still runs twice. Other agents receive them only if you put {mcp_config} in their command."
              : "Your agents ALSO load their own MCP config. A server configured in both places runs twice.")
             .font(.caption).foregroundStyle(palette.mutedForeground)
             .fixedSize(horizontal: false, vertical: true)
@@ -556,7 +564,7 @@ public struct MCPServersView: View {
     private var emptyState: some View {
         SheetEmptyState(icon: "puzzlepiece.extension",
                         title: "No MCP servers",
-                        message: "Add a server once and every agent — opencode, Claude Code, and any CLI agent you've configured — gets its tools. Credentials stay on this Mac.",
+                        message: "Add a server once and opencode and Claude Code get its tools, along with any CLI agent whose command includes {mcp_config}. Credentials stay on this Mac.",
                         palette: palette) {
             HStack(spacing: OculusSpace.sm) {
                 Button { open(.browse) } label: { Label("Browse the registry", systemImage: "magnifyingglass") }

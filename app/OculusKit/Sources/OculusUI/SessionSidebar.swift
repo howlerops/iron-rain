@@ -111,6 +111,7 @@ struct SessionSidebar: View {
     var onOpenApprovalRules: (() -> Void)? = nil
     var onOpenMCP: (() -> Void)? = nil
     var onOpenSharing: (() -> Void)? = nil
+    var onOpenDevices: (() -> Void)? = nil
     var onOpenDictionary: (() -> Void)? = nil
     var onOpenUsage: (() -> Void)? = nil
     var onOpenAccounts: (() -> Void)? = nil
@@ -636,6 +637,12 @@ struct SessionSidebar: View {
         }
         if let onOpenSharing {
             Button { onOpenSharing() } label: { Label("Sharing…", systemImage: "person.2") }
+        }
+        // Next to Sharing: that screen is what a device may DO, this one is which devices may
+        // connect at all. Reachable from the phone as well as the Mac, because "revoke the device I
+        // just lost" is exactly the errand you run from the device you still have.
+        if let onOpenDevices {
+            Button { onOpenDevices() } label: { Label("Devices…", systemImage: "iphone") }
         }
         if let onOpenMCP {
             Button { onOpenMCP() } label: { Label("MCP servers…", systemImage: "puzzlepiece.extension") }

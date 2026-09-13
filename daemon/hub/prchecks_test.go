@@ -93,7 +93,7 @@ func noPush(t *testing.T, got chan push.Notification, why string) {
 // after which the user turns the category off and never hears about a real failure again.
 func TestPRChecksNotifiesOnceIntoFailure(t *testing.T) {
 	green := &worktree.PRChecks{State: prSuccess, Passed: 3}
-	red := &worktree.PRChecks{State: prFailure, Passed: 2, Failed: 1, Failing: []string{"build"}}
+	red := &worktree.PRChecks{State: prFailure, Passed: 2, Failed: 1, Failing: []worktree.FailingCheck{worktree.FailingCheck{Name: "build"}}}
 	pending := &worktree.PRChecks{State: prPending, Passed: 2, Pending: 1}
 
 	m, got := prHarness(t, prOpen(green), prOpen(red), prOpen(pending), prOpen(red))
@@ -130,7 +130,7 @@ func TestPRChecksNotifiesOnceIntoFailure(t *testing.T) {
 // PRInfo, nil error. None of them is a CI failure, and turning any of them into one would make the
 // feature cry wolf on every laptop that closes its lid.
 func TestPRChecksGhFailureNeverNotifies(t *testing.T) {
-	red := &worktree.PRChecks{State: prFailure, Failed: 1, Failing: []string{"test"}}
+	red := &worktree.PRChecks{State: prFailure, Failed: 1, Failing: []worktree.FailingCheck{worktree.FailingCheck{Name: "test"}}}
 	m, got := prHarness(t, prOpen(red), ghSilent)
 	now := time.Now()
 
@@ -189,7 +189,7 @@ func TestPRChecksMergedStopsPolling(t *testing.T) {
 // pure noise, and it is the one that would fire on every routine build.
 func TestPRChecksRecoveryNotifiesOnlyAfterFailure(t *testing.T) {
 	green := &worktree.PRChecks{State: prSuccess, Passed: 3}
-	red := &worktree.PRChecks{State: prFailure, Failed: 1, Failing: []string{"lint"}}
+	red := &worktree.PRChecks{State: prFailure, Failed: 1, Failing: []worktree.FailingCheck{worktree.FailingCheck{Name: "lint"}}}
 
 	// Never-red: pending → green must stay silent.
 	quiet, quietPush := prHarness(t, prOpen(&worktree.PRChecks{State: prPending, Pending: 2}), prOpen(green))
