@@ -5222,6 +5222,15 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, nil)
 
 	case protocol.TypeLogSubscribe:
+		// Owner-only. The daemon log is operator-grade detail about the owner's machine: absolute
+		// paths, project and branch names, provider errors, and whatever a harness chose to print.
+		// This had no gate at all, and roleAllows grants capWatch to EVERY connected client — so a
+		// guest who redeemed an invite could stream the whole thing, including the backlog from
+		// before they arrived. Sharing a session is not sharing a machine.
+		if !h.requireCapabilityBecause(conn, env.ID, capOwner, "stream the daemon log",
+			"the log carries paths, project names and errors from the whole machine, not just this session") {
+			return
+		}
 		h.mu.Lock()
 		h.logSubs[conn] = true
 		lh := h.logHub

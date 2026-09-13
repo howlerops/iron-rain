@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"golang.org/x/term"
 	"html"
 	"io"
 	"log"
@@ -147,6 +148,7 @@ func serve(args []string) error {
 	// Only `log` output is captured; the pairing-QR banner (printed with fmt) stays out of the stream.
 	lh := loghub.New(1000)
 	log.SetOutput(io.MultiWriter(os.Stderr, lh))
+	rollLogIfLarge(logPath()) // bound the on-disk log before this run starts adding to it
 
 	// Under launchd the daemon inherits a minimal PATH, so agent harnesses installed via nvm /
 	// homebrew (which live in ~/.zshrc, not the login-only path) aren't found — the "native agents
@@ -741,7 +743,22 @@ func printPairing(wsURL, pubHex, code, name, relay string, expires time.Time) {
 		BlackChar: qrterminal.BLACK_BLACK, WhiteChar: qrterminal.WHITE_WHITE,
 		QuietZone: 1,
 	})
-	fmt.Printf("\n  or paste: %s\n", pairURL)
+	// The pasteable URL carries the pairing secret, so it is printed only to a REAL terminal.
+	//
+	// Under launchd the plist sends StandardOutPath to ~/.oculus/oculusd.log (LoginItemManager), so
+	// this line wrote a live pairing secret into a file that is never rotated — and, until the log
+	// stream was gated to the owner, one any connected guest could read. The code is single-use and
+	// short-lived, which bounds it, but a secret with a ten-minute life still should not be the thing
+	// sitting in a log.
+	//
+	// Nothing is lost by the omission: when stdout is a file nobody is watching it, the QR above is
+	// unreadable anyway, and the documented way to pair in that situation is the Mac app's
+	// "Pair a phone…". An interactive terminal still gets the full URL for camera-less pairing.
+	if term.IsTerminal(int(os.Stdout.Fd())) {
+		fmt.Printf("\n  or paste: %s\n", pairURL)
+	} else {
+		fmt.Printf("\n  (pairing link withheld — stdout is not a terminal; mint one from the Mac app: Pair a phone…)\n")
+	}
 	fmt.Printf("  this code pairs ONE device and expires at %s — mint another from the Mac app (Pair a phone…)\n\n",
 		expires.Format("15:04:05"))
 }
@@ -991,6 +1008,57 @@ func activityPath() string {
 		return "oculus-activity.jsonl"
 	}
 	return filepath.Join(home, ".oculus", "activity.jsonl")
+}
+
+// maxLogBytes is the point at which the daemon log is rolled back. Big enough to hold a long
+// debugging session, small enough that it can never become the largest file in ~/.oculus.
+const maxLogBytes = 8 << 20 // 8 MiB
+
+// logTailKept is how much of the old log survives a roll. Enough to still contain the startup
+// sequence and whatever went wrong just before it, which is the reason anyone opens this file.
+const logTailKept = 1 << 20 // 1 MiB
+
+// logPath is where launchd is told to send the daemon's stdout+stderr (see LoginItemManager).
+func logPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".oculus", "oculusd.log")
+}
+
+// rollLogIfLarge bounds the daemon log, which nothing else does: launchd opens it with O_APPEND and
+// writes forever, so it grew without limit for the life of the install. On a machine that runs agents
+// daily this is the file that quietly becomes hundreds of megabytes, and — until the log stream was
+// gated — the one a guest could read.
+//
+// TRUNCATE rather than rename. launchd holds the descriptor in append mode, so renaming the file
+// leaves it writing happily into the renamed inode and the "current" log stays empty forever.
+// Truncating in place is the one operation that works on a file somebody else holds open: the tail
+// is copied aside first, so the recent history that makes the file worth reading survives.
+func rollLogIfLarge(path string) {
+	if path == "" {
+		return
+	}
+	fi, err := os.Stat(path)
+	if err != nil || fi.Size() <= maxLogBytes {
+		return
+	}
+	tail := make([]byte, logTailKept)
+	f, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	n, _ := f.ReadAt(tail, fi.Size()-int64(logTailKept))
+	f.Close()
+	if n > 0 {
+		_ = os.WriteFile(path+".1", tail[:n], 0o600)
+	}
+	if err := os.Truncate(path, 0); err != nil {
+		log.Printf("log: could not roll %s (%v) — it will keep growing", path, err)
+		return
+	}
+	log.Printf("log: rolled %s at %d MiB; the previous tail is in %s.1", path, fi.Size()>>20, path)
 }
 
 func loopsPath() string {

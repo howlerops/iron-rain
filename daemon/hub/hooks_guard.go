@@ -70,6 +70,22 @@ func guardApproval(ar protocol.ApprovalRequest) approvalGuard {
 			return approvalGuard{reason: "writes into " + meta + " are refused — a hook placed there " +
 				"would be executed by Iron Rain's own git commit/merge when you finish this session"}
 		}
+		// The same standard, applied to the rest of the paths that end in execution by somebody other
+		// than the agent. fsaccess already knows them — it is the list the daemon's OWN file
+		// operations are held to — but approvals never consulted it, so an agent's own Write tool
+		// reached everything the daemon's file browser is forbidden from touching.
+		//
+		// The .git argument transfers exactly. ~/.oculus/agents.json defines custom CLI agents as
+		// commands THIS DAEMON executes, so writing it is indistinguishable from writing a hook.
+		// ~/Library/LaunchAgents runs at login. A shell rc file runs on every new shell — including
+		// the login shell the daemon itself uses to resolve PATH. In each case the write looks
+		// ordinary on a one-line card and the execution arrives later, from us, which is the precise
+		// reason the .git rule refuses rather than asks.
+		if label := fsaccess.ProtectedPath(cand); label != "" {
+			return approvalGuard{reason: "writes into " + label + " are refused — it is executed later " +
+				"by Iron Rain, by launchd or by your shell, so approving it here would be approving " +
+				"code you cannot see on this card"}
+		}
 	}
 
 	// Redirecting hooksPath achieves the same thing without ever naming .git, so the path rule alone

@@ -1,7 +1,10 @@
 package hub
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -169,5 +172,52 @@ func TestGuardAllowsOrdinaryInput(t *testing.T) {
 		if g := guardApproval(ar); g.reason != "" {
 			t.Fatalf("refused ordinary input %s: %s", in, g.reason)
 		}
+	}
+}
+
+// The ".git is executed later, by us" rule applies to more than .git.
+//
+// guardApproval refused repository metadata on the grounds that a hook written there is executed by
+// the daemon's own git commit/merge. The same sentence is true of several other paths, and fsaccess
+// already enumerates them — it is the list the daemon's OWN file operations are held to — but
+// approvals never consulted it. So an agent's Write tool reached everything the daemon's file
+// browser is forbidden from touching, arriving as an ordinary-looking file write on a one-line card.
+//
+// The sharpest case is ~/.oculus/agents.json: it defines custom CLI agents as commands THIS DAEMON
+// executes, making a write to it indistinguishable in consequence from writing a git hook.
+func TestApprovalGuardRefusesPathsExecutedByUs(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory")
+	}
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{"the daemon's own agent definitions", filepath.Join(home, ".oculus", "agents.json")},
+		{"a login item", filepath.Join(home, "Library", "LaunchAgents", "com.evil.plist")},
+		{"the shell rc the daemon itself sources for PATH", filepath.Join(home, ".zshrc")},
+		{"ssh keys", filepath.Join(home, ".ssh", "id_ed25519")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ar := protocol.ApprovalRequest{
+				Tool:  "write",
+				Input: json.RawMessage(`{"file_path":` + strconv.Quote(tc.path) + `}`),
+			}
+			if g := guardApproval(ar); g.reason == "" {
+				t.Errorf("a write to %s was allowed through to an approval card", tc.path)
+			}
+		})
+	}
+}
+
+// And it must not refuse ordinary project work.
+func TestApprovalGuardAllowsOrdinaryFiles(t *testing.T) {
+	ar := protocol.ApprovalRequest{
+		Tool:  "write",
+		Input: json.RawMessage(`{"file_path":"/tmp/some-project/src/main.go"}`),
+	}
+	if g := guardApproval(ar); g.reason != "" {
+		t.Errorf("an ordinary source file was refused: %s", g.reason)
 	}
 }

@@ -119,3 +119,23 @@ func TestSwitchingIntoYoloNeedsOwnerAuthority(t *testing.T) {
 		t.Error("the owner must still be able to turn approvals off")
 	}
 }
+
+// The daemon log is owner-only.
+//
+// log.subscribe had no capability check, and roleAllows grants capWatch to every connected client —
+// so a guest who redeemed an invite could stream the whole daemon log, including the backlog from
+// before they arrived. That log carries absolute paths, project and branch names, provider errors
+// and whatever a harness printed: operator-grade detail about the owner's machine, not about the
+// session that was shared. Sharing a session is not sharing a machine.
+func TestDaemonLogIsOwnerOnly(t *testing.T) {
+	if roleAllows(RoleObserver, capOwner) || roleAllows(RoleSteerer, capOwner) {
+		t.Fatal("only the owner may hold capOwner")
+	}
+	if !roleAllows(RoleOwner, capOwner) {
+		t.Error("the owner must still be able to read their own log")
+	}
+	// capWatch is the capability the handler used to run under by default — it gates nothing.
+	if !roleAllows(RoleObserver, capWatch) {
+		t.Error("precondition: capWatch is granted to everyone, which is why it could not gate the log")
+	}
+}
