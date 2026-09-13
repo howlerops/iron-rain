@@ -220,8 +220,10 @@ func randomID() string {
 }
 
 var (
-	homeDir     = func() string { h, _ := os.UserHomeDir(); return h }()
-	absPathRe   = regexp.MustCompile(`(/[^\s"']+)+`)
+	homeDir   = func() string { h, _ := os.UserHomeDir(); return h }()
+	absPathRe = regexp.MustCompile(`(/[^\s"']+)+`)
+	// Anything the provider quoted back at us: branch names, commit subjects, commands, model text.
+	quotedRe    = regexp.MustCompile(`"[^"]*"|'[^']*'|` + "`[^`]*`")
 	whitespaceR = regexp.MustCompile(`\s+`)
 )
 
@@ -232,6 +234,14 @@ func scrub(msg string) string {
 	if homeDir != "" {
 		msg = strings.ReplaceAll(msg, homeDir, "~")
 	}
+	// Quoted spans go first, and they are the reason this is not path-only.
+	//
+	// The contract this function documents is "no repo/user/path detail leaks", but it only ever
+	// removed PATHS — and provider errors quote the thing that failed: a branch name, a commit
+	// subject, a shell command, a model's own words. Those travel in quotes, survive every path
+	// rule, and are exactly the user content the contract promises not to send. The failure SHAPE
+	// (the words around the quotes) is what makes these useful, and it is preserved.
+	msg = quotedRe.ReplaceAllString(msg, "[redacted]")
 	msg = absPathRe.ReplaceAllString(msg, "[path]")
 	msg = whitespaceR.ReplaceAllString(msg, " ")
 	msg = strings.TrimSpace(msg)
