@@ -80,20 +80,23 @@ type Hub struct {
 	// see enqueueLogLine.
 	logLines atomic.Pointer[chan string]
 	// shuttingDown suppresses work that exists only to inform clients. See Shutdown.
-	shuttingDown  atomic.Bool
-	logSubs       map[*transport.Conn]bool // clients subscribed to the log stream
-	transcripts   *transcript.Store        // optional: durable append-only per-session transcript (never-lose-work)
-	activity      *activity.Store          // optional: cross-session activity feed (Activity destination backbone)
-	accounts      *accounts.Registry       // optional: multi-account credentials + active selection per provider
-	remotes       *sshremote.Registry      // optional: registered SSH remote hosts (remote worktrees)
-	sshRunner     *sshremote.Runner        // optional: executes git/agent ops on remotes over SSH
-	redetect      func()                   // optional: re-run agent-harness detection (provider.refresh)
-	loopEngine    *loops.Engine            // optional: recurring autonomous ticket workflows
-	agentsPath    string                   // path to ~/.oculus/agents.json (custom CLI agents)
-	agentHidePath string                   // path to ~/.oculus/agent-visibility.json (hidden names)
-	agentHidden   map[string]bool          // agent names hidden from the session pickers
-	oauthAddr     string                   // loopback host:port for tracker OAuth callbacks (per-provider path)
-	worktreeBase  string                   // base dir for worktrees ("" = worktree.DefaultBase)
+	shuttingDown atomic.Bool
+	// storeUnavailable is why the durable store could not be opened, empty when it is fine.
+	// Surfaced because losing history silently is worse than not having it.
+	storeUnavailable string
+	logSubs          map[*transport.Conn]bool // clients subscribed to the log stream
+	transcripts      *transcript.Store        // optional: durable append-only per-session transcript (never-lose-work)
+	activity         *activity.Store          // optional: cross-session activity feed (Activity destination backbone)
+	accounts         *accounts.Registry       // optional: multi-account credentials + active selection per provider
+	remotes          *sshremote.Registry      // optional: registered SSH remote hosts (remote worktrees)
+	sshRunner        *sshremote.Runner        // optional: executes git/agent ops on remotes over SSH
+	redetect         func()                   // optional: re-run agent-harness detection (provider.refresh)
+	loopEngine       *loops.Engine            // optional: recurring autonomous ticket workflows
+	agentsPath       string                   // path to ~/.oculus/agents.json (custom CLI agents)
+	agentHidePath    string                   // path to ~/.oculus/agent-visibility.json (hidden names)
+	agentHidden      map[string]bool          // agent names hidden from the session pickers
+	oauthAddr        string                   // loopback host:port for tracker OAuth callbacks (per-provider path)
+	worktreeBase     string                   // base dir for worktrees ("" = worktree.DefaultBase)
 	// preview routes http://<name>.localhost:<port> to each session's own dev server, so several
 	// sessions can run one at a time without fighting over :3000 and without the user having to
 	// remember which number belongs to which agent. See package preview.
@@ -176,6 +179,21 @@ func (h *Hub) SetWorktreeBase(dir string) {
 // SetStore attaches the durable local database (session names + records). Set once at
 // startup before serving; nil disables persistence (state then lives only for the
 // daemon's lifetime).
+// SetStoreUnavailable records why durable history is off, so the app can say so rather than letting
+// the user discover it by losing a conversation.
+func (h *Hub) SetStoreUnavailable(reason string) {
+	h.mu.Lock()
+	h.storeUnavailable = reason
+	h.mu.Unlock()
+}
+
+// StoreUnavailable returns why durable history is off ("" when it is working).
+func (h *Hub) StoreUnavailable() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.storeUnavailable
+}
+
 func (h *Hub) SetStore(s *store.Store) {
 	h.mu.Lock()
 	h.db = s

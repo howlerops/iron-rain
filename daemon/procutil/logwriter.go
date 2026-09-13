@@ -32,6 +32,27 @@ type lineWriter struct {
 	prefix string
 	mu     sync.Mutex
 	buf    bytes.Buffer
+	// tail keeps the last few lines so a caller can explain a crash.
+	//
+	// A child's dying words go to stderr, and this writer is the only thing that sees them — it
+	// logged each line and dropped it. So when a harness exited non-zero, all the daemon could tell
+	// the user was "pi exited: exit status 1": an exit code with no cause, on a session that looks
+	// broken for no stated reason, while the sentence explaining it (a missing API key, a bad
+	// config) had already scrolled past in the log. The generic CLI adapter learned this lesson and
+	// grew its own exitHint; keeping the tail here gives every child the same ability.
+	tail []string
+}
+
+// maxTail is how many recent stderr lines are kept. Enough for a diagnosis that spans two lines
+// (which is common: the cause and the instruction are often printed separately), short enough that
+// this can never be mistaken for a log buffer.
+const maxTail = 6
+
+// Tail returns the child's most recent stderr lines, oldest first.
+func (w *lineWriter) Tail() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]string(nil), w.tail...)
 }
 
 func (w *lineWriter) Write(p []byte) (int, error) {
@@ -64,6 +85,10 @@ func (w *lineWriter) emit(line string) {
 	}
 	if len(line) > maxLogLine {
 		line = line[:maxLogLine] + "…"
+	}
+	w.tail = append(w.tail, line)
+	if len(w.tail) > maxTail {
+		w.tail = w.tail[len(w.tail)-maxTail:]
 	}
 	log.Printf("%s: %s", w.prefix, line)
 }

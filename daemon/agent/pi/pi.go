@@ -124,8 +124,9 @@ func (p *Provider) spawn(_ context.Context, cwd, id string, extraArgs []string) 
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
-	cmd.Stderr = procutil.LogWriter("pi") // into the daemon log/loghub, not the raw inherited FD
-	procutil.Isolate(cmd)                 // pi can shell out — terminate the whole tree
+	stderrLog := procutil.LogWriter("pi") // into the daemon log/loghub, not the raw inherited FD
+	cmd.Stderr = stderrLog
+	procutil.Isolate(cmd) // pi can shell out — terminate the whole tree
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		cancel()
@@ -168,8 +169,16 @@ func (p *Provider) spawn(_ context.Context, cwd, id string, extraArgs []string) 
 		}
 		if !sawIdle && !shuttingDown {
 			if err != nil {
+				// Carry pi's own last words, not just the exit code. "pi exited: exit status 1" is a
+				// number the user cannot look up, attached to a session that looks broken for no
+				// stated reason — while the line that explains it (a missing key, a bad config) went
+				// to stderr and straight past. Same reasoning as the generic CLI adapter's exitHint.
+				detail := "pi exited: " + err.Error()
+				if why := exitHint(stderrLog.Tail()); why != "" {
+					detail += " — " + why
+				}
 				s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{
-					SessionID: s.id, Status: protocol.StatusError, Detail: "pi exited: " + err.Error()}})
+					SessionID: s.id, Status: protocol.StatusError, Detail: detail}})
 			} else {
 				s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{
 					SessionID: s.id, Status: protocol.StatusIdle}})
@@ -515,6 +524,31 @@ func (e piEvent) toolOutput() string {
 		}
 	}
 	return b.String()
+}
+
+// exitHint condenses a child's final stderr lines into one sentence fit for a fleet card or a push
+// notification. Indented lines are continuations and stack frames — they never carry the diagnosis
+// and make a joined hint unreadable — so they are dropped. Bounded, because the full output is in
+// the log, which is where someone goes next.
+func exitHint(tail []string) string {
+	const maxHint = 160
+	var keep []string
+	for _, raw := range tail {
+		if raw != strings.TrimLeft(raw, " \t") {
+			continue
+		}
+		if t := strings.TrimSpace(raw); t != "" {
+			keep = append(keep, t)
+		}
+	}
+	if len(keep) == 0 {
+		return ""
+	}
+	out := strings.Join(keep, " ")
+	if len(out) > maxHint {
+		out = out[:maxHint] + "…"
+	}
+	return out
 }
 
 // messageText returns the "message" field when it is a plain string (a confirm/select prompt), and

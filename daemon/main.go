@@ -225,10 +225,19 @@ func serve(args []string) error {
 	}
 	// Durable local state (session names, etc.): a pure-Go SQLite DB in ~/.oculus.
 	// Best-effort — if it can't open, we log and run with in-memory-only names.
+	// A warning on stderr is not enough here, and this is the one degradation the user cannot see
+	// coming: without the store there is no durable transcript, so history silently stops surviving
+	// a restart and they find out by losing a conversation. Logged (so it reaches the log file and
+	// the app's log panel, not just a terminal nobody is watching) and recorded on the hub so the
+	// app can say it plainly.
 	if err := os.MkdirAll(filepath.Dir(dbPath()), 0o700); err != nil {
-		fmt.Fprintf(os.Stderr, "  warning: could not create state dir: %v\n", err)
+		log.Printf("state: could not create %s (%v) — running WITHOUT durable history: transcripts "+
+			"will not survive a restart", filepath.Dir(dbPath()), err)
+		h.SetStoreUnavailable(err.Error())
 	} else if db, err := store.Open(dbPath()); err != nil {
-		fmt.Fprintf(os.Stderr, "  warning: could not open local database: %v\n", err)
+		log.Printf("state: could not open %s (%v) — running WITHOUT durable history: transcripts "+
+			"will not survive a restart", dbPath(), err)
+		h.SetStoreUnavailable(err.Error())
 	} else {
 		h.SetStore(db)
 		defer db.Close()
@@ -629,6 +638,7 @@ const shutdownDeadline = 30 * time.Second
 func relayHost(relayURL, serverID string, hostPriv []byte, srv *server.Server) {
 	ctx := context.Background()
 	backoff := time.Second
+	relayFailures := 0 // consecutive registration failures, for a bounded log trail
 	for {
 		start := time.Now()
 		// ServeHostKey, not ServeHost: it answers the relay's proof-of-possession challenge, which is
@@ -641,10 +651,23 @@ func relayHost(relayURL, serverID string, hostPriv []byte, srv *server.Server) {
 		// It degrades rather than fails: a relay not yet redeployed ignores the offer, and a key that
 		// doesn't match serverID falls back to an unproven registration, so this cannot break remote
 		// access on its own.
-		_ = relay.ServeHostKey(ctx, relayURL, serverID, hostPriv, relay.DefaultKeepalive, srv.ServeConn)
+		err := relay.ServeHostKey(ctx, relayURL, serverID, hostPriv, relay.DefaultKeepalive, srv.ServeConn)
 		if time.Since(start) > 5*time.Second {
 			backoff = time.Second // served a client (or waited on one) — re-register immediately
+			relayFailures = 0
 			continue
+		}
+		// Say why remote access is not working.
+		//
+		// This error was discarded and the relay package logs nothing at all, so a daemon that could
+		// not register was completely silent — while the phone, failing to reach it, reported the
+		// problem as "daemon not running". That sends the user to restart something that is running
+		// fine. Logged on the first failure and then every tenth, so a relay outage leaves a trail
+		// without filling the log at the backoff rate.
+		relayFailures++
+		if err != nil && (relayFailures == 1 || relayFailures%10 == 0) {
+			log.Printf("relay %s: not registered (attempt %d): %v — remote access is unavailable; "+
+				"LAN still works", relayURL, relayFailures, err)
 		}
 		// Relay unreachable — retry with capped exponential backoff plus full jitter, so a relay
 		// restart doesn't trigger a thundering herd of every daemon reconnecting in lockstep.
