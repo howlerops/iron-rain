@@ -8,7 +8,10 @@ import UIKit
 
 /// A document attached to the next prompt — its extracted plain text, sent as a fenced block so
 /// every provider sees the content (no per-adapter file handling needed).
-public struct FileAttachment: Hashable {
+public struct FileAttachment: Hashable, Identifiable {
+    /// Stable identity for SwiftUI, so a list of these is diffed by a UUID rather than by hashing
+    /// `text` — which holds an entire extracted document. See the ForEach in Composer.fileChips.
+    public let id = UUID()
     public let name: String
     public let text: String
     public init(name: String, text: String) { self.name = name; self.text = text }

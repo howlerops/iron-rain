@@ -128,26 +128,26 @@ enum SyntaxHighlighter {
             for i in r.location..<NSMaxRange(r) { claimed[i] = true }
             return true
         }
-        func apply(_ pattern: String, _ kind: CodeToken, options: NSRegularExpression.Options = []) {
-            guard let re = try? NSRegularExpression(pattern: pattern, options: options) else { return }
+        func apply(_ re: NSRegularExpression?, _ kind: CodeToken) {
+            guard let re else { return }
             for m in re.matches(in: text, range: full) where mark(m.range) {
                 out.append((m.range, kind))
             }
         }
 
         // Comments first (line + block), then strings, so tokens inside them aren't re-colored.
-        apply("//[^\\n]*", .comment)
-        apply("#[^\\n]*", .comment) // python/shell line comments
-        apply("/\\*[\\s\\S]*?\\*/", .comment)
-        apply("\"(?:\\\\.|[^\"\\\\\\n])*\"", .string)
-        apply("'(?:\\\\.|[^'\\\\\\n])*'", .string)
-        apply("`(?:\\\\.|[^`\\\\])*`", .string)
-        apply("\\b[A-Z][A-Za-z0-9_]*\\b", .type) // Capitalized identifiers ≈ types
-        apply("\\b\\d[\\d_.eExXa-fA-F]*\\b", .number)
+        apply(RE.lineComment, .comment)
+        apply(RE.hashComment, .comment) // python/shell line comments
+        apply(RE.blockComment, .comment)
+        apply(RE.doubleQuoted, .string)
+        apply(RE.singleQuoted, .string)
+        apply(RE.backTicked, .string)
+        apply(RE.capitalized, .type) // Capitalized identifiers ≈ types
+        apply(RE.numeric, .number)
 
         // Keywords last (whole-word), only on still-unclaimed spans.
         let kw = language.keywords
-        if !kw.isEmpty, let re = try? NSRegularExpression(pattern: "\\b[A-Za-z_][A-Za-z0-9_]*\\b") {
+        if !kw.isEmpty, let re = RE.word {
             for m in re.matches(in: text, range: full) {
                 let word = ns.substring(with: m.range)
                 if kw.contains(word) && mark(m.range) { out.append((m.range, .keyword)) }
@@ -160,16 +160,44 @@ enum SyntaxHighlighter {
         guard json else { return [] }
         let full = NSRange(location: 0, length: (text as NSString).length)
         var out: [(NSRange, CodeToken)] = []
-        if let s = try? NSRegularExpression(pattern: "\"(?:\\\\.|[^\"\\\\])*\"") {
+        if let s = RE.jsonString {
             for m in s.matches(in: text, range: full) { out.append((m.range, .string)) }
         }
-        if let n = try? NSRegularExpression(pattern: "\\b-?\\d[\\d.eE+-]*\\b") {
+        if let n = RE.jsonNumber {
             for m in n.matches(in: text, range: full) { out.append((m.range, .number)) }
         }
-        if let b = try? NSRegularExpression(pattern: "\\b(true|false|null)\\b") {
+        if let b = RE.jsonLiteral {
             for m in b.matches(in: text, range: full) { out.append((m.range, .keyword)) }
         }
         return out
+    }
+
+    /// The tokenizer's patterns, compiled ONCE.
+    ///
+    /// Every one of these was built with `NSRegularExpression(pattern:)` on each call — nine
+    /// compilations per invocation — and the tokenizer is reached from a SwiftUI view body, which
+    /// runs on scroll, on theme change, on any @Published touch. Compiling a regex is orders of
+    /// magnitude more expensive than matching with one, so this was most of the cost of rendering a
+    /// code block, paid again on every frame that touched it.
+    private enum RE {
+        static let lineComment = compile("//[^\\n]*")
+        static let hashComment = compile("#[^\\n]*")
+        static let blockComment = compile("/\\*[\\s\\S]*?\\*/")
+        static let doubleQuoted = compile("\"(?:\\\\.|[^\"\\\\\\n])*\"")
+        static let singleQuoted = compile("'(?:\\\\.|[^'\\\\\\n])*'")
+        static let backTicked = compile("`(?:\\\\.|[^`\\\\])*`")
+        static let capitalized = compile("\\b[A-Z][A-Za-z0-9_]*\\b")
+        static let numeric = compile("\\b\\d[\\d_.eExXa-fA-F]*\\b")
+        static let word = compile("\\b[A-Za-z_][A-Za-z0-9_]*\\b")
+        static let jsonString = compile("\"(?:\\\\.|[^\"\\\\])*\"")
+        static let jsonNumber = compile("\\b-?\\d[\\d.eE+-]*\\b")
+        static let jsonLiteral = compile("\\b(true|false|null)\\b")
+
+        /// Optional rather than `try!`: these are literals that cannot fail in practice, but a
+        /// crash in a syntax highlighter is never the right answer to a bad pattern.
+        private static func compile(_ pattern: String) -> NSRegularExpression? {
+            try? NSRegularExpression(pattern: pattern)
+        }
     }
 
     /// Builds a SwiftUI AttributedString for read-only rendering (diff view, iOS).

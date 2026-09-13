@@ -472,11 +472,16 @@ struct Composer: View {
     private var attachmentChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                // Keyed by the attachment's own value (Hashable) rather than the array
-                // offset, so inserting/removing a chip doesn't shift every other chip's
-                // identity. Removal is by value, so a stale captured index can't delete
-                // the wrong item.
-                ForEach(model.pendingImages, id: \.self) { img in
+                // Keyed by the attachment's stable id rather than the array offset, so
+                // inserting/removing a chip doesn't shift every other chip's identity. Removal is
+                // still by value, so a stale captured index can't delete the wrong item.
+                //
+                // `\.id`, NOT `\.self`: hashing the value means hashing `data`, which is the
+                // image's full base64. SwiftUI re-diffs this list on every body evaluation — and the
+                // composer's body runs on every keystroke — so `\.self` hashed megabytes per
+                // character typed. The id is a UUID minted once per attachment and is exactly as
+                // stable as the value was.
+                ForEach(model.pendingImages, id: \.id) { img in
                     HStack(spacing: 5) {
                         attachmentThumb(img)
                         Text("Image \(imageNumber(img))").font(.caption2)
@@ -667,7 +672,9 @@ struct Composer: View {
     private var fileChips: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
-                ForEach(model.pendingFiles, id: \.self) { f in
+                // `\.id` for the same reason as the image chips: FileAttachment carries the whole
+                // extracted document in `text`, and hashing it per keystroke is pure waste.
+                ForEach(model.pendingFiles, id: \.id) { f in
                     HStack(spacing: 5) {
                         Image(systemName: "doc.text").font(.caption2)
                         Text(f.name).font(.caption2).lineLimit(1)
