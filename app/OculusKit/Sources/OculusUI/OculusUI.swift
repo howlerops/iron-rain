@@ -2471,7 +2471,14 @@ public final class Model: ObservableObject {
     /// card), so the working bar can say "Running a command · npm test" instead of a contentless
     /// "Running a command". Nil when nothing is mid-tool.
     public var activityDetail: String? {
-        if let t = messages.last(where: { $0.role == .tool && $0.tool?.status == "running" })?.tool,
+        // Bounded scan. `last(where:)` walks backwards over the WHOLE transcript when nothing
+        // matches — which is the common case, since most of the time no tool is running — and this
+        // is read from a view body, so an idle session paid a full-transcript scan on every render.
+        // A running tool is always among the most recent rows by construction: it was appended when
+        // it started and nothing newer can precede it.
+        let window = 40
+        let start = max(messages.startIndex, messages.endIndex - window)
+        if let t = messages[start...].last(where: { $0.role == .tool && $0.tool?.status == "running" })?.tool,
            !t.title.isEmpty { return t.title }
         return nil
     }

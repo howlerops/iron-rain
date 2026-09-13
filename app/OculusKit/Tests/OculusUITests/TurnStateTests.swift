@@ -54,3 +54,35 @@ final class TurnStateTests: XCTestCase {
         }
     }
 }
+
+/// `activityDetail` is read from a view body, and `last(where:)` walks the WHOLE transcript when
+/// nothing matches — which is the common case, since most of the time no tool is running. An idle
+/// session paid a full-transcript scan on every render. A running tool is always among the most
+/// recent rows by construction, so the scan is bounded.
+@MainActor
+final class ActivityDetailTests: XCTestCase {
+    func testFindsARunningToolNearTheEnd() {
+        let m = Model()
+        for i in 0..<500 { m.messages.append(ChatMessage(role: .assistant, text: "row \(i)")) }
+        var tool = ChatMessage(role: .tool, text: "bash")
+        tool.tool = ToolCall(id: "t1", name: "bash", title: "npm test", output: "", status: "running")
+        m.messages.append(tool)
+        XCTAssertEqual(m.activityDetail, "npm test")
+    }
+
+    func testIdleSessionReportsNothing() {
+        let m = Model()
+        for i in 0..<500 { m.messages.append(ChatMessage(role: .assistant, text: "row \(i)")) }
+        XCTAssertNil(m.activityDetail, "no tool is running, so there is nothing to report")
+    }
+
+    /// A tool that finished long ago must not be reported as current activity.
+    func testAnOldRunningToolIsNotReported() {
+        let m = Model()
+        var stale = ChatMessage(role: .tool, text: "bash")
+        stale.tool = ToolCall(id: "old", name: "bash", title: "ancient", output: "", status: "running")
+        m.messages.append(stale)
+        for i in 0..<500 { m.messages.append(ChatMessage(role: .assistant, text: "row \(i)")) }
+        XCTAssertNil(m.activityDetail, "a tool 500 rows back is not what the session is doing now")
+    }
+}

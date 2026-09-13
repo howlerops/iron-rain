@@ -46,9 +46,26 @@ func (s *Store) path(sessionID string) string {
 	return filepath.Join(s.dir, sessionID+".jsonl")
 }
 
+// maxOpenFiles bounds the handle cache. One descriptor per session id was kept for the daemon's
+// whole lifetime — including sessions that ended hours ago, and every session ever restored from
+// disk — so a long-lived daemon leaked handles until it hit the process limit, at which point
+// nothing could open a file at all. The cache exists to avoid an open() per append on the ACTIVE
+// session, which a small cache serves exactly as well.
+const maxOpenFiles = 32
+
 func (s *Store) file(sessionID string) (*os.File, error) {
 	if f := s.fhs[sessionID]; f != nil {
 		return f, nil
+	}
+	// Make room before opening another. Eviction order is arbitrary because the access pattern is
+	// overwhelmingly "the session being written to right now": anything evicted is reopened on its
+	// next append, which costs one open() on a path that is already doing a write and an fsync.
+	for len(s.fhs) >= maxOpenFiles {
+		for id, old := range s.fhs {
+			_ = old.Close()
+			delete(s.fhs, id)
+			break
+		}
 	}
 	f, err := os.OpenFile(s.path(sessionID), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {

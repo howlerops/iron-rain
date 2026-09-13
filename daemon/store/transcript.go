@@ -55,7 +55,21 @@ func (s *Store) AppendTranscript(sessionID string, seq int64, msgID string, raw 
 		// DELETEd everything past the cap — so a long session permanently lost its own beginning,
 		// and the durable transcript (the fallback for when a provider can't answer) was bounded
 		// while the conversation it backs up was not.
-		s.archiveOldTranscript(sessionID)
+		// Not on EVERY row. archiveOldTranscript opens with a COUNT(*) over this session's events,
+		// so checking per append meant a full count on the single write connection for every message,
+		// tool card and status the daemon persisted — work that answers "are we past the cap yet?",
+		// a question whose answer changes once every few thousand rows. Sampling keeps the same
+		// bound (the cap is a threshold, not an exact line) at a fraction of the cost.
+		s.appendMu.Lock()
+		s.appendsSinceArchiveCheck++
+		due := s.appendsSinceArchiveCheck >= archiveCheckEvery
+		if due {
+			s.appendsSinceArchiveCheck = 0
+		}
+		s.appendMu.Unlock()
+		if due {
+			s.archiveOldTranscript(sessionID)
+		}
 	}
 	return n > 0, nil
 }

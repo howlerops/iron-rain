@@ -10,6 +10,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -19,7 +20,16 @@ import (
 // concurrent use (database/sql owns an internal connection pool).
 type Store struct {
 	db *sql.DB
+	// appendsSinceArchiveCheck samples the archive threshold instead of testing it on every row.
+	// Guarded by appendMu: transcript appends are the only writer.
+	appendMu                 sync.Mutex
+	appendsSinceArchiveCheck int
 }
+
+// archiveCheckEvery is how many persisted events pass between archive-threshold checks. The check
+// is a COUNT(*) over the session's rows, and the cap it enforces is a threshold rather than an exact
+// line, so sampling holds the same bound for a fraction of the cost.
+const archiveCheckEvery = 256
 
 // Open opens (creating if needed) the SQLite database at path and applies migrations.
 func Open(path string) (*Store, error) {
