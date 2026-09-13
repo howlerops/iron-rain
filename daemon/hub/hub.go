@@ -457,6 +457,29 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 	if servers := h.mcpServersForSession(req.ProjectID, mcpToken); len(servers) > 0 {
 		ctx = mcp.WithConfig(ctx, mcp.Config{Servers: servers, Exclusive: h.mcpExclusiveEnabled()})
 	}
+	// The directory must actually be there before a provider is asked to start in it.
+	//
+	// Checked HERE rather than in validateSessionCwd, which runs before a worktree session has
+	// created its directory — requiring existence there breaks worktree sessions outright. By this
+	// point the worktree (if any) exists, so the check is correct for both shapes.
+	//
+	// Without it a session whose worktree had been reclaimed, or whose volume was unmounted, failed
+	// deep inside whichever harness was asked to start in it — surfacing as that tool's own error
+	// text about a path the user never chose and cannot place. A missing directory is the ordinary
+	// case here: worktrees get reclaimed on a TTL, externals get ejected.
+	if cwd != "" {
+		if fi, statErr := os.Stat(cwd); statErr != nil || !fi.IsDir() {
+			h.discardMCPToken(mcpToken)
+			if os.IsNotExist(statErr) {
+				return nil, fmt.Errorf("that folder no longer exists: %s — its worktree may have been "+
+					"reclaimed, or its volume unmounted", cwd)
+			}
+			if statErr != nil {
+				return nil, fmt.Errorf("cannot start in %s: %w", cwd, statErr)
+			}
+			return nil, fmt.Errorf("%s is a file, not a folder", cwd)
+		}
+	}
 	if planStart {
 		if pc, ok := p.(agent.PlanCreator); ok {
 			sess, err = pc.CreatePlan(ctx, cwd, createPrompt)

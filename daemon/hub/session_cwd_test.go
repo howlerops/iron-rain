@@ -7,7 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/project"
+	"github.com/howlerops/oculus/daemon/protocol"
 )
 
 // cwdHub returns a hub with one registered project and a worktree base, plus a relocated HOME whose
@@ -133,4 +135,44 @@ func TestSessionCwdRequiresAbsolute(t *testing.T) {
 			t.Errorf("relative cwd %q was accepted", cwd)
 		}
 	}
+}
+
+// A session must not be started in a directory that is gone.
+//
+// Nothing checked, so a session whose worktree had been reclaimed on its TTL, or whose volume had
+// been unmounted, failed deep inside whichever harness was asked to start there — surfacing as that
+// tool's own error text about a path the user never chose and cannot place.
+//
+// The check lives just before the provider is created, NOT in validateSessionCwd: that runs before a
+// worktree session has made its directory, so requiring existence there breaks worktree sessions
+// outright. By the point tested here the worktree (if any) exists, so it is correct for both shapes.
+func TestStartingInAMissingDirectoryFailsWithASentence(t *testing.T) {
+	h := New()
+	h.Register(&missingDirProvider{})
+
+	gone := filepath.Join(t.TempDir(), "reclaimed-worktree")
+	_, err := h.startSession(context.Background(),
+		protocol.SessionCreate{Provider: "fake", Cwd: gone}, sessionMeta{}, nil)
+	if err == nil {
+		t.Fatal("a session was started in a directory that does not exist")
+	}
+	if !strings.Contains(err.Error(), "no longer exists") || !strings.Contains(err.Error(), gone) {
+		t.Errorf("the error should name the folder and say it is gone, got: %v", err)
+	}
+
+	// A real directory still works, or the guard is worse than the bug.
+	if _, err := h.startSession(context.Background(),
+		protocol.SessionCreate{Provider: "fake", Cwd: t.TempDir()}, sessionMeta{}, nil); err != nil {
+		t.Errorf("a session in a real directory was refused: %v", err)
+	}
+}
+
+// missingDirProvider is a minimal provider for the check above: it records nothing and starts
+// nothing, because the point is that startSession refuses BEFORE reaching it.
+type missingDirProvider struct{}
+
+func (p *missingDirProvider) Name() string                                     { return "fake" }
+func (p *missingDirProvider) List(context.Context) ([]protocol.Session, error) { return nil, nil }
+func (p *missingDirProvider) Create(context.Context, string, string) (agent.Session, error) {
+	return &subSess{ch: make(chan agent.Event, 1)}, nil
 }

@@ -21,7 +21,8 @@ func TestSessionChildE2E(t *testing.T) {
 	r := newReader(conn)
 
 	// Parent session.
-	send(t, conn, "c1", protocol.TypeSessionCreate, protocol.SessionCreate{Provider: "fake", Cwd: "/repo"})
+	repo := t.TempDir() // a real directory: the daemon refuses to start a session in one that is gone
+	send(t, conn, "c1", protocol.TypeSessionCreate, protocol.SessionCreate{Provider: "fake", Cwd: repo})
 	var parent protocol.Session
 	if err := json.Unmarshal(r.waitOK(t, "c1"), &parent); err != nil {
 		t.Fatalf("parent decode: %v", err)
@@ -44,7 +45,7 @@ func TestSessionChildE2E(t *testing.T) {
 	if child.Subtask != "Add retries" {
 		t.Errorf("child.Subtask = %q, want 'Add retries'", child.Subtask)
 	}
-	if child.Cwd != "/repo" { // inherits the parent's working directory
+	if child.Cwd != repo { // inherits the parent's working directory
 		t.Errorf("child.Cwd = %q, want /repo", child.Cwd)
 	}
 

@@ -130,7 +130,8 @@ func TestCreatedSessionPersistsProviderURL(t *testing.T) {
 	h, db := restoreHub(t)
 	h.Register(&urlProvider{url: "http://127.0.0.1:49001"})
 
-	m, err := h.startSession(context.Background(), protocol.SessionCreate{Provider: "url-agent", Cwd: "/repo"}, sessionMeta{}, nil)
+	repo := t.TempDir() // a real directory: the daemon refuses to start a session in one that is gone
+	m, err := h.startSession(context.Background(), protocol.SessionCreate{Provider: "url-agent", Cwd: repo}, sessionMeta{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
