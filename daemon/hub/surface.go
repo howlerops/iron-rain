@@ -45,14 +45,18 @@ func (h *Hub) sendSessionSurface(conn *transport.Conn, m *managedSession) {
 //     enough to see it.
 func (h *Hub) broadcastFacts(m *managedSession) {
 	facts := h.sessionFacts(m)
-	m.mu.Lock()
-	conns := make([]*transport.Conn, 0, len(m.subs))
-	for c := range m.subs {
-		conns = append(conns, c)
-	}
-	m.mu.Unlock()
-	for _, c := range conns {
-		h.sendEvent(c, protocol.TypeSessionFacts, facts)
+	// Through the subscriber QUEUE, never a direct socket write.
+	//
+	// sendEvent calls conn.Send, which blocks until the frame is written. This runs from the session
+	// event pump (usage updates, mode changes), so one client on a stalled TCP connection stopped
+	// that session's event processing for everybody — the precise failure the per-subscriber queue
+	// and its drop-the-slow-client rule exist to prevent. Every other pump broadcast already goes
+	// through broadcastTransient; this was the one that did not.
+	//
+	// Transient rather than ringed: facts are a snapshot of current state, so replaying old ones on
+	// attach would be noise, and the fresh snapshot is sent on subscribe anyway.
+	if raw, err := protocol.Encode("", protocol.TypeSessionFacts, facts); err == nil {
+		m.broadcastTransient(raw)
 	}
 }
 

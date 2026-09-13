@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"log"
 	"time"
 
 	"github.com/coder/websocket"
@@ -26,12 +27,27 @@ type wsConn struct {
 
 var _ transport.MsgConn = (*wsConn)(nil)
 
+// MaxFrameBytes is the largest protocol frame either end will handle. The client sets the identical
+// limit (OculusClient.maxFrameBytes); a frame larger than this on either side kills the connection,
+// so the two numbers must stay equal.
+const MaxFrameBytes = 8 * 1024 * 1024
+
 func newWSConn(ctx context.Context, ws *websocket.Conn) *wsConn {
-	ws.SetReadLimit(8 * 1024 * 1024) // agent output frames can be large
+	ws.SetReadLimit(MaxFrameBytes) // agent output frames can be large
 	return &wsConn{ws: ws, ctx: ctx}
 }
 
 func (c *wsConn) WriteMsg(b []byte) error {
+	// An oversized frame is fatal at the other end, so say so HERE rather than letting the peer
+	// drop with no explanation. Nothing capped what the daemon sends, and the client's receive limit
+	// used to be the 1 MiB URLSession default — so a large tool result disconnected the app and
+	// looked like a network problem. The frame is still attempted (the peer may be a newer build),
+	// but the log now names the cause.
+	if len(b) > MaxFrameBytes {
+		log.Printf("server: outbound frame is %d bytes, over the %d-byte limit — the peer will drop this connection",
+			len(b), MaxFrameBytes)
+	}
+
 	ctx, cancel := context.WithTimeout(c.ctx, writeTimeout)
 	defer cancel()
 	err := c.ws.Write(ctx, websocket.MessageBinary, b)

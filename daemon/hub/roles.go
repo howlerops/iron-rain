@@ -85,7 +85,15 @@ func (r *roleRegistry) setRole(conn *transport.Conn, role string) {
 }
 
 // forget drops a disconnected connection.
+//
+// Nil-receiver safe. dropClient is now reachable from the broadcast path (a subscriber whose queue
+// overflows tears its connection down), and that path runs for any Hub — including one assembled as
+// a struct literal rather than through New, which leaves this registry nil. A cleanup routine that
+// panics on a half-built Hub is worse than the leak it was cleaning up.
 func (r *roleRegistry) forget(conn *transport.Conn) {
+	if r == nil {
+		return
+	}
 	r.mu.Lock()
 	delete(r.byConn, conn)
 	r.mu.Unlock()

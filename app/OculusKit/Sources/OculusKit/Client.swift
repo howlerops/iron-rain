@@ -42,8 +42,18 @@ public actor OculusClient {
     /// below. It disappears when v0 support does.
     private static let legacyFallbackNanos: UInt64 = 3_000_000_000
 
+    /// Matches the daemon's own read limit (daemon/server/wsconn.go SetReadLimit).
+    ///
+    /// URLSessionWebSocketTask defaults to 1 MiB, and nothing raised it — while the daemon happily
+    /// reads and sends up to 8 MiB, because "agent output frames can be large". Any frame between
+    /// those two numbers was fatal: the receive failed and the connection dropped, with the user
+    /// seeing a disconnect rather than the big tool result that caused it. A long diff, a wide file
+    /// read, or a replayed transcript page is enough. The two ends must agree on this number.
+    public static let maxFrameBytes = 8 * 1024 * 1024
+
     public init(url: URL, session: URLSession = URLSession(configuration: .default)) {
         self.task = session.webSocketTask(with: url)
+        self.task.maximumMessageSize = OculusClient.maxFrameBytes
     }
 
     private struct ClientHello: Encodable { let clientPub: String; let v: Int }
