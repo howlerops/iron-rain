@@ -102,8 +102,17 @@ public struct SharingView: View {
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {
                 Text(p.name).font(.subheadline).foregroundStyle(palette.foreground)
-                Text(ParticipantRole.label(p.role))
-                    .font(.caption).foregroundStyle(palette.mutedForeground)
+                HStack(spacing: 6) {
+                    Text(ParticipantRole.label(p.role))
+                        .font(.caption).foregroundStyle(palette.mutedForeground)
+                    // The key, when the daemon sends it. A name is whatever the device said it
+                    // was, so two rows can carry the same one; this is the only thing on the row
+                    // that tells them apart — and the daemon refuses a grant it cannot aim.
+                    if let k = p.keyPrefix, !k.isEmpty {
+                        Text(k).font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(palette.mutedForeground)
+                    }
+                }
             }
             Spacer()
             if model.sharingEnabled && p.role != ParticipantRole.owner {
@@ -134,10 +143,18 @@ public struct SharingView: View {
     private func grant(_ p: Participant, _ next: String) {
         Task {
             await model.grantRole(name: p.name, role: next)
-            if model.participants.first(where: { $0.name == p.name })?.role != next {
+            // Matched on identity, not name: two devices can share a name, and checking the first
+            // one that matches would report success off the wrong row. The daemon refuses an
+            // ambiguous grant outright, so this is how that refusal surfaces.
+            if model.participants.first(where: { $0.id == p.id })?.role != next {
+                // Name the likeliest cause when it is visible from here. The daemon refuses to aim
+                // a grant it cannot aim, and this screen can see the reason it could not.
+                let ambiguous = model.participants.filter { $0.name == p.name }.count > 1
                 model.setError(next == ParticipantRole.steerer
                                ? "Couldn’t let \(p.name) steer" : "Couldn’t revoke \(p.name)",
-                               "Their access is unchanged. Check the daemon is connected and try again.")
+                               ambiguous
+                               ? "More than one connected device is calling itself “\(p.name)”, so there is no way to tell which one you meant. Rename one of them and try again."
+                               : "Their access is unchanged. Check the daemon is connected and try again.")
             }
         }
     }

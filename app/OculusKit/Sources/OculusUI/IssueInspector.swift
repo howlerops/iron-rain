@@ -307,7 +307,9 @@ struct IssueInspectorPanel: View {
     }
 
     @ViewBuilder private func attachmentRow(_ a: IssueAttachment) -> some View {
-        if a.isImage {
+        // An absent is_image means "not an image", never "unknown, render it as one": the daemon
+        // omits the key for every non-image attachment.
+        if a.showsInline {
             VStack(alignment: .leading, spacing: 4) {
                 // Auth-gated tracker CDNs: fetch through the daemon (reuses the markdown image path).
                 TrackerImage(model: model, provider: current.provider, url: a.url, alt: a.filename, palette: palette)

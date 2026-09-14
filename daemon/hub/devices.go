@@ -371,3 +371,25 @@ func (h *Hub) deviceList(conn *transport.Conn) protocol.DeviceList {
 	}
 	return out
 }
+
+// guestsToDisconnect lists the enrolled guests that must be cut off when sharing enforcement is
+// turned OFF.
+//
+// With enforcement off, roleRegistry.role() short-circuits to owner for every open connection. That
+// is right for a solo setup — every device is yours — and wrong for someone admitted by an invite,
+// whose socket stays open and never re-authenticates. Flipping the switch would promote a watch-only
+// guest to owner in place: answering approvals, running commands as the owner, revoking the owner's
+// devices, minting a pairing code to return as a permanent device afterwards.
+//
+// Split out from the handler so the decision is testable without a live handshake. The owner's own
+// devices are deliberately untouched: turning sharing off means "stop gating my machines", not
+// "disconnect everything".
+func (h *Hub) guestsToDisconnect() []string {
+	var out []string
+	for _, d := range h.Devices() {
+		if d.Guest && d.PubHex != "" {
+			out = append(out, d.PubHex)
+		}
+	}
+	return out
+}

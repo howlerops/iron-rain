@@ -3644,8 +3644,25 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, res)
 
 	case protocol.TypeProjectBrowse:
+		// Owner-gated, like project.add, which is the action this picker exists to feed.
+		//
+		// It had no capability check at all, and every connected client holds capWatch. So an
+		// observer — someone admitted by a watch-only invite link, who is meant to be able to read
+		// one session and nothing else — could list any directory the daemon's user can read and
+		// walk the whole tree from the `Parent` this hands back: the owner's home, their Documents,
+		// every client codebase on the machine. Nothing was logged and nothing surfaced in the
+		// session they were watching. Meanwhile the fs.* family immediately around it is capSteer
+		// AND confined to allowed roots.
+		if !h.requireCapability(conn, env.ID, capOwner, "browse folders") {
+			return
+		}
 		var req protocol.ProjectBrowseReq
 		_ = env.Unmarshal(&req)
+		// Even for the owner: the folder picker has no business enumerating ~/.ssh or ~/.oculus.
+		if label := fsaccess.ProtectedPath(req.Path); label != "" {
+			h.sendErr(conn, env.ID, "that folder is protected ("+label+")")
+			return
+		}
 		res, err := project.Browse(req.Path)
 		if err != nil {
 			h.sendErr(conn, env.ID, err.Error())
@@ -4981,6 +4998,23 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		// Whoever turns enforcement ON becomes the owner — otherwise enabling it would instantly
 		// demote the person doing the enabling to an observer of their own machine.
 		h.roles.setRole(conn, RoleOwner)
+		// Turning it OFF must disconnect the guests first.
+		//
+		// With enforcement off, role() short-circuits to RoleOwner for EVERY connection — that is
+		// what makes the solo case frictionless, and it is correct for devices that are all yours.
+		// It is not correct for someone who came in through an invite. Their socket is already open
+		// and never re-authenticates, so flipping this switch promoted a watch-only guest to owner
+		// in place: they could answer approvals, run commands as the owner, revoke the owner's own
+		// devices, and mint a pairing code to come back as a permanent device afterwards.
+		//
+		// The owner's reading of this switch is "stop gating my own machines", not "hand the room
+		// to whoever is currently in it". Invite revocation already closes the connections it let
+		// in, for exactly this reason; this path just never did the same.
+		if !req.Enabled {
+			for _, pub := range h.guestsToDisconnect() {
+				h.closeDeviceConns(pub, "sharing turned off")
+			}
+		}
 		h.SetRolesEnabled(req.Enabled)
 		h.sendOK(conn, env.ID, h.participants())
 		h.broadcastParticipants()

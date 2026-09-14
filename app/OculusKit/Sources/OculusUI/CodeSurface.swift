@@ -429,6 +429,15 @@ struct OpenTab: Identifiable, Equatable {
                 guard let self, self.openPath == path else { return }
                 if self.dirty || self.readOnly { continue }
                 guard let f = try? await self.model.fsRead(path ?? "") else { continue }
+                // Re-check AFTER the round trip, not only before it.
+                //
+                // Switching tabs cancels this task and rewrites openPath/content/loadedSha
+                // synchronously, but cancellation does nothing to a request already in flight —
+                // Model.request is a bare continuation with no cancellation handler, so the await
+                // still resumes. Without this guard the poll then wrote file A's bytes and sha into
+                // whatever file is open now: the editor silently replaces B's contents with A's, and
+                // saving from there commits them.
+                guard !Task.isCancelled, self.openPath == path, !self.dirty else { continue }
                 if f.sha != self.loadedSha, !self.dirty {
                     self.loadedSha = f.sha
                     self.content = f.content ?? self.content

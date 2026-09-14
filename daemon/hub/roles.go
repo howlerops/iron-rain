@@ -184,16 +184,31 @@ func (h *Hub) grantRole(target, role string) bool {
 	if target == "" {
 		return false
 	}
+	// A grant is targeted by DISPLAY NAME, and a display name is whatever the client said it was —
+	// client.identify is ungated and unverified. So two connections can present the same one, and
+	// this used to break on the first match while ranging a Go map, whose iteration order is
+	// deliberately randomized: the grant landed on one of them at random, the owner had no way to
+	// see which, and nothing on the Sharing sheet distinguished the rows.
+	//
+	// Refusing an ambiguous grant is the whole fix here. Picking wrong hands steering — and on a
+	// steerer grant, the ability to prompt an agent holding the owner's credentials — to a
+	// connection the owner did not mean to pick, silently. Refusing costs them a rename.
 	h.mu.Lock()
 	var match *transport.Conn
+	matches := 0
 	for conn, c := range h.clients {
 		if strings.EqualFold(c.displayName(), target) {
 			match = conn
-			break
+			matches++
 		}
 	}
 	h.mu.Unlock()
 	if match == nil {
+		return false
+	}
+	if matches > 1 {
+		log.Printf("roles: REFUSING to grant %s to %q — %d connected devices are using that exact "+
+			"name and there is no way to tell which one you meant", role, target, matches)
 		return false
 	}
 	h.roles.setRole(match, role)
@@ -224,6 +239,9 @@ func (h *Hub) participants() protocol.ParticipantList {
 		out.Participants = append(out.Participants, protocol.Participant{
 			Name: name,
 			Role: h.roles.role(e.conn),
+			// The connection's own key, short. A name is self-declared and two devices can claim
+			// the same one; this is the only thing on the row that they cannot both have.
+			KeyPrefix: shortPub(hexKey(e.conn.PeerPublicKey())),
 		})
 	}
 	return out

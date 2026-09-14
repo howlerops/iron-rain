@@ -2322,6 +2322,10 @@ type ClientIdentify struct {
 type Participant struct {
 	Name string `json:"name"`
 	Role string `json:"role"` // owner | steerer | observer
+	// KeyPrefix is the start of the connection's own public key. A Name is self-declared — the
+	// identify message is ungated and unverified — so two devices can present the same one and the
+	// roster showed two identical rows. This is the part of the row they cannot both have.
+	KeyPrefix string `json:"key_prefix,omitempty"`
 }
 
 // ParticipantList is who is connected (participants / broadcast on change). Enabled reports whether

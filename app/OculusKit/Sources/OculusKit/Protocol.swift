@@ -882,6 +882,12 @@ public struct Session: Codable, Identifiable {
         case inputTokens = "input_tokens"
         case outputTokens = "output_tokens"
         case costUSD = "cost_usd"
+        // Declaring a property is not declaring a key. Swift silently accepts an explicit
+        // CodingKeys enum that omits an optional var — the decoder just never reads it — so these
+        // two arrived on the wire, were dropped, and left the toolbar reporting a session's real
+        // spend as "cost not reported by this provider" on every reload.
+        case contextTokens = "context_tokens"
+        case costKnown = "cost_known"
     }
 }
 public struct ProtocolError: Codable { public var message: String }
@@ -2036,10 +2042,20 @@ public struct IssueAttachment: Codable, Identifiable, Hashable {
     public var id: String
     public var filename: String
     public var url: String
-    public var mime: String
+    /// Optional because the daemon OMITS them.
+    ///
+    /// Both are `omitempty` on the Go side, so a Linear attachment (which never carries a MIME type)
+    /// and any non-image Jira attachment arrive with neither key present. Decoding them as
+    /// non-optional threw keyNotFound — and a throw here is not a missing filename, it unwinds the
+    /// whole `issue.detail` decode, so the ticket panel rendered permanently empty with no error for
+    /// any ticket carrying an attachment. Linear adds those automatically from its GitHub and Slack
+    /// apps, so that is most active tickets.
+    public var mime: String?
     public var size: Int?
-    public var isImage: Bool
-    public init(id: String, filename: String, url: String, mime: String, size: Int? = nil, isImage: Bool = false) {
+    public var isImage: Bool?
+    /// Convenience for the call sites, which want a yes/no and not a maybe.
+    public var showsInline: Bool { isImage == true }
+    public init(id: String, filename: String, url: String, mime: String? = nil, size: Int? = nil, isImage: Bool? = false) {
         self.id = id; self.filename = filename; self.url = url; self.mime = mime; self.size = size; self.isImage = isImage
     }
     enum CodingKeys: String, CodingKey {
@@ -2480,7 +2496,18 @@ public enum ParticipantRole {
 public struct Participant: Codable, Equatable, Identifiable {
     public var name: String
     public var role: String
-    public var id: String { name }
+    /// The start of this connection's public key. A name is self-declared — client.identify is
+    /// ungated and unverified — so two devices can present the same one; this is the part of the row
+    /// they cannot both have. Absent from daemons older than this field.
+    public var keyPrefix: String?
+    /// Identity is the KEY, not the name. Identifiable on `name` meant two devices claiming the same
+    /// name rendered as one row in the roster's ForEach — so the second connection was not merely
+    /// indistinguishable from the first, it was invisible.
+    public var id: String { (keyPrefix ?? "") + "\u{1F}" + name }
+    enum CodingKeys: String, CodingKey {
+        case name, role
+        case keyPrefix = "key_prefix"
+    }
 }
 
 public struct ParticipantList: Codable, Equatable {

@@ -1768,8 +1768,23 @@ public final class Model: ObservableObject {
     /// Loads the models available to the current session's provider (for the header picker).
     /// Clears to non-editable if the provider is agent-managed (e.g. pi, generic CLI).
     public func loadModels(sessionID override: String? = nil) async {
-        guard client != nil, let sid = override ?? sessionID else { sessionModels = []; modelEditable = false; return }
-        if let resp = try? await request(MessageType.modelList, payload: ModelListReq(sessionID: sid)),
+        // The identity check comes FIRST, above the connection check.
+        //
+        // Both of the branches below write state that describes THE OPEN SESSION, and that includes
+        // the failure branch: asked about a session the user has left, a disconnected client would
+        // blank the open session's picker instead of leaving it alone.
+        guard let sid = override ?? sessionID, sid == sessionID else { return }
+        guard client != nil else { sessionModels = []; modelEditable = false; return }
+        let resp = try? await request(MessageType.modelList, payload: ModelListReq(sessionID: sid))
+        // Re-establish identity after the await. `sessionModels` describes THE OPEN SESSION, so a
+        // reply for one the user has already left is never the right thing to apply — and the
+        // window is wide: model.list is dispatched on its own goroutine and, for claude-code,
+        // spawns a CLI, so tapping two sessions in quick succession routinely lands the first
+        // session's answer after the second is open. The picker then offers models belonging to a
+        // different agent, and the else-branch below is just as wrong — it would blank the list for
+        // a session that has one.
+        guard sid == sessionID else { return }
+        if let resp,
            let ml = try? resp.payload(as: ModelList.self) {
             sessionModels = ml.models
             modelEditable = ml.editable
@@ -3393,8 +3408,11 @@ public final class Model: ObservableObject {
     /// Loads the agent's slash commands (built-in + custom from .claude/commands) for the composer's
     /// "/" palette. Scoped to the session's provider + working directory.
     public func loadCommands(sessionID sid: String) async {
+        guard sid == sessionID else { return } // same as loadModels: this describes the OPEN session
         guard client != nil else { commands = []; return }
-        if let resp = try? await request(MessageType.commandList, payload: CommandListReq(sessionID: sid)),
+        let resp = try? await request(MessageType.commandList, payload: CommandListReq(sessionID: sid))
+        guard sid == sessionID else { return } // same reason as loadModels: this describes the OPEN session
+        if let resp,
            let cl = try? resp.payload(as: CommandList.self) {
             commands = cl.commands
         } else {
