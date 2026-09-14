@@ -398,6 +398,25 @@ struct OpenTab: Identifiable, Equatable {
         await save()
     }
 
+    /// Reloads the open file after the daemon says it changed on disk — but never over unsaved work.
+    ///
+    /// `path` is the file the daemon named; empty means "everything changed" (a checkpoint restore,
+    /// a worktree move), which is exactly when a stale buffer is most dangerous.
+    ///
+    /// A dirty buffer is deliberately left alone and flagged instead. Silently replacing what someone
+    /// is typing is worse than showing them a stale view, and `conflict` is the existing signal for
+    /// "this file moved under you" — the save path already refuses to clobber on it.
+    func fileChangedOnDisk(_ path: String) async {
+        guard let open = openPath else { return }
+        if !path.isEmpty && path != open { return }
+        if dirty {
+            conflict = true
+            status = "This file changed on disk while you were editing it."
+            return
+        }
+        await reload()
+    }
+
     /// Discards local edits and reloads from disk.
     func reload() async {
         guard let path = openPath else { return }
@@ -532,6 +551,16 @@ struct CodeSurface: View {
                     .navigationBarTitleDisplayMode(.inline)
             }
             .onChange(of: code.revealCount) { _ in showDetail = true }
+            // The daemon tells us when files moved underneath the editor — after an LSP rename
+            // writes across a project, after a checkpoint restore, after a worktree is removed.
+            // Nothing in the app read that message, so the buffer on screen stayed at the version it
+            // was loaded with and the next save wrote it back over the agent's work. The existing
+            // poll only covers the active file on a timer; this is prompt, and it covers the
+            // "everything changed" broadcast the poll cannot see.
+            .onChange(of: model.fsChangeToken) { _ in
+                let path = model.fsChangedPath
+                Task { await code.fileChangedOnDisk(path) }
+            }
     }
 
     private var detailTitle: String {

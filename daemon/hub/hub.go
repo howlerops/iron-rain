@@ -4536,7 +4536,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, "integrations not enabled")
 			return
 		}
-		var projects []protocol.IssueProject
+		// make(), not a nil slice. A nil slice marshals as `null`, NOT as an omitted key — and the
+		// client's `projects` is a non-optional [IssueProject], so `null` throws valueNotFound and
+		// unwinds the decode of the WHOLE message. The loader swallows that with `try?`, so the board
+		// picker renders empty with no error anywhere. Both paths that produce nothing here are
+		// ordinary: no tracker connected, or every connected tracker's Projects() call failed (the
+		// loop continues, and the comment beside it says "one tracker failing shouldn't blank the
+		// whole picker" — this nil is what blanked it).
+		projects := make([]protocol.IssueProject, 0, 4)
 		for _, name := range m.Connected() {
 			p := m.Provider(name)
 			if p == nil {
@@ -5501,7 +5508,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.logSubs[conn] = true
 		lh := h.logHub
 		h.mu.Unlock()
-		var lines []string
+		lines := []string{} // never nil: `null` fails the client's non-optional [String] decode
 		if lh != nil {
 			lines = lh.Recent()
 		}
@@ -5962,7 +5969,10 @@ func (h *Hub) applyRename(ctx context.Context, req protocol.LSPRenameReq) ([]str
 		return nil, err
 	}
 	guard := h.fsGuard()
-	var files []string
+	// Never nil. A rename that touched nothing — the server returned no edits, or every path it
+	// returned was refused by the guard — would otherwise send `"files":null` and fail the client's
+	// decode, so "0 files changed" arrived as a transport error.
+	files := make([]string, 0, len(contents))
 	for p, content := range contents {
 		abs, err := guard.Resolve(p) // refuse anything outside allowed roots
 		if err != nil {

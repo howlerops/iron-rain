@@ -201,6 +201,11 @@ struct ActivityView: View {
         case "stalled":     return .needsYou
         case "error":       return .failed
         case "loop_run", "loop_pr": return .loop
+        // Fan-out. A comparison becoming ready is the whole point of running one, and both of these
+        // used to fall through to .idle — so "4 agents finished, a comparison is ready" rendered
+        // identically to an ordinary completed turn, which is the one row the user needs to act on.
+        case "fanout_run":  return .loop
+        case "fanout_done": return .needsYou
         case "finished":    return .idle
         default:            return .idle
         }

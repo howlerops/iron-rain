@@ -118,6 +118,16 @@ public final class Model: ObservableObject {
     @Published public var pairingPublicURL: String? // reachable URL for the phone-pairing QR
     /// Live LSP diagnostics keyed by file path (editor underlines + the problems list).
     @Published public var diagnostics: [String: [LSPDiagnostic]] = [:]
+    /// Bumped whenever the daemon reports that files changed on disk underneath us, with the path
+    /// it named (empty meaning "everything").
+    ///
+    /// The daemon has always broadcast fs.change — after an LSP rename writes across a project,
+    /// after a checkpoint restore moves the tree, after a worktree is removed — and NOTHING in the
+    /// app read it. `fsWatch`, `fsChange` and the `FSChange` type were referenced nowhere outside
+    /// Protocol.swift. So the built-in editor kept showing the version of the file it loaded, and
+    /// the user's next save wrote that stale buffer back over the agent's work.
+    @Published public private(set) var fsChangeToken = 0
+    @Published public private(set) var fsChangedPath = ""
     /// The active session's live to-do list (from the agent).
     @Published public var todos: [Todo] = []
 
@@ -4897,6 +4907,11 @@ public final class Model: ObservableObject {
                 activityFeed.removeAll { $0.id == e.id }
                 activityFeed.insert(e, at: 0)
                 if activityFeed.count > 500 { activityFeed.removeLast(activityFeed.count - 500) }
+            }
+        case MessageType.fsChange: // files changed on disk (rename, checkpoint restore, worktree move)
+            if let c = try? env.payload(as: FSChange.self) {
+                fsChangedPath = c.path
+                fsChangeToken &+= 1
             }
         case MessageType.lspDiagnostics: // language server published diagnostics for a file
             if let d = try? env.payload(as: LSPDiagnostics.self) {

@@ -1589,7 +1589,7 @@ public struct LogLine: Codable {
 public struct ActivityEvent: Codable, Identifiable, Equatable {
     public var id: String
     public var ts: Int
-    public var kind: String        // finished | needs_input | error | loop_run | loop_pr | started
+    public var kind: String        // finished | needs_input | error | stalled | loop_run | loop_pr | fanout_run | fanout_done
     public var sessionID: String?
     public var provider: String?
     public var project: String?
@@ -2476,13 +2476,21 @@ public struct MCPUpsert: Codable {
     public var env: [String: String]?
     public var url: String?
     public var projectID: String?
+    /// Auth headers for an HTTP-transport server — the normal way a remote or hosted MCP server is
+    /// authenticated. The daemon has always read these; the app had no key for them, so a
+    /// header-authenticated server simply could not be configured from the app at all.
+    public var headers: [String: String]?
+    /// Working directory for a stdio server. Same story: the daemon reads it, the app could not send it.
+    public var cwd: String?
     public init(name: String, transport: String? = nil, command: String? = nil, args: [String]? = nil,
-                env: [String: String]? = nil, url: String? = nil, projectID: String? = nil) {
+                env: [String: String]? = nil, url: String? = nil, projectID: String? = nil,
+                headers: [String: String]? = nil, cwd: String? = nil) {
         self.name = name; self.transport = transport; self.command = command
         self.args = args; self.env = env; self.url = url; self.projectID = projectID
+        self.headers = headers; self.cwd = cwd
     }
     enum CodingKeys: String, CodingKey {
-        case name, transport, command, args, env, url
+        case name, transport, command, args, env, url, headers, cwd
         case projectID = "project_id"
     }
 }
@@ -2573,9 +2581,15 @@ public struct Invite: Codable, Equatable, Identifiable {
     public var role: String
     public var expiresAt: Int
     public var redeemed: Int
+    /// How many devices this link admits. The daemon sends it; the app could not read it, so an
+    /// invite minted elsewhere with room for five devices rendered identically to a single-use one.
+    /// Optional because an older daemon omits it (`omitempty`), and absent means the daemon's own
+    /// default of one — see protocol.go: "a share link is pasted into chats, and chats forward".
+    public var maxDevices: Int?
     enum CodingKeys: String, CodingKey {
         case id, label, role, redeemed
         case expiresAt = "expires_at"
+        case maxDevices = "max_devices"
     }
 }
 
@@ -2593,10 +2607,18 @@ public struct InviteCreate: Codable {
     public var label: String?
     public var role: String?
     public var ttlHours: Int?
-    public init(label: String? = nil, role: String? = nil, ttlHours: Int? = nil) {
-        self.label = label; self.role = role; self.ttlHours = ttlHours
+    /// The device cap. Without it the app could never set one, so every invite it minted took the
+    /// daemon's default of a single device — which is the safe default, but it meant the cap was
+    /// simply unreachable from the app that is the only way most people will ever create a link.
+    public var maxDevices: Int?
+    public init(label: String? = nil, role: String? = nil, ttlHours: Int? = nil, maxDevices: Int? = nil) {
+        self.label = label; self.role = role; self.ttlHours = ttlHours; self.maxDevices = maxDevices
     }
-    enum CodingKeys: String, CodingKey { case label, role; case ttlHours = "ttl_hours" }
+    enum CodingKeys: String, CodingKey {
+        case label, role
+        case ttlHours = "ttl_hours"
+        case maxDevices = "max_devices"
+    }
 }
 
 public struct InviteCreated: Codable {

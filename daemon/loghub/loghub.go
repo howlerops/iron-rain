@@ -146,5 +146,12 @@ func tailLines(path string, n int) []string {
 func (h *Hub) Recent() []string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return append([]string(nil), h.ring...)
+	// A non-nil empty slice, deliberately. append to a nil slice with nothing to add returns nil,
+	// which marshals as `null` rather than `[]` — and the client's LogHistory.lines is a
+	// non-optional [String], so `null` throws and the log panel reports "Couldn't stream daemon
+	// logs" for the ordinary case of an empty ring. Worse, its error path also clears the
+	// subscribed flag while the daemon has already registered the subscription, so it keeps
+	// streaming log lines to a client that believes it unsubscribed.
+	out := make([]string, 0, len(h.ring))
+	return append(out, h.ring...)
 }

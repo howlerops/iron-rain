@@ -578,7 +578,7 @@ type LogHistory struct {
 type ActivityEvent struct {
 	ID        string `json:"id"`
 	TS        int64  `json:"ts"`
-	Kind      string `json:"kind"` // finished | needs_input | error | loop_run | loop_pr | started
+	Kind      string `json:"kind"` // finished | needs_input | error | stalled | loop_run | loop_pr | fanout_run | fanout_done
 	SessionID string `json:"session_id,omitempty"`
 	Provider  string `json:"provider,omitempty"`
 	Project   string `json:"project,omitempty"`
