@@ -42,6 +42,11 @@ type doc struct {
 	langID  string
 	version int
 	uri     string
+	// text is the document's last known content, kept so a document can be re-opened against a
+	// REPLACEMENT server after the original one dies. Without it a crash left every already-open
+	// document bound to the corpse forever: the eviction below respawns, but nothing rebinds the
+	// docs, and a language server only answers for documents IT was told about.
+	text string
 }
 
 // Manager owns language-server subprocesses keyed by (rootDir, languageID) and
@@ -76,22 +81,63 @@ func (m *Manager) getOrStartServer(root, langID, command string, args []string) 
 	key := root + "\x00" + langID
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	var dead *server
 	if s, ok := m.servers[key]; ok {
 		// A crashed server used to stay in this map forever: readLoop returns, closed is closed, and
 		// every later call failed errServerClosed for the life of the daemon — LSP silently died until
 		// restart. Evict the corpse and fall through to a fresh spawn.
 		if !s.isClosed() {
+			m.mu.Unlock()
 			return s, nil
 		}
 		log.Printf("lsp: %s server for %s exited — restarting", langID, root)
 		delete(m.servers, key)
+		dead = s
 	}
 	s, err := startServer(command, args, langID, root, m.onDiagnostics)
 	if err != nil {
+		m.mu.Unlock()
 		return nil, err
 	}
 	m.servers[key] = s
+	// Rebind every document the dead server was holding, and remember which ones need re-announcing.
+	//
+	// Evicting the corpse was only half the fix. m.docs[path].srv still pointed at it, and Open is the
+	// only thing that ever rewrote that field — so hover, definition and completion on an
+	// already-open tab kept calling the dead connection and failing forever, while opening a THIRD
+	// file spawned a healthy server and made LSP look recovered. The user's only escape was closing
+	// and re-opening each tab, and CodeSurface early-returns for a tab that is already open, so even
+	// that did not work.
+	var reopen []*doc
+	if dead != nil {
+		for _, d := range m.docs {
+			if d.srv == dead {
+				d.srv = s
+				d.version++
+				reopen = append(reopen, d)
+			}
+		}
+	}
+	m.mu.Unlock()
+
+	// The corpse may not be one: readLoop also exits on a FRAMING error, with the process still
+	// alive and still holding its indexed project in memory. Kill the group, outside the lock.
+	if dead != nil {
+		go dead.kill()
+	}
+
+	// didOpen for each, OUTSIDE the lock — a replacement server has never been told about these
+	// documents, so without this it answers nothing for them however correctly they are bound.
+	for _, d := range reopen {
+		m.mu.Lock()
+		uri, ver, lang, text := d.uri, d.version, d.langID, d.text
+		m.mu.Unlock()
+		if err := s.notify("textDocument/didOpen", didOpenParams{
+			TextDocument: textDocumentItem{URI: uri, LanguageID: lang, Version: ver, Text: text},
+		}); err != nil {
+			log.Printf("lsp: could not re-announce %s to the restarted %s server: %v", uri, langID, err)
+		}
+	}
 	return s, nil
 }
 
@@ -122,13 +168,14 @@ func (m *Manager) Open(ctx context.Context, path, content string) error {
 	m.mu.Lock()
 	d, exists := m.docs[path]
 	if !exists {
-		d = &doc{srv: srv, langID: langID, version: 1, uri: uri}
+		d = &doc{srv: srv, langID: langID, version: 1, uri: uri, text: content}
 		m.docs[path] = d
 	} else {
 		// Re-open of an already tracked file: bump version and rebind the server.
 		d.version++
 		d.srv = srv
 		d.uri = uri
+		d.text = content
 	}
 	ver := d.version
 	m.mu.Unlock()
@@ -148,6 +195,7 @@ func (m *Manager) Change(_ context.Context, path, content string) error {
 		return nil
 	}
 	d.version++
+	d.text = content // kept so a restarted server can be told about this document as it stands now
 	ver, srv, uri := d.version, d.srv, d.uri
 	m.mu.Unlock()
 

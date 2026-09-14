@@ -81,6 +81,14 @@ func startServer(command string, args []string, langID, root string, onDiag func
 	// Drain stderr so the server never blocks on a full pipe; discard the content.
 	go func() { _, _ = io.Copy(io.Discard, stderr) }()
 	go s.readLoop()
+	// REAP. Nothing called Wait() on this process except stop(), and stop() is reachable only from
+	// Manager.Shutdown — so every language server that died on its own (a rust-analyzer crash while
+	// indexing, a framing error on a still-live process) sat <defunct> for the daemon's lifetime,
+	// accumulating one zombie per crash. daemon/mcp spawns exactly this goroutine for exactly this
+	// reason; the LSP side never got it.
+	go func() {
+		_ = cmd.Wait()
+	}()
 	return s, nil
 }
 
@@ -222,6 +230,24 @@ func (s *server) ensureInit(context.Context) error {
 	return s.initErr
 }
 
+// kill terminates a server's whole process group without the graceful handshake. Used on a server
+// that is already being evicted: its read loop is gone, so `shutdown` has nobody to answer it.
+//
+// Eviction used to just delete the map entry and drop the *server on the floor. When readLoop exits
+// because of a FRAMING error the process is still alive, so the Manager spawned a second
+// rust-analyzer while the first — plus its isolated group of proc-macro and node helpers, holding a
+// fully indexed project in RAM — kept running, was no longer in m.servers, and therefore outlived
+// Manager.Shutdown and the daemon itself.
+func (s *server) kill() {
+	// Nil-safe on both handles. This runs on a bare goroutine, so a nil dereference here would not
+	// merely fail the cleanup — it would take the whole daemon down, which is strictly worse than
+	// the leak it is cleaning up. TerminateGroup already guards a nil cmd; stdin needs the same.
+	procutil.TerminateGroup(s.cmd)
+	if s.stdin != nil {
+		_ = s.stdin.Close()
+	}
+}
+
 // stop performs a graceful LSP shutdown (shutdown request + exit notification),
 // then waits briefly and force-kills the process if it hasn't exited.
 func (s *server) stop() {
@@ -230,10 +256,11 @@ func (s *server) stop() {
 	_, _ = s.call(ctx, "shutdown", nil)
 	_ = s.notify("exit", nil)
 
-	done := make(chan struct{})
-	go func() { _, _ = s.cmd.Process.Wait(); close(done) }()
+	// Wait on the READ LOOP ending, not on Process.Wait(): startServer now runs a reaper goroutine
+	// that owns cmd.Wait(), and calling Wait twice on one Cmd is an error that can leave the pipes
+	// half-closed. readLoop closing s.closed is the same signal — it only returns when stdout is done.
 	select {
-	case <-done:
+	case <-s.closed:
 	case <-time.After(500 * time.Millisecond):
 		procutil.TerminateGroup(s.cmd) // the whole group, not just the direct child
 	}

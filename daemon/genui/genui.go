@@ -134,13 +134,28 @@ func validateTable(props json.RawMessage) bool {
 	return len(p.Columns) <= maxCols && len(p.Rows) <= maxRows
 }
 
-// validateOptions caps the interactive option list.
+// validateOptions caps the interactive option list, and REFUSES props it cannot decode.
+//
+// The discarded error was the whole bug. On a decode failure Options is nil, len(nil) <= maxOptions,
+// and the block was emitted as a valid `choice` whose Props are the undecodable object — so the user
+// got an interactive card with nothing to click. Worse, the fence text is stripped from the stream,
+// so the QUESTION the agent was asking disappeared with it: nothing to answer, and no prose left
+// explaining what was being asked.
+//
+// Its two siblings, validateTable and validateForm, both return false here. Doing the same drops the
+// block and leaves the JSON visible as an ordinary code block, which is the package's stated failure
+// mode — "never broken".
+//
+// An option list must also be non-EMPTY. A choice card with zero options is the same dead end by
+// another route, and is what an agent produces when it writes `"options": "yes or no"`.
 func validateOptions(props json.RawMessage) bool {
 	var p struct {
 		Options []json.RawMessage `json:"options"`
 	}
-	_ = json.Unmarshal(props, &p)
-	return len(p.Options) <= maxOptions
+	if err := json.Unmarshal(props, &p); err != nil {
+		return false
+	}
+	return len(p.Options) > 0 && len(p.Options) <= maxOptions
 }
 
 // Segmenter incrementally splits one session's assistant-text stream into forwardable text and

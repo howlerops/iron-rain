@@ -61,6 +61,10 @@ func writeFrame(w io.Writer, body []byte) error {
 
 // readFrame parses one framed message: it reads headers line by line until the
 // blank separator, then reads exactly Content-Length bytes of body.
+// maxFrameBytes is the largest single LSP message accepted. Generous — a whole-file didOpen for a
+// large source file is the biggest legitimate frame — while still bounding the allocation.
+const maxFrameBytes = 16 << 20
+
 func readFrame(r *bufio.Reader) ([]byte, error) {
 	contentLength := -1
 	for {
@@ -85,6 +89,15 @@ func readFrame(r *bufio.Reader) ([]byte, error) {
 	}
 	if contentLength < 0 {
 		return nil, errors.New("lsp: missing Content-Length header")
+	}
+	// BOUND IT. contentLength comes straight from a header written by a subprocess and went to make()
+	// with no ceiling: a corrupted or hostile "Content-Length: 9000000000000000000" panics the
+	// allocation with "makeslice: len out of range", on a goroutine with no recover(), which kills
+	// oculusd — every agent session drops and every client disconnects. A merely large value (2 GB)
+	// is not much better: it allocates and then blocks in ReadFull forever with the memory held.
+	// daemon/mcp's framed reader already guards the identical code path; this one predates it.
+	if contentLength > maxFrameBytes {
+		return nil, fmt.Errorf("lsp: frame of %d bytes exceeds the %d-byte limit", contentLength, maxFrameBytes)
 	}
 	body := make([]byte, contentLength)
 	if _, err := io.ReadFull(r, body); err != nil {
