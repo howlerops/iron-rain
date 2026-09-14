@@ -436,6 +436,9 @@ func (m *Manager) Refresh(ctx context.Context) error {
 	// was returning 401. The longer it stayed broken the longer the backoff, so the more convincing
 	// the lie; a failure marked permanent suspends polling outright and cleared the error forever.
 	polled := map[string]bool{}
+	// fresh records which providers actually RETURNED this round. Everything else — skipped for
+	// backoff, or polled and failed — keeps whatever it last gave us.
+	fresh := map[string]bool{}
 	var wg sync.WaitGroup
 	var rmu sync.Mutex
 	for _, np := range provs {
@@ -472,11 +475,36 @@ func (m *Manager) Refresh(ctx context.Context) error {
 			// (and recoveries) still log, via notePollSuccess/notePollFailure, which is the part
 			// that carries information.
 			m.notePollSuccess(name)
+			fresh[name] = true // this provider's answer in `merged` is current
 			merged = append(merged, got...)
 		}(np.name, np.p)
 	}
 	wg.Wait()
 	m.mu.Lock()
+	// KEEP what a provider last gave us unless it answered THIS round.
+	//
+	// `merged` holds only the providers that returned successfully, and the cache was replaced
+	// wholesale — so a provider that failed, or was skipped for backoff, contributed nothing and
+	// every ticket it had supplied vanished from the board. One 401 sets a 2–15 minute skip window
+	// and a permanent auth failure suspends polling indefinitely, so "Jira hiccupped once" became
+	// "the Jira column is empty until a human reconnects".
+	//
+	// Keyed on SUCCESS, not on whether we tried: a provider that was polled and errored is in exactly
+	// the same position as one that was skipped — it told us nothing, so the last thing it told us is
+	// still the best answer we have. Stale-but-correct is the honest thing to show while the
+	// reconnect pill explains why; the tickets did not stop existing because a poll failed.
+	kept := 0
+	for _, iss := range m.cache {
+		if fresh[iss.Provider] {
+			continue // this provider answered; `merged` already has its current list
+		}
+		merged = append(merged, iss)
+		kept++
+	}
+	if kept > 0 {
+		log.Printf("issues: kept %d ticket(s) from provider(s) that did not answer this round rather "+
+			"than blanking them from the board", kept)
+	}
 	m.cache = merged
 	cb := m.onUpdate
 	// Record fetch failures; clear the error for any provider that fetched cleanly this round.

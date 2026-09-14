@@ -91,8 +91,15 @@ struct OpenTab: Identifiable, Equatable {
         catch { status = "\(error.localizedDescription)" }
     }
 
-    func children(of path: String) async -> [FSNode] {
-        (try? await model.fsTree(path))?.entries ?? []
+    /// Returns nil when the listing FAILED, and an empty array for a genuinely empty folder.
+    ///
+    /// These were the same value before, so a refusal or an error rendered as an empty folder — the
+    /// user concludes the agent deleted its contents, or that they are in the wrong tree. Collapsing
+    /// the two also removed any reason to retry: the caller latched `loaded` before awaiting, so a
+    /// failed fetch was never attempted again and re-expanding did nothing.
+    func children(of path: String) async -> [FSNode]? {
+        guard let tree = try? await model.fsTree(path) else { return nil }
+        return tree.entries
     }
 
     /// Opens a file into the editor (read-only for binary/oversized) and starts a poll that
@@ -834,6 +841,9 @@ private struct DirNode: View {
     @State private var expanded = false
     @State private var children: [FSNode] = []
     @State private var loaded = false
+    /// The last expansion could not be listed. Shown in place of the (false) empty folder, and left
+    /// retryable — collapsing and re-expanding tries again, because `loaded` stays false.
+    @State private var loadFailed = false
     @Environment(\.colorScheme) private var scheme
     private var palette: OculusPalette { .current(scheme) }
 
@@ -855,9 +865,28 @@ private struct DirNode: View {
         }
         .buttonStyle(.plain)
         .onChange(of: expanded) { on in
-            if on && !loaded { loaded = true; Task { children = await code.children(of: node.path) } }
+            guard on, !loaded else { return }
+            Task {
+                // Latch only on SUCCESS. Setting it before the await meant a failed listing was
+                // permanent — collapsing and re-expanding is a no-op once `loaded` is true — so a
+                // folder that failed once looked empty for the rest of the session.
+                if let kids = await code.children(of: node.path) {
+                    children = kids
+                    loaded = true
+                    loadFailed = false
+                } else {
+                    loadFailed = true
+                }
+            }
         }
         if expanded {
+            if loadFailed {
+                // NOT an empty folder. Rendering nothing here made a refused or failed listing look
+                // exactly like a directory whose contents had been deleted.
+                Text("Couldn't list this folder.")
+                    .font(.caption2).foregroundStyle(palette.mutedForeground)
+                    .padding(.leading, CGFloat(depth + 1) * 10)
+            }
             ForEach(children) { child in
                 if child.dir {
                     DirNode(code: code, node: child, depth: depth + 1)
@@ -1014,6 +1043,8 @@ private let codeHitTarget: CGFloat = 44
 struct EditorTabBar: View {
     @ObservedObject var code: CodeModel
     let palette: OculusPalette
+    /// The tab a close is waiting on confirmation for. See the close button below.
+    @State private var closingDirty: OpenTab?
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
@@ -1037,7 +1068,13 @@ struct EditorTabBar: View {
                         .accessibilityLabel(tab.name)
                         .accessibilityValue(dirty ? "Unsaved changes" : "")
                         .accessibilityAddTraits(isActive ? [.isButton, .isSelected] : .isButton)
-                        Button { code.closeTab(tab.id) } label: {
+                        // A DIRTY tab asks first. The glyph doubles as the unsaved-changes
+                        // indicator, so someone clicking the dot is at least as likely to be
+                        // clearing the marker as closing the file — and closeTab discards the
+                        // buffer outright, with no prompt and no recovery, for edits that were
+                        // never on disk. Same for a non-active dirty tab, whose only copy lives
+                        // in `tabs[i].content`.
+                        Button { if dirty { closingDirty = tab } else { code.closeTab(tab.id) } } label: {
                             // Fixed, not Dynamic Type: the dot and the × are deliberately different
                             // sizes so "unsaved" reads as a dot rather than a small close button,
                             // and both are centred in a fixed hit target.
@@ -1048,7 +1085,7 @@ struct EditorTabBar: View {
                         }
                         .buttonStyle(.plain).foregroundStyle(palette.mutedForeground)
                         .help(dirty ? "Close (unsaved changes)" : "Close tab")
-                        .accessibilityLabel("Close \(tab.name)")
+                        .accessibilityLabel(dirty ? "Close \(tab.name), unsaved changes" : "Close \(tab.name)")
                     }
                     .padding(.leading, 12).padding(.trailing, 2)
                     .background(isActive ? palette.background : palette.card.opacity(0.4))
@@ -1060,6 +1097,18 @@ struct EditorTabBar: View {
             }
         }
         .background(palette.card.opacity(0.25))
+        .confirmationDialog("Close without saving?",
+                            isPresented: Binding(get: { closingDirty != nil },
+                                                 set: { if !$0 { closingDirty = nil } }),
+                            titleVisibility: .visible) {
+            Button("Discard changes", role: .destructive) {
+                if let t = closingDirty { code.closeTab(t.id) }
+                closingDirty = nil
+            }
+            Button("Keep editing", role: .cancel) { closingDirty = nil }
+        } message: {
+            Text("\(closingDirty?.name ?? "This file") has unsaved changes. They were never written to disk, so closing loses them.")
+        }
     }
 }
 

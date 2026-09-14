@@ -303,7 +303,7 @@ func (m *managedSession) pollPRChecks(ctx context.Context, now time.Time) {
 		// unsolicited green, which never fires here: a PR that has been green all along says
 		// nothing, because prLastState was adopted or set to SUCCESS without ever notifying.
 		log.Printf("session %s: PR checks recovered to green (%s) — notifying", sid, info.URL)
-		m.hub.pushPRFinished(sid, label, info.URL)
+		m.hub.pushPRFinished(sid, label, info.URL, "")
 	}
 }
 

@@ -118,6 +118,21 @@ public struct IssuesView: View {
             .sheet(isPresented: $creatingTicket) {
                 NewTicketSheet(model: model, palette: palette, projectID: model.selectedProjectID)
             }
+            // A tracker failure has to be visible on the BOARD.
+            //
+            // trackerErrorBanner had exactly one call site, inside connectScreen — which only renders
+            // when no tracker is connected AND there are no issues. So every failure on a working
+            // board was drawn nowhere: dragging a card into a status the workflow forbids made it
+            // snap back with no reason given, and "Create" on a new ticket appeared to do nothing at
+            // all while the sheet sat open waiting.
+            .alert("Tracker error", isPresented: Binding(
+                get: { model.trackerError != nil },
+                set: { if !$0 { model.trackerError = nil } }
+            )) {
+                Button("OK", role: .cancel) { model.trackerError = nil }
+            } message: {
+                Text(model.trackerError ?? "")
+            }
     }
 
     /// The right-slide inspector: a dimmed tap-to-dismiss backdrop + the panel sliding in

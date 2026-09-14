@@ -249,10 +249,22 @@ public struct ChatView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
             if let ap = model.pendingApproval {
+                // .id on the approval, so a REPLACEMENT gets a fresh card.
+                //
+                // ApprovalCard seeds `showArgs` in init, which SwiftUI runs once per view IDENTITY.
+                // With parallel tool calls the daemon replaces pendingApproval without passing
+                // through nil — deliberately, and documented as such — so without this the view kept
+                // its identity and the new request rendered with the PREVIOUS one's disclosure
+                // state. A Read with a long payload folds its details away; a write-capable `bash`
+                // replacing it stayed folded, and the user approved a shell command having seen only
+                // the one-line summary. That is precisely what argsOpenByDefault exists to prevent.
+                // It also re-fires the VoiceOver announcement, which otherwise never mentioned the
+                // second request at all.
                 ApprovalCard(approval: ap, palette: palette,
                              onAllow: { Task { await model.respond(Decision.allow) } },
                              onAlways: { scope in Task { await model.respond(Decision.always, scope: scope) } },
                              onDeny: { Task { await model.respond(Decision.deny) } })
+                    .id(ap.approvalID)
                     .readableColumn(chatMeasure)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }

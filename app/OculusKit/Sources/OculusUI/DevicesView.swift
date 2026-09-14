@@ -185,7 +185,13 @@ public struct DevicesView: View {
         Task {
             await model.revokeDevice(d.pub)
             await model.loadDevices()
-            if model.devices.contains(where: { $0.pub == d.pub && $0.guest != true }) {
+            // PRESENCE alone is the failure signal. Hub.Devices() already filters revoked entries
+            // out, so anything still in the list is still enrolled — and the `&& $0.guest != true`
+            // clause made this predicate false for every GUEST, which is exactly the device an owner
+            // is most likely to be cutting off in a hurry. A failed revoke of a guest therefore
+            // redrew as though it had worked while their credential still opened the daemon: the
+            // direction this function's own comment says it must not fail in.
+            if model.devices.contains(where: { $0.pub == d.pub }) {
                 model.setError("Couldn't revoke \(name(d))",
                                "It is still enrolled and can still reach this Mac's agents. Check the daemon is connected and try again.")
             }

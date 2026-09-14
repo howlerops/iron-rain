@@ -13,7 +13,16 @@ enum DiffLineKind { case add, del, context, meta }
 /// could point at were "this file" and "this hunk", so a note about one wrong line arrived at the
 /// agent attached to forty lines of context and it had to guess which.
 struct DiffLineModel: Identifiable {
-    let id = UUID()
+    /// Positional, not a fresh UUID.
+    ///
+    /// These models are rebuilt by DiffParser.parse on every body evaluation, and with `UUID()` every
+    /// rebuild minted a brand-new identity for every row. SwiftUI treats that as a different view, so
+    /// it discarded each card's expand state and — worse — the text being typed into an open comment
+    /// box. The view observes the whole Model, so ANY published change rebuilds it: once you send one
+    /// comment the agent starts streaming, and from then on a comment you are typing on another hunk
+    /// is erased several times a second.
+    var id: String { "\(index)" }
+    let index: Int
     let kind: DiffLineKind
     let text: String
     /// Line number in the pre-change file (nil for added lines).
@@ -28,7 +37,10 @@ struct DiffLineModel: Identifiable {
 
 /// A single hunk (`@@ … @@` block) with its lines.
 struct DiffHunkModel: Identifiable {
-    let id = UUID()
+    /// Derived from the hunk header + position: stable across a re-parse of the same diff. See the
+    /// note on DiffLineModel.id.
+    var id: String { "\(index)\u{1F}\(header)" }
+    let index: Int
     let header: String
     let lines: [DiffLineModel]
 
@@ -46,7 +58,8 @@ struct DiffHunkModel: Identifiable {
 
 /// One file's section of the diff: its path and hunks (add/del counts are derived).
 struct DiffFileModel: Identifiable {
-    let id = UUID()
+    /// The path, which is what actually identifies a file in a diff. See DiffLineModel.id.
+    var id: String { path }
     let path: String
     let hunks: [DiffHunkModel]
 
@@ -81,7 +94,7 @@ enum DiffParser {
 
         func closeHunk() {
             if let h = hunkHeader {
-                curHunks.append(DiffHunkModel(header: h, lines: hunkLines))
+                curHunks.append(DiffHunkModel(index: curHunks.count, header: h, lines: hunkLines))
             }
             hunkHeader = nil
             hunkLines = []
@@ -140,7 +153,7 @@ enum DiffParser {
                 case .context: old = oldNo; new = newNo; oldNo += 1; newNo += 1
                 case .meta: break
                 }
-                hunkLines.append(DiffLineModel(kind: kind, text: line, oldLine: old, newLine: new))
+                hunkLines.append(DiffLineModel(index: hunkLines.count, kind: kind, text: line, oldLine: old, newLine: new))
             }
             // else: file-header metadata (index / mode / similarity) — ignored.
         }
@@ -268,8 +281,15 @@ public struct DiffReviewView: View {
     private var wrapLines: Bool { wrapOverride ?? compact }
 
     private var theme: CodeTheme { .current(scheme) }
+    /// Parsed ONCE per diff, not once per body evaluation.
+    ///
+    /// `body` reads this three or four times (the totals line, two isEmpty checks, the list), and the
+    /// view rebuilds on every published change on the Model — which during a turn is every token. So
+    /// a large diff was re-parsed several times a second for the whole run.
+    @State private var parsedDiff: (source: String, files: [DiffFileModel]) = ("", [])
     private var files: [DiffFileModel] {
         guard let d = model.lastDiff, !d.isEmpty else { return [] }
+        if parsedDiff.source == d { return parsedDiff.files }
         return DiffParser.parse(d)
     }
 
@@ -298,6 +318,17 @@ public struct DiffReviewView: View {
         .background(palette.background)
         .clipShape(OculusShape.rounded(OculusRadius.md))
         .overlay(OculusShape.rounded(OculusRadius.md).strokeBorder(palette.border, lineWidth: 1))
+        // Parse when the DIFF changes, not when the view redraws. `files` reads this cache; without
+        // filling it here every body evaluation re-parsed, which during a turn is several times a
+        // second on a diff that has not changed at all.
+        .onAppear { reparseIfNeeded() }
+        .onChange(of: model.lastDiff) { _ in reparseIfNeeded() }
+    }
+
+    private func reparseIfNeeded() {
+        let d = model.lastDiff ?? ""
+        guard parsedDiff.source != d else { return }
+        parsedDiff = (d, d.isEmpty ? [] : DiffParser.parse(d))
     }
 
     private var totals: (add: Int, del: Int) {

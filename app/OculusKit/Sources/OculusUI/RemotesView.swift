@@ -149,7 +149,14 @@ struct RemotesView: View {
         Text(sshNote)
             .font(.footnote).foregroundStyle(palette.mutedForeground)
             .fixedSize(horizontal: false, vertical: true)
-        if model.remotes.isEmpty {
+        if model.remotesForbidden {
+            // NOT the empty state. There are remote hosts registered; this connection may not see them, and saying
+            // "none" would be a claim about someone else's machine that is simply false.
+            SheetEmptyState(icon: "lock",
+                            title: "Only the owner can see this",
+                            message: "Remote hosts belong to whoever owns this Mac. You're connected as a guest.",
+                            palette: palette)
+        } else if model.remotes.isEmpty {
             emptyState
         } else {
             ForEach(model.remotes) { host in

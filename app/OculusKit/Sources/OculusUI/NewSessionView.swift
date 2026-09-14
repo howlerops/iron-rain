@@ -1190,6 +1190,9 @@ struct FolderBrowser: View {
     let onClose: () -> Void
 
     @State private var listing: ProjectBrowse?
+    /// Why the last browse or add failed, rendered instead of the "no sub-folders" empty state —
+    /// which is a claim about someone else's machine that a refusal makes false.
+    @State private var loadError: String?
     @State private var selected: Set<String> = [] // absolute paths
     @State private var loading = true
     @State private var adding = false
@@ -1279,6 +1282,15 @@ struct FolderBrowser: View {
                 } else if !(listing?.entries.isEmpty ?? true) {
                     Text("Nothing here matches “\(filter)”.")
                         .font(.caption).foregroundStyle(palette.mutedForeground).padding(40)
+                } else if let err = loadError {
+                    // NOT "no sub-folders". The daemon refused or failed; saying the folder is empty
+                    // is a claim about the owner's machine that is simply untrue.
+                    VStack(spacing: 6) {
+                        Image(systemName: "lock").foregroundStyle(palette.mutedForeground)
+                        Text(err).font(.caption).foregroundStyle(palette.mutedForeground)
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding(40)
                 } else {
                     Text("No sub-folders here.").font(.caption).foregroundStyle(palette.mutedForeground).padding(40)
                 }
@@ -1356,17 +1368,45 @@ struct FolderBrowser: View {
         // just opened, and the emptiness would look like the folder rather than the filter.
         filter = ""
         let res = await model.browseFolders(path: path)
-        if let res { listing = res }
+        if let res {
+            listing = res
+            loadError = nil
+        } else {
+            // project.browse is owner-only now, and browseFolders swallows the refusal — so on a
+            // refusal `listing` stayed exactly as it was and the render chain fell through to
+            // "No sub-folders here.", telling a guest their home directory is empty. Navigating INTO
+            // a folder was worse: the previous folder's entries stayed on screen and the chevron
+            // simply appeared dead.
+            listing = nil
+            loadError = "Couldn't list that folder. Browsing this Mac's folders is limited to its owner."
+        }
         loading = false
     }
 
     private func addSelected() async {
         adding = true
         var added: [Project] = []
+        var failed: [String] = []
         for path in selected {
-            if let p = await model.addProject(path: path) { added.append(p) }
+            if let p = await model.addProject(path: path) {
+                added.append(p)
+            } else {
+                failed.append((path as NSString).lastPathComponent)
+            }
         }
         adding = false
+        // Do NOT dismiss on a partial failure. This closed unconditionally, so selecting four
+        // folders and having three refused looked exactly like adding four: one project appeared and
+        // the only evidence was a transient status line that each successive failure overwrote,
+        // under a sheet that was no longer on screen.
+        if !failed.isEmpty {
+            loadError = failed.count == selected.count
+                ? "Couldn't add \(failed.joined(separator: ", "))."
+                : "Added \(added.count), but couldn't add \(failed.joined(separator: ", "))."
+            selected = Set(selected.filter { failed.contains(($0 as NSString).lastPathComponent) })
+            onPicked(added)
+            return
+        }
         onPicked(added)
         onClose()
     }

@@ -124,7 +124,14 @@ struct AccountsView: View {
     /// The macOS shape: a scrolling column of tinted rows under hand-drawn section labels.
     @ViewBuilder private var cardBody: some View {
         usageSection
-        if model.accounts.isEmpty {
+        if model.accountsForbidden {
+            // NOT the empty state. There are provider accounts; this connection may not see them, and saying
+            // "none" would be a claim about someone else's machine that is simply false.
+            SheetEmptyState(icon: "lock",
+                            title: "Only the owner can see this",
+                            message: "Provider accounts and their quota belong to whoever owns this Mac. You're connected as a guest.",
+                            palette: palette)
+        } else if model.accounts.isEmpty {
             emptyState
         } else {
             ForEach(byProvider, id: \.provider) { group in

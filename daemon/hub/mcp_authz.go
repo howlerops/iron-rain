@@ -253,9 +253,32 @@ func (h *Hub) askForMCPApproval(ctx context.Context, m *managedSession, ar proto
 		}
 		return nil
 	case <-ctx.Done():
+		h.retireUnansweredApproval(ar, m, "the request was cancelled before anyone answered")
 		return fmt.Errorf("timed out waiting for approval of %s", ar.Tool)
 	case <-time.After(mcpApprovalTimeout):
+		h.retireUnansweredApproval(ar, m,
+			"nobody answered within "+mcpApprovalTimeout.String()+", so the tool did not run")
 		return fmt.Errorf("nobody answered the approval for %s within %s", ar.Tool, mcpApprovalTimeout)
+	}
+}
+
+// retireUnansweredApproval tells everyone an approval is over when nobody answered it.
+//
+// The defer above deletes the approval from the hub's maps, but the card was sent hub-WIDE — so with
+// no announcement every connected client and every Fleet card kept rendering Allow/Deny for a tool
+// call that failed ten minutes ago and that the agent has long since moved past. Tapping Allow then
+// sent a dead id: the daemon answers "no such approval", while the client has ALREADY appended
+// "✓ Allowed …" to the transcript optimistically — so the conversation permanently records an
+// approval that was never delivered, with no trace of the timeout to explain it.
+//
+// Its twin in setup_trust.go has always done both halves of this. This one did neither.
+func (h *Hub) retireUnansweredApproval(ar protocol.ApprovalRequest, m *managedSession, why string) {
+	h.broadcast(protocol.TypeApprovalResolved, protocol.ApprovalResolved{
+		ApprovalID: ar.ApprovalID, Decision: protocol.DecisionDeny,
+	})
+	// And leave a mark in the conversation, so scrolling back explains what happened.
+	if m != nil {
+		m.emitTool("⚠︎ " + ar.Tool + " was not run — " + why)
 	}
 }
 

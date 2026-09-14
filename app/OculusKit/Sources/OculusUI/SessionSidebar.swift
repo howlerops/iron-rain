@@ -340,7 +340,9 @@ struct SessionSidebar: View {
         // that settles both. Writing the value that is already there is a no-op, so this cannot loop.
         .onChange(of: listSelection) { sel in
             guard let sel, sel != model.sessionID else { return }
-            activate(sel)
+            // Traversal, not a commitment: this fires on every arrow-key move. Opening is right;
+            // reviving is not, and used to start a fresh agent process for each row passed over.
+            activate(sel, revive: false)
         }
         .onChange(of: model.sessionID) { listSelection = $0 }
         .onAppear { listSelection = model.sessionID }
@@ -362,17 +364,23 @@ struct SessionSidebar: View {
         #endif
     }
 
-    /// What a row does when it is chosen — by click, or by an arrow key moving the list selection.
-    /// One path for both, so keyboard navigation cannot drift from the pointer: a broken session
-    /// RECOVERS and a stopped one RESTARTS rather than opening a dead conversation.
-    private func activate(_ id: String) {
+    /// What a row does when it is chosen. A broken session RECOVERS and a stopped one RESTARTS,
+    /// rather than opening a dead conversation.
+    ///
+    /// `revive` is what separates a commit from a traversal. On macOS `List(selection:)` MOVES the
+    /// selection with the arrow keys — that is navigation, not a choice — and routing both through
+    /// here meant every row you passed over was opened in full, and any row wearing a "Stopped" chip
+    /// was RESTARTED: a fresh agent process per keypress. Arrowing three rows down silently revived
+    /// two sessions you only scrolled past. Keyboard traversal now opens, and only a click or Return
+    /// revives.
+    private func activate(_ id: String, revive: Bool = true) {
         guard let item = filteredGroups.flatMap(\.items).first(where: { $0.id == id }) else {
             selection = id
             return
         }
-        if item.hasError {
+        if revive, item.hasError {
             Task { await model.recoverSession(item.id) }
-        } else if item.stopped {
+        } else if revive, item.stopped {
             Task { await model.restartSession(item.id) }
         } else {
             selection = item.id

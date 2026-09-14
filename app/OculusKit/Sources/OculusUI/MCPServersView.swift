@@ -218,7 +218,14 @@ public struct MCPServersView: View {
         if model.daemonOutdated { outdatedBanner }
         if !model.mcpFound.isEmpty { importBanner }
 
-        if model.mcpServers.isEmpty && model.mcpFound.isEmpty {
+        if model.mcpForbidden {
+            // NOT the empty state. There are MCP servers configured; this connection may not see them, and saying
+            // "none" would be a claim about someone else's machine that is simply false.
+            SheetEmptyState(icon: "lock",
+                            title: "Only the owner can see this",
+                            message: "A server's command line and endpoint are configuration for this Mac, not part of the session. You're connected as a guest.",
+                            palette: palette)
+        } else if model.mcpServers.isEmpty && model.mcpFound.isEmpty {
             emptyState
         } else if visible.isEmpty {
             noMatches

@@ -515,6 +515,10 @@ type WorktreePRResult struct {
 	Branch    string `json:"branch"`
 	Pushed    bool   `json:"pushed"`
 	URL       string `json:"url,omitempty"` // set when a PR was opened via gh
+	// Error is why the pull request could not be opened, when the branch was pushed but `gh pr
+	// create` failed. Empty on success. Without it the reply said Pushed:true with no URL and the
+	// client had no way to tell "no PR was opened" from "the URL is not interesting".
+	Error string `json:"error,omitempty"`
 }
 
 // WorktreeCatchUp merges the repo's default branch into a worktree session's branch (request carries

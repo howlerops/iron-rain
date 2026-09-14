@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -2438,14 +2439,46 @@ func (h *Hub) pushAgentFinished(sessionID, label string, dur time.Duration, todo
 
 // pushPRFinished notifies that a session opened a PR / finished its worktree branch — a real
 // end-of-task milestone, not just a turn ending.
-func (h *Hub) pushPRFinished(sessionID, label, prURL string) {
-	title := "PR ready"
-	if label != "" {
-		title = label + ": PR ready"
+// prErrString renders a PR failure for the wire, or "" when there was none.
+func prErrString(err error) string {
+	if err == nil {
+		return ""
 	}
-	body := "The agent opened a pull request — tap to review"
-	if prURL != "" {
-		body = prURL
+	return err.Error()
+}
+
+// pushWorkspacePRs notifies for a cross-repo workspace, where some members can succeed and others
+// fail. Naming the count is the difference between a milestone and a false one.
+func (h *Hub) pushWorkspacePRs(sessionID, label string, opened, total int, firstURL string) {
+	title := "PRs ready"
+	body := fmt.Sprintf("Opened %d of %d pull requests", opened, total)
+	switch {
+	case opened == 0:
+		title = "No PRs opened"
+		body = fmt.Sprintf("Pushed %d branches, but every pull request failed to open", total)
+	case opened == total:
+		body = fmt.Sprintf("Opened %d pull request(s) — tap to review", opened)
+	}
+	if label != "" {
+		title = label + ": " + title
+	}
+	h.pushNotify(push.Notification{
+		Title: title, Body: body, Category: "PR_FINISHED",
+		ThreadID: sessionID, Custom: map[string]any{"session_id": sessionID, "url": firstURL},
+	})
+}
+
+func (h *Hub) pushPRFinished(sessionID, label, prURL, branch string) {
+	// Say which of the two things actually happened. With no URL there is no pull request — the
+	// branch was pushed and `gh pr create` failed — and telling the user "the agent opened a pull
+	// request" then sends them looking for something that does not exist.
+	title, body := "PR ready", prURL
+	if prURL == "" {
+		title = "Branch pushed"
+		body = "Pushed " + branch + " — opening the pull request failed, so there isn't one yet"
+	}
+	if label != "" {
+		title = label + ": " + title
 	}
 	h.pushNotify(push.Notification{
 		Title: title, Body: body, Category: "PR_FINISHED",
@@ -2562,7 +2595,17 @@ func (h *Hub) pushNotify(notif push.Notification) {
 				ctx, cancel := context.WithTimeout(context.Background(), timeout)
 				defer cancel()
 				if err := n.Notify(ctx, token, notif); err != nil {
-					log.Printf("hub: push to %s… failed: %v", safePrefix(token), err)
+					// A permanently dead token (410 Unregistered / 400 BadDeviceToken) is not a
+					// transient failure and must not be retried forever. Left in the list, every
+					// later push to that phone is rejected by Apple while the Notifications screen
+					// still reports the device registered and every toggle on — so the user believes
+					// their unattended agents are still reaching them.
+					if errors.Is(err, push.ErrTokenDead) {
+						log.Printf("hub: push token %s… is permanently invalid (%v) — dropping it", safePrefix(token), err)
+						h.dropPushToken(token)
+					} else {
+						log.Printf("hub: push to %s… failed: %v", safePrefix(token), err)
+					}
 				} else {
 					log.Printf("hub: push to %s… delivered to APNs", safePrefix(token))
 				}
@@ -2579,6 +2622,19 @@ const (
 	defaultPushTimeout     = 15 * time.Second
 	defaultPushConcurrency = 8
 )
+
+// dropPushToken removes a token Apple has told us will never work again.
+func (h *Hub) dropPushToken(token string) {
+	h.mu.Lock()
+	kept := h.pushTokens[:0]
+	for _, t := range h.pushTokens {
+		if t != token {
+			kept = append(kept, t)
+		}
+	}
+	h.pushTokens = kept
+	h.mu.Unlock()
+}
 
 func safePrefix(s string) string {
 	if len(s) > 8 {
@@ -3980,10 +4036,20 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			title = m.meta.workspaceName
 		}
 		results := make([]protocol.WorkspaceMemberPR, 0, len(m.meta.members))
+		opened, firstURL := 0, ""
 		for _, mem := range m.meta.members {
-			results = append(results, h.finishWorkspaceMember(ctx, mem, title, req.Body))
+			r := h.finishWorkspaceMember(ctx, mem, title, req.Body)
+			if r.URL != "" {
+				opened++
+				if firstURL == "" {
+					firstURL = r.URL
+				}
+			}
+			results = append(results, r)
 		}
-		h.pushPRFinished(req.SessionID, m.activityTitle(), "") // notify: workspace PRs opened
+		// Report what actually happened. This passed "" unconditionally, so even a workspace where
+		// EVERY member's `gh pr create` failed still told the phone "the agent opened a pull request".
+		h.pushWorkspacePRs(req.SessionID, m.activityTitle(), opened, len(results), firstURL)
 		h.sendOK(conn, env.ID, protocol.WorkspacePR{SessionID: req.SessionID, Title: title, Body: req.Body, Members: results})
 
 	case protocol.TypeWorktreeRemove:
@@ -4054,12 +4120,27 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, err.Error())
 			return
 		}
-		url, _ := worktree.CreatePR(ctx, wtPath, branch, title, req.Body) // gh optional; branch is pushed regardless
+		// gh is optional and the branch is pushed regardless — but the error is NOT nothing.
+		//
+		// It used to be discarded outright: not returned, not logged, not in the reply. CreatePR
+		// fails for entirely routine reasons (gh missing from the daemon's PATH, gh unauthenticated,
+		// a PR already open for this branch, fork or branch-protection rules), and the handler then
+		// pushed "PR ready — The agent opened a pull request" to the user's phone and answered
+		// Pushed:true with an empty URL. The only record of why was a CombinedOutput buffer that was
+		// thrown away, so from a phone the sole way to learn there was no pull request was to open
+		// GitHub in a browser.
+		url, prErr := worktree.CreatePR(ctx, wtPath, branch, title, req.Body)
+		if prErr != nil {
+			log.Printf("worktree.pr %s: pushed %s but could not open a PR: %v", req.SessionID, branch, prErr)
+		}
 		if url != "" && m.meta.issueID != "" {
 			go h.writeBackPR(m.meta.issueProvider, m.meta.issueID, url) // close the loop on the linked ticket
 		}
-		h.pushPRFinished(req.SessionID, m.activityTitle(), url) // notify: end-of-task milestone reached
-		h.sendOK(conn, env.ID, protocol.WorktreePRResult{SessionID: req.SessionID, Branch: branch, Pushed: true, URL: url})
+		// Only claim a PR when there is one. The push is still real and worth reporting.
+		h.pushPRFinished(req.SessionID, m.activityTitle(), url, branch)
+		h.sendOK(conn, env.ID, protocol.WorktreePRResult{
+			SessionID: req.SessionID, Branch: branch, Pushed: true, URL: url, Error: prErrString(prErr),
+		})
 
 	case protocol.TypeDeviceList:
 		if !h.requireCapabilityBecause(conn, env.ID, capOwner, "list enrolled devices",

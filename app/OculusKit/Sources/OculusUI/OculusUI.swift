@@ -1553,9 +1553,28 @@ public final class Model: ObservableObject {
     /// and removes it from the list immediately (optimistic — the next session.list confirms).
     /// No-op for discovered sessions (not owned here). Clears the conversation if it's on screen.
     public func stopSession(_ id: String) async {
-        guard let client else { return }
-        // Optimistic removal so the row disappears at once instead of lingering until the
-        // server broadcasts the updated session list.
+        // SEND FIRST. This used to remove the row, erase the on-device transcript and clear the
+        // auto-reopen key, and only then send — reporting a failure into `status`, which nothing
+        // renders while connected (every reader of it is gated on !connected or passes it through
+        // sessionStatusWord, which returns nil for anything that is not a session token). So on a
+        // flaky link the row vanished and its cached history was erased from the device with no
+        // error anywhere; seconds later the daemon's next session.list put the session back, now
+        // with its local history gone. Offline it was worse: the `guard let client` made the menu
+        // item a complete no-op, silently.
+        guard let client else {
+            actionError = "Not connected — couldn't delete that session."
+            return
+        }
+        do {
+            let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.sessionStop,
+                                          payload: SessionRef(sessionID: id))
+            try await client.send(env)
+        } catch {
+            actionError = "Couldn't delete that session: \(error.localizedDescription)"
+            return
+        }
+        // The send landed. Now it is safe to be optimistic, so the row disappears at once instead of
+        // lingering until the daemon broadcasts the updated list.
         sessions.removeAll { $0.id == id }
         if sessionID == id { newSession() }
         // Delete its cached transcript too. The cache holds this machine's source code and the
@@ -1565,13 +1584,6 @@ public final class Model: ObservableObject {
         // re-attaches) the just-deleted session, so it reappears.
         if defaults.string(forKey: lastSessionKey) == id { defaults.removeObject(forKey: lastSessionKey) }
         sessionErrors[id] = nil
-        do {
-            let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.sessionStop,
-                                          payload: SessionRef(sessionID: id))
-            try await client.send(env)
-        } catch {
-            status = "Delete failed: \(error)"
-        }
     }
 
     /// Renames a managed session (empty clears the label → back to the derived title). Updates
@@ -2753,6 +2765,13 @@ public final class Model: ObservableObject {
     /// claim about the world and the wrong one.
     @Published public var notifyPrefsForbidden = false
     @Published public var devicesForbidden = false
+    /// The same signal for the other two owner-only screens in the same settings sheet. Both render
+    /// a polished, definitive "none" — "No remote hosts", with an invitation to add one — when the
+    /// honest answer is "this Mac has them and you may not see them". DevicesView already carries
+    /// the comment for why that distinction matters; these are its neighbours.
+    @Published public var accountsForbidden = false
+    @Published public var remotesForbidden = false
+    @Published public var mcpForbidden = false
 
     public func loadNotifyPrefs() async {
         guard client != nil else { return }
@@ -3158,9 +3177,14 @@ public final class Model: ObservableObject {
 
     public func loadMCPServers() async {
         guard client != nil else { return }
-        if let env = try? await request(MessageType.mcpList, payload: Optional<Int>.none),
-           let list = try? env.payload(as: MCPList.self) {
-            mcpServers = list.servers
+        do {
+            let env = try await request(MessageType.mcpList, payload: Optional<Int>.none)
+            mcpForbidden = false
+            if let list = try? env.payload(as: MCPList.self) { mcpServers = list.servers }
+        } catch {
+            // mcp.list is capSteer now — a server's command line and endpoint are configuration for
+            // this Mac, not session content — so this screen can be refused like Devices was.
+            mcpForbidden = OculusError.isForbidden(error)
         }
     }
 
@@ -3367,8 +3391,16 @@ public final class Model: ObservableObject {
 
     public func loadAccounts() async {
         guard client != nil else { return }
-        if let env = try? await request(MessageType.accountList, payload: Optional<Int>.none),
-           let al = try? env.payload(as: AccountList.self) { accounts = al.accounts; providerUsage = al.usage }
+        do {
+            let env = try await request(MessageType.accountList, payload: Optional<Int>.none)
+            accountsForbidden = false
+            if let al = try? env.payload(as: AccountList.self) { accounts = al.accounts; providerUsage = al.usage }
+        } catch {
+            // A refusal is not an empty list. Swallowing the error is deliberate — a failed
+            // bootstrap request must not block the connection — but rendering "no accounts" for it
+            // tells a guest something false about someone else's machine.
+            accountsForbidden = OculusError.isForbidden(error)
+        }
     }
     private func applyAccountList(_ env: Envelope) {
         if let al = try? env.payload(as: AccountList.self) { accounts = al.accounts; providerUsage = al.usage }
@@ -3398,8 +3430,13 @@ public final class Model: ObservableObject {
     @Published public var remotes: [RemoteHost] = []
     public func loadRemotes() async {
         guard client != nil else { return }
-        if let env = try? await request(MessageType.remoteList, payload: Optional<Int>.none),
-           let rl = try? env.payload(as: RemoteList.self) { remotes = rl.hosts }
+        do {
+            let env = try await request(MessageType.remoteList, payload: Optional<Int>.none)
+            remotesForbidden = false
+            if let rl = try? env.payload(as: RemoteList.self) { remotes = rl.hosts }
+        } catch {
+            remotesForbidden = OculusError.isForbidden(error)
+        }
     }
     public func upsertRemote(_ h: RemoteHost) async {
         guard client != nil else { return }

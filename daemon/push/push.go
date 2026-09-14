@@ -172,10 +172,26 @@ func (a *apnsNotifier) Notify(ctx context.Context, deviceToken string, n Notific
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("push: APNs returned %s: %s", resp.Status, string(body))
+		err := fmt.Errorf("push: APNs returned %s: %s", resp.Status, string(body))
+		// Distinguish "this token is DEAD" from "this attempt failed".
+		//
+		// 410 Unregistered and 400 BadDeviceToken mean the token will never work again — the app was
+		// uninstalled, or the token rotated. Every failure was treated the same and only logged, so a
+		// dead token stayed in the list forever: every push to that phone was rejected by Apple from
+		// then on, while the Notifications screen went on reporting "1 device" and every toggle on,
+		// because notifyPrefs reports CONFIGURATION and registration counts, never delivery. The user
+		// concludes their agents are still running unattended.
+		if resp.StatusCode == http.StatusGone || strings.Contains(string(body), "BadDeviceToken") {
+			return fmt.Errorf("%w: %s", ErrTokenDead, err)
+		}
+		return err
 	}
 	return nil
 }
+
+// ErrTokenDead wraps a failure that means the device token is permanently invalid, so the caller can
+// drop it rather than retrying it forever. Check with errors.Is.
+var ErrTokenDead = errors.New("push: device token is no longer valid")
 
 // providerToken returns a signed APNs provider JWT (ES256), reusing a cached
 // token until it is older than jwtMaxAge. Apple rejects tokens regenerated more
