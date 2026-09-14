@@ -333,7 +333,14 @@ func (h *Hub) OpenCodeMCPConfig() string {
 			global = append(global, s)
 		}
 	}
-	return mcp.OpenCodeConfigJSON(h.gatewayServers(global, ""))
+	// The HARNESS token, not "" — which falls back to the machine-wide token and would be allowed
+	// past every mode gate and approval rule. opencode runs as one shared server for all sessions
+	// (autodetect.go starts it once at boot), so a per-session token is not available on this path;
+	// the harness token instead makes each call raise an approval the user answers.
+	h.mu.Lock()
+	harness := h.mcpHarnessToken
+	h.mu.Unlock()
+	return mcp.OpenCodeConfigJSON(h.gatewayServers(global, harness))
 }
 
 // SetMCPGateway records the local gateway so injected configs point harnesses at it instead of at a
@@ -342,7 +349,16 @@ func (h *Hub) SetMCPGateway(g *mcp.Gateway, token string) {
 	h.mu.Lock()
 	h.mcpGateway = g
 	h.mcpToken = token
+	// A SEPARATE token for agent harnesses that cannot be given a per-session one. The machine-wide
+	// token means "the user's own tooling" and is allowed past the session policy; handing that same
+	// token to an agent made the allowance apply to the party this system exists to constrain. See
+	// authorizeMCPTool.
+	if h.mcpHarnessToken == "" {
+		h.mcpHarnessToken = "mcph_" + randToken()
+	}
+	harness := h.mcpHarnessToken
 	h.mu.Unlock()
+	g.AddSessionToken(harness) // accepted by the gateway, but bound to no session
 	g.SetToolCallHook(func(server, tool string) {
 		// Every MCP tool call transits the daemon, so this is the one place it can be recorded.
 		log.Printf("mcp: tool call %s/%s", server, tool)

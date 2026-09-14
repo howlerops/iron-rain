@@ -1,11 +1,14 @@
 package hub
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/howlerops/oculus/daemon/mcp"
+	"github.com/howlerops/oculus/daemon/protocol"
 )
 
 // The config opencode is handed must point at the gateway, not at the real server.
@@ -44,7 +47,114 @@ func TestOpenCodesInjectedConfigRoutesThroughTheGateway(t *testing.T) {
 	if !strings.Contains(cfg, "127.0.0.1:6000") {
 		t.Errorf("the config does not point at the gateway:\n%s", cfg)
 	}
-	if !strings.Contains(cfg, "tok-123") {
-		t.Errorf("the config carries no bearer token, so the gateway will refuse it:\n%s", cfg)
+	// A bearer token, but NOT the machine-wide one. authorizeMCPTool treats the machine token as
+	// "the user's own tooling" and lets it past the mode gate, the rule engine and the approval card
+	// — so handing it to an agent harness made every opencode session's MCP calls unapprovable. The
+	// harness token is accepted by the gateway and bound to no session, which routes it to an
+	// approval the user actually answers.
+	if strings.Contains(cfg, "tok-123") {
+		t.Errorf("the config carries the MACHINE-WIDE token:\n%s\n\nauthorizeMCPTool allows that "+
+			"token unconditionally, so an Ask/Architect session — which the UI calls read-only — "+
+			"could call a mutating MCP tool with no card and no standing rule applied.", cfg)
+	}
+	if !strings.Contains(cfg, "Bearer mcph_") {
+		t.Errorf("the config carries no harness bearer token, so the gateway will refuse it:\n%s", cfg)
+	}
+}
+
+// The harness token must be authorized by the gateway but attributable to NO session — that pairing
+// is what routes its calls to askUnattributedMCPApproval instead of the machine-token allowance.
+func TestHarnessTokenIsAcceptedButBoundToNoSession(t *testing.T) {
+	h := New()
+	r := mcp.NewRegistry(filepath.Join(t.TempDir(), "mcp.json"))
+	h.SetMCPRegistry(r)
+	h.SetMCPGateway(mcp.NewGateway(mcp.NewManager(r), "tok-123"), "tok-123")
+
+	h.mu.Lock()
+	harness := h.mcpHarnessToken
+	h.mu.Unlock()
+	if harness == "" {
+		t.Fatal("no harness token was minted, so OpenCodeMCPConfig falls back to the machine token")
+	}
+	if harness == "tok-123" {
+		t.Fatal("the harness token IS the machine token — the allowance it was meant to avoid")
+	}
+	if _, ok := h.mcpTokens.session(harness); ok {
+		t.Fatal("the harness token resolves to a session; it must not, or it would inherit that " +
+			"session's rules while belonging to every opencode session at once")
+	}
+}
+
+// A harness-token call must WAIT for a human, not sail through.
+//
+// This is the whole point of the harness token. With the machine token in the injected config,
+// authorizeMCPTool hit the "no session context" early return and allowed every opencode MCP tool
+// call: no mode gate, no standing rule, no card. A read-only session could write through an MCP
+// server, and a standing deny rule was inert.
+func TestAHarnessTokenCallWaitsForApproval(t *testing.T) {
+	h := New()
+	r := mcp.NewRegistry(filepath.Join(t.TempDir(), "mcp.json"))
+	h.SetMCPRegistry(r)
+	h.SetMCPGateway(mcp.NewGateway(mcp.NewManager(r), "tok-123"), "tok-123")
+	h.mu.Lock()
+	harness := h.mcpHarnessToken
+	h.mu.Unlock()
+
+	// Nobody is connected to answer, so the call must end unanswered rather than permitted.
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	err := h.authorizeMCPTool(ctx, harness, "github", "create_issue", nil)
+	if err == nil {
+		t.Fatal("an unattributed harness call was ALLOWED with nobody having approved it.\n\n" +
+			"Every opencode session shares this token, so this is every MCP tool call opencode " +
+			"makes: past the mode gate, past standing rules, and with no card on any device.")
+	}
+
+	// The machine token keeps its allowance: that path is the user's own tooling, not an agent.
+	if err := h.authorizeMCPTool(ctx, "tok-123", "github", "create_issue", nil); err != nil {
+		t.Fatalf("the machine-wide token was refused, which breaks the user's own tooling: %v", err)
+	}
+}
+
+// Answering the card releases the blocked call — the card must not be decorative.
+func TestAnsweringAnUnattributedApprovalReleasesTheCall(t *testing.T) {
+	h := New()
+	r := mcp.NewRegistry(filepath.Join(t.TempDir(), "mcp.json"))
+	h.SetMCPRegistry(r)
+	h.SetMCPGateway(mcp.NewGateway(mcp.NewManager(r), "tok-123"), "tok-123")
+	h.mu.Lock()
+	harness := h.mcpHarnessToken
+	h.mu.Unlock()
+
+	result := make(chan error, 1)
+	go func() {
+		result <- h.authorizeMCPTool(context.Background(), harness, "github", "create_issue", nil)
+	}()
+
+	// Find the pending approval the call raised, then answer it the way approval.respond does.
+	var id string
+	for i := 0; i < 200 && id == ""; i++ {
+		h.mu.Lock()
+		for k := range h.mcpApprovals {
+			id = k
+		}
+		h.mu.Unlock()
+		if id == "" {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	if id == "" {
+		t.Fatal("the call raised no approval waiter, so no card was ever offered")
+	}
+	if !h.resolveMCPApproval(id, protocol.DecisionAllow) {
+		t.Fatal("the waiter could not be resolved, so answering the card would report 'no such approval'")
+	}
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("an APPROVED call was still refused: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("approving the card did not release the blocked MCP call")
 	}
 }

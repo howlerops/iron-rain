@@ -165,10 +165,23 @@ func (h *Hub) authorizeMCPTool(ctx context.Context, token, server, tool string, 
 
 	sessionID, ok := h.mcpTokens.session(token)
 	if !ok {
-		// The machine-wide token (or an unbound one): no session context, so no rules can be applied
-		// and no approval can be attributed. Allowed past the session policy because this is the path
-		// the user's own tooling uses — but no longer past the guard above, and the gateway confines
-		// it to loopback so a LAN caller cannot present it.
+		h.mu.Lock()
+		harness := h.mcpHarnessToken
+		h.mu.Unlock()
+		if harness != "" && token == harness {
+			// An AGENT with no per-session token. opencode runs as one shared server for every
+			// session (autodetect.go starts it once at boot), so there is no session to attribute
+			// the call to and no rules to evaluate — but "cannot attribute" is not "may proceed".
+			// This branch used to be the machine-token allowance, which meant every opencode
+			// session's MCP calls ran with no mode gate, no standing rule and no card: an Ask or
+			// Architect session, which the UI says is read-only, would happily call a mutating tool.
+			// Ask the user instead. Unattributed, but answered.
+			return h.askUnattributedMCPApproval(ctx, ar)
+		}
+		// The machine-wide token: no session context, so no rules can be applied and no approval can
+		// be attributed. Allowed past the session policy because this is the path the user's own
+		// tooling uses — but no longer past the guard above, and the gateway confines it to loopback
+		// so a LAN caller cannot present it.
 		return nil
 	}
 	m := h.managed(sessionID)
@@ -306,5 +319,57 @@ func (t *mcpSessionTokens) discard(token string) {
 	if sid, ok := t.toSess[token]; ok {
 		delete(t.toSess, token)
 		delete(t.fromSess, sid)
+	}
+}
+
+// askUnattributedMCPApproval surfaces a card for an MCP call that belongs to no session.
+//
+// It is askForMCPApproval without the session: no mode to consult, no rules to evaluate, no
+// per-session pendingApprovals counter and no session transcript to broadcast into — so the card
+// goes to every connection that may answer one. Everything else is the same machinery, including the
+// owner-only approval.respond gate and the "resolved" broadcast that clears the card everywhere.
+//
+// SuggestedScopes is deliberately empty. Every scope the client could offer ("always allow this
+// tool", "…in this project") is defined relative to a session or a project, and this call has
+// neither — an "always" answered here would generalize to something the user was never shown.
+func (h *Hub) askUnattributedMCPApproval(ctx context.Context, ar protocol.ApprovalRequest) error {
+	answer := make(chan string, 1)
+
+	h.mu.Lock()
+	if h.mcpApprovals == nil {
+		h.mcpApprovals = map[string]chan string{}
+	}
+	h.mcpApprovals[ar.ApprovalID] = answer
+	if h.approvalReqs == nil {
+		h.approvalReqs = map[string]pendingApproval{}
+	}
+	// No h.approvals entry: that map holds the session a decision is delivered TO, and there is none.
+	// approval.respond treats a live mcpApprovals waiter as sufficient for exactly this case.
+	h.approvalReqs[ar.ApprovalID] = pendingApproval{req: ar, provider: "mcp"}
+	h.mu.Unlock()
+
+	defer func() {
+		h.mu.Lock()
+		delete(h.mcpApprovals, ar.ApprovalID)
+		delete(h.approvalReqs, ar.ApprovalID)
+		h.mu.Unlock()
+	}()
+
+	log.Printf("mcp: asking for approval of %s (no session — harness token)", ar.Tool)
+	h.pushApproval(ar)
+	// To every connection that may ANSWER one, rather than into a session transcript: there is no
+	// session to put it in, and a card nobody with capApprove can see is the same as no card.
+	h.broadcastWithCapability(protocol.TypeApprovalRequest, ar, capApprove)
+
+	select {
+	case decision := <-answer:
+		if decision == protocol.DecisionDeny {
+			return fmt.Errorf("you denied %s", ar.Tool)
+		}
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("timed out waiting for approval of %s", ar.Tool)
+	case <-time.After(mcpApprovalTimeout):
+		return fmt.Errorf("nobody answered the approval for %s within %s", ar.Tool, mcpApprovalTimeout)
 	}
 }

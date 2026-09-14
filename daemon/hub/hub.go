@@ -130,13 +130,14 @@ type Hub struct {
 	// address is known; nil = invites can be created but not rendered as a link.
 	pairURL func(secret string) string
 
-	mcpGateway     *mcp.Gateway // local HTTP front door for supervised MCP servers (nil = not enabled)
-	mcpGatewayBase string       // reachable base URL of the gateway ("" until the listener is up)
-	mcpToken       string       // machine-wide bearer token for the gateway
-	mcpTokens      *mcpSessionTokens
-	mcpApprovals   map[string]chan string // approvalID -> waiter, for MCP calls blocked on a human
-	mcpFound       map[string]mcp.Found   // last discovery, so an import can only adopt what was offered
-	mcpExclusive   bool                   // daemon owns MCP: harnesses ignore their own config
+	mcpGateway      *mcp.Gateway // local HTTP front door for supervised MCP servers (nil = not enabled)
+	mcpGatewayBase  string       // reachable base URL of the gateway ("" until the listener is up)
+	mcpToken        string       // machine-wide bearer token for the gateway ("the user's own tooling")
+	mcpHarnessToken string       // bearer token for agent harnesses with no per-session token
+	mcpTokens       *mcpSessionTokens
+	mcpApprovals    map[string]chan string // approvalID -> waiter, for MCP calls blocked on a human
+	mcpFound        map[string]mcp.Found   // last discovery, so an import can only adopt what was offered
+	mcpExclusive    bool                   // daemon owns MCP: harnesses ignore their own config
 
 	// agentsFileMu serializes the load→mutate→save cycle on ~/.oculus/agents.json. agent.upsert and
 	// agent.delete are both in the async-dispatch allowlist, so without this two concurrent edits
@@ -5006,11 +5007,26 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.mu.Lock()
 		m := h.approvals[req.ApprovalID]
 		pend := h.approvalReqs[req.ApprovalID]
+		// An MCP call made on the harness token belongs to no session, so h.approvals has no entry
+		// for it — a live waiter is what makes it real. Without this, answering that card returned
+		// "no such approval" and the agent sat blocked until the ten-minute timeout.
+		_, daemonQuestion := h.mcpApprovals[req.ApprovalID]
 		delete(h.approvals, req.ApprovalID)
 		delete(h.approvalReqs, req.ApprovalID)
 		h.mu.Unlock()
-		if m == nil {
+		if m == nil && !daemonQuestion {
 			h.sendErr(conn, env.ID, "no such approval")
+			return
+		}
+		if m == nil {
+			// Nothing to attribute: deliver the answer to the waiting gateway call and stop.
+			if !h.resolveMCPApproval(req.ApprovalID, req.Decision) {
+				h.sendErr(conn, env.ID, "no such approval")
+				return
+			}
+			h.sendOK(conn, env.ID, nil)
+			h.broadcast(protocol.TypeApprovalResolved,
+				protocol.ApprovalResolved{ApprovalID: req.ApprovalID, Decision: req.Decision})
 			return
 		}
 		m.mu.Lock()
