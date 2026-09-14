@@ -1041,7 +1041,8 @@ func (m *managedSession) surfaceApproval(ar *protocol.ApprovalRequest) {
 	projectID := m.meta.projectID
 	m.mu.Unlock()
 	ar.SuggestedScopes = suggestScopes(*ar, ar.Patterns, projectID)
-	// (the caller's event payload is replaced by the enriched request below)
+	// The caller must take its event payload AFTER this returns: ar is a value, so a payload
+	// assigned before this line captures a copy with no scopes on it.
 	m.hub.recordApproval(*ar, m)
 	m.mu.Lock()
 	m.pendingApprovals++
@@ -1234,6 +1235,24 @@ func (m *managedSession) finalizeTurnTranscript() {
 	m.asstPersisted = false
 	m.subAccum = nil
 	m.accMu.Unlock()
+
+	// Mirror the reply into the write-ahead JSONL.
+	//
+	// That package's doc has always said it "mirrors assistant/tool/status events". It never did:
+	// the only things ever appended were user prompts and error statuses. So the never-lose-work
+	// backstop held exactly one half of every conversation — every question, no answers — and the
+	// CLI recap built from it handed an amnesiac agent a list of the user's own questions with
+	// nothing between them.
+	//
+	// Deliberately OUTSIDE the `db != nil` gate below: the JSONL matters most precisely when SQLite
+	// is unavailable, which is the one case the old placement skipped. And deliberately not gated on
+	// `persisted` either — a provider that finalizes its own message writes that to SQLite only, so
+	// gating here would keep the backstop empty for exactly the providers that work best.
+	if strings.TrimSpace(text) != "" {
+		if tr := m.hub.tr(); tr != nil {
+			_ = tr.Append(m.sess.ID(), transcript.Entry{Kind: "assistant", Text: text})
+		}
+	}
 
 	if db != nil && !persisted && strings.TrimSpace(text) != "" {
 		ev := agent.Event{Type: protocol.TypeSessionMessage, Payload: protocol.SessionMessage{SessionID: m.sess.ID(), Role: "assistant", Text: text}}
@@ -1611,8 +1630,15 @@ func (m *managedSession) run() {
 				if m.hub.autoAllowApproval(m, ar) {
 					continue
 				}
-				ev.Payload = ar
+				// Enrich FIRST, then take the payload. `ar` is a value, so assigning it to the
+				// event boxes a COPY — doing that before surfaceApproval adds SuggestedScopes left
+				// the subscribed clients (the ones actually showing the chat) with an empty scope
+				// list, while the hub-wide broadcast that deliberately skips them carried the full
+				// one. The client falls back to a single "Always allow <tool> everywhere" button
+				// when scopes are empty, so the narrow choices the daemon had just computed were
+				// unreachable from the only surface the user was looking at.
 				m.surfaceApproval(&ar)
+				ev.Payload = ar
 			}
 		}
 		if ev.Type == protocol.TypeSessionUsage {
@@ -1688,6 +1714,7 @@ func (m *managedSession) run() {
 				m.mu.Lock()
 				m.lastStatus = ss.Status
 				startedTurn := false // log "turn start" only on the ended→running EDGE, not per-tool
+				recordError := false // telemetry is sent after the unlock; see below
 				switch ss.Status {
 				case protocol.StatusRunning:
 					startedTurn = m.turnEnded || !m.wasRunning
@@ -1695,13 +1722,27 @@ func (m *managedSession) run() {
 				case protocol.StatusIdle, protocol.StatusDone:
 					m.turnEnded = true
 				case protocol.StatusError:
-					// Surface real session/turn errors in telemetry too (scrubbed) — otherwise they
-					// were only visible in the local log, invisible to remote debugging.
+					// Recorded AFTER the unlock. See below — reaching for the hub from under this
+					// lock is what deadlocks the daemon.
+					recordError = true
+				}
+				m.mu.Unlock()
+				// Surface real session/turn errors in telemetry too (scrubbed) — otherwise they are
+				// only visible in the local log, invisible to remote debugging.
+				//
+				// Outside m.mu, and that placement is the whole point. tel() takes the HUB lock, and
+				// the hub takes locks in the other order: Hub.sessionList holds h.mu and calls
+				// m.info(), which wants m.mu. Doing this under m.mu meant an ordinary failed turn —
+				// a rate limit, a model error — raced every session.list, and session.list is
+				// re-broadcast on create/rename/delete and requested by every client on connect.
+				// Losing that race deadlocks h.mu, which every dispatch case, every broadcast and
+				// every subscribe takes: all sessions freeze, every device goes dead holding a
+				// healthy socket, and only killing the daemon recovers it.
+				if recordError {
 					if t := m.hub.tel(); t != nil {
 						t.Record("session.error", m.sess.Provider(), 0, fmt.Errorf("%s", ss.Detail))
 					}
 				}
-				m.mu.Unlock()
 				// Universal per-turn visibility: every provider funnels status through here, so ONE set
 				// of log lines narrates every turn (start/end/error) in the daemon log + app log panel —
 				// the fix for "0 daemon logs during a whole Q&A session". Errors are always logged.

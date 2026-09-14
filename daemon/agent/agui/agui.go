@@ -354,7 +354,15 @@ func (s *session) execRun(ctx context.Context, req runInput, release func()) {
 	// where its output should be. A backend that simply doesn't report results had every tool it ever
 	// ran painted red. The adapter is the only layer that knows this is normal for AG-UI, so it is the
 	// layer that has to say so.
-	s.sweepOpenTools(err != nil)
+	//
+	// Not when the run stopped to ASK. An approval interrupt ends the run with the tool still
+	// genuinely open: the user has yet to answer, and the resume run is what delivers its
+	// TOOL_CALL_RESULT. Sweeping here retires the card and forgets the call id, so that result
+	// arrives for a tool the adapter no longer knows about and is dropped — the user approves a
+	// command, it runs, and its output never appears anywhere.
+	if status != protocol.StatusAwaitingApproval {
+		s.sweepOpenTools(err != nil)
+	}
 	// Sampled BEFORE release, which cancels this very context: reading ctx.Err() afterwards always
 	// reports Canceled, which would misclassify every genuine failure as a user-initiated Stop and
 	// silently swallow it as a normal idle turn.

@@ -40,13 +40,35 @@ func hasContinuity(sess agent.Session) bool {
 // showed is unsafe: `codex exec resume --last` and friends select by cwd-recency, so turn two of one
 // session could land in another session's conversation, or in the user's own terminal run.
 //
+// `pending` is the prompt about to be SENT. The write-ahead records it before this runs — that is
+// the whole point of a write-ahead — so without excluding it the brief ends with the very message
+// that follows it, and the agent is told it has already been asked the question being asked.
+//
 // Returns "" when there is nothing worth replaying, so a first turn is never prefixed.
-func buildRecap(entries []transcript.Entry) string {
+func buildRecap(entries []transcript.Entry, pending string) string {
+	// Drop the pending prompt from the tail. Only a TRAILING user entry, and only one: an identical
+	// message sent twice earlier in the conversation is real history and belongs in the brief.
+	pending = strings.TrimSpace(pending)
+	if pending != "" {
+		for i := len(entries) - 1; i >= 0; i-- {
+			if entries[i].Kind == "status" {
+				continue // statuses interleave with prompts and are not part of the conversation
+			}
+			if entries[i].Kind == "user" && strings.TrimSpace(entries[i].Text) == pending {
+				entries = entries[:i]
+			}
+			break
+		}
+	}
 	// Walk backwards collecting user/assistant text, then reverse: the tail is what matters.
 	type line struct{ who, text string }
 	var picked []line
+	answered := false
 	for i := len(entries) - 1; i >= 0 && len(picked) < recapTurns*2; i-- {
 		e := entries[i]
+		if e.Kind == "assistant" {
+			answered = true
+		}
 		var who string
 		switch e.Kind {
 		case "user":
@@ -64,6 +86,12 @@ func buildRecap(entries []transcript.Entry) string {
 	}
 	if len(picked) < 2 {
 		return "" // nothing to recall: a first turn, or a session with only one message
+	}
+	// A brief with no answers in it is not a conversation, it is a list of questions — and prefixing
+	// it with "you have no memory of this" tells the agent it already handled things it never saw.
+	// Reachable for a session whose turns predate assistant entries being recorded at all.
+	if !answered {
+		return ""
 	}
 	for i, j := 0, len(picked)-1; i < j; i, j = i+1, j-1 {
 		picked[i], picked[j] = picked[j], picked[i]

@@ -2164,6 +2164,13 @@ func (h *Hub) recordApproval(ar protocol.ApprovalRequest, m *managedSession) {
 	execKind := m.meta.execKind
 	m.mu.Unlock()
 	h.mu.Lock()
+	// Both maps nil-guarded. approvalReqs already was; approvals was not, so a Hub built without
+	// this one populated took the whole daemon down on the first approval — a nil-map assignment
+	// panics, and the pump's recover fires only after the process-wide damage is already the
+	// question. Same class as the role registry's nil receiver.
+	if h.approvals == nil {
+		h.approvals = map[string]*managedSession{}
+	}
 	h.approvals[ar.ApprovalID] = m
 	if h.approvalReqs == nil {
 		h.approvalReqs = map[string]pendingApproval{}
@@ -4642,7 +4649,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		outbound := text
 		if !hasContinuity(m.sess) {
 			if entries, err := h.tr().Read(req.SessionID); err == nil {
-				if recap := buildRecap(entries); recap != "" {
+				// `text` is passed so the write-ahead entry for THIS prompt — appended above, by
+				// design — is not replayed back as history immediately before itself.
+				if recap := buildRecap(entries, text); recap != "" {
 					outbound = recap + text
 				}
 			}

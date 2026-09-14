@@ -129,6 +129,12 @@ func (r *Router) Unregister(sessionID string) {
 
 // URL returns the browsable address for a session, or "" if it has no preview.
 func (r *Router) URL(sessionID string) string {
+	// Nil-receiver safe. A daemon running without a preview router is an ordinary configuration, and
+	// this is called from managedSession.info() — which runs inside Hub.sessionList, under the hub's
+	// global lock. A panic there is not a missing preview URL, it is the whole daemon.
+	if r == nil {
+		return ""
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	label, ok := r.byID[sessionID]
