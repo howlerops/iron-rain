@@ -356,7 +356,14 @@ func (m *managedSession) markUserInterrupted() {
 
 // activityTitle is a short human label for the session in the activity feed: the user-set name,
 // else a repo/branch-ish hint from the cwd, else a short id.
+// Takes m.mu: `meta.label` is MUTABLE — session.rename writes it, on the connection's read loop —
+// while this is read from the event pump, the turn-engine goroutine and the PR-check poller. An
+// unsynchronized string read against a concurrent write can hand back a mismatched pointer/length
+// pair, so a rename landing at the moment a turn ends put a corrupted title into the activity feed
+// and the needs-you inbox. Every caller holds no lock, so taking one here is safe.
 func (m *managedSession) activityTitle() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.meta.label != "" {
 		return m.meta.label
 	}

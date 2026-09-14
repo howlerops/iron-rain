@@ -126,6 +126,33 @@ func (s *Store) Read(sessionID string) ([]Entry, error) {
 	return out, sc.Err()
 }
 
+// Delete removes a session's transcript file and forgets its handle.
+//
+// Without this there was no way to remove one at all: the package exposed New/Append/Read/Close, so
+// a session the user stopped, deleted, or let age past its TTL had every prompt they ever typed into
+// it left on disk verbatim, forever. The SQLite side was already swept — DeleteSession,
+// DeleteTranscript and PruneSessions all run — so the session vanished from every device and the app
+// reported it gone while the text stayed behind. That is a privacy claim the product was making and
+// not keeping, and a directory that only ever grows.
+//
+// Best-effort: a file we cannot remove is not a reason to fail a delete the user has already been
+// told succeeded, but it IS worth a log line, since the whole point is that it should be gone.
+func (s *Store) Delete(sessionID string) error {
+	if s == nil || sessionID == "" {
+		return nil
+	}
+	s.mu.Lock()
+	if f, ok := s.fhs[sessionID]; ok && f != nil {
+		_ = f.Close()
+		delete(s.fhs, sessionID)
+	}
+	s.mu.Unlock()
+	if err := os.Remove(s.path(sessionID)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // Close releases open file handles (best-effort, on shutdown).
 func (s *Store) Close() {
 	if s == nil {

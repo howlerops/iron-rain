@@ -644,6 +644,19 @@ func (h *Hub) touchAndPrune(ttl time.Duration) {
 	// through the app. An abandoned fanout is the common way to get there, since nothing else ever
 	// tears its variants down.
 	h.reclaimExpiredWorktrees(db, cutoff)
+	// Drop the write-ahead files of the sessions about to be pruned, BEFORE the records go — the
+	// records are the only list of which ids are expiring. PruneSessions sweeps the SQLite side and
+	// cannot see these files, so without this a TTL-expired session disappeared from every device
+	// while every prompt the user typed into it stayed on disk verbatim, forever.
+	if tr := h.tr(); tr != nil {
+		if recs, err := db.ExpiringSessions(cutoff); err == nil {
+			for _, r := range recs {
+				if err := tr.Delete(r.ID); err != nil {
+					log.Printf("prune: could not remove %s's write-ahead file: %v", r.ID, err)
+				}
+			}
+		}
+	}
 	if n, err := db.PruneSessions(cutoff); err != nil {
 		log.Printf("prune: %v", err)
 	} else if n > 0 {

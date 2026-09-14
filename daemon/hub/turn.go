@@ -667,7 +667,17 @@ func (m *managedSession) handleUnreachable(probeErr error, fails, failLimit int)
 
 	// Try to repair in place, on a schedule of its own so a flapping connection isn't hammered.
 	if reviver, ok := m.sess.(agent.Reviver); ok && attempts >= 2 && revives < reviveCap {
+		// Only while the turn is still OPEN. Everything below blocks for up to 20s inside
+		// Revive, and the agent can finish in that window: the pump delivers idle, closeTurnFrom
+		// clears turnPhase, seals the tools and releases the wake lock. Writing a phase back
+		// afterwards resurrects a turn that is over — the client's composer stays locked, the
+		// heartbeat keeps reporting "working", and nothing will ever close it again because the
+		// close already happened.
 		m.mu.Lock()
+		if m.turnPhase == "" {
+			m.mu.Unlock()
+			return false
+		}
 		m.turnRevives = revives + 1
 		m.turnPhase = protocol.StatusRecovering
 		m.mu.Unlock()
@@ -679,6 +689,12 @@ func (m *managedSession) handleUnreachable(probeErr error, fails, failLimit int)
 			// Repaired. Clear the outage and let the NEXT tick re-probe: Revive promises the session
 			// is usable, not that the turn survived, and the probe is what actually knows.
 			m.mu.Lock()
+			if m.turnPhase == "" {
+				// It ended while we were reviving. Revive promises the SESSION is usable, not that
+				// this turn survived, and the turn is already closed — leave it closed.
+				m.mu.Unlock()
+				return false
+			}
 			m.turnProbeFails, m.turnProbeSince = 0, time.Time{}
 			m.turnPhase = protocol.StatusRunning
 			m.turnLastEvent = time.Now()
@@ -789,6 +805,10 @@ func (m *managedSession) escalateStalled(stuckFor time.Duration) bool {
 	limit := m.nudgeLimit
 	if limit <= 0 {
 		limit = turnNudgeLimit
+	}
+	if m.turnPhase == "" {
+		m.mu.Unlock()
+		return false // the turn closed while the stall was being assessed; do not reopen it
 	}
 	m.turnPhase = protocol.StatusStalled
 	m.mu.Unlock()

@@ -1659,6 +1659,14 @@ func (h *Hub) removeSession(id string, owner *managedSession) {
 		_ = db.DeleteHandoff(id)
 		_ = db.DeleteTranscript(id) // drop the durable conversation too
 	}
+	// And the write-ahead JSONL, which nothing could remove until now. Outside the db != nil
+	// branch: the file exists whether or not SQLite does, and leaving every prompt the user typed
+	// on disk after they deleted the session is the same failure either way.
+	if tr := h.tr(); tr != nil {
+		if err := tr.Delete(id); err != nil {
+			log.Printf("transcript: could not remove %s's write-ahead file: %v", id, err)
+		}
+	}
 	h.forgetFanoutIfEmpty(group) // last variant gone → drop the group's notify marker
 	h.revokeMCPToken(id)
 	h.sweepSessionApprovals(id)
