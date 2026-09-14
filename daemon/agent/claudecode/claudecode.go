@@ -584,7 +584,25 @@ func (p *Provider) start(ctx context.Context, cwd, id, mode, prompt string, plan
 	// it returns reaps the child and releases the stdin/stdout pipe fds without racing
 	// the scanner. Without this the process lingers as a zombie and its fds/goroutine leak.
 	go func() {
-		sawIdle := s.readLoop(stdout)
+		sawIdle, streamErr := s.readLoop(stdout)
+		if streamErr != nil {
+			// readLoop gave up on the stream, but the SIDECAR DID NOT STOP WRITING: it is parked in
+			// write(), pushing the rest of that oversized frame into a 64 KiB pipe that no longer has
+			// a reader. So it never exits, cmd.Wait() below never returns, and s.closeEvents() is
+			// never reached — the events channel stays open forever, the hub keeps the turn "working",
+			// and the node tree leaks. One tool result over the 8 MB cap is the whole trigger, and
+			// there was no recovery path at all: Probe answers from the sidecar, which is still alive.
+			//
+			// procutil's WaitDelay does not cover this. Its timer starts only once the ctx is
+			// cancelled or Wait has already observed the process exit; here neither ever happens.
+			//
+			// Drain concurrently — that releases the sidecar from write(), and the copy ends on its
+			// own when Wait closes the read end — then kill the GROUP, because the `claude` child
+			// inherited this same stdout and would hold the pipe open by itself.
+			go func() { _, _ = io.Copy(io.Discard, stdout) }()
+			procutil.TerminateGroup(cmd)
+			cancel()
+		}
 		err := cmd.Wait()
 		// The exit status is the only evidence of HOW the sidecar went. It used to be discarded, and
 		// readLoop emitted a clean idle on any stream end — so a crashed, OOM-killed or
@@ -604,7 +622,10 @@ func (p *Provider) start(ctx context.Context, cwd, id, mode, prompt string, plan
 			shuttingDown = true
 		default:
 		}
-		if !sawIdle && !shuttingDown {
+		// readLoop already emitted the truthful terminal status for a broken stream. Skip the backstop
+		// rather than following it with "the agent process exited unexpectedly: signal: terminated",
+		// which names our own kill as the cause.
+		if streamErr == nil && !sawIdle && !shuttingDown {
 			detail := "the agent process exited unexpectedly"
 			if err != nil {
 				detail += ": " + err.Error()
@@ -1074,9 +1095,10 @@ func (s *session) closeEvents() {
 }
 
 // readLoop consumes the sidecar's frames and reports whether it saw a genuine idle before the stream
-// ended. closeEvents is NOT deferred here: the caller closes the channel after cmd.Wait(), so the
-// exit status can still be turned into an event.
-func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool) {
+// ended, plus the scanner error that ended it early, if any — the caller needs that second value to
+// know the child still has to be reaped by hand. closeEvents is NOT deferred here: the caller closes
+// the channel after cmd.Wait(), so the exit status can still be turned into an event.
+func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool, streamErr error) {
 	// stdout EOF means the sidecar is gone (normal exit, stop, kill, crash), so this is the one
 	// teardown path every session takes — release any card that never got its terminal frame here.
 	defer s.forgetToolCards()
@@ -1210,14 +1232,14 @@ func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool) {
 		s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{
 			SessionID: s.id, Status: protocol.StatusError,
 			Detail: "lost the agent's output stream: " + err.Error()}})
-		return false
+		return false, err
 	}
 	if !idle {
 		// Not an idle of our own invention any more — the caller decides, once it knows how the
 		// process exited. Reporting idle here is what made a crash look like a finished turn.
-		return false
+		return false, nil
 	}
-	return true
+	return true, nil
 }
 
 func randID() string {
