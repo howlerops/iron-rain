@@ -2,6 +2,8 @@ package hub
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -98,6 +100,24 @@ func guardApproval(ar protocol.ApprovalRequest) approvalGuard {
 	if isShellTool(tool) && hooksPathRe.MatchString(ar.Detail+" "+string(ar.Input)) {
 		return approvalGuard{reason: "changing core.hooksPath is refused — it redirects git's hooks " +
 			"to a directory the agent controls, which Iron Rain's own git commit/merge would then execute"}
+	}
+
+	// A shell command's own TEXT, for the same rule. approvalPaths deliberately reads only the
+	// pathKeys arguments, and `command` is not one of them — on purpose, so a prompt or a commit
+	// message that mentions .git does not refuse the operation. But that left the redirect wide
+	// open: `printf '…' > .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit` names no
+	// file_path, matches no pattern, and does not mention core.hooksPath, so the guard returned
+	// empty and yolo mode auto-allowed it. The daemon's own `git commit` (no --no-verify) then runs
+	// it as the owner — the exact chain this file exists to break.
+	//
+	// Refusing a shell command that merely READS .git is consistent, not stricter: fsaccess.Resolve
+	// already refuses reads of repository metadata as well as writes.
+	if isShellTool(tool) {
+		if label, tok := shellTouchesProtected(ar.Detail + " " + string(ar.Input)); label != "" {
+			return approvalGuard{reason: "this command touches " + label + " (" + tok + ") — refused " +
+				"for the same reason a direct write is: it is executed later by Iron Rain, by launchd " +
+				"or by your shell, so approving it here would be approving code you cannot see"}
+		}
 	}
 	return approvalGuard{}
 }
@@ -202,4 +222,43 @@ func looksLikePath(s string) bool {
 		return false // a command line, not a path
 	}
 	return strings.Contains(s, "/")
+}
+
+// shellTouchesProtected scans a shell command for a token naming a protected location, and returns
+// the label plus the offending token.
+//
+// Tokenised on shell separators rather than whitespace alone, so `>.git/hooks/pre-commit` and
+// `cp x .git/config;` are seen as paths. A token is judged by ProtectedPath and by the VCS-metadata
+// rule, the same two checks a declared file argument gets — the point is that a shell command
+// reaches the identical destinations by another route.
+func shellTouchesProtected(cmd string) (label, token string) {
+	if cmd == "" {
+		return "", ""
+	}
+	for _, tok := range strings.FieldsFunc(cmd, func(r rune) bool {
+		switch r {
+		case ' ', '\t', '\n', '\r', '"', '\'', '`', '>', '<', '|', ';', '&', '(', ')', ',':
+			return true
+		}
+		return false
+	}) {
+		tok = strings.TrimSpace(tok)
+		if tok == "" || !strings.ContainsAny(tok, "/\\") {
+			continue // a bare word cannot be a path into a metadata directory
+		}
+		// A shell expands ~ before the command runs, so the guard has to as well — otherwise
+		// `> ~/.oculus/agents.json` is judged as a relative path called "~" and matches nothing.
+		if tok == "~" || strings.HasPrefix(tok, "~/") {
+			if home, err := os.UserHomeDir(); err == nil {
+				tok = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(tok, "~"), "/"))
+			}
+		}
+		if l := fsaccess.ProtectedPath(tok); l != "" {
+			return l, tok
+		}
+		if name := fsaccess.VCSMetadataComponent(tok); name != "" {
+			return name, tok
+		}
+	}
+	return "", ""
 }

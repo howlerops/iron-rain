@@ -400,10 +400,16 @@ func (h *Hub) gatewayServers(servers []mcp.Server, token string) []mcp.Server {
 	}
 	out := make([]mcp.Server, 0, len(servers))
 	for _, s := range servers {
-		if s.Transport != "stdio" {
-			out = append(out, s) // an upstream remote server is passed through untouched
-			continue
-		}
+		// EVERY transport is rewritten, not just stdio. An http server used to be passed through
+		// untouched — with its real URL and its stored Headers, which is where an API key lives — so
+		// the harness connected straight to the vendor endpoint and its tool calls never reached
+		// Gateway.ServeHTTP: no mode gate, no rule evaluation, no approval card, no audit line, and
+		// the .git guard never inspected them either. It also copied the credential into the
+		// harness's config file, where any agent bash step can read it.
+		//
+		// This was never a capability limit. Manager.Dial already proxies hosted servers (it dials
+		// remote and negotiates a version), so the gateway can front them exactly as it fronts a
+		// stdio one.
 		out = append(out, mcp.Server{
 			Name:      s.Name,
 			Transport: "http",

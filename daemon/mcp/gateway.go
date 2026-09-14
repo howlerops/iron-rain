@@ -30,6 +30,12 @@ import (
 // short enough that a hung server doesn't pin a harness forever.
 const requestTimeout = 120 * time.Second
 
+// authorizeTimeout bounds the approval step, which waits on a PERSON rather than on a server. It
+// has to exceed the authorizer's own approval window (hub.mcpApprovalTimeout, 10m) or that window
+// can never be reached — the shorter of the two always wins, and the reason reported is the wrong
+// one. The extra minute is slack so the authorizer's timer is the one that fires.
+const authorizeTimeout = 11 * time.Minute
+
 // maxRequestBytes bounds an inbound request body.
 const maxRequestBytes = 8 << 20
 
@@ -174,6 +180,15 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
 	defer cancel()
 
+	// The AUTHORIZATION step gets its own, longer bound. requestTimeout sizes a proxied tool call;
+	// an approval sizes a human walking to their phone, and the authorizer's own window is ten
+	// minutes. Handing it this context clamped every MCP approval to two minutes and force-denied
+	// it — the card vanished from every device, the transcript recorded "the request was cancelled
+	// before anyone answered" (which names the wrong cause), and tapping Allow afterwards returned
+	// "no such approval". The ten-minute arm in askForMCPApproval was unreachable.
+	authCtx, cancelAuth := context.WithTimeout(r.Context(), authorizeTimeout)
+	defer cancelAuth()
+
 	// Gate the call BEFORE connecting: a denied tool shouldn't even wake a sleeping server, and the
 	// user shouldn't wait on a spawn for a call that was never going to run.
 	//
@@ -191,7 +206,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if req.Method == "tools/call" {
 			tool, args = toolNameFrom(req.Params), toolArgsFrom(req.Params)
 		}
-		if err := g.authorize(ctx, bearer, name, tool, args); err != nil {
+		if err := g.authorize(authCtx, bearer, name, tool, args); err != nil {
 			writeRPCError(w, req.ID, -32001, err.Error())
 			return
 		}

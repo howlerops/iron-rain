@@ -158,3 +158,45 @@ func TestAnsweringAnUnattributedApprovalReleasesTheCall(t *testing.T) {
 		t.Fatal("approving the card did not release the blocked MCP call")
 	}
 }
+
+// An http-transport server must be fronted by the gateway too, not handed to the harness raw.
+//
+// It used to be passed through untouched — real vendor URL, and the stored Headers, which is where
+// an API key lives. The harness then connected straight to the vendor, so its tool calls never
+// reached Gateway.ServeHTTP: no mode gate, no rule evaluation, no approval card, no audit line, and
+// the .git guard never saw them. The credential was also copied into the harness's config file,
+// where any agent bash step can read it.
+//
+// Never a capability limit: Manager.Dial already proxies hosted servers.
+func TestAHostedServerIsFrontedByTheGatewayToo(t *testing.T) {
+	dir := t.TempDir()
+	r := mcp.NewRegistry(filepath.Join(dir, "mcp.json"))
+	if err := r.Upsert(mcp.Server{
+		Name: "vendor", Transport: "http",
+		URL:     "https://api.vendor.example/mcp",
+		Headers: map[string]string{"Authorization": "Bearer sk-vendor-secret"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := New()
+	h.SetMCPRegistry(r)
+	h.SetMCPGateway(mcp.NewGateway(mcp.NewManager(r), "tok-123"), "tok-123")
+	h.SetMCPGatewayBase("http://127.0.0.1:6000")
+
+	out := h.gatewayServers(r.List(), "sess-token")
+	if len(out) != 1 {
+		t.Fatalf("got %d servers, want 1", len(out))
+	}
+	got := out[0]
+	if got.URL != "http://127.0.0.1:6000/mcp/vendor" {
+		t.Errorf("the harness was pointed at %q, not at the gateway — its tool calls never reach "+
+			"authorizeMCPTool, so no mode, rule, card or audit line applies to them", got.URL)
+	}
+	if got.Headers["Authorization"] == "Bearer sk-vendor-secret" {
+		t.Error("the vendor credential was copied into the harness config, where any agent bash " +
+			"step can read it out of the file or the process environment")
+	}
+	if got.Headers["Authorization"] != "Bearer sess-token" {
+		t.Errorf("the gateway bearer is wrong: %q", got.Headers["Authorization"])
+	}
+}

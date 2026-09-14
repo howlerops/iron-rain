@@ -746,7 +746,15 @@ func VCSMetadataComponent(path string) string {
 	if strings.TrimSpace(path) == "" {
 		return ""
 	}
-	for _, part := range strings.Split(NormalizePath(path), string(os.PathSeparator)) {
+	// A RELATIVE path is cleaned in place rather than normalized. NormalizePath resolves against the
+	// filesystem and returns "" for a relative input, which made this function answer "not metadata"
+	// for `.git/hooks/pre-commit` — the exact form a shell command uses, and the form the doc comment
+	// above claims to handle. The callers that have an absolute path still get full normalization.
+	norm := NormalizePath(path)
+	if norm == "" {
+		norm = filepath.Clean(path)
+	}
+	for _, part := range strings.Split(norm, string(os.PathSeparator)) {
 		if vcsMetaDirs[strings.ToLower(part)] {
 			return part
 		}
