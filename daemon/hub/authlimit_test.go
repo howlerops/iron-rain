@@ -19,6 +19,10 @@ func TestAuthThrottleGraceIsFree(t *testing.T) {
 
 // Past the grace the wait grows, and then stops growing — an unbounded delay would let a flood pin
 // goroutines indefinitely, which trades one denial-of-service for another.
+//
+// The cap is authQueueMax, not authFailureMax: penalties now QUEUE (see the test below), so
+// authFailureMax bounds what one failure adds to the queue while this bounds what any single attempt
+// is made to wait. Before the queue existed both were the same number, and this test asserted it.
 func TestAuthThrottleGrowsThenCaps(t *testing.T) {
 	var a authThrottle
 	now := time.Now()
@@ -26,8 +30,8 @@ func TestAuthThrottleGrowsThenCaps(t *testing.T) {
 	for i := 0; i < authFailureGrace+40; i++ {
 		last = a.penalty(now)
 	}
-	if last != authFailureMax {
-		t.Fatalf("sustained failures settled at %v, want the cap %v", last, authFailureMax)
+	if last != authQueueMax {
+		t.Fatalf("sustained failures settled at %v, want the cap %v", last, authQueueMax)
 	}
 
 	var b authThrottle
@@ -98,5 +102,48 @@ func TestAuthThrottleIsConcurrencySafe(t *testing.T) {
 	}
 	if n := a.recentFailures(now); n != 32*50 {
 		t.Fatalf("counted %d failures, want %d — a race lost some", n, 32*50)
+	}
+}
+
+// Penalties must QUEUE, not run alongside each other.
+//
+// Each failure used to sleep on its own handshake goroutine, so N concurrent sockets served N
+// penalties in parallel: the cost of guessing was the cost of opening another connection, which is
+// free and which an attacker doing this is already doing. The documented "~1 guess/sec" was the rate
+// for an attacker who politely used one connection at a time.
+//
+// Asserted without sleeping, by giving every attempt the SAME instant: if the delays overlap, they
+// all come back the same; if they queue, each one starts where the last ended.
+func TestAuthThrottlePenaltiesQueueRatherThanOverlap(t *testing.T) {
+	var a authThrottle
+	now := time.Now()
+	for i := 0; i < authFailureGrace; i++ {
+		a.penalty(now) // burn the grace
+	}
+
+	// Simultaneous failures, all at the same instant. A growing return value proves nothing on its
+	// own — the per-failure STEP grows with the failure count whether or not anything queues — so the
+	// test is whether a later attempt inherits the backlog ahead of it and therefore waits longer
+	// than any single failure is allowed to add.
+	var last time.Duration
+	for i := 0; i < 12; i++ {
+		last = a.penalty(now)
+	}
+	if last <= authFailureMax {
+		t.Fatalf("the 12th simultaneous failure waited %v, no more than one failure's own cap (%v).\n\n"+
+			"The penalties elapse in PARALLEL: each one slept on its own handshake goroutine, so N "+
+			"concurrent sockets served N penalties at once and an attacker paid the cost of one guess "+
+			"however many were in flight. Opening another connection is free, so the only rate control "+
+			"in the auth path provided none.", last, authFailureMax)
+	}
+
+	// And the queue drains: an attempt well after the gate has passed waits only its own step.
+	var b authThrottle
+	for i := 0; i < authFailureGrace+3; i++ {
+		b.penalty(now)
+	}
+	if d := b.penalty(now.Add(authFailureWindow + time.Second)); d != 0 {
+		t.Errorf("a failure after the window still inherited a queued delay of %v — the gate has to "+
+			"age out with the failures, or one burst throttles the owner for good", d)
 	}
 }

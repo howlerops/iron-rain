@@ -1,13 +1,26 @@
 package hub
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
 
+	"github.com/howlerops/oculus/daemon/agent"
 	"github.com/howlerops/oculus/daemon/protocol"
 )
+
+// summarySess is a session that exists only to be a member of a fan-out group.
+type summarySess struct{ ch chan agent.Event }
+
+func (s *summarySess) ID() string                                    { return "v0" }
+func (s *summarySess) Provider() string                              { return "fake" }
+func (s *summarySess) Events() <-chan agent.Event                    { return s.ch }
+func (s *summarySess) Prompt(context.Context, string) error          { return nil }
+func (s *summarySess) Respond(context.Context, string, string) error { return nil }
+func (s *summarySess) Stop(context.Context) error                    { return nil }
+func (s *summarySess) Close() error                                  { return nil }
 
 // TestDiffStatCountsUncommittedWork: an agent that did the work but didn't commit still shows a
 // change — measuring only committed work would report "0 files" for most variants.
@@ -83,5 +96,54 @@ func TestFanoutCapConstant(t *testing.T) {
 	}
 	if maxFanoutVariants > 24 {
 		t.Fatalf("the cap (%d) is high enough to exhaust the machine", maxFanoutVariants)
+	}
+}
+
+// The judge spec must survive the first comparison.
+//
+// It was deleted as the summary was broadcast, on the theory that a judge runs once. But a group
+// outlives one comparison: synthesizeFanout adds a variant and re-arms the done-latch (see
+// TestSynthesisReArmsTheDoneLatch), so the summary is broadcast a second time for the same group —
+// and by then the spec was gone. The synthesis round, which compares the merged result against the
+// originals and is the one a judgement is most useful for, therefore never got a judge at all.
+//
+// The spec is per-GROUP and its lifetime is the group's: fanout.resolve and forgetFanoutIfEmpty are
+// the two ways a group ends, and both drop it.
+func TestTheJudgeSpecSurvivesUntilTheGroupEnds(t *testing.T) {
+	h := New()
+	h.fanoutJudge["g1"] = fanoutJudgeSpec{provider: "fake", projectID: "p1"}
+	// A member, or broadcastFanoutSummary returns at its empty-results guard and never reaches the
+	// line under test — which is how the first version of this test passed with the defect intact.
+	h.mu.Lock()
+	m := newManagedSession(h, &summarySess{ch: make(chan agent.Event, 4)}, sessionMeta{fanoutGroup: "g1"})
+	h.sessions["v0"] = m
+	h.mu.Unlock()
+
+	h.broadcastFanoutSummary("g1")
+
+	h.mu.Lock()
+	spec, second := h.fanoutJudge["g1"]
+	h.mu.Unlock()
+	if !second {
+		t.Fatal("the judge spec was consumed by the first comparison.\n\n" +
+			"The synthesis round re-arms the done-latch and broadcasts a second summary for the same " +
+			"group; with the spec gone it gets no judge — and that round, which compares the merged " +
+			"result against the originals, is the one a judgement is most useful for.")
+	}
+	if spec.provider != "fake" {
+		t.Errorf("spec.provider = %q, want the recorded one", spec.provider)
+	}
+
+	// And the group ending still drops it, or the map grows for the life of the daemon. The group
+	// ends when its last member is gone — which is exactly what forgetFanoutIfEmpty checks.
+	h.mu.Lock()
+	delete(h.sessions, "v0")
+	h.mu.Unlock()
+	h.forgetFanoutIfEmpty("g1")
+	h.mu.Lock()
+	_, afterEnd := h.fanoutJudge["g1"]
+	h.mu.Unlock()
+	if afterEnd {
+		t.Error("the spec outlived its group — this map would grow with every fan-out the daemon runs")
 	}
 }

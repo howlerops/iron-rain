@@ -140,8 +140,23 @@ func (m *Manager) newAdapter(name, token string) (Provider, error) {
 			clientID, clientSecret := m.cfg.Jira.ClientID, m.cfg.Jira.ClientSecret
 			m.mu.Unlock()
 			// Persist rotated tokens so the next start (and the next refresh) has the current pair.
+			//
+			// Only if this adapter is still the live one. The closure captures the cloud id it was
+			// built with, and a multi-site org can switch sites (jira.set_site) — which builds a NEW
+			// adapter against a different cloud id while the old one may still have a refresh in
+			// flight. That late refresh used to rewrite the persisted token with the OLD site's cloud
+			// id and the new refresh token, which does two things at once: it points the daemon back
+			// at the site the user just left, and it strands the new adapter holding a refresh token
+			// that has now been rotated out from under it. The next refresh gets invalid_grant, and
+			// polling suspends — "connected but no tickets", with the wrong site selected.
 			onRefresh := func(access, refresh string) {
 				m.mu.Lock()
+				if live := persistedJiraCloudID(m.cfg.Jira.Token); live != "" && live != cloudID {
+					m.mu.Unlock()
+					log.Printf("jira: ignoring a token refresh from the %s adapter — the active site is "+
+						"now %s (writing it would strand the live connection)", cloudID, live)
+					return
+				}
 				m.cfg.Jira.Token = strings.Join([]string{"oauth", cloudID, access, refresh}, "|")
 				cfg := m.cfg
 				m.mu.Unlock()
@@ -794,4 +809,22 @@ func (m *Manager) save(cfg Config) {
 	if data, err := json.MarshalIndent(cfg, "", "  "); err == nil {
 		_ = os.WriteFile(m.path, data, 0o600)
 	}
+}
+
+// persistedJiraCloudID reads the cloud id out of a persisted Jira OAuth token
+// ("oauth|cloudid|access|refresh"). Returns "" for a basic-auth token or anything malformed, which
+// callers treat as "no opinion".
+//
+// Distinct from jiraCloudID in oauth.go, which ASKS Atlassian which sites a token can reach. This
+// one only reads what is already on disk — the question here is "which site is the daemon currently
+// configured for", not "which sites exist".
+func persistedJiraCloudID(token string) string {
+	if !strings.HasPrefix(token, "oauth|") {
+		return ""
+	}
+	parts := strings.SplitN(token, "|", 4)
+	if len(parts) != 4 {
+		return ""
+	}
+	return parts[1]
 }

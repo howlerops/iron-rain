@@ -106,3 +106,63 @@ func TestWrongSecretIsRejected(t *testing.T) {
 		t.Fatal("an empty credential must be rejected")
 	}
 }
+
+// A refused device must not burn the invite's seat.
+//
+// redeem() consumed the slot BEFORE the caller decided whether to admit the device, and that
+// decision can say no: a revoked device presenting a valid invite is refused, correctly, since an
+// invite must not undo a revocation. But the seat was already gone, so a one-use link read
+// "Redeemed 1/1" for a device that never got in, and the owner had to mint a new link with nothing
+// on screen explaining why the first was spent.
+func TestARefusedDeviceDoesNotBurnTheInviteSeat(t *testing.T) {
+	h := New()
+	accept := h.AcceptSecret("owner-secret")
+	inv := h.invites.create("Sam", RoleObserver, time.Hour) // one seat
+
+	// A device the owner has revoked.
+	revoked := []byte{4, 4, 4}
+	if !h.enrollGuest(revoked) {
+		t.Fatal("could not enrol the device to be revoked")
+	}
+	reg := h.deviceRegistry()
+	reg.mu.Lock()
+	reg.byID[hexKey(revoked)].Revoked = true
+	reg.saveLocked()
+	reg.mu.Unlock()
+
+	if accept(revoked, inv.Secret) {
+		t.Fatal("a revoked device authenticated with an invite — revocation must win")
+	}
+
+	// The seat must still be there for the person the link was actually for.
+	guest := []byte{5, 5, 5}
+	if !accept(guest, inv.Secret) {
+		t.Fatal("the invite's only seat was consumed by a device that was refused.\n\n" +
+			"The slot is taken before the enrolment decision, so a refused device permanently burns a " +
+			"one-use link: the owner sees \"Redeemed 1/1\" for someone who never got in, and has to " +
+			"mint another with nothing explaining why.")
+	}
+	if role := h.roleForConn(guest); role != RoleObserver {
+		t.Fatalf("the guest arrived as %s, want %s", role, RoleObserver)
+	}
+}
+
+// The seat must still be consumed by a device that IS admitted — releasing it on refusal must not
+// turn a one-use link into an unlimited one.
+func TestAnAdmittedDeviceStillConsumesTheSeat(t *testing.T) {
+	h := New()
+	accept := h.AcceptSecret("owner-secret")
+	inv := h.invites.create("Sam", RoleObserver, time.Hour) // one seat
+
+	if !accept([]byte{1, 1, 1}, inv.Secret) {
+		t.Fatal("the first guest should be admitted")
+	}
+	if accept([]byte{2, 2, 2}, inv.Secret) {
+		t.Fatal("a SECOND device got in on a one-seat invite — the link is now unlimited")
+	}
+	// The original device reconnecting is not a second seat.
+	if !accept([]byte{1, 1, 1}, inv.Secret) {
+		t.Error("the admitted guest could not reconnect — a dropped Wi-Fi connection must not cost a seat")
+	}
+	_ = inv
+}

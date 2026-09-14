@@ -53,8 +53,14 @@ func TestEveryMessageTypeDecidesWhoMaySendIt(t *testing.T) {
 		"TypeTelemetryStatus", "TypeUsageReport",
 	}
 	// Per-connection bookkeeping: these act on the sender's own connection and nothing else.
+	//
+	// TypeDeviceRegister used to be here and is now gated at capSteer. It was never per-connection:
+	// a push token is a standing subscription to hub-wide content, and the fan-out is not
+	// capability-aware — approval requests with their ids and details, agent errors and session
+	// titles go to every registered token. A watch-only guest cannot answer an approval, so being
+	// woken by one only hands them a decision that is not theirs.
 	ownConnection := []string{
-		"TypeDeviceRegister", "TypeLogUnsubscribe",
+		"TypeLogUnsubscribe",
 	}
 	// Reads of a session's own WORK. An observer can already subscribe to the session and read its
 	// transcript, and the diff is the same content by another route: it is what the agent did. Left

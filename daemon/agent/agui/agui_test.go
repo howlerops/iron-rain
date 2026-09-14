@@ -607,3 +607,64 @@ func TestToolWithNoResultEndsCompletedNotFailed(t *testing.T) {
 		t.Errorf("tc1 ended as %q; a run that finished normally did not fail its tools", last.Status)
 	}
 }
+
+// An endpoint that answers 200 and streams nothing is a FAILURE, not a finished turn.
+//
+// The end-of-stream path treated any run without a terminal event as idle. The reasoning was sound
+// for a truncated stream that had already delivered work — better a completed turn the reconciler
+// can act on than a spurious failure — but it swallowed the case it should have caught. A wrong
+// path, a proxy answering for the backend, a server that accepts the POST and says nothing: all of
+// them "finished" instantly with an empty reply and no error anywhere, which is indistinguishable
+// from an agent that had nothing to say. The turn closed clean, the transcript sealed empty, and
+// "agent finished" was pushed.
+func TestAnEmptyRunIsAnErrorNotAFinishedTurn(t *testing.T) {
+	s, _ := newTestSession(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK) // 200, and nothing else
+	})
+
+	var status protocol.SessionStatus
+	for _, ev := range collect(t, s, func(ev agent.Event) bool {
+		st, ok := ev.Payload.(protocol.SessionStatus)
+		return ok && (st.Status == protocol.StatusIdle || st.Status == protocol.StatusError)
+	}) {
+		if st, ok := ev.Payload.(protocol.SessionStatus); ok {
+			status = st
+		}
+	}
+	if status.Status != protocol.StatusError {
+		t.Fatalf("an endpoint that sent nothing produced status %q, want an error.\n\n"+
+			"A misconfigured endpoint finishes instantly with an empty reply and nothing anywhere says "+
+			"so — the transcript seals empty and the user is pushed \"agent finished\".", status.Status)
+	}
+	if !strings.Contains(status.Detail, "without sending anything") {
+		t.Errorf("detail = %q — the error has to say what went wrong, since there is no output to "+
+			"go on", status.Detail)
+	}
+}
+
+// The lenient case must stay lenient: a stream that delivered real work and was then cut off is
+// still more usefully a completed turn than a failure.
+func TestATruncatedRunThatDeliveredWorkStillFinishes(t *testing.T) {
+	s, _ := newTestSession(t, func(w http.ResponseWriter, r *http.Request) {
+		// Text, then the stream just ends — no RUN_FINISHED.
+		sse(w,
+			map[string]any{"type": "RUN_STARTED", "threadId": "t", "runId": "r"},
+			map[string]any{"type": "TEXT_MESSAGE_CONTENT", "messageId": "m1", "delta": "partial answer"},
+		)
+	})
+
+	var status protocol.SessionStatus
+	for _, ev := range collect(t, s, func(ev agent.Event) bool {
+		st, ok := ev.Payload.(protocol.SessionStatus)
+		return ok && (st.Status == protocol.StatusIdle || st.Status == protocol.StatusError)
+	}) {
+		if st, ok := ev.Payload.(protocol.SessionStatus); ok {
+			status = st
+		}
+	}
+	if status.Status != protocol.StatusIdle {
+		t.Fatalf("a truncated run that had already streamed a reply was reported as %q (%q). Failing "+
+			"here throws away work the user can see on screen.", status.Status, status.Detail)
+	}
+}

@@ -127,3 +127,41 @@ func newObserver(t *testing.T) (*transport.Conn, *clientReader) {
 	ownerReader.waitOK(t, "grant")
 	return guest, guestReader
 }
+
+// A watch-only device must not be able to subscribe itself to push.
+//
+// device.register was the last ungated message type that was not genuinely per-connection, and the
+// capability census listed it as "acts on the sender's own connection and nothing else". A push
+// token is not that: it is a standing subscription to hub-wide content, and the fan-out is not
+// capability-aware — pushNotify sends approval requests with their ids and details, agent errors and
+// session titles to every registered token. A watcher cannot answer an approval, so waking them with
+// one only hands over a decision that is not theirs to make.
+//
+// The separate disclosure — tokens outliving a revoked device — was fixed in v0.2.199 by binding
+// tokens to the device. This is the other half of the same question, and it is a deliberate
+// behaviour change: a watch-only guest stops receiving push.
+func TestAWatcherCannotRegisterForPush(t *testing.T) {
+	conn, r := newObserver(t)
+	send(t, conn, "reg-1", protocol.TypeDeviceRegister, protocol.DeviceRegister{Token: "watcher-token"})
+
+	env := waitEnvelope(t, r, "reg-1")
+	if env.Type != protocol.TypeError {
+		t.Fatalf("device.register was ACCEPTED for an observer (type %q).\n\n"+
+			"That token now receives every approval request the daemon raises, with its id and detail, "+
+			"for decisions this device cannot make.", env.Type)
+	}
+	var perr protocol.Error
+	if err := json.Unmarshal(env.Payload, &perr); err != nil {
+		t.Fatal(err)
+	}
+	if perr.Code != protocol.ErrorForbidden {
+		t.Errorf("code = %q, want %q — the app cannot tell a refusal from a failed registration",
+			perr.Code, protocol.ErrorForbidden)
+	}
+	// The reason sentence, not just the generic "ask the owner to steer": being refused
+	// NOTIFICATIONS is surprising enough that the message has to say why.
+	if !strings.Contains(perr.Message, "approval requests") {
+		t.Errorf("message = %q — the refusal does not explain why notifications are gated, which reads "+
+			"as a broken toggle rather than a boundary", perr.Message)
+	}
+}

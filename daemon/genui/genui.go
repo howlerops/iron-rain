@@ -36,6 +36,13 @@ const (
 	maxRows         = 500
 	maxCols         = 20
 	maxOptions      = 50
+	// maxFenceBytes bounds an OPEN fence as it accumulates, which maxPayloadBytes could not: that one
+	// is checked after the whole body is already in memory, so an unterminated fence grew without
+	// limit and was then forwarded to every client in one delta. Larger than maxPayloadBytes so a body
+	// that merely exceeds the component cap still takes the ordinary "invalid → fall back to a code
+	// block" path, and only a fence that is clearly never closing trips this.
+	maxFenceBytes  = 4 * maxPayloadBytes
+	fenceSizeLabel = "256 KB"
 )
 
 // spec describes one catalog component: its current schema version and how to validate its props.
@@ -269,6 +276,31 @@ func (s *Segmenter) consumeLine(line string) (string, protocol.UIComponent, bool
 				return out, protocol.UIComponent{
 					ID: ph, Component: "callout", SchemaV: 1, Status: "error",
 					FallbackText: "*(the agent's UI block was malformed)*",
+				}, true
+			}
+			return out, protocol.UIComponent{}, false
+		}
+		// Bound the buffer HERE, not at parseComponent. The cap was only checked once the whole body
+		// was resident, so an agent that opened an ```iron:ui fence and never closed it accumulated
+		// without limit — and the over-cap body was then handed back as a fallback code block and
+		// forwarded to every client whole, as a single output.delta. An unterminated fence is the
+		// ordinary shape of the failure: a model that starts a UI block and drifts, or is interrupted.
+		//
+		// Overrunning here stops the fence rather than truncating it: what is in the buffer is not a
+		// component and never will be, so it is released as text and the parser goes back to ordinary
+		// markdown. That keeps the user's content — nothing is hidden — while the daemon stops
+		// accumulating.
+		if s.fenceBuf.Len()+len(line) > maxFenceBytes {
+			body := s.fenceBuf.String()
+			s.inFence = false
+			s.fenceBuf.Reset()
+			ph := s.placeholderID
+			s.placeholderID = ""
+			out := "```" + fenceInfo + "\n" + body + line
+			if ph != "" {
+				return out, protocol.UIComponent{
+					ID: ph, Component: "callout", SchemaV: 1, Status: "error",
+					FallbackText: "*(the agent's UI block ran past " + fenceSizeLabel + " without closing)*",
 				}, true
 			}
 			return out, protocol.UIComponent{}, false

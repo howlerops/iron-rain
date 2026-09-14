@@ -31,15 +31,29 @@ const (
 	authFailureGrace = 3
 	// authFailureStep is added per failure past the grace.
 	authFailureStep = 250 * time.Millisecond
-	// authFailureMax caps the wait, so a sustained flood cannot pin goroutines for long. At this cap
-	// a single attacker gets ~1 guess/sec against a 128-bit space.
+	// authFailureMax caps what ONE failure adds to the queue. At this step a sustained attacker is
+	// held to ~1 wrong answer per second in total, rather than one per second per connection.
 	authFailureMax = 1 * time.Second
+	// authQueueMax caps how long any single attempt is made to wait, however deep the queue is. A
+	// connection goroutine parked indefinitely is its own denial of service — the daemon holds one
+	// per socket — so the queue bounds the RATE while this bounds the resource.
+	authQueueMax = 5 * time.Second
 )
 
 // authThrottle counts recent authentication failures and converts them into a delay.
 type authThrottle struct {
 	mu       sync.Mutex
 	failures []time.Time
+	// gate is when the next delayed attempt is allowed to finish waiting.
+	//
+	// Without it the delay bounded nothing. Each failure slept on its OWN handshake goroutine, so N
+	// concurrent sockets served N penalties in parallel and the whole cost of guessing was the cost
+	// of opening more connections — which is free, and which an attacker doing this would already be
+	// doing. The documented "~1 guess/sec" was the rate for an attacker who politely used one
+	// connection. Scheduling each delayed attempt to start where the previous one ends makes the
+	// penalties queue instead of overlap, so the bound is on total wrong answers per second rather
+	// than per socket.
+	gate time.Time
 }
 
 // penalty records a failure and returns how long the caller should be made to wait.
@@ -62,11 +76,26 @@ func (a *authThrottle) penalty(now time.Time) time.Duration {
 	if over <= 0 {
 		return 0
 	}
-	d := time.Duration(over) * authFailureStep
-	if d > authFailureMax {
-		d = authFailureMax
+	step := time.Duration(over) * authFailureStep
+	if step > authFailureMax {
+		step = authFailureMax
 	}
-	return d
+	// Queue behind whatever is already waiting, rather than running alongside it.
+	start := now
+	if a.gate.After(start) {
+		start = a.gate
+	}
+	a.gate = start.Add(step)
+	wait := a.gate.Sub(now)
+	// The honest residual, stated rather than hidden: a flood still gets a bounded wait per attempt,
+	// because a connection goroutine parked for minutes is its own denial of service — the daemon has
+	// one per socket. So a large enough burst is still served faster than the queue implies. What
+	// this does buy is that the delay is now a real function of the global failure rate instead of a
+	// per-socket sleep an attacker opts out of by opening another socket.
+	if wait > authQueueMax {
+		wait = authQueueMax
+	}
+	return wait
 }
 
 // recentFailures reports how many failures are inside the window, for tests and diagnostics.

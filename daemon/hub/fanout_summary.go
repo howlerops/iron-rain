@@ -207,9 +207,18 @@ func (h *Hub) broadcastFanoutSummary(group string) {
 		}
 	}
 	// Optional advisory judge, if this group asked for one.
+	//
+	// The spec is NOT deleted here. It used to be, on the theory that a judge runs once — but a group
+	// outlives one comparison: the synthesis round adds a variant and re-arms fanoutNotified
+	// (fanout_synth.go), so this function runs again for the same group and found the spec gone. The
+	// synthesis round — the one comparing the merged result against the originals, and the one a
+	// judgement is most useful for — therefore never got a judge, ever.
+	//
+	// Running once per ROUND is what fanoutNotified already guarantees; this map is per-GROUP, and its
+	// lifetime is the group's. It is cleaned up in fanout.resolve and forgetFanoutIfEmpty, which are
+	// the two ways a group actually ends.
 	h.mu.Lock()
 	spec, wantsJudge := h.fanoutJudge[group]
-	delete(h.fanoutJudge, group)
 	h.mu.Unlock()
 	if wantsJudge {
 		go h.judgeFanout(context.Background(), sum, spec.provider, spec.projectID)

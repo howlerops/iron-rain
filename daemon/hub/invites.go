@@ -98,7 +98,9 @@ func (r *inviteRegistry) createFor(label, role string, ttl time.Duration, maxDev
 
 // redeem checks a presented secret against live invites. On success it remembers which client
 // redeemed it so the resulting connection can be assigned the invite's role.
-func (r *inviteRegistry) redeem(clientPub []byte, secret string) (*invite, bool) {
+// The third return reports whether THIS call consumed a seat, so a caller that then refuses the
+// device can hand it back — see release.
+func (r *inviteRegistry) redeem(clientPub []byte, secret string) (*invite, bool, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, inv := range r.byID {
@@ -114,11 +116,33 @@ func (r *inviteRegistry) redeem(clientPub []byte, secret string) (*invite, bool)
 		if !inv.Redeemed[key] && inv.full() {
 			continue
 		}
+		fresh := !inv.Redeemed[key]
 		inv.Redeemed[key] = true
 		r.byPub[key] = inv.ID
-		return inv, true
+		return inv, fresh, true
 	}
-	return nil, false
+	return nil, false, false
+}
+
+// release hands back a seat this key had just taken, for an enrolment that was then refused.
+//
+// The seat was consumed BEFORE the decision to admit the device, and the decision can say no — a
+// revoked device presenting a valid invite is refused, correctly, but the slot was already gone.
+// A one-use link then read "Redeemed 1/1" for a device that never got in, and the owner had to mint
+// a new link with nothing on screen explaining why the first one was spent.
+func (r *inviteRegistry) release(clientPub []byte, id string) {
+	if len(clientPub) == 0 {
+		return
+	}
+	key := hex.EncodeToString(clientPub)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if inv, ok := r.byID[id]; ok {
+		delete(inv.Redeemed, key)
+	}
+	if r.byPub[key] == id {
+		delete(r.byPub, key)
+	}
 }
 
 // forget drops a key's invite binding without touching the invite itself.
@@ -308,9 +332,15 @@ func (h *Hub) authenticate(clientPub []byte, presented string) bool {
 
 	// 3. A live invite. Guests are enrolled so they are visible and revocable, but get no
 	//    credential of their own — their access has to end when the invite does.
-	if inv, ok := h.invites.redeem(clientPub, presented); ok {
+	if inv, fresh, ok := h.invites.redeem(clientPub, presented); ok {
 		if !h.enrollGuest(clientPub) {
-			return false // this device was revoked; an invite must not undo that
+			// Refused — a revoked device, correctly, since an invite must not undo a revocation. Give
+			// the seat back: it was taken before this decision, and a refused device that permanently
+			// burns a one-use link leaves the owner re-minting links with nothing explaining why.
+			if fresh {
+				h.invites.release(clientPub, inv.ID)
+			}
+			return false
 		}
 		log.Printf("invites: %q redeemed as %s", inviteLabel(inv), inv.Role)
 		// Sharing is only meaningful with enforcement on; redeeming an invite turns it on so a

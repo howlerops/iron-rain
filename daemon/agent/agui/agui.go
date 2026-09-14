@@ -171,6 +171,10 @@ type session struct {
 	// client had not already received.
 	sawText      bool
 	pendingBreak bool
+	// sawAny is whether this run produced ANY event we understood — text, a tool call, reasoning,
+	// anything. It is the test for "the endpoint answered with nothing at all", which text alone gets
+	// wrong: a run that calls one tool and is then truncated has done real work.
+	sawAny bool
 }
 
 func (s *session) ID() string       { return s.id }
@@ -312,6 +316,9 @@ func (s *session) beginRun(input string) (runInput, context.Context, func(), boo
 	if s.pendingResume == nil {
 		s.sawText, s.pendingBreak = false, false
 	}
+	// Unconditional, unlike the message-boundary state above: this asks whether THIS POST produced
+	// anything, and a resume run that produces nothing is exactly as broken as a fresh one.
+	s.sawAny = false
 	if s.threadID == "" {
 		s.threadID = s.id // the Iron Rain session id IS the thread id
 	}
@@ -480,9 +487,26 @@ func (s *session) stream(ctx context.Context, in runInput) (string, error) {
 	if err := sc.Err(); err != nil {
 		return "", err
 	}
-	// The stream ended without a terminal event. Treat it as the run finishing rather than as an
-	// error: a truncated stream with output already delivered is far more usefully shown as a
-	// completed turn the turn engine can reconcile than as a failure.
+	// The stream ended without a terminal event.
+	//
+	// With output already delivered, treat it as the run finishing: a truncated stream carrying real
+	// work is far more usefully shown as a completed turn the turn engine can reconcile than as a
+	// failure. That was the whole rule, and it swallowed the case it should have caught — a 200 with
+	// NOTHING in it. A misconfigured endpoint (wrong path, a proxy answering for it, a server that
+	// accepts the POST and streams nothing) then "finished" instantly with an empty reply and no
+	// error anywhere, which is indistinguishable from an agent that had nothing to say. Every layer
+	// downstream believed it: the turn closed clean, the transcript sealed empty, and "agent finished"
+	// was pushed.
+	//
+	// So the two cases are separated. Output delivered → idle, as before. Silence → an error that
+	// names the endpoint, because there is nothing else to go on.
+	s.mu.Lock()
+	said := s.sawAny
+	s.mu.Unlock()
+	if !said {
+		return "", fmt.Errorf("the agent at %s ended the run without sending anything — no output and "+
+			"no RUN_FINISHED; check the endpoint URL and that it speaks AG-UI", s.prov.cfg.Endpoint)
+	}
 	s.endMessage()
 	return protocol.StatusIdle, nil
 }
@@ -493,6 +517,13 @@ func (s *session) handle(raw string) (done bool, terminal string, err error) {
 	if err := json.Unmarshal([]byte(raw), &ev); err != nil {
 		return false, "", nil // a malformed frame is skipped, never fatal to the run
 	}
+	// Anything that decodes is evidence the endpoint is really speaking AG-UI, including event names
+	// we do not translate — the protocol has no version field and evolves additively, so an unknown
+	// name is far more likely to be newer than broken. The empty-run check below only needs to
+	// distinguish "said nothing" from "said something".
+	s.mu.Lock()
+	s.sawAny = true
+	s.mu.Unlock()
 	switch ev.Type {
 	case evRunStarted:
 		return false, "", nil

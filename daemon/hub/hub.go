@@ -5438,6 +5438,19 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.broadcastParticipants() // presence: everyone sees who joined
 
 	case protocol.TypeDeviceRegister:
+		// capSteer, because a push token is a subscription to content this connection may not be
+		// entitled to. The fan-out is not capability-aware — pushNotify sends to every registered
+		// token — and what it sends includes approval requests with their ids and details, agent
+		// errors, and session titles. A watch-only guest cannot answer an approval; registering to be
+		// woken up by one hands them the contents of a decision that is not theirs to make.
+		//
+		// The separate disclosure (tokens outliving a revoked device) was fixed in v0.2.199 by binding
+		// tokens to the device. This is the other half: whether a watcher may subscribe at all.
+		// Deliberately a behaviour change — a watch-only guest stops receiving push.
+		if !h.requireCapabilityBecause(conn, env.ID, capSteer, "register for notifications",
+			"Notifications carry approval requests and agent errors, which a watch-only device cannot act on.") {
+			return
+		}
 		var req protocol.DeviceRegister
 		if err := env.Unmarshal(&req); err != nil || req.Token == "" {
 			h.sendErr(conn, env.ID, "bad device.register")

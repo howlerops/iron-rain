@@ -67,6 +67,11 @@ type Run struct {
 	// and the bare word "error" with no reason, on a row whose Open button does nothing because
 	// there is no session id. Nothing was logged either, so not even the daemon log explained it.
 	Error string `json:"error,omitempty"`
+
+	// seq identifies this run inside the process, so the placeholder recorded when a slot is reserved
+	// can be found again once the spawn returns. Unexported, and therefore not persisted: it means
+	// nothing across a restart, and a restored run is never mid-spawn.
+	seq uint64
 }
 
 // Issue is the slice of a tracker ticket the engine needs.
@@ -76,12 +81,14 @@ type Issue struct {
 
 // Engine owns loop config + run history and reacts to incoming issues.
 type Engine struct {
-	mu       sync.Mutex
-	path     string
-	loops    []Loop
-	runs     []Run
-	spawn    func(Loop, *Issue) (sessionID string, err error) // injected: starts the session (issue nil = task loop)
-	onChange func()                                           // injected: notify clients config/runs changed
+	mu    sync.Mutex
+	path  string
+	loops []Loop
+	runs  []Run
+	spawn func(Loop, *Issue) (sessionID string, err error) // injected: starts the session (issue nil = task loop)
+	// runSeq numbers reserved runs so a placeholder can be found again once its spawn returns.
+	runSeq   uint64
+	onChange func() // injected: notify clients config/runs changed
 	now      func() int64
 }
 
@@ -217,45 +224,22 @@ func (e *Engine) OnIssues(issues []Issue) {
 		if !lp.Enabled || lp.Kind == "task" || len(lp.Repos()) == 0 {
 			continue // task loops run on a schedule (see runScheduled), not on ticket arrival
 		}
-		active := e.activeRunCount(lp.ID)
-		cap := lp.MaxConcurrent
-		if cap < 1 {
-			cap = 1
-		}
 		for _, iss := range issues {
-			if active >= cap {
-				break
-			}
 			if lp.TriggerCategory != "" && iss.Category != lp.TriggerCategory {
 				continue
 			}
 			if lp.Tracker != "" && iss.Provider != lp.Tracker {
 				continue
 			}
-			// CLAIM before spawning, not after. See Engine.claim.
-			if !e.claim(lp.ID, iss.Key) {
-				continue
+			// CLAIM the ticket and a concurrency slot together, before spawning. Separately, with the
+			// lock released in between, two overlapping refreshes both passed the cap. See reserve.
+			seq, ok := e.reserve(lp.ID, iss.Key, iss.Title, lp.MaxConcurrent, e.now())
+			if !ok {
+				continue // at the cap, or this ticket is already handled
 			}
 			issCopy := iss
 			sid, err := e.spawn(lp, &issCopy)
-			run := Run{LoopID: lp.ID, IssueKey: iss.Key, IssueTitle: iss.Title, SessionID: sid, StartedAt: e.now(), Status: "running"}
-			if err != nil {
-				run.Status = "error"
-				run.Error = err.Error()
-				// Hand the ticket back. A spawn that failed for a transient, fixable reason — the
-				// provider binary missing, a worktree that could not be created, a project path that
-				// moved — must not blacklist it permanently.
-				e.release(lp.ID, iss.Key)
-				log.Printf("loops: %q could not start a session for %s: %v — leaving the ticket "+
-					"unclaimed so the next tick can retry it", lp.Name, iss.Key, err)
-			}
-			e.mu.Lock()
-			e.runs = append(e.runs, run)
-			if len(e.runs) > 200 { // bound history
-				e.runs = e.runs[len(e.runs)-200:]
-			}
-			e.mu.Unlock()
-			active++
+			e.finish(seq, lp.ID, iss.Key, lp.Name, sid, err)
 			changed = true
 		}
 	}
@@ -301,20 +285,16 @@ func (e *Engine) runScheduled() {
 		if lp.LastRun != 0 && now-lp.LastRun < interval {
 			continue // not due yet
 		}
-		cap := lp.MaxConcurrent
-		if cap < 1 {
-			cap = 1
-		}
-		if e.activeRunCount(lp.ID) >= cap {
+		// Reserve the slot before spawning, for the same reason OnIssues does: a spawn takes seconds,
+		// and until its run is recorded the active count cannot see it, so two ticks landing together
+		// both stacked a run on a loop capped at one.
+		seq, ok := e.reserve(lp.ID, "task", lp.Name, lp.MaxConcurrent, now)
+		if !ok {
 			continue // a prior run of this loop is still going — don't stack
 		}
 		sid, err := e.spawn(lp, nil) // nil issue = task loop → uses lp.Prompt
 		e.setLastRun(lp.ID, now)
-		run := Run{LoopID: lp.ID, IssueKey: "task", IssueTitle: lp.Name, SessionID: sid, StartedAt: now, Status: "running"}
-		if err != nil {
-			run.Status = "error"
-		}
-		e.appendRun(run)
+		e.finish(seq, lp.ID, "task", lp.Name, sid, err)
 		changed = true
 	}
 	if changed {
@@ -367,6 +347,10 @@ func (e *Engine) SetRunStatus(sessionID, status string) {
 func (e *Engine) activeRunCount(loopID string) int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.activeRunCountLocked(loopID)
+}
+
+func (e *Engine) activeRunCountLocked(loopID string) int {
 	n := 0
 	for _, r := range e.runs {
 		if r.LoopID == loopID && r.Status == "running" {
@@ -374,6 +358,80 @@ func (e *Engine) activeRunCount(loopID string) int {
 		}
 	}
 	return n
+}
+
+// reserve takes a concurrency slot (and, for a ticket loop, the ticket itself) and records the run
+// that will fill it — all under ONE lock.
+//
+// MaxConcurrent used to be a check-then-act with the lock released across the whole spawn: the
+// active count was read once at the top of OnIssues and then incremented in a local variable, so two
+// overlapping refreshes both saw zero and each started up to the cap. A loop capped at one ran two
+// agents on the same repo, which is the specific thing the cap exists to prevent — two agents
+// editing one worktree, each undoing the other.
+//
+// The placeholder run is what makes the slot real: a spawn takes seconds, and until its run is
+// recorded the count cannot see it. Its seq is returned so finish() can fill in the session id, or
+// mark it failed, once the spawn returns.
+func (e *Engine) reserve(loopID, issueKey, issueTitle string, maxConcurrent int, now int64) (uint64, bool) {
+	if maxConcurrent < 1 {
+		maxConcurrent = 1
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.activeRunCountLocked(loopID) >= maxConcurrent {
+		return 0, false
+	}
+	// A ticket loop also claims the ticket here; a task loop (issueKey "task") has none to claim.
+	if issueKey != "" && issueKey != "task" {
+		if !e.claimLocked(loopID, issueKey) {
+			return 0, false
+		}
+	}
+	e.runSeq++
+	seq := e.runSeq
+	e.runs = append(e.runs, Run{
+		LoopID: loopID, IssueKey: issueKey, IssueTitle: issueTitle,
+		StartedAt: now, Status: "running", seq: seq,
+	})
+	if len(e.runs) > 200 { // bound history
+		e.runs = e.runs[len(e.runs)-200:]
+	}
+	return seq, true
+}
+
+// finish completes the run reserved under seq: it records the session the spawn produced, or the
+// reason there is none.
+func (e *Engine) finish(seq uint64, loopID, issueKey, loopName, sid string, err error) {
+	e.mu.Lock()
+	for i := range e.runs {
+		if e.runs[i].seq != seq {
+			continue
+		}
+		e.runs[i].SessionID = sid
+		if err != nil {
+			e.runs[i].Status = "error"
+			// Both of these were missing on the task-loop path: Status was set to "error" and the
+			// reason dropped, so the row showed a red dot and the bare word "error", with an Open
+			// button that does nothing because there is no session id. Nothing was logged either, so
+			// not even the daemon log explained it.
+			e.runs[i].Error = err.Error()
+		}
+		break
+	}
+	e.mu.Unlock()
+	if err == nil {
+		return
+	}
+	if issueKey != "" && issueKey != "task" {
+		// Hand the ticket back. A spawn that failed for a transient, fixable reason — the provider
+		// binary missing, a worktree that could not be created, a project path that moved — must not
+		// blacklist it permanently.
+		e.release(loopID, issueKey)
+		log.Printf("loops: %q could not start a session for %s: %v — leaving the ticket unclaimed so "+
+			"the next tick can retry it", loopName, issueKey, err)
+		return
+	}
+	log.Printf("loops: %q could not start its scheduled run: %v", loopName, err)
 }
 
 func (e *Engine) isHandled(loopID, key string) bool {
@@ -402,6 +460,12 @@ func (e *Engine) isHandled(loopID, key string) bool {
 func (e *Engine) claim(loopID, key string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	return e.claimLocked(loopID, key)
+}
+
+// claimLocked is claim with e.mu already held, so a caller can make the claim and the concurrency
+// check one atomic step. See reserve.
+func (e *Engine) claimLocked(loopID, key string) bool {
 	for i := range e.loops {
 		if e.loops[i].ID != loopID {
 			continue
