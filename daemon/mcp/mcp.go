@@ -76,6 +76,9 @@ type Client struct {
 	closed    chan struct{}
 
 	stderr *lineBuffer // recent stderr, so a failed connect can say WHY
+	// reaped is closed once cmd.Wait() has returned. Wait does not return until os/exec's own
+	// stderr-copying goroutine has finished, which makes this the signal that `stderr` is complete.
+	reaped chan struct{}
 }
 
 // Dial starts a stdio MCP server and returns a connected client. The caller must Close it.
@@ -111,10 +114,12 @@ func Dial(ctx context.Context, command string, args []string, env map[string]str
 		pending: make(map[int64]chan rpcMessage),
 		closed:  make(chan struct{}),
 		stderr:  lb,
+		reaped:  make(chan struct{}),
 	}
 	go c.readLoop()
 	go func() {
 		_ = cmd.Wait() // reap; without this the exited server lingers as a zombie
+		close(c.reaped)
 	}()
 	return c, nil
 }
@@ -138,7 +143,28 @@ func (c *Client) Close() error {
 }
 
 // Stderr returns the server's recent stderr — the explanation for a failed start.
-func (c *Client) Stderr() string { return c.stderr.String() }
+//
+// It WAITS, briefly, for the process to be reaped first. cmd.Stderr is an io.Writer rather than a
+// file, so os/exec copies the pipe on a goroutine of its own, and that copy is only guaranteed
+// complete once cmd.Wait() returns. Reading without waiting is a race against it, and the race is
+// biased the wrong way: a server that dies immediately — the exact case this text exists for — closes
+// stdout at almost the same moment it writes its last stderr line. Losing that race replaces "boom:
+// missing API key" with a bare "exit status 1", which is the difference between a user who can fix
+// their config and one who cannot.
+//
+// Bounded, because a server that keeps its stderr pipe open (a surviving grandchild holding the fd)
+// would otherwise hang the caller. A truncated explanation beats a wedged Check.
+func (c *Client) Stderr() string {
+	select {
+	case <-c.reaped:
+	case <-time.After(stderrDrainWait):
+	}
+	return c.stderr.String()
+}
+
+// stderrDrainWait is how long Stderr waits for the reaper. Long enough for a process that has already
+// exited to be collected, short enough that nobody notices.
+const stderrDrainWait = 500 * time.Millisecond
 
 func (c *Client) readLoop() {
 	defer close(c.closed)

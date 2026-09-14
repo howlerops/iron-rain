@@ -322,7 +322,7 @@ func (h *Hub) indexHandoff(m *managedSession, cwd, path string) {
 		return
 	}
 	if list, err := h.db.Handoffs(""); err == nil {
-		h.broadcast(protocol.TypeHandoffList, protocol.HandoffList{Handoffs: toHandoffEntries(list)})
+		h.broadcastWithCapability(protocol.TypeHandoffList, protocol.HandoffList{Handoffs: toHandoffEntries(list)}, capSteer)
 	}
 }
 

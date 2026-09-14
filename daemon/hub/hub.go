@@ -797,7 +797,7 @@ func (h *Hub) SetActivity(a *activity.Store) {
 	h.mu.Unlock()
 	if a != nil {
 		a.SetListener(func(e activity.Event) {
-			h.broadcast(protocol.TypeActivityEvent, toProtoActivity(e))
+			h.broadcastWithCapability(protocol.TypeActivityEvent, toProtoActivity(e), capSteer)
 		})
 	}
 }
@@ -1000,9 +1000,9 @@ func (h *Hub) broadcastLogLine(line string) {
 // BroadcastIssues pushes the current assigned issues to every device (the Manager's poll
 // callback). Exported so main.go can wire it as the Manager's onUpdate.
 func (h *Hub) BroadcastIssues(in []issues.Issue) {
-	h.broadcast(protocol.TypeIssueList, protocol.IssueList{Issues: toProtoIssues(in)})
+	h.broadcastWithCapability(protocol.TypeIssueList, protocol.IssueList{Issues: toProtoIssues(in)}, capSteer)
 	if m := h.issuesMgr(); m != nil {
-		h.broadcast(protocol.TypeIntegrationStatus, protocol.IntegrationStatus{Connected: m.Connected(), OAuthApps: m.OAuthApps(), AuthErrors: m.AuthErrors(), AuthErrorDetails: m.AuthErrorDetails(), JiraSiteAmbiguous: m.JiraSiteAmbiguous()})
+		h.broadcastWithCapability(protocol.TypeIntegrationStatus, protocol.IntegrationStatus{Connected: m.Connected(), OAuthApps: m.OAuthApps(), AuthErrors: m.AuthErrors(), AuthErrorDetails: m.AuthErrorDetails(), JiraSiteAmbiguous: m.JiraSiteAmbiguous()}, capSteer)
 	}
 	// Feed the loop engine so it can start agents on newly-appearing tickets.
 	h.mu.Lock()
@@ -1176,7 +1176,7 @@ func (h *Hub) broadcastLoops() {
 	if eng == nil {
 		return
 	}
-	h.broadcast(protocol.TypeLoopList, protocol.LoopList{Loops: toProtoLoops(eng.List()), Runs: toProtoRuns(eng.Runs())})
+	h.broadcastWithCapability(protocol.TypeLoopList, protocol.LoopList{Loops: toProtoLoops(eng.List()), Runs: toProtoRuns(eng.Runs())}, capOwner)
 }
 
 func toProtoLoops(in []loops.Loop) []protocol.Loop {
@@ -1317,9 +1317,12 @@ func New() *Hub {
 		pushTimeout:     defaultPushTimeout,
 		pushConcurrency: defaultPushConcurrency,
 	}
-	// Language servers push diagnostics asynchronously; fan them out to every client.
+	// Language servers push diagnostics asynchronously. They go to whoever could have asked the
+	// editor for them — a diagnostic is a project file's path plus a line of its source, which is
+	// exactly what requireEditorRead exists to keep from an observer.
 	h.lsp = lsp.NewManager(func(path string, diags []lsp.Diagnostic) {
-		h.broadcast(protocol.TypeLSPDiagnostics, protocol.LSPDiagnostics{Path: path, Diagnostics: toProtoDiags(diags)})
+		h.broadcastWithCapability(protocol.TypeLSPDiagnostics,
+			protocol.LSPDiagnostics{Path: path, Diagnostics: toProtoDiags(diags)}, editorReadCap)
 	})
 	// Named previews. Started here rather than by every embedder so nobody has to remember a second
 	// call — and a failure is logged, not fatal: losing pretty URLs must never stop the daemon that
@@ -2783,6 +2786,44 @@ func (h *Hub) broadcastExcept(typ string, payload any, skip map[*transport.Conn]
 	}
 }
 
+// broadcastWithCapability fans out only to connections that would have been allowed to ASK for this.
+//
+// Gating a request and then broadcasting its answer to everyone gates nothing. device.list is refused
+// to a non-owner with an explicit reason — and then device.revoke, seventeen lines below it, pushed
+// the very same list to every connected client, so an invited observer learned every enrolled
+// device's public key, label, and last-seen time by doing nothing at all. The same shape held for the
+// MCP server list, the language server's diagnostics, and filesystem change notifications: each is
+// reachable only to someone who can steer, and each was announced to everyone.
+//
+// The rule this enforces is that a push carries the capability of the request that would have
+// returned it. It costs a solo user nothing — with sharing off every connection is the owner, so this
+// is the unfiltered fan-out it replaces.
+func (h *Hub) broadcastWithCapability(typ string, payload any, c capability) {
+	raw, err := protocol.Encode("", typ, payload)
+	if err != nil {
+		return
+	}
+	h.mu.Lock()
+	all := make([]*hubClient, 0, len(h.clients))
+	for _, cl := range h.clients {
+		all = append(all, cl)
+	}
+	h.mu.Unlock()
+	// Roles are resolved OUTSIDE h.mu, matching participants() and Serve(). The role registry guards
+	// itself and never reaches back for the hub lock; keeping it that way is what stops the two from
+	// ever being taken in both orders.
+	for _, cl := range all {
+		if !roleAllows(h.roles.role(cl.conn), c) {
+			continue
+		}
+		select {
+		case cl.ch <- raw:
+		default:
+			h.dropClient(cl.conn)
+		}
+	}
+}
+
 // hubClient is one connected client's bounded outbound queue for hub-level (cross-device)
 // broadcasts, drained by a dedicated writer goroutine. broadcast() enqueues without blocking;
 // a client whose queue overflows is dropped. Point-to-point replies (sendOK/sendErr) still write
@@ -2937,6 +2978,13 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, nil)
 
 	case protocol.TypeHandoffList:
+		// An empty Cwd means "every repo on this machine" (store.Handoffs applies no WHERE clause),
+		// and each entry carries an absolute directory, an absolute file path, and the human summary
+		// of what the owner is doing there. That is the shape of fs.tree, not of a session.
+		if !h.requireCapabilityBecause(conn, env.ID, capSteer, "read the handoff index",
+			"It spans every repo on this Mac, not just this session.") {
+			return
+		}
 		var req protocol.HandoffList
 		_ = env.Unmarshal(&req)
 		if h.db == nil {
@@ -3136,6 +3184,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.handleMCP(ctx, conn, env)
 
 	case protocol.TypeApprovalRulesList:
+		// Owner-only, matching approval.rule.delete below. The census once declared this a watcher
+		// read on the rationale that a watcher may see the session — but the payload is not
+		// session-scoped: it is every standing permission on the machine, each naming an absolute
+		// subtree and the exact command shape that was approved there.
+		if !h.requireCapabilityBecause(conn, env.ID, capOwner, "list approval rules",
+			"Standing permissions span every project on this Mac.") {
+			return
+		}
 		h.sendOK(conn, env.ID, h.approvalRulesList())
 
 	case protocol.TypeApprovalRuleDelete:
@@ -3155,7 +3211,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, list)
 		// Broadcast so a second device's rules screen updates live instead of going stale — the
 		// mistake agent.list and notify.prefs.set both make.
-		h.broadcast(protocol.TypeApprovalRulesChanged, list)
+		h.broadcastWithCapability(protocol.TypeApprovalRulesChanged, list, capOwner)
 
 	case protocol.TypeCheckpointCreate:
 		if !h.requireCapability(conn, env.ID, capSteer, "create a checkpoint") {
@@ -3722,6 +3778,12 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.CommandList{Commands: out})
 
 	case protocol.TypeLoopList:
+		// Owner-only, matching loop.upsert/delete/setEnabled beside it. A Loop carries the verbatim
+		// prompt the owner wrote for an unattended agent, the repos it targets and its dollar budget —
+		// configuration for this Mac, and the same read/write asymmetry the MCP list had.
+		if !h.requireCapability(conn, env.ID, capOwner, "list autonomous loops") {
+			return
+		}
 		eng := h.loops()
 		if eng == nil {
 			h.sendErr(conn, env.ID, "loops not enabled")
@@ -3850,7 +3912,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 				h.sendErr(conn, env.ID, err.Error())
 				return
 			}
-			h.broadcast(protocol.TypeFSChange, protocol.FSChange{Path: wtPath}) // files moved — reload open buffers
+			h.broadcastWithCapability(protocol.TypeFSChange, protocol.FSChange{Path: wtPath}, capSteer) // files moved — reload open buffers
 			h.sendOK(conn, env.ID, protocol.WorktreeCatchUp{SessionID: req.SessionID, Status: res.Status, Base: res.Base, Message: res.Message, Conflicts: res.Conflicts})
 		case len(members) > 0:
 			// Workspace: catch every member repo up to its own default branch; aggregate the outcome.
@@ -3873,7 +3935,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 					status = "updated"
 				}
 			}
-			h.broadcast(protocol.TypeFSChange, protocol.FSChange{Path: ""})
+			h.broadcastWithCapability(protocol.TypeFSChange, protocol.FSChange{Path: ""}, capSteer)
 			h.sendOK(conn, env.ID, protocol.WorktreeCatchUp{SessionID: req.SessionID, Status: status, Base: base, Message: strings.Join(msgs, "\n"), Conflicts: conflicts})
 		default:
 			h.sendErr(conn, env.ID, "not a worktree session")
@@ -4020,7 +4082,8 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			return
 		}
 		h.sendOK(conn, env.ID, h.deviceList(conn))
-		h.broadcast(protocol.TypeDeviceList, h.deviceList(nil))
+		// Owners only — device.list above refuses this exact payload to anyone else.
+		h.broadcastWithCapability(protocol.TypeDeviceList, h.deviceList(nil), capOwner)
 
 	case protocol.TypeDeviceLabel:
 		if !h.requireCapability(conn, env.ID, capOwner, "label a device") {
@@ -4038,6 +4101,13 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, h.deviceList(conn))
 
 	case protocol.TypeDeviceCredentialAck:
+		// Owner-only despite looking like per-connection bookkeeping: noteMigrated is a GLOBAL side
+		// effect. It starts the clock that retires the old shared pairing secret, so an observer could
+		// shorten the life of a credential that is not theirs by acking one they never received.
+		if !h.requireCapabilityBecause(conn, env.ID, capOwner, "confirm a device credential",
+			"Acknowledging one starts the retirement clock on this Mac's old pairing secret.") {
+			return
+		}
 		// The device confirms it stored its own credential. This — not the mint — is what starts the
 		// clock on the old permanent secret: a credential that was minted but never landed (client
 		// killed mid-frame, an older build that ignores the frame) must not strand the owner with a
@@ -4198,9 +4268,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		}
 		st := protocol.IntegrationStatus{Connected: m.Connected(), OAuthApps: m.OAuthApps(), AuthErrors: m.AuthErrors(), AuthErrorDetails: m.AuthErrorDetails(), JiraSiteAmbiguous: m.JiraSiteAmbiguous()}
 		h.sendOK(conn, env.ID, st)
-		h.broadcast(protocol.TypeIntegrationStatus, st) // every device converges on the disconnect
+		h.broadcastWithCapability(protocol.TypeIntegrationStatus, st, capSteer) // every device converges on the disconnect
 
 	case protocol.TypeIntegrationStatus:
+		// Carries AuthErrorDetails — raw upstream error text, which is where site URLs and account
+		// identifiers surface. Same level as the board it describes.
+		if !h.requireCapability(conn, env.ID, capSteer, "see tracker connection status") {
+			return
+		}
 		var connected, oauthApps, authErrors []string
 		var details map[string]string
 		var siteAmbiguous bool
@@ -4257,6 +4332,10 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.broadcast(protocol.TypeTelemetryStatus, st) // converge every device on the toggle
 
 	case protocol.TypeJiraSites:
+		if !h.requireCapabilityBecause(conn, env.ID, capSteer, "read the ticket board",
+			"It is this Mac's tracker account, not part of the session.") {
+			return
+		}
 		m := h.issuesMgr()
 		if m == nil {
 			h.sendErr(conn, env.ID, "integrations not enabled")
@@ -4319,6 +4398,12 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.IntegrationOAuth{Provider: req.Provider, URL: url})
 
 	case protocol.TypeIssueList:
+		// The board is the owner's tracker, read with the owner's credentials, and every issue carries
+		// its full BODY. A watcher invited to one session has no claim on that.
+		if !h.requireCapabilityBecause(conn, env.ID, capSteer, "read the ticket board",
+			"It is this Mac's tracker account, not part of the session.") {
+			return
+		}
 		m := h.issuesMgr()
 		if m == nil {
 			h.sendErr(conn, env.ID, "integrations not enabled")
@@ -4327,6 +4412,10 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.IssueList{Issues: toProtoIssues(m.Issues())})
 
 	case protocol.TypeIssueStates:
+		if !h.requireCapabilityBecause(conn, env.ID, capSteer, "read the ticket board",
+			"It is this Mac's tracker account, not part of the session.") {
+			return
+		}
 		var req protocol.IssueStatesReq
 		_ = env.Unmarshal(&req)
 		m := h.issuesMgr()
@@ -4346,6 +4435,10 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.IssueStateList{States: out})
 
 	case protocol.TypeIssueColumns:
+		if !h.requireCapabilityBecause(conn, env.ID, capSteer, "read the ticket board",
+			"It is this Mac's tracker account, not part of the session.") {
+			return
+		}
 		var req protocol.IssueColumnsReq
 		_ = env.Unmarshal(&req)
 		m := h.issuesMgr()
@@ -4434,6 +4527,10 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		go func() { _ = m.Refresh(context.Background()) }()
 
 	case protocol.TypeIssueProjects:
+		if !h.requireCapabilityBecause(conn, env.ID, capSteer, "read the ticket board",
+			"It is this Mac's tracker account, not part of the session.") {
+			return
+		}
 		m := h.issuesMgr()
 		if m == nil {
 			h.sendErr(conn, env.ID, "integrations not enabled")
@@ -4459,6 +4556,10 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.handleIssueLaunch(ctx, conn, env)
 
 	case protocol.TypeIssueDetail:
+		if !h.requireCapabilityBecause(conn, env.ID, capSteer, "read the ticket board",
+			"It is this Mac's tracker account, not part of the session.") {
+			return
+		}
 		var req protocol.IssueDetailReq
 		_ = env.Unmarshal(&req)
 		m := h.issuesMgr()
@@ -4512,6 +4613,10 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		go func() { _ = m.Refresh(context.Background()) }()
 
 	case protocol.TypeIssueMembers:
+		if !h.requireCapabilityBecause(conn, env.ID, capSteer, "read the ticket board",
+			"It is this Mac's tracker account, not part of the session.") {
+			return
+		}
 		var req protocol.IssueMembersReq
 		_ = env.Unmarshal(&req)
 		m := h.issuesMgr()
@@ -4531,6 +4636,10 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.IssueMemberList{Members: out})
 
 	case protocol.TypeIssueLabels:
+		if !h.requireCapabilityBecause(conn, env.ID, capSteer, "read the ticket board",
+			"It is this Mac's tracker account, not part of the session.") {
+			return
+		}
 		var req protocol.IssueLabelsReq
 		_ = env.Unmarshal(&req)
 		m := h.issuesMgr()
@@ -4550,6 +4659,10 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.IssueLabelList{Labels: out})
 
 	case protocol.TypeIssueCycles:
+		if !h.requireCapabilityBecause(conn, env.ID, capSteer, "read the ticket board",
+			"It is this Mac's tracker account, not part of the session.") {
+			return
+		}
 		var req protocol.IssueCyclesReq
 		_ = env.Unmarshal(&req)
 		m := h.issuesMgr()
@@ -4611,6 +4724,10 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, nil)
 
 	case protocol.TypeIssueImage:
+		if !h.requireCapabilityBecause(conn, env.ID, capSteer, "read the ticket board",
+			"It is this Mac's tracker account, not part of the session.") {
+			return
+		}
 		var req protocol.IssueImageReq
 		_ = env.Unmarshal(&req)
 		m := h.issuesMgr()
@@ -4827,7 +4944,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		// project); with no Scope it stays the historical provider+tool rule.
 		if req.Decision == protocol.DecisionAlways {
 			h.addApprovalRule(ruleFromDecision(pend, req.Scope))
-			h.broadcast(protocol.TypeApprovalRulesChanged, h.approvalRulesList())
+			h.broadcastWithCapability(protocol.TypeApprovalRulesChanged, h.approvalRulesList(), capOwner)
 		}
 		h.sendOK(conn, env.ID, nil)
 		// Tell every client this approval was answered, so its card clears everywhere.
@@ -5303,9 +5420,18 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		})
 
 	case protocol.TypePreviewDOMResult:
-		// The app's answer to a preview.dom.ask. No capability gate: this resolves a waiter the
-		// daemon itself created moments ago and keyed with an unguessable id, so an unsolicited
-		// result matches nothing and is discarded.
+		// The app's answer to a preview.dom.ask.
+		//
+		// This was ungated on the argument that the waiter is keyed with an unguessable id, so an
+		// unsolicited result matches nothing. The id was not unguessable — the ask that carries it was
+		// broadcast to every connection, observers included. So a watcher could answer a tool call on
+		// the app's behalf, and callPreviewTool hands the result to the agent verbatim: a prompt
+		// injection channel into an agent running with the OWNER's credentials, from capWatch. Whoever
+		// answers must at least be someone who could have driven the tool that asked.
+		if !h.requireCapabilityBecause(conn, env.ID, capSteer, "answer a preview request",
+			"The answer goes straight to the agent as the result of a tool call.") {
+			return
+		}
 		var res protocol.PreviewDOMResult
 		if env.Unmarshal(&res) == nil && res.RequestID != "" && h.previewDOM != nil {
 			h.previewDOM.resolve(res)
@@ -5388,6 +5514,14 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, nil)
 
 	case protocol.TypeActivityList:
+		// activity.mark_read beside it was gated on the grounds that it MUTATES a shared feed, and the
+		// read was left open. That was the wrong half to worry about: the ring is machine-wide and
+		// persisted, so it carries absolute working directories, labels and stall reasons for sessions
+		// the reader was never shown — including events recorded before they connected.
+		if !h.requireCapabilityBecause(conn, env.ID, capSteer, "read the activity feed",
+			"The feed covers every session on this Mac, not only the ones you can see.") {
+			return
+		}
 		h.mu.Lock()
 		a := h.activity
 		h.mu.Unlock()
@@ -5838,7 +5972,7 @@ func (h *Hub) applyRename(ctx context.Context, req protocol.LSPRenameReq) ([]str
 			continue
 		}
 		files = append(files, abs)
-		h.broadcast(protocol.TypeFSChange, protocol.FSChange{Path: abs}) // open buffers reload
+		h.broadcastWithCapability(protocol.TypeFSChange, protocol.FSChange{Path: abs}, capSteer) // open buffers reload
 	}
 	sort.Strings(files)
 	return files, nil

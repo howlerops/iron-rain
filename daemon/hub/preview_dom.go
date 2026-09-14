@@ -98,7 +98,7 @@ func (h *Hub) askPreviewDOM(ctx context.Context, sessionID, op, ref, value strin
 
 	// Broadcast rather than target a device: the daemon does not know which client, if any, has this
 	// preview open. Every client sees the ask, only one can act on it, and the first answer wins.
-	h.broadcast(protocol.TypePreviewDOMAsk, ask)
+	h.broadcastWithCapability(protocol.TypePreviewDOMAsk, ask, capSteer)
 
 	select {
 	case res := <-ch:

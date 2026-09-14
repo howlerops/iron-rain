@@ -107,6 +107,15 @@ func (h *Hub) handleMCP(ctx context.Context, conn *transport.Conn, env protocol.
 	}
 	switch env.Type {
 	case protocol.TypeMCPList:
+		// The list is CONFIGURATION, not session content: every server's command line, its arguments
+		// and its endpoint URL, which between them name absolute paths on the owner's machine and
+		// private endpoints they may not have meant to publish. (Env is already redacted.) capSteer
+		// puts it beside fs.tree and the editor — the same access by another route — rather than
+		// beside mcp.upsert, which is owner-only because it CHANGES what the agent can run.
+		if !h.requireCapabilityBecause(conn, env.ID, capSteer, "see the MCP servers",
+			"A server's command line and endpoint are configuration for this Mac, not part of the session.") {
+			return
+		}
 		h.sendOK(conn, env.ID, h.mcpList())
 
 	case protocol.TypeMCPUpsert:
@@ -152,11 +161,11 @@ func (h *Hub) handleMCP(ctx context.Context, conn *transport.Conn, env protocol.
 		}
 		log.Printf("mcp: server %q saved (%s)", srv.Name, srv.Transport)
 		h.sendOK(conn, env.ID, h.mcpList())
-		h.broadcast(protocol.TypeMCPChanged, h.mcpList())
+		h.broadcastWithCapability(protocol.TypeMCPChanged, h.mcpList(), capSteer)
 		// Probe in the background so the UI shows whether it actually works without blocking the save.
 		go func() {
 			r.Check(context.Background(), srv.Name)
-			h.broadcast(protocol.TypeMCPChanged, h.mcpList())
+			h.broadcastWithCapability(protocol.TypeMCPChanged, h.mcpList(), capSteer)
 		}()
 
 	case protocol.TypeMCPDelete:
@@ -174,7 +183,7 @@ func (h *Hub) handleMCP(ctx context.Context, conn *transport.Conn, env protocol.
 		}
 		log.Printf("mcp: server %q removed", ref.Name)
 		h.sendOK(conn, env.ID, h.mcpList())
-		h.broadcast(protocol.TypeMCPChanged, h.mcpList())
+		h.broadcastWithCapability(protocol.TypeMCPChanged, h.mcpList(), capSteer)
 
 	case protocol.TypeMCPEnable:
 		if !h.requireCapability(conn, env.ID, capOwner, "enable an MCP server") {
@@ -190,9 +199,16 @@ func (h *Hub) handleMCP(ctx context.Context, conn *transport.Conn, env protocol.
 			return
 		}
 		h.sendOK(conn, env.ID, h.mcpList())
-		h.broadcast(protocol.TypeMCPChanged, h.mcpList())
+		h.broadcastWithCapability(protocol.TypeMCPChanged, h.mcpList(), capSteer)
 
 	case protocol.TypeMCPDiscover:
+		// A scan of the owner's own machine for agent config files. The reply carries the absolute
+		// PATH of each one it found, so this is a directory read wearing a different name — owner-only,
+		// like project.browse, and like mcp.import which is the other half of this screen's flow.
+		if !h.requireCapabilityBecause(conn, env.ID, capOwner, "scan this Mac for MCP servers",
+			"The scan reports where each config file lives on this Mac.") {
+			return
+		}
 		found := h.discoverMCP(h.discoverCwd())
 		out := protocol.MCPDiscovered{Exclusive: h.mcpExclusiveEnabled()}
 		for _, f := range found {
@@ -224,7 +240,7 @@ func (h *Hub) handleMCP(ctx context.Context, conn *transport.Conn, env protocol.
 			return
 		}
 		h.sendOK(conn, env.ID, h.mcpList())
-		h.broadcast(protocol.TypeMCPChanged, h.mcpList())
+		h.broadcastWithCapability(protocol.TypeMCPChanged, h.mcpList(), capSteer)
 
 	case protocol.TypeMCPExclusive:
 		if !h.requireCapability(conn, env.ID, capOwner, "change MCP exclusivity") {
@@ -239,6 +255,12 @@ func (h *Hub) handleMCP(ctx context.Context, conn *transport.Conn, env protocol.
 		h.sendOK(conn, env.ID, protocol.MCPExclusiveSet{Enabled: in.Enabled})
 
 	case protocol.TypeMCPBrowse:
+		// Owner-only because it makes the DAEMON go out to the network with a caller-supplied query,
+		// and because it is the read half of mcp.import, which is owner-only for the obvious reason:
+		// what it installs runs with the owner's credentials.
+		if !h.requireCapability(conn, env.ID, capOwner, "browse the MCP directory") {
+			return
+		}
 		var req protocol.MCPBrowse
 		_ = env.Unmarshal(&req)
 		entries, err := mcp.BrowseDirectory(ctx, req.Query)
@@ -270,7 +292,7 @@ func (h *Hub) handleMCP(ctx context.Context, conn *transport.Conn, env protocol.
 		}
 		r.Check(ctx, ref.Name)
 		h.sendOK(conn, env.ID, h.mcpList())
-		h.broadcast(protocol.TypeMCPChanged, h.mcpList())
+		h.broadcastWithCapability(protocol.TypeMCPChanged, h.mcpList(), capSteer)
 	}
 }
 

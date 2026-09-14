@@ -121,6 +121,21 @@ func (r *inviteRegistry) redeem(clientPub []byte, secret string) (*invite, bool)
 	return nil, false
 }
 
+// forget drops a key's invite binding without touching the invite itself.
+//
+// Used when a key authenticates with its own device credential: whatever it did in the past, it is
+// not presenting an invite now. The invite keeps its `Redeemed` entry, so its seat count is unchanged
+// and revoking it still works — only the "this key's role comes from that invite" link goes away.
+func (r *inviteRegistry) forget(clientPub []byte) {
+	if len(clientPub) == 0 {
+		return
+	}
+	key := hex.EncodeToString(clientPub)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.byPub, key)
+}
+
 // roleFor returns the role a client should get, based on the invite it redeemed. ok=false means this
 // client didn't come in through an invite (i.e. it used the owner's own credential).
 func (r *inviteRegistry) roleFor(clientPub []byte) (string, bool) {
@@ -258,6 +273,21 @@ func (h *Hub) authenticate(clientPub []byte, presented string) bool {
 	// 1. The device's own credential. Bound to this public key, so a credential lifted from one
 	//    device authenticates nothing from another.
 	if h.authenticateDevice(clientPub, presented) {
+		// Presenting your OWN credential means you are not here as a guest, so any invite this key
+		// once redeemed stops speaking for it.
+		//
+		// Without this, redeeming an invite bound the key to that invite's role permanently, and
+		// roleForConn consults the invite registry FIRST — it never asks which credential actually
+		// authenticated. So an owner who opened their own share link on their own phone (to check what
+		// a guest sees, or because the link was the quickest way to add a viewer) demoted that phone to
+		// observer on their own Mac: no approvals, no steering, no pairing a new device, no device
+		// list, and nothing on screen explaining why. It lasted until the invite expired — a day by
+		// default — and revoking the invite to undo it killed the phone's connection as well, because
+		// revocation disconnects everyone who came in through it.
+		//
+		// Guests never reach this branch: enrollGuest issues no credential, which is exactly what makes
+		// their access end when the invite does.
+		h.invites.forget(clientPub)
 		return true
 	}
 

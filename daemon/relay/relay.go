@@ -56,6 +56,13 @@ const (
 	// nothing would park a goroutine and hold the socket open for the life of the
 	// connection — a cheap slowloris vector on a public relay.
 	defaultRegistrationTimeout = 10 * time.Second
+
+	// defaultPairTimeout bounds how long a client waits to be handed to a host. A host serves ONE
+	// client and then re-registers, so a second client arriving mid-session has nobody to pair with;
+	// without a bound it parked forever, holding a goroutine and an unread socket that nothing would
+	// ever notice was dead. Long enough to cover the host's re-registration round trip, short enough
+	// that the app's own connect race gives up on this route and tries another.
+	defaultPairTimeout = 5 * time.Second
 )
 
 type registration struct {
@@ -65,10 +72,11 @@ type registration struct {
 
 // Relay bridges hosts and clients by server_id.
 type Relay struct {
-	mu         sync.Mutex
-	hosts      map[string]*hostEntry
-	regTimeout time.Duration // registration-phase read bound (per-instance so tests can shorten it)
-	popTimeout time.Duration // proof-of-possession read bound (per-instance for the same reason)
+	mu          sync.Mutex
+	hosts       map[string]*hostEntry
+	regTimeout  time.Duration // registration-phase read bound (per-instance so tests can shorten it)
+	popTimeout  time.Duration // proof-of-possession read bound (per-instance for the same reason)
+	pairTimeout time.Duration // how long a client waits for a host to take it (same reason)
 }
 
 // hostEntry is a registered host awaiting (or serving) a client. evict is closed
@@ -93,7 +101,12 @@ type pairing struct {
 
 // New returns an empty Relay.
 func New() *Relay {
-	return &Relay{hosts: map[string]*hostEntry{}, regTimeout: defaultRegistrationTimeout, popTimeout: defaultPopTimeout}
+	return &Relay{
+		hosts:       map[string]*hostEntry{},
+		regTimeout:  defaultRegistrationTimeout,
+		popTimeout:  defaultPopTimeout,
+		pairTimeout: defaultPairTimeout,
+	}
 }
 
 // Handler is the relay's WebSocket endpoint. Registration is by URL query (?sid=&role=) — the
@@ -157,8 +170,13 @@ func (r *Relay) serveHost(ctx context.Context, id string, hostWS *websocket.Conn
 		proven = true
 	}
 
+	// The pairing handoff is UNBUFFERED on purpose. Buffered, a send succeeded whether or not anyone
+	// would ever receive it — and serveHost receives exactly once, so the second client's pairing
+	// landed in the buffer, its goroutine blocked on a `done` nobody would close, and its socket was
+	// never read again. Unbuffered, a successful send MEANS the host took it, which is the only thing
+	// serveClient can safely conclude from one.
 	entry := &hostEntry{
-		pair:   make(chan *pairing, 1),
+		pair:   make(chan *pairing),
 		ws:     hostWS,
 		evict:  make(chan struct{}),
 		proven: proven,
@@ -201,8 +219,18 @@ func (r *Relay) serveHost(ctx context.Context, id string, hostWS *websocket.Conn
 	//
 	// The reader cannot simply be cancelled at pairing (cancelling a coder/websocket read closes the
 	// connection), so it keeps running and the bridge consumes its output instead of reading directly.
+	// Cancelled when serveHost returns, which is what lets the reader below stop. The request context
+	// is NOT enough: coder/websocket hijacks the connection, and net/http does not cancel a hijacked
+	// request's context when the peer goes away, so `ctx` alone can stay live long after both ends are
+	// gone.
+	ctx, cancelHost := context.WithCancel(ctx)
+	defer cancelHost()
+
 	frames := make(chan wsFrame, 32)
 	readErr := make(chan error, 1)
+	// Closed the moment a client is paired. Before that, dropping a frame is right; after it, every
+	// frame is live session ciphertext and dropping one is silent data loss — see the send below.
+	paired := make(chan struct{})
 	go func() {
 		defer close(frames)
 		for {
@@ -211,18 +239,35 @@ func (r *Relay) serveHost(ctx context.Context, id string, hostWS *websocket.Conn
 				readErr <- err
 				return
 			}
+			f := wsFrame{typ: typ, data: data}
 			select {
-			case frames <- wsFrame{typ: typ, data: data}:
+			case <-paired:
+				// APPLY BACKPRESSURE, never drop. A slow client is the ordinary case — a phone on
+				// cellular — and it is exactly when this buffer fills. Dropping here removed frames
+				// from the middle of an encrypted stream, and nothing downstream could tell: the
+				// transport's replay check only rejects a sequence number that goes BACKWARDS, so a
+				// gap passes as valid (transport.go openLocked says as much). Blocking instead pushes
+				// the stall back to the daemon's own socket, where TCP already knows what to do.
+				select {
+				case frames <- f:
+				case <-ctx.Done():
+					return
+				}
 			default:
-				// Nothing is paired yet, or the client is too slow. A host has nothing useful to say
-				// before a client arrives, so dropping is right: buffering unbounded would let an
-				// unpaired daemon grow the relay's memory without limit.
+				select {
+				case frames <- f:
+				default:
+					// Nothing is paired yet. A host has nothing useful to say before a client
+					// arrives, and buffering it unbounded would let an unpaired daemon grow the
+					// relay's memory without limit.
+				}
 			}
 		}
 	}()
 
 	select {
 	case p := <-entry.pair:
+		close(paired)
 		bridgeFromReader(ctx, frames, readErr, hostWS, p.clientWS)
 		close(p.done)
 	case <-entry.evict:
@@ -269,11 +314,29 @@ func (r *Relay) serveClient(ctx context.Context, id string, clientWS *websocket.
 		return
 	}
 	done := make(chan struct{})
+	// A host serves one client at a time, so "is anyone there?" has to be answered by a bounded wait
+	// rather than assumed. This used to park forever on a send nobody would receive: the goroutine
+	// and the socket both stayed, and since nothing read that socket, a peer that had already gone
+	// away was never noticed either — unauthenticated, unbounded, and invisible on a shared relay.
+	//
+	// A refusal here is also the honest answer for the app: the WebSocket upgrade has already
+	// succeeded, so a route that is silently dead looks identical to one that is merely slow, and its
+	// LAN-vs-relay race would happily pick it and wait out the whole handshake budget.
+	timer := time.NewTimer(r.pairTimeout)
+	defer timer.Stop()
 	select {
 	case entry.pair <- &pairing{clientWS: clientWS, done: done}:
-		<-done
+	case <-timer.C:
+		clientWS.Close(websocket.StatusTryAgainLater, "host is serving another client")
+		return
 	case <-ctx.Done():
 		clientWS.Close(websocket.StatusNormalClosure, "")
+		return
+	}
+	// Paired. From here `done` is the reliable signal — the host closes it when the bridge ends.
+	select {
+	case <-done:
+	case <-ctx.Done():
 	}
 }
 

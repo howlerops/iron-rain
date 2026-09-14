@@ -124,9 +124,9 @@ func probe(conn *transport.Conn, rd *reader, id string, quiet time.Duration) boo
 		log.Fatal(err)
 	}
 	byType := map[string]int{}
-	seen := map[string]int{}             // frame hash -> count, to catch a doubled replay
-	kindOf := map[string]string{}        // frame hash -> its type, so repeats can be judged by what they draw
-	sample := map[string][]byte{}        // frame hash -> the raw frame, for reporting a real duplicate
+	seen := map[string]int{}      // frame hash -> count, to catch a doubled replay
+	kindOf := map[string]string{} // frame hash -> its type, so repeats can be judged by what they draw
+	sample := map[string][]byte{} // frame hash -> the raw frame, for reporting a real duplicate
 	var dupSamples [][]byte
 	visible, total := 0, 0
 	last := time.Now()

@@ -9,11 +9,11 @@ import (
 // failingProvider always fails ListAssigned, like a tracker whose token has expired.
 type failingProvider struct{ name string }
 
-func (f *failingProvider) Name() string { return f.name }
-func (f *failingProvider) ListAssigned(context.Context) ([]Issue, error) { return nil, errAuth{} }
+func (f *failingProvider) Name() string                                            { return f.name }
+func (f *failingProvider) ListAssigned(context.Context) ([]Issue, error)           { return nil, errAuth{} }
 func (f *failingProvider) WorkflowStates(context.Context, string) ([]State, error) { return nil, nil }
-func (f *failingProvider) Comment(context.Context, string, string) error            { return nil }
-func (f *failingProvider) Transition(context.Context, string, string) error         { return nil }
+func (f *failingProvider) Comment(context.Context, string, string) error           { return nil }
+func (f *failingProvider) Transition(context.Context, string, string) error        { return nil }
 func (f *failingProvider) Detail(context.Context, string) (Issue, []Comment, []Attachment, error) {
 	return Issue{}, nil, nil, nil
 }

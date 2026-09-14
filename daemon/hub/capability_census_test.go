@@ -30,24 +30,23 @@ import (
 // owner for every connection, so every check here passes unconditionally. These boundaries exist
 // only once someone has deliberately turned sharing on and invited another person in.
 func TestEveryMessageTypeDecidesWhoMaySendIt(t *testing.T) {
-	// Reads a watcher is meant to have. Someone you let watch a session can see the session.
+	// Reads a watcher is meant to have. Someone you let watch a session can see the session — and
+	// nothing else. That last clause is what this list keeps getting wrong: the entries that have left
+	// it were all machine-WIDE reads wearing a session-shaped name. The ticket board is the owner's
+	// tracker account (ticket bodies included), the handoff index spans every repo on the Mac, the
+	// activity ring and the approval rules outlive any one session, and a Loop is the verbatim prompt
+	// the owner wrote for an unattended agent. All are capSteer or capOwner now.
 	watcherReads := []string{
 		"TypeSessionList", "TypeSessionSubscribe", "TypeParticipants", "TypeClientIdentify",
 		"TypeThreadTree", "TypeTranscriptPage", "TypeProviderList", "TypeAgentList",
-		"TypeModelList", "TypeCommandList", "TypeProjectList", "TypeLoopList", "TypeHandoffList",
-		"TypeCheckpointList", "TypeActivityList", "TypeDiscover", "TypeSessionDefaultsGet",
-		"TypeApprovalRulesList", "TypeWorktreeStatus", "TypeWorktreeConflicts",
-		"TypeIntegrationStatus", "TypeTelemetryStatus", "TypeUsageReport",
-	}
-	// The ticket board. Read-only against the user's own tracker credentials.
-	trackerReads := []string{
-		"TypeIssueList", "TypeIssueStates", "TypeIssueColumns", "TypeIssueProjects",
-		"TypeIssueDetail", "TypeIssueMembers", "TypeIssueLabels", "TypeIssueCycles",
-		"TypeIssueImage", "TypeJiraSites",
+		"TypeModelList", "TypeCommandList", "TypeProjectList",
+		"TypeCheckpointList", "TypeDiscover", "TypeSessionDefaultsGet",
+		"TypeWorktreeStatus", "TypeWorktreeConflicts",
+		"TypeTelemetryStatus", "TypeUsageReport",
 	}
 	// Per-connection bookkeeping: these act on the sender's own connection and nothing else.
 	ownConnection := []string{
-		"TypeDeviceRegister", "TypeDeviceCredentialAck", "TypeLogUnsubscribe", "TypePreviewDOMResult",
+		"TypeDeviceRegister", "TypeLogUnsubscribe",
 	}
 	// Reads of a session's own WORK. An observer can already subscribe to the session and read its
 	// transcript, and the diff is the same content by another route: it is what the agent did. Left
@@ -55,7 +54,7 @@ func TestEveryMessageTypeDecidesWhoMaySendIt(t *testing.T) {
 	sessionWork := []string{"TypeWorktreeDiff", "TypeWorkspaceDiff"}
 
 	known := map[string]bool{}
-	for _, group := range [][]string{watcherReads, trackerReads, ownConnection, sessionWork} {
+	for _, group := range [][]string{watcherReads, ownConnection, sessionWork} {
 		for _, n := range group {
 			known[n] = true
 		}
@@ -102,43 +101,100 @@ func TestEveryMessageTypeDecidesWhoMaySendIt(t *testing.T) {
 // ungatedDispatchCases returns the message types whose dispatch arm performs no capability check,
 // following one level of delegation into an h.handleX or h.requireX helper — several arms gate inside
 // one (handleMCP), and the language-server family shares a named gate that carries their common reason.
+//
+// The delegate is re-dispatched, NOT merely scanned. Asking only whether "requireCapability" appears
+// somewhere inside handleMCP passed the whole mcp.* family on the strength of the gate on mcp.upsert,
+// while mcp.list — every server's command line, arguments and endpoint URL — sat ungated a few lines
+// above it and this census reported nothing. A helper that switches on env.Type gates each type
+// separately, so the census has to look at the arm for the type it is actually asking about.
+// gateUse is what a REAL gate looks like: the refusal is acted on.
+//
+// Matching the bare call name accepted a handler that asks for permission and then ignores the
+// answer — `_ = h.requireCapability(...)` reads as gated, sends the refusal to the client, and does
+// the work anyway. That is not a hypothetical shape; it is exactly what a refactor produces when
+// someone splits an `if !gate { return }` across lines and loses the return.
+const gateUse = "if !h.require"
+
 func ungatedDispatchCases() ([]string, error) {
 	src, err := os.ReadFile("hub.go")
 	if err != nil {
 		return nil, err
 	}
 	s := string(src)
-	caseRe := regexp.MustCompile(`\n\tcase (protocol\.Type\w+(?:,\s*\n?\s*protocol\.Type\w+)*):`)
 	nameRe := regexp.MustCompile(`protocol\.(Type\w+)`)
 	delegateRe := regexp.MustCompile("h\\.((?:handle|require)\\w+)\\(")
 
-	cases := caseRe.FindAllStringSubmatchIndex(s, -1)
 	var out []string
-	for i, c := range cases {
-		start := c[1]
-		end := len(s)
-		if i+1 < len(cases) {
-			end = cases[i+1][0]
-		}
-		body := s[start:end]
-		if strings.Contains(body, "requireCapability") {
+	for _, arm := range censusArms(s) {
+		// A gate written directly in the arm covers every type the arm names.
+		if strings.Contains(arm.body, gateUse) {
 			continue
 		}
-		gated := false
-		for _, d := range delegateRe.FindAllStringSubmatch(body, -1) {
-			if strings.Contains(hubFuncBody(d[1]), "requireCapability") {
-				gated = true
-				break
+		// Otherwise each type is judged SEPARATELY. Deciding this per ARM is what hid mcp.list: its
+		// arm names nine types and delegates to handleMCP, so the gate on mcp.upsert cleared mcp.list
+		// along with it. One gate anywhere is not evidence about the type actually being asked about.
+		gated := map[string]bool{}
+		for _, d := range delegateRe.FindAllStringSubmatch(arm.body, -1) {
+			delegate := hubFuncBody(d[1])
+			if delegate == "" {
+				continue
+			}
+			inner := censusArms(delegate)
+			if len(inner) == 0 {
+				// A delegate that does not re-dispatch handles whatever it was given, so its gate
+				// applies to all of them (this is how the language-server family shares one).
+				if strings.Contains(delegate, gateUse) {
+					for _, t := range arm.types {
+						gated[t] = true
+					}
+				}
+				continue
+			}
+			for _, ia := range inner {
+				if !strings.Contains(ia.body, gateUse) {
+					continue
+				}
+				for _, t := range ia.types {
+					gated[t] = true
+				}
 			}
 		}
-		if gated {
-			continue
-		}
-		for _, n := range nameRe.FindAllStringSubmatch(s[c[2]:c[3]], -1) {
-			out = append(out, n[1])
+		for _, n := range nameRe.FindAllStringSubmatch(arm.header, -1) {
+			if !gated[n[1]] {
+				out = append(out, n[1])
+			}
 		}
 	}
 	return out, nil
+}
+
+// censusArm is one `case protocol.TypeX, protocol.TypeY:` and everything up to the next case.
+type censusArm struct {
+	header string   // the raw case list, for name extraction
+	types  []string // the type names in it
+	body   string
+}
+
+// censusArms splits a type switch into its arms. Used for both the top-level dispatch in hub.go and
+// for any delegate that switches again on env.Type.
+func censusArms(s string) []censusArm {
+	caseRe := regexp.MustCompile(`\n\t+case (protocol\.Type\w+(?:,\s*\n?\s*protocol\.Type\w+)*):`)
+	nameRe := regexp.MustCompile(`protocol\.(Type\w+)`)
+	found := caseRe.FindAllStringSubmatchIndex(s, -1)
+	arms := make([]censusArm, 0, len(found))
+	for i, c := range found {
+		end := len(s)
+		if i+1 < len(found) {
+			end = found[i+1][0]
+		}
+		header := s[c[2]:c[3]]
+		var types []string
+		for _, n := range nameRe.FindAllStringSubmatch(header, -1) {
+			types = append(types, n[1])
+		}
+		arms = append(arms, censusArm{header: header, types: types, body: s[c[1]:end]})
+	}
+	return arms
 }
 
 // hubFuncBody returns the body of `func (h *Hub) name(...)` from anywhere in the package.

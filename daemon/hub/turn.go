@@ -602,7 +602,7 @@ func (h *Hub) clearNeedsYou(sessionID string) {
 	a := h.activity
 	h.mu.Unlock()
 	for _, e := range a.ClearNeedsYou(sessionID) { // nil-safe; returns only what it actually flipped
-		h.broadcast(protocol.TypeActivityEvent, toProtoActivity(e))
+		h.broadcastWithCapability(protocol.TypeActivityEvent, toProtoActivity(e), capSteer)
 	}
 }
 
