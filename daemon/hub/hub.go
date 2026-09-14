@@ -808,21 +808,18 @@ func (h *Hub) SetActivity(a *activity.Store) {
 // SetAccounts attaches the credentials registry and wires every provider that supports per-account
 // env (the CLI agents) to resolve the ACTIVE account's env at each session spawn — so hot-swapping
 // an account in the app changes what new sessions run with. Call after providers are registered.
+// Providers registered LATER are wired by Register itself, which is what makes this safe to call
+// once at start-up.
 func (h *Hub) SetAccounts(r *accounts.Registry) {
 	h.mu.Lock()
 	h.accounts = r
-	provs := make(map[string]agent.Provider, len(h.providers))
-	for name, p := range h.providers {
-		provs[name] = p
+	provs := make([]agent.Provider, 0, len(h.providers))
+	for _, p := range h.providers {
+		provs = append(provs, p)
 	}
 	h.mu.Unlock()
-	for name, p := range provs {
-		if s, ok := p.(interface {
-			SetAccountEnv(func() map[string]string)
-		}); ok {
-			n := name
-			s.SetAccountEnv(func() map[string]string { return r.EnvFor(n) })
-		}
+	for _, p := range provs {
+		wireAccountEnv(p, r)
 	}
 }
 
@@ -2198,11 +2195,38 @@ func (h *Hub) recordApproval(ar protocol.ApprovalRequest, m *managedSession) {
 	h.mu.Unlock()
 }
 
-// Register adds a provider (keyed by Name()).
+// Register adds a provider (keyed by Name()) and wires it to the account registry.
+//
+// The wiring lives HERE, not only in SetAccounts, because Register is the one path every provider
+// arrives by and SetAccounts is called exactly once at start-up. It used to wire a one-time SNAPSHOT
+// of the providers that existed at that moment, so every later Register silently dropped it:
+// `agent.upsert` (saving a custom CLI agent) and `provider.refresh` (Re-scan) both re-Register by
+// name, and the replacement object has no account-env resolver. Sessions then spawned with the
+// ambient environment — the wrong API key, the wrong config dir — while the Accounts screen still
+// showed the account active, because nothing about the registry itself had changed.
 func (h *Hub) Register(p agent.Provider) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	h.providers[p.Name()] = p
+	r := h.accounts
+	h.mu.Unlock()
+	wireAccountEnv(p, r)
+}
+
+// wireAccountEnv installs the active-account env resolver on a provider that supports one (the CLI
+// agents). Resolved per spawn, not captured, so hot-swapping the active account takes effect on the
+// next session without re-registering anything.
+func wireAccountEnv(p agent.Provider, r *accounts.Registry) {
+	if r == nil {
+		return
+	}
+	s, ok := p.(interface {
+		SetAccountEnv(func() map[string]string)
+	})
+	if !ok {
+		return
+	}
+	name := p.Name()
+	s.SetAccountEnv(func() map[string]string { return r.EnvFor(name) })
 }
 
 // Unregister removes a provider by name (used when a custom agent is deleted).
@@ -3594,7 +3618,13 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.mu.Unlock()
 		if redetect != nil {
 			log.Printf("provider.refresh: re-detecting agent harnesses on PATH")
-			redetect() // re-runs detection; Register overwrites by name (idempotent)
+			// Re-runs detection; Register overwrites by name. That is idempotent for the provider
+			// TABLE only — the replacement is a different object, and its per-provider wiring has to be
+			// re-applied. It isn't, for anything Register doesn't do itself: the account-env resolver
+			// used to be attached by SetAccounts alone and a Re-scan silently dropped it (fixed by
+			// moving that wiring into Register). Anything wired onto a provider from outside Register
+			// will have the same problem.
+			redetect()
 		}
 		h.broadcastProviders() // push the (possibly new) set to every client
 		h.sendOK(conn, env.ID, protocol.ProviderList{Providers: h.providerNames()})
