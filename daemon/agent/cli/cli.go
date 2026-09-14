@@ -265,6 +265,13 @@ func (s *session) startTurn(text string) bool {
 	return true
 }
 
+// streamDrainGrace is how long the output drain may keep reading after the agent process has been
+// reaped. It exists for the ordinary case — the agent's last line is still in the pipe when it exits,
+// and cutting the read there would drop the one sentence that explains a failed turn (see exitHint).
+// Nothing but an inherited write end held by a process the agent deliberately backgrounded can
+// outlast it, and that is exactly what this bound is here to stop waiting for.
+const streamDrainGrace = time.Second
+
 func (s *session) runTurn(ctx context.Context, argv []string) {
 	s.ratedThisTurn = false // fresh turn: allow one rate-limit surfacing
 	s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusRunning, Detail: s.cfg.Name}})
@@ -286,20 +293,31 @@ func (s *session) runTurn(ctx context.Context, argv []string) {
 	cmd.Dir = s.cwd
 	// Account env overrides the config env (so a per-account API key wins over any default).
 	cmd.Env = env(mergeEnv(s.cfg.Env, s.acctEnv))
-	stdout, err := cmd.StdoutPipe()
+	// OUR OWN pipe, not cmd.StdoutPipe(). The read end has to outlive cmd.Wait() here: the turn ends
+	// when the AGENT exits, and the only way to learn that without blocking on the pipe is to Wait
+	// first and drain second — but Wait unconditionally closes the read end of a StdoutPipe as it
+	// returns, which would discard whatever the agent wrote just before exiting. Owning the pipe
+	// means we decide when that fd closes, so the drain gets a grace period first (see below).
+	pr, pw, err := os.Pipe()
 	if err != nil {
 		turnErr = err
 		return
 	}
-	cmd.Stderr = cmd.Stdout // fold stderr into the streamed output (agents log progress there)
+	defer pr.Close()
+	cmd.Stdout = pw
+	cmd.Stderr = pw // fold stderr into the streamed output (agents log progress there)
 	// No stdin. These are third-party CLIs invoked with flags we believe are non-interactive, but
 	// that is third-party surface that can change under us — and a tool that decides to prompt would
 	// otherwise block forever with nobody to answer it. An empty stdin turns "hang until killed" into
 	// "read EOF and exit", which surfaces as a normal failed turn the user can actually see.
 	cmd.Stdin = nil
 	procutil.Isolate(cmd) // a CLI agent forks compilers/test runners — Stop() must kill the tree
-	if err := cmd.Start(); err != nil {
-		turnErr = err
+	startErr := cmd.Start()
+	// Drop the parent's copy of the write end either way: while we hold it, the pipe can never reach
+	// EOF, so a successful turn would hang on its own plumbing.
+	pw.Close()
+	if startErr != nil {
+		turnErr = startErr
 		return
 	}
 	s.mu.Lock()
@@ -313,8 +331,35 @@ func (s *session) runTurn(ctx context.Context, argv []string) {
 		s.mu.Unlock()
 	}()
 	s.tail = nil
-	s.stream(stdout, s.newTitleScanner())
-	if err := cmd.Wait(); err != nil && ctx.Err() == nil {
+	// Drain on its own goroutine and reap FIRST. It used to be the other way round — stream() to EOF,
+	// then cmd.Wait() — which meant the turn ended when the last holder of stdout closed it, not when
+	// the agent exited. Those are the same moment only if the agent forked nothing that outlives it.
+	// An agent that backgrounds a process (`npm run dev &`, a watcher, a server it means to leave
+	// running) hands that child the inherited stdout, so EOF never arrives: stream() blocks forever,
+	// cmd.Wait() is never reached, `running` stays true, and Probe — which answers from `running` and
+	// is treated as authoritative liveness — tells the turn engine's reconciler the session is fine.
+	// The turn then sits "working" until the daemon restarts, with no recovery path.
+	//
+	// cmd.Wait() returns as soon as the AGENT is reaped; a grandchild holding the pipe cannot delay
+	// it, because exec waits on the direct child only.
+	streamed := make(chan struct{})
+	go func() {
+		defer close(streamed)
+		s.stream(pr, s.newTitleScanner())
+	}()
+	waitErr := cmd.Wait()
+	// The agent is gone. Give the drain a moment to pick up whatever is still sitting in the pipe —
+	// output the agent wrote immediately before exiting, which is where its error message lives — and
+	// then close the read end so a surviving grandchild's open write end cannot hold the turn open.
+	// stream() unblocks on ErrFileClosed and returns; joining it before we read s.tail below keeps
+	// that field owned by one goroutine at a time.
+	select {
+	case <-streamed:
+	case <-time.After(streamDrainGrace):
+		pr.Close()
+		<-streamed
+	}
+	if err := waitErr; err != nil && ctx.Err() == nil {
 		// A non-zero exit that wasn't from our Stop(): keep the trailing line (preserves partial output)
 		// AND record it so the turn ends as an error rather than a silent success.
 		s.emit(agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: s.id, Text: "\n[" + s.cfg.Name + " exited: " + err.Error() + "]\n"}})
