@@ -355,19 +355,7 @@ func (s *session) replayHistory(ctx context.Context) {
 		return
 	}
 	defer resp.Body.Close()
-	var msgs []struct {
-		Info struct {
-			ID         string `json:"id"`
-			Role       string `json:"role"`
-			ModelID    string `json:"modelID"`
-			ProviderID string `json:"providerID"`
-		} `json:"info"`
-		Parts []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-			Tool string `json:"tool"`
-		} `json:"parts"`
-	}
+	var msgs []historyMessage
 	if json.NewDecoder(resp.Body).Decode(&msgs) != nil {
 		return
 	}
@@ -381,6 +369,44 @@ func (s *session) replayHistory(ctx context.Context) {
 			break
 		}
 	}
+	// THE EMITS GO OFF-GOROUTINE; the fetch and the model seed above do not.
+	//
+	// s.events is 64-buffered and NOBODY reads Events() until Attach has returned the session —
+	// hub.go and persist.go both do `sess, err := att.Attach(...)` and only then addSession +
+	// `go m.run()`. Emitting from here therefore filled the buffer and parked emit forever on a
+	// `done` that only Close() closes, and Close cannot be called on a session that was never
+	// returned. Any real agentic session has more than 64 messages carrying text or a tool part, so
+	// taking one over hung the client's request outright — and RestoreSessions is a serial loop, so
+	// one such session stalled the restore and every session after it never came back.
+	//
+	// claudecode (`go cs.replayTranscript`) and pi (`go s.replayTranscript`) were already built this
+	// way; opencode was the one that was not.
+	//
+	// The model seed stays SYNCHRONOUS deliberately. It decides which model the user's next turn runs
+	// on, and that turn can be sent the instant Attach returns — deferring it would silently run the
+	// first prompt after a takeover on whatever the server defaults to, which is the exact bug the
+	// seed exists to prevent.
+	go s.emitHistory(msgs)
+}
+
+// historyMessage is one entry of opencode's /message reply, in the shape emitHistory needs.
+type historyMessage = struct {
+	Info struct {
+		ID         string `json:"id"`
+		Role       string `json:"role"`
+		ModelID    string `json:"modelID"`
+		ProviderID string `json:"providerID"`
+	} `json:"info"`
+	Parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+		Tool string `json:"tool"`
+	} `json:"parts"`
+}
+
+// emitHistory replays a fetched conversation into the event stream. Runs on its own goroutine; see
+// the note at its call site for why that is load-bearing rather than an optimisation.
+func (s *session) emitHistory(msgs []historyMessage) {
 	for _, m := range msgs {
 		var text string
 		var tool string

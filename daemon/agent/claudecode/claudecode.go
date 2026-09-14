@@ -591,7 +591,20 @@ func (p *Provider) start(ctx context.Context, cwd, id, mode, prompt string, plan
 		// oversized-frame sidecar was reported as a turn that finished normally: the spinner stopped,
 		// the transcript was persisted and "agent finished" was pushed, for work that never
 		// completed. Only a stream that ended AFTER a real idle frame is a clean finish.
-		if !sawIdle {
+		// …unless WE killed it. Close() and Stop() signal the sidecar, so a session torn down
+		// mid-turn always lands here with "signal: killed" and used to report that as a crash. pi's
+		// equivalent goroutine has guarded this from the start; claude-code did not, so stopping or
+		// deleting a running session painted a red row and an error line for something the user had
+		// just deliberately done. It was also nondeterministic: emit selects between s.events and
+		// s.done, Close closes done FIRST, so both cases were ready and Go picked at random — the
+		// error appeared roughly half the time, which reads as a flaky agent rather than a bug here.
+		shuttingDown := false
+		select {
+		case <-s.done:
+			shuttingDown = true
+		default:
+		}
+		if !sawIdle && !shuttingDown {
 			detail := "the agent process exited unexpectedly"
 			if err != nil {
 				detail += ": " + err.Error()

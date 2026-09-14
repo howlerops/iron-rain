@@ -146,10 +146,20 @@ type session struct {
 	// on the same goroutine — stream() is called synchronously before cmd.Wait() — so no lock.
 	tail []string
 
-	mu        sync.Mutex
-	running   bool
-	turns     int
-	cancel    context.CancelFunc // cancels the in-flight turn (Stop)
+	mu      sync.Mutex
+	running bool
+	turns   int
+	cancel  context.CancelFunc // cancels the in-flight turn (Stop)
+	// cmd is the in-flight turn's process, kept so Stop/Close can kill its whole GROUP.
+	//
+	// cancel() alone is not enough and never was. procutil's own doc says what cancellation does:
+	// exec.CommandContext kills the direct child and leaves the grandchildren running. Isolate then
+	// puts the child in its own process group, so the daemon's group signals do not reach it either.
+	// A CLI agent's turn is mostly grandchildren — `npm test`, `cargo build`, a dev server — and
+	// every interrupted turn left them running, reparented to launchd, holding CPU and ports and
+	// invisible to the daemon. claudecode already called TerminateGroup for exactly this reason and
+	// its comment records the measurement: 143 orphaned sidecars, 284 processes, 12.7 GB resident.
+	cmd       *exec.Cmd
 	closeOnce sync.Once
 	model     string // selected model, substituted for {model} in Args (guarded by mu)
 	// mcpConfigPath is a temp file holding the daemon's MCP servers, substituted for {mcp_config}.
@@ -292,6 +302,16 @@ func (s *session) runTurn(ctx context.Context, argv []string) {
 		turnErr = err
 		return
 	}
+	s.mu.Lock()
+	s.cmd = cmd
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		if s.cmd == cmd {
+			s.cmd = nil
+		}
+		s.mu.Unlock()
+	}()
 	s.tail = nil
 	s.stream(stdout, s.newTitleScanner())
 	if err := cmd.Wait(); err != nil && ctx.Err() == nil {
@@ -446,13 +466,33 @@ func (s *session) dropNoise(txt string, carry *string) string {
 }
 
 // detectRateLimit scans agent output for a rate-limit condition (from the agent's own message) and
-// surfaces it ONCE per turn as a status event with a "retry in N" hint — so the app can show "rate
-// limited" and back off, on any provider, without account APIs.
+// surfaces it ONCE per turn with a "retry in N" hint — so the app can show "rate limited" and back
+// off, on any provider, without account APIs.
+//
+// PER LINE, not per read. ratelimit.Parse documents itself as inspecting "one line" and this was
+// handing it whole 4 KiB chunks, so a match anywhere in the chunk was attributed to the whole of it.
+//
+// And NOT StatusError. turnOnStatus treats any adapter error status as a terminal turn failure: it
+// closes the turn, publishes a verdict and fires a push notification. Two ordinary things then went
+// badly wrong. An agent answering a question ABOUT rate limits — the user asks why an endpoint
+// returns 429 — had its turn killed mid-sentence while the subprocess kept streaming into a turn the
+// hub considered over. And an agent that prints "Rate limit exceeded, retrying in 30s" and then
+// SUCCEEDS paged the user about a failure that never happened, with the real completion arriving
+// after the turn was already closed.
+//
+// A rate limit is a reason the turn is SLOW, not a reason it is over. If the agent really cannot
+// proceed it exits, and the non-zero exit path below reports that as the error it is.
 func (s *session) detectRateLimit(text string) {
 	if s.ratedThisTurn {
 		return
 	}
-	info := ratelimit.Parse(text)
+	var info ratelimit.Info
+	for _, line := range strings.Split(text, "\n") {
+		if got := ratelimit.Parse(line); got.Hit {
+			info = got
+			break
+		}
+	}
 	if !info.Hit {
 		return
 	}
@@ -464,7 +504,7 @@ func (s *session) detectRateLimit(text string) {
 		detail += " — resets at " + info.ResetHint
 	}
 	s.emit(agent.Event{Type: protocol.TypeSessionStatus,
-		Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusError, Detail: detail}})
+		Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusRunning, Detail: detail}})
 }
 
 // newTitleScanner returns an OSC-title scanner that emits a SessionStatus whenever the agent's
@@ -513,8 +553,13 @@ func (s *session) Probe(context.Context) (bool, error) {
 // Stop cancels the in-flight turn but keeps the session alive for follow-ups.
 func (s *session) Stop(context.Context) error {
 	s.mu.Lock()
-	c := s.cancel
+	c, cmd := s.cancel, s.cmd
 	s.mu.Unlock()
+	// The GROUP first. Cancelling only kills the agent process itself and leaves whatever it forked
+	// — the test runner, the compiler, the dev server — running with nothing left to stop it.
+	if cmd != nil {
+		procutil.TerminateGroup(cmd)
+	}
 	if c != nil {
 		c()
 	}
@@ -526,12 +571,17 @@ func (s *session) Close() error {
 	s.closeOnce.Do(func() {
 		close(s.done)
 		s.mu.Lock()
+		cmd := s.cmd
 		if s.cancel != nil {
 			s.cancel()
 		}
 		path := s.mcpConfigPath
 		s.mcpConfigPath = ""
 		s.mu.Unlock()
+		// Same reasoning as Stop: cancel reaches the agent, not the tree it forked.
+		if cmd != nil {
+			procutil.TerminateGroup(cmd)
+		}
 		if path != "" {
 			_ = os.Remove(path) // the MCP config may hold credentials — don't leave it in /tmp
 		}

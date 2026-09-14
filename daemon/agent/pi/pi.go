@@ -449,6 +449,13 @@ func (s *session) Nudge(_ context.Context, text string) error {
 func (s *session) Close() error {
 	s.closeOnce.Do(func() {
 		close(s.done)
+		// The whole GROUP, not just pi itself. pi shells out, and procutil.Isolate puts it in its own
+		// process group precisely so those children are reachable as a unit — but cancel() only kills
+		// the direct child, which is what procutil's own doc says. The comment at the Isolate call
+		// claimed the tree was terminated; nothing terminated it.
+		if s.cmd != nil {
+			procutil.TerminateGroup(s.cmd)
+		}
 		if s.cancel != nil {
 			s.cancel()
 		}

@@ -33,6 +33,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -366,7 +367,13 @@ func (s *session) execRun(ctx context.Context, req runInput, release func()) {
 	// Sampled BEFORE release, which cancels this very context: reading ctx.Err() afterwards always
 	// reports Canceled, which would misclassify every genuine failure as a user-initiated Stop and
 	// silently swallow it as a normal idle turn.
-	stopped := ctx.Err() != nil
+	// DeadlineExceeded is NOT a stop. beginRun bounds every run with a 6h timeout, and collapsing
+	// every non-nil ctx.Err() into "the user pressed Stop" meant a run that crossed that cap took the
+	// default branch below and emitted StatusIdle — so the client was told the turn Finished, with no
+	// error and no warning, for an answer that stops mid-sentence. The turn engine then closed it
+	// cleanly instead of reconciling, which is the one state from which nothing recovers it.
+	stopped := ctx.Err() != nil && !errors.Is(ctx.Err(), context.DeadlineExceeded)
+	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 
 	// Release BEFORE announcing the turn ended. The hub reacts to a terminal status by sending the
 	// next prompt, so emitting while `running` was still set produced a real race: a perfectly valid
@@ -386,6 +393,10 @@ func (s *session) execRun(ctx context.Context, req runInput, release func()) {
 	}
 
 	switch {
+	case timedOut:
+		s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{
+			SessionID: s.id, Status: protocol.StatusError,
+			Detail: "the run hit its " + runTimeout.String() + " limit and was cut off — its output is incomplete"}})
 	case err != nil && !stopped:
 		s.emit(agent.Event{Type: protocol.TypeSessionStatus,
 			Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusError, Detail: err.Error()}})
