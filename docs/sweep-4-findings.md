@@ -19,7 +19,13 @@ examined and found clean.
 
 ---
 
-## FIXED (6) — commits 67f1336, ac5979d, 6ee4277
+## FIXED (22) — released as v0.2.199
+
+Commits 67f1336, ac5979d, 6ee4277, 3281ed5, 623d6e5, dce864e, e5ea242, d7425a2.
+
+Every one has a test whose control fails when only the fix is reverted.
+
+### First batch — the criticals
 
 | Area | What | Where |
 |---|---|---|
@@ -30,38 +36,58 @@ examined and found clean.
 | hub/mcp | opencode's MCP calls bypassed approvals via the **machine-wide token** (second route; the gateway-base route was fixed last sweep). Harness token + unattributed approval card. | `mcp.go`, `mcp_authz.go`, `hub.go` respond path |
 | activity | Snapshot/write not atomic — events lost or duplicated. **Its own test was already failing** under `-count=30`; single-run suites hid it. | `activity.go` |
 
+### Second batch — capability boundary
+
+| Area | What | Where |
+|---|---|---|
+| roles | A `role.grant` demotion lived only on the socket; a credentialed device resolved back to `RoleOwner` on reconnect. Now persisted as `Device.Role` and checked first. | `devices.go`, `invites.go`, `roles.go` |
+| devices | A revoked device kept every push (with session and approval ids). Tokens are now bound to the device and dropped in `closeDeviceConns`, which all four revocation paths pass through. | `hub.go`, `devices.go` |
+| hub | `agent.list` served custom agents' `Env` — API keys — to watch-only guests. Roster stays capWatch, env is owner-only. | `hub.go` |
+| hooks_guard | A shell redirect into `.git` walked past the protected-path rule; yolo mode installed hooks with no card. Shell command text is now scanned. | `hooks_guard.go` |
+| fsaccess | `VCSMetadataComponent` answered "not metadata" for every relative path, which is the shape a shell token takes. | `fsaccess.go` |
+| hub/mcp | Hosted (http) MCP servers were passed to harnesses with real URLs and stored API keys, skipping the gateway. All transports are now fronted. | `mcp.go` |
+| mcp | The 10-minute approval window was unreachable — the authorizer got the 120s request context. | `gateway.go` |
+
+### Third batch — data loss
+
+| Area | What | Where |
+|---|---|---|
+| worktree | `RemoveWorkspace` deleted the uncommitted work it had just refused to delete. | `workspace.go` |
+| worktree | `SweepOrphans` could delete live worktrees whose repo was merely unmounted. Now quarantines by time — a mount comes back, a deleted repo does not. | `worktree.go` |
+| hub | The husk-drop orphaned the write-ahead JSONL, often the only copy of the user's prompts. | `persist.go` |
+
+### Fourth batch — turn identity and lifecycle
+
+| Area | What | Where |
+|---|---|---|
+| hub | `handleUnreachable` could abandon the turn that replaced the one it watched; the revive-success path forced `running` onto it. | `turn.go` |
+| hub | The reconcile close was posted to the pump as a closure that re-checked nothing. | `turn.go` |
+| hub | `approval.respond` deleted the approval before `Respond` was attempted, so a failed answer became a permanent ghost card. | `hub.go` |
+| fanout | The judge session's pump was never started — no `go ms.run()` — so it produced nothing, ever. | `fanout_judge.go` |
+| loops | `Upsert` dropped `LastRun`, so editing a loop reset its schedule and launched an unrequested autonomous run within a minute. | `loops.go` |
+| issues | A DISCONNECTED tracker's tickets never left the board — the keep-cache loop keyed on success, which a disconnected provider can never achieve. | `manager.go` |
+
 ---
 
-## REMAINING (65)
+## REMAINING (49)
 
 ### Security / capability boundary
 
-- **HIGH** `hub/invites.go:355`, `roles.go:98`, `hub.go:2660` — a `role.grant` demotion is stored only against the live `*transport.Conn` and never persisted, so a demoted **credentialed** device resolves back to `RoleOwner` on reconnect. No `role` field on `Device`; `roleRegistry` has no disk backing. Re-demoting lasts until the next disconnect.
-- **HIGH** `hub/hub.go:5302` — `device.register` has **no capability gate**, and an APNs token is never removed on device or invite revocation. A revoked observer keeps receiving every push (with `session_id` and `approval_id`) indefinitely; the list is pruned only when APNs reports the token dead.
-- **HIGH** `hub/hub.go:3611` — `agent.list` is capWatch and its reply carries each custom agent's `Env`, which the app's own UI says can hold API keys. `account.list` is capOwner for exactly this reason. Removing `TypeAgentList` from `watcherReads` is required either way or the census's stale-entry check fires.
-- **HIGH** `hub/hooks_guard.go:140` — the `.git`/protected-path guard never inspects a shell tool's `command` argument, so a redirect (`… > .git/hooks/pre-commit`) defeats it. `looksLikePath` rejects anything with a space; `command` is not in `pathKeys`. The daemon's own `git commit` (no `--no-verify`) then runs it.
-- **HIGH** `hub/mcp.go:387` — an **http-transport** MCP server is injected into the harness with its real URL and stored `Headers` (API keys) instead of being rewritten to the gateway, so its calls never reach `authorizeMCPTool`. `Manager.Dial` already proxies hosted servers, so this is not a capability limit.
+- **MEDIUM** `hub/hub.go:5302` — `device.register` still has no capability GATE. Its push tokens are now revoked with the device, which was the disclosure; deciding whether a watcher may register at all is a separate call.
 - **MEDIUM** `hub/invites.go:117` — `redeem()` consumes the device slot **before** the enrollment decision, so a refused device (revoked) permanently burns a seat. Owner sees "Redeemed 1/1" for a link nobody used.
 - **MEDIUM** `hub/authlimit.go:35` — the auth throttle is a per-attempt `time.Sleep` on the handshake goroutine, so penalties elapse in parallel across N concurrent sockets. The documented "~1 guess/sec" bound does not hold. Not a practical break against 128-bit credentials; the defect is that the only rate control in the auth path provides none.
-- **MEDIUM** `mcp/gateway.go:174` + `hub/mcp_authz.go:255` — the 10-minute MCP approval window is unreachable: the authorizer receives the gateway's 120s request context, so every MCP approval is force-denied at two minutes with the wrong reason ("cancelled before anyone answered").
 
 ### Data loss
 
-- **HIGH** `worktree/workspace.go:109` — `RemoveWorkspace` runs `os.RemoveAll(layout)` **unconditionally**, even when every member's `git worktree remove` refused for uncommitted work. The user is shown the refusal while the work is already gone. `workspace_test.go` only exercises `force=true`.
-- **MEDIUM** `worktree/worktree.go:320` — `isOrphanWorktree` decides purely on whether the gitdir path stats, so an unmounted volume or moved repo makes `SweepOrphans` (runs at **every daemon start**) delete live worktrees and their uncommitted work. No `IsDirty`, no `rev-list`, no force gate.
-- **MEDIUM** `hub/persist.go:201` — the husk-drop deletes the session record and SQLite transcript but not the write-ahead JSONL, and deleting the record makes that file unreachable forever (the sweep enumerates ids from `ExpiringSessions`).
 
 ### Turn engine / lifecycle
 
-- **HIGH** `hub/turn.go:766` — `handleUnreachable` checks only that *a* turn is open, never that it is the one it supervises, so after the ≤20s `Revive` it can abandon the turn opened after it. The success path at `:746` has the same defect, forcing `running` onto a turn it knows nothing about.
-- **HIGH** `hub/turn.go:1164` — the reconcile close is posted to the pump as a closure that re-checks nothing; every sibling path calls `stillMine(turnID)`. A freshly-opened turn ends instantly as "reconciled: completion event was lost".
 - **HIGH** `hub/session.go:925` — `subscribe` registers the subscriber then **releases `m.mu` before** snapshotting the replay, so an event broadcast in between is delivered twice. Contradicts the function's own doc comment. Window is wide for a restored session (full SQLite read + sha256 per frame).
 - **MEDIUM** `hub/session.go:1540` — `run()`'s panic recover returns normally, so `detachSession`/`removeSession` never run: the session stays in `h.sessions` with a dead pump, its approvals unresolvable and its MCP token unrevoked.
 - **MEDIUM** `hub/thread.go:120` — `adoptForkedSession` copies the parent's **entire** `sessionMeta` (not just project/cwd as the comment claims), so a fork inherits `worktreePath`/`repoRoot`/`port`/`fanoutGroup`. Resolving the fan-out then tears down the *kept* winner's worktree.
 - **MEDIUM** `hub/turn.go:888` — the 15s nudge bound is decorative: no `agent.Nudger` implementation reads the context. While it blocks, `turnLoops` is parked and the turn can never reach `needs_you`; the wake Hold is never released.
 - **MEDIUM** `hub/heartbeat.go:160` — the budget stop sends the "needs you" push twice (once via `publishVerdict`, once directly).
 - **MEDIUM** `hub/hub.go:361` — `startSession` creates the worktree and reserves a port, then has `return nil, err` paths with no cleanup. Only the bootstrap failure path cleans up. The leaked worktrees are unreachable by every sweep because no session record was written.
-- **HIGH** `hub/hub.go:5001` — `approval.respond` deletes the approval and decrements `pendingApprovals` **before** `m.sess.Respond` is attempted; a failed Respond leaves the approval permanently unanswerable and the card up on every device. The auto-answer path retries 3× and re-surfaces; the human path has neither.
 
 ### Providers
 
@@ -78,9 +104,6 @@ examined and found clean.
 
 ### Issues / loops / fan-out
 
-- **HIGH** `hub/fanout_judge.go:88` — the judge session is created but **its event pump is never started** (`go ms.run()` missing). No recommendation is ever produced; the session is ephemeral so it cannot even be opened to read one, and the provider process leaks for the daemon's lifetime. `fanoutJudgeComponent` has zero callers.
-- **HIGH** `loops/loops.go:161` + `hub/hub.go:3867` — `Upsert` preserves `Handled` but not `LastRun`, and the handler never copies it, so **editing a loop resets its schedule and it fires within a minute**. Deterministic.
-- **HIGH** `issues/manager.go:497` — the keep-cache loop keys on success-this-round, which a **disconnected** provider can never achieve, so `Disconnect` leaves its tickets on the board permanently. Directly contradicts `manager.go:766`. (The backoff case is correct and covered; only Disconnect is not.)
 - **MEDIUM** `loops/loops.go:211` — `MaxConcurrent` is a check-then-act with the lock released across the whole spawn, so two overlapping refreshes both see `active=0` and start two agents on a loop capped at one.
 - **MEDIUM** `hub/fanout_summary.go:212` — the judge spec is deleted on the first summary broadcast, so the synthesis round never gets a judge.
 - **MEDIUM** `loops/loops.go:305` — a task loop whose spawn fails sets `Status:"error"` but never `Run.Error` and never logs.
@@ -137,9 +160,20 @@ used for accounts/remotes/MCP/devices is the fix.
 
 ---
 
-## Suggested order
+## Suggested order for what is left
 
-1. The **capability/security** group — role demotion, `device.register`, `agent.list` env, hooks guard, http MCP passthrough.
-2. The **data-loss** group — `RemoveWorkspace`, `SweepOrphans`, husk-drop JSONL.
-3. **Turn identity** — `handleUnreachable` and the reconcile closure both need `stillMine(turnID)`; that helper already exists.
-4. Providers, then loops/issues, then the Swift `*Forbidden` sweep (one pattern, ten sites).
+The capability, data-loss and turn-identity groups are done and shipped in v0.2.199. What
+remains, roughly by value:
+
+1. **Provider hangs** — `pi`'s context-free `send`, the `readLoop`/`cmd.Wait()` deadlock on an
+   oversized frame (both claude-code and pi), and `cli`'s stream-before-Wait. Each wedges a session
+   permanently, and the pi one stalls the serial heartbeat tick for every session behind it.
+2. **`main.go:368` `SetAccounts`** — a one-time provider snapshot, so Re-scan or editing an agent
+   silently drops the account env. Wrong API key, wrong config dir, Accounts screen still green.
+3. **opencode session attribution** — `message.updated` decodes no `sessionID`, so cost and provider
+   errors land on the wrong session whenever two share a directory.
+4. **The Swift `*Forbidden` sweep** — one pattern, ten sites, and it is why a refused list renders as
+   "you have none" on the default iOS tab.
+5. **`lsp.go:131`** — `didOpen` before `initialize`, which silently kills every previously-open tab
+   after a server crash.
+6. The remaining mediums.
