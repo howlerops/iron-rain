@@ -39,21 +39,44 @@ func TestMutableSessionMetadataIsOnlyReadUnderItsOwnLock(t *testing.T) {
 		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		// session.go declares the fields and owns the accessors, and its own reads run on the pump
-		// that writes them.
-		if name == "session.go" {
-			continue
-		}
+		// session.go is NOT excluded. It used to be, on the reasoning that "its own reads run on the
+		// pump that writes them" — which is false in both halves: neither writer is the pump
+		// (session.rename runs on a connection's read loop, resolveFanout on the handler that
+		// resolves the race), and info() is called from whichever connection asked for the session
+		// list. Excluding the one file that DECLARES the fields is what let two unlocked reads of
+		// meta.fanoutGroup sit in onStatus and info() through a whole audit.
 		src, err := os.ReadFile(name)
 		if err != nil {
 			t.Fatal(err)
 		}
 		held := false // whether m.mu is held at this point in the file
+		// A switch whose arms each unlock is the shape onStatus uses: ONE Lock at the top, then a
+		// separate Unlock inside every case. A purely linear scan goes blind after the first arm's
+		// Unlock and reports every later arm as unlocked. So remember what was held when the switch
+		// opened and restore it at each `case`, keyed on the switch's indentation to survive nesting.
+		type swState struct {
+			indent int
+			held   bool
+		}
+		var switches []swState
+		indentOf := func(s string) int { return len(s) - len(strings.TrimLeft(s, "\t")) }
 		for i, line := range strings.Split(string(src), "\n") {
 			trimmed := strings.TrimSpace(line)
+			ind := indentOf(line)
+			// Leaving a switch's body: anything at or left of its own indent closes it.
+			for len(switches) > 0 && trimmed != "" && ind < switches[len(switches)-1].indent {
+				switches = switches[:len(switches)-1]
+			}
 			switch {
 			case strings.HasPrefix(trimmed, "func "):
 				held = false // a new function starts with nothing held
+				switches = switches[:0]
+			case strings.HasPrefix(trimmed, "switch ") || trimmed == "switch {":
+				switches = append(switches, swState{indent: ind, held: held})
+			case strings.HasPrefix(trimmed, "case ") || trimmed == "default:":
+				if len(switches) > 0 && ind == switches[len(switches)-1].indent {
+					held = switches[len(switches)-1].held // this arm starts where the switch did
+				}
 			// Any session lock, whatever the receiver is called — thread.go holds `parent.mu`. The
 			// hub lock is explicitly NOT one of these: holding it is the mistake being looked for.
 			case sessionLock(trimmed, "Lock()"):

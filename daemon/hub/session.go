@@ -606,11 +606,15 @@ func (m *managedSession) onStatus(ss protocol.SessionStatus) {
 		}
 	case protocol.StatusError:
 		m.wasRunning = false
+		// Captured under the lock: resolveFanout clears meta.fanoutGroup from another goroutine, and
+		// a torn string header here faults inside checkFanoutDone's map hash — which Go does not
+		// make recoverable, so it takes the whole daemon with it.
+		errGroup := m.meta.fanoutGroup
 		m.mu.Unlock()
 		m.hub.pushAgentError(m.sess.ID(), label, ss.Detail)
 		// A failed variant still ENDED, so the group may now be complete. Without this the fan-out
 		// notification waited on a session that was never going to report idle.
-		if g := m.meta.fanoutGroup; g != "" {
+		if g := errGroup; g != "" {
 			m.hub.checkFanoutDone(g)
 		}
 		// A failed run is a FINISHED run as far as the loop scheduler is concerned; leaving it
@@ -670,10 +674,14 @@ func (m *managedSession) seedStatus(status string) {
 func (m *managedSession) info() protocol.Session {
 	m.mu.Lock()
 	updated := m.lastActivity.Unix()
-	label := m.meta.label
+	// The WHOLE struct, under the lock. meta.label and meta.fanoutGroup are both written after
+	// construction (session.rename on a connection's read loop, resolveFanout on another), so reading
+	// any of it unlocked races; copying one field at a time just invites the next one to be missed.
+	meta := m.meta
+	label := meta.label
 	inTok, outTok, cost := m.inTok, m.outTok, m.costUSD
 	ctxTok, costKnown := m.contextTokens, m.costKnown
-	isWorkspace := len(m.meta.members) > 0
+	isWorkspace := len(meta.members) > 0
 	status := m.lastStatus
 	turnOpen := m.turnPhase != ""
 	model, modelProvider := m.model, m.modelProvider
@@ -697,17 +705,17 @@ func (m *managedSession) info() protocol.Session {
 		Provider:      m.sess.Provider(),
 		Status:        status, // real last status (idle/error/awaiting_approval), not a hardcoded "running"
 		Name:          label,
-		ProjectID:     m.meta.projectID,
-		Cwd:           m.meta.cwd,
-		WorkspaceName: m.meta.workspaceName,
-		Branch:        m.meta.branch,
+		ProjectID:     meta.projectID,
+		Cwd:           meta.cwd,
+		WorkspaceName: meta.workspaceName,
+		Branch:        meta.branch,
 		IsWorkspace:   isWorkspace,
-		ParentID:      m.meta.parentID,
-		Subtask:       m.meta.subtask,
-		Port:          m.meta.port,
+		ParentID:      meta.parentID,
+		Subtask:       meta.subtask,
+		Port:          meta.port,
 		PreviewURL:    m.hub.preview.URL(m.sess.ID()),
-		IssueKey:      m.meta.issueKey,
-		IssueID:       m.meta.issueID,
+		IssueKey:      meta.issueKey,
+		IssueID:       meta.issueID,
 		Model:         model,
 		ModelProvider: modelProvider,
 		Mode:          mode,
@@ -718,11 +726,11 @@ func (m *managedSession) info() protocol.Session {
 		ContextTokens: ctxTok,
 		CostKnown:     costKnown,
 		Conflicted:    conflicted,
-		FanoutGroup:   m.meta.fanoutGroup,
-		FanoutVariant: m.meta.fanoutVariant,
-		Ephemeral:     m.meta.ephemeral,
-		ExecKind:      m.meta.execKind,
-		ExecHost:      m.meta.execHost,
+		FanoutGroup:   meta.fanoutGroup,
+		FanoutVariant: meta.fanoutVariant,
+		Ephemeral:     meta.ephemeral,
+		ExecKind:      meta.execKind,
+		ExecHost:      meta.execHost,
 	}
 }
 

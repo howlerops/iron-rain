@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestResolveWithinRoot(t *testing.T) {
@@ -461,4 +462,78 @@ func must(t *testing.T, err error) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+// A DANGLING symlink must be judged by where it points, not by where it sits.
+//
+// TestResolveRejectsSymlinkEscape above covers a link to an EXISTING target, which EvalSymlinks
+// resolves and the guard then refuses. The dangling case took the opposite path: EvalSymlinks
+// returns an error for a link whose target does not exist, resolveExisting kept the literal in-root
+// path, and containment was judged against the link's own location — so the write was allowed and
+// os.WriteFile created the target THROUGH the link, outside the root.
+//
+// Any absent target is enough to own the machine. ~/.zshenv does not exist on a stock account, and
+// the daemon sources it through `$SHELL -ilc` when it augments PATH at start-up.
+func TestResolveRejectsDanglingSymlinkEscape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks differ on windows")
+	}
+	// EvalSymlinks the temp dirs first. On macOS t.TempDir() hands back /var/... while the guard
+	// normalises its roots to /private/var/..., and an un-normalised root makes this test pass for
+	// the wrong reason — the escape is refused as "outside allowed roots" before the symlink is ever
+	// the question. With the roots normalised, the dangling-link resolution is the ONLY thing
+	// standing between the link and acceptance.
+	root := realpath(t, t.TempDir())
+	outside := realpath(t, t.TempDir())
+	target := filepath.Join(outside, "zshenv") // deliberately NOT created
+	link := filepath.Join(root, "notes.txt")
+	must(t, os.Symlink(target, link))
+	g := New([]string{root})
+
+	if _, err := g.Resolve(link); err == nil {
+		t.Fatal("a dangling symlink pointing out of the root was allowed.\n\n" +
+			"fs.write on an ordinary-looking in-worktree file then creates the target outside the " +
+			"root — ~/.zshenv is enough, and the daemon sources it at start-up.")
+	}
+
+	// A dangling link that stays INSIDE the root is ordinary and must still work: writing a new
+	// file through a link to a not-yet-created sibling is not an escape.
+	inside := filepath.Join(root, "sub", "new.txt")
+	inLink := filepath.Join(root, "link-in.txt")
+	must(t, os.Symlink(inside, inLink))
+	if _, err := g.Resolve(inLink); err != nil {
+		t.Fatalf("a dangling link to an in-root path was refused: %v", err)
+	}
+}
+
+// A symlink CYCLE must terminate. EvalSymlinks answers ELOOP; resolveDangling walks the chain
+// itself, so the bound is ours to enforce.
+func TestResolveTerminatesOnSymlinkCycle(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks differ on windows")
+	}
+	root := realpath(t, t.TempDir())
+	a, b := filepath.Join(root, "a"), filepath.Join(root, "b")
+	must(t, os.Symlink(b, a))
+	must(t, os.Symlink(a, b))
+	g := New([]string{root})
+
+	done := make(chan struct{})
+	go func() { defer close(done); _, _ = g.Resolve(a) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Resolve did not terminate on a symlink cycle — the hop cap is missing or ineffective")
+	}
+}
+
+// realpath resolves a temp dir the way the guard resolves its roots, so a test that means to
+// exercise containment is not silently decided by /var vs /private/var instead.
+func realpath(t *testing.T, p string) string {
+	t.Helper()
+	real, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%s): %v", p, err)
+	}
+	return real
 }

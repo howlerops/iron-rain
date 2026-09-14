@@ -866,6 +866,11 @@ func (s *session) target(sub string) string {
 	return s.id
 }
 
+// send is for the one caller with no context to honour (SetModel's signature has none). Every
+// method that DOES take a context must use sendCtx: a caller's deadline is the only thing that
+// bounds a write into a 64 KiB stdin pipe the sidecar may have stopped draining, and discarding it
+// here is what let Probe — whose whole job is to answer "is this session alive?" — block forever on
+// the per-turn goroutine, so the turn never heartbeated, nudged or reconciled.
 func (s *session) send(m inMsg) error { return s.sendCtx(context.Background(), m) }
 
 // sendCtx writes one message to the sidecar's stdin, bounded by ctx.
@@ -910,24 +915,24 @@ func (s *session) Prompt(ctx context.Context, text string) error {
 }
 
 // PromptImages sends a multimodal turn; the sidecar builds Anthropic image content blocks.
-func (s *session) PromptImages(_ context.Context, text string, images []protocol.ImageAttachment) error {
+func (s *session) PromptImages(ctx context.Context, text string, images []protocol.ImageAttachment) error {
 	ims := make([]imgAtt, len(images))
 	for i, im := range images {
 		ims[i] = imgAtt{Mime: im.Mime, Data: im.Data}
 	}
-	return s.send(inMsg{T: "prompt", Text: text, Images: ims})
+	return s.sendCtx(ctx, inMsg{T: "prompt", Text: text, Images: ims})
 }
 
 // Respond answers a tool approval; the sidecar's canUseTool unblocks. allow/always→allow.
-func (s *session) Respond(_ context.Context, approvalID, decision string) error {
+func (s *session) Respond(ctx context.Context, approvalID, decision string) error {
 	d := "deny"
 	if decision == protocol.DecisionAllow || decision == protocol.DecisionAlways {
 		d = "allow"
 	}
-	return s.send(inMsg{T: "approval", ID: approvalID, Decision: d})
+	return s.sendCtx(ctx, inMsg{T: "approval", ID: approvalID, Decision: d})
 }
 
-func (s *session) Stop(_ context.Context) error { return s.send(inMsg{T: "stop"}) }
+func (s *session) Stop(ctx context.Context) error { return s.sendCtx(ctx, inMsg{T: "stop"}) }
 
 // Probe implements agent.Prober: ask the sidecar directly whether a turn is in flight.
 //
@@ -951,7 +956,7 @@ func (s *session) Probe(ctx context.Context) (bool, error) {
 		s.pingMu.Unlock()
 	}()
 
-	if err := s.send(inMsg{T: "ping", ID: id}); err != nil {
+	if err := s.sendCtx(ctx, inMsg{T: "ping", ID: id}); err != nil {
 		return false, err
 	}
 	select {
@@ -986,8 +991,8 @@ func (s *session) deliverPong(id string, busy bool) {
 // generator (sidecar.mjs inputGen/pushInput): a pushed message joins the input stream the running
 // query is already consuming. It is the same wire message as Prompt — the distinct method exists
 // because the CALLER must not have to know which providers can be nudged and which would abort.
-func (s *session) Nudge(_ context.Context, text string) error {
-	return s.send(inMsg{T: "prompt", Text: text})
+func (s *session) Nudge(ctx context.Context, text string) error {
+	return s.sendCtx(ctx, inMsg{T: "prompt", Text: text})
 }
 
 // SetModel switches the model via the SDK's setModel (provider is unused — Claude ids stand alone).
@@ -996,8 +1001,8 @@ func (s *session) SetModel(_, model string) error { return s.send(inMsg{T: "mode
 // SetMode implements agent.ModeSetter: forward the mode to the sidecar, which maps ask/architect onto
 // the SDK's "plan" permission mode for subsequent turns. The daemon enforces the mode itself either
 // way — this only makes the model aware of the intent.
-func (s *session) SetMode(_ context.Context, mode string) error {
-	return s.send(inMsg{T: "mode", Text: mode})
+func (s *session) SetMode(ctx context.Context, mode string) error {
+	return s.sendCtx(ctx, inMsg{T: "mode", Text: mode})
 }
 
 // Close ends the session and REAPS the sidecar's whole process tree. Every step below is
@@ -1018,10 +1023,17 @@ func (s *session) SetMode(_ context.Context, mode string) error {
 func (s *session) Close() error {
 	s.closeOnce.Do(func() {
 		close(s.done)
+		// Closed WITHOUT taking writeMu, on purpose. A write larger than the 64 KiB stdin pipe parks
+		// its goroutine inside stdin.Write holding writeMu, and sendCtx releases only the CALLER on
+		// ctx expiry — the writer stays parked until the pipe drains or the process dies. Waiting for
+		// writeMu here therefore waited on the very thing TerminateGroup below was going to fix, and
+		// deadlocked before reaching it: Stop/delete hung the connection goroutine with no reply, and
+		// on shutdown the sidecar and its `claude` child outlived the daemon.
+		//
+		// os.File is safe to Close concurrently with a Write — the runtime's poll.FD refcounts the
+		// descriptor, so the parked Write returns ErrFileClosing rather than touching a reused fd.
 		if s.stdin != nil {
-			s.writeMu.Lock()
 			_ = s.stdin.Close()
-			s.writeMu.Unlock()
 		}
 		// SIGTERM the whole group, a short grace for the cooperative exit above to land, then SIGKILL.
 		// Safe on a sidecar that already exited, and safe to reach twice (closeOnce makes it once).

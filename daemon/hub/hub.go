@@ -1988,10 +1988,15 @@ func (h *Hub) spawnRemote(ctx context.Context, req protocol.RemoteRun) (*managed
 	if strings.TrimSpace(req.AgentCommand) == "" {
 		return nil, fmt.Errorf("remote run needs an agent command")
 	}
-	// Build: ssh <opts> <forwards> <target> "cd '<path>' && <agentCommand> {prompt}". The CLI
-	// provider substitutes {prompt} into the final arg per turn. Port forwards (from the host) tunnel
-	// a remote dev server to localhost so Design Mode / a browser can reach it during the run.
-	remoteCmd := req.AgentCommand + " {prompt}"
+	// Build: ssh <opts> <forwards> <target> "cd '<path>' && <agentCommand> {prompt_sh}". The CLI
+	// provider substitutes the prompt into the final arg per turn. Port forwards (from the host)
+	// tunnel a remote dev server to localhost so Design Mode / a browser can reach it during the run.
+	//
+	// {prompt_sh}, not {prompt}: ssh joins its trailing arguments and hands the result to the remote
+	// LOGIN SHELL, so this string is shell source, not argv. Verbatim substitution made every prompt
+	// executable there — and session.prompt is capSteer while remote.run is capOwner, so a steer-only
+	// collaborator got arbitrary execution on the owner's box under the owner's ssh key.
+	remoteCmd := req.AgentCommand + " {prompt_sh}"
 	if hst.RemotePath != "" {
 		remoteCmd = "cd '" + strings.ReplaceAll(hst.RemotePath, "'", `'\''`) + "' && " + remoteCmd
 	}

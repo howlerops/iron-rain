@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/howlerops/oculus/daemon/protocol"
+	"os"
+	"os/exec"
 )
 
 func TestSubstitute(t *testing.T) {
@@ -339,5 +341,79 @@ func TestBuiltinCLIAgentsReportNoContinuity(t *testing.T) {
 	s := &session{cfg: Config{Name: "x", ResumeArgs: []string{"x", "--continue", "{prompt}"}}}
 	if !s.HasContinuity() {
 		t.Error("an agent with ResumeArgs resumes, and must say so")
+	}
+}
+
+// A prompt that will be read by a REMOTE SHELL must arrive as one literal word.
+//
+// The remote-session template is `ssh <target> "cd '<path>' && <agent> {prompt_sh}"`: ssh joins its
+// trailing arguments and the remote login shell parses the result. With a verbatim {prompt} there,
+// `session.prompt` — which needs only capSteer — was arbitrary command execution on the owner's box
+// under the owner's ssh key, while `remote.run` itself is gated at capOwner.
+//
+// This runs the composed command through a real shell rather than pattern-matching the string:
+// metacharacters are legitimately PRESENT inside the quotes, so only execution settles it.
+func TestRemotePromptIsNotRemoteShellCode(t *testing.T) {
+	dir := t.TempDir()
+	agent := filepath.Join(dir, "agent.sh")
+	argsFile := filepath.Join(dir, "args")
+	pwned := filepath.Join(dir, "pwned")
+	script := "#!/bin/sh\nprintf '%s|%s' \"$#\" \"$1\" > " + argsFile + "\n"
+	if err := os.WriteFile(agent, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// Exactly the shape hub.go builds for a remote session.
+	remoteCmd := agent + " {prompt_sh}"
+	prompt := "x; touch " + pwned + "; echo done"
+	expanded := substitute([]string{"host", remoteCmd}, prompt, dir, "", "")
+
+	// ssh hands its trailing argument to the remote LOGIN SHELL — this is that step.
+	if out, err := exec.Command("sh", "-c", expanded[len(expanded)-1]).CombinedOutput(); err != nil {
+		t.Fatalf("remote command failed: %v (%s)", err, out)
+	}
+	if _, err := os.Stat(pwned); err == nil {
+		t.Fatal("the prompt EXECUTED on the remote shell — a capSteer client just ran an arbitrary " +
+			"command on the owner's machine under the owner's ssh key")
+	}
+	got, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("agent never ran: %v", err)
+	}
+	if string(got) != "1|"+prompt {
+		t.Fatalf("the agent did not receive the prompt as one intact argument: got %q, want %q",
+			got, "1|"+prompt)
+	}
+}
+
+// The ordinary cases the same bug broke: an apostrophe was a remote syntax error, and a multi-word
+// prompt word-split so the agent saw only its first word.
+func TestRemotePromptSurvivesQuotingIntact(t *testing.T) {
+	dir := t.TempDir()
+	agent := filepath.Join(dir, "agent.sh")
+	argsFile := filepath.Join(dir, "args")
+	script := "#!/bin/sh\nprintf '%s|%s' \"$#\" \"$1\" > " + argsFile + "\n"
+	if err := os.WriteFile(agent, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, prompt := range []string{"what's wrong?", "fix the auth bug", `a "quoted" $HOME ` + "`id`"} {
+		expanded := substitute([]string{"host", agent + " {prompt_sh}"}, prompt, dir, "", "")
+		out, err := exec.Command("sh", "-c", expanded[len(expanded)-1]).CombinedOutput()
+		if err != nil {
+			t.Fatalf("prompt %q was a remote shell error: %v (%s)", prompt, err, out)
+		}
+		got, _ := os.ReadFile(argsFile)
+		if string(got) != "1|"+prompt {
+			t.Errorf("prompt %q did not arrive intact: got %q", prompt, got)
+		}
+	}
+}
+
+// {prompt} must stay verbatim: a LOCAL template is argv handed to exec, and quoting it there would
+// pass literal quote characters through to the agent as part of the prompt text.
+func TestLocalPromptStaysVerbatim(t *testing.T) {
+	got := substitute([]string{"claude", "-p", "{prompt}"}, "what's up; ls", "/repo", "", "")
+	if got[len(got)-1] != "what's up; ls" {
+		t.Fatalf("a local argv prompt was altered: %q", got[len(got)-1])
 	}
 }

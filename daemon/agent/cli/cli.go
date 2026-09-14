@@ -591,13 +591,21 @@ func (s *session) Close() error {
 
 // substitute expands {prompt}/{cwd} in the arg template. If no arg contains {prompt}, the prompt is
 // appended as the final argument (so a bare command like `["exec"]` still receives it).
+//
+// {prompt} is expanded VERBATIM, which is correct only because the result is an argv element handed
+// to exec — no shell parses it. A template whose expansion will be read BY a shell must use
+// {prompt_sh} instead, which single-quotes. The remote-session template is exactly that case: ssh
+// joins its trailing arguments and the remote LOGIN SHELL parses the result, so a verbatim {prompt}
+// there made every prompt remote shell code (`; curl … | sh`) for anyone holding capSteer, and broke
+// ordinary prompts besides — `fix the auth bug` word-split, and an apostrophe was a syntax error.
 func substitute(tmpl []string, prompt, cwd, model, mcpConfig string) []string {
 	out := make([]string, 0, len(tmpl)+1)
 	sawPrompt := false
 	for _, a := range tmpl {
-		if strings.Contains(a, "{prompt}") {
+		if strings.Contains(a, "{prompt}") || strings.Contains(a, "{prompt_sh}") {
 			sawPrompt = true
 		}
+		a = strings.ReplaceAll(a, "{prompt_sh}", shellQuote(prompt))
 		a = strings.ReplaceAll(a, "{prompt}", prompt)
 		a = strings.ReplaceAll(a, "{cwd}", cwd)
 		a = strings.ReplaceAll(a, "{model}", model)
@@ -610,6 +618,13 @@ func substitute(tmpl []string, prompt, cwd, model, mcpConfig string) []string {
 		out = append(out, prompt)
 	}
 	return out
+}
+
+// shellQuote single-quotes a string so a remote shell reads it as one literal word. Single quotes
+// suppress every metacharacter, and the only byte that needs care is the quote itself: close, emit
+// an escaped quote, reopen.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func env(extra map[string]string) []string {

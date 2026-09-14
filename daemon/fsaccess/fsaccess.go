@@ -458,13 +458,32 @@ func vcsMetaComponent(root, path string) string {
 // resolveExisting resolves symlinks on the longest existing ancestor of abs, then rejoins the
 // non-existing tail — so a partially-existing write target is still checked against the real
 // location of its existing parent.
-func resolveExisting(abs string) string {
+func resolveExisting(abs string) string { return resolveExistingHops(abs, 40) }
+
+// resolveExistingHops is resolveExisting with an explicit budget for DANGLING symlinks.
+//
+// EvalSymlinks fails on a link whose target does not exist, and keeping the literal path in that
+// case made the guard judge the link's own location instead of the file a write would actually
+// reach: a link inside an allowed root, pointing at a not-yet-existing path outside it, passed
+// containment, and os.WriteFile then created the target through the link. Any absent target is
+// enough — ~/.zshenv does not exist on a stock account, and the daemon sources it through
+// `$SHELL -ilc` when it augments PATH at start-up.
+//
+// So the link is followed by hand, and the target is resolved by the same rules (its own ancestors
+// may be links, and may not exist either). The budget is what makes a symlink CYCLE terminate:
+// EvalSymlinks would have answered ELOOP, but this walk is ours to bound.
+func resolveExistingHops(abs string, hops int) string {
 	cur := abs
 	var tail []string
 	for {
 		if _, err := os.Lstat(cur); err == nil {
 			if real, err := filepath.EvalSymlinks(cur); err == nil {
 				cur = real
+			} else if target, rerr := os.Readlink(cur); rerr == nil && hops > 0 {
+				if !filepath.IsAbs(target) {
+					target = filepath.Join(filepath.Dir(cur), target)
+				}
+				cur = resolveExistingHops(filepath.Clean(target), hops-1)
 			}
 			break
 		}
