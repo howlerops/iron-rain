@@ -139,15 +139,27 @@ func (s *Store) Record(e Event) Event {
 	if len(s.ring) > s.max {
 		s.ring = s.ring[len(s.ring)-s.max:]
 	}
+	// fileMu is taken BEFORE s.mu is released, and held across the write.
+	//
+	// Taking it afterwards left a window in which the snapshot went stale: another goroutine could
+	// append to the ring and win the race to fileMu, and the rewrite built from the older snapshot
+	// then erased its event — or, with the ordering reversed, wrote it twice. Two turn edges on one
+	// session in the same tick was enough, and it only showed after a restart, as an Activity feed
+	// missing items or double-counting the unread badge. fileMu serialised the writers against each
+	// other but not against the snapshot they were built from.
+	//
+	// Lock order is s.mu -> fileMu everywhere; no path takes fileMu first.
+	s.fileMu.Lock()
+	defer s.fileMu.Unlock()
 	snapshot := append([]Event(nil), s.ring...)
 	cb := s.onNew
 	s.mu.Unlock()
 	if superseded {
 		// The flips above must survive a restart; an append alone would resurrect the phantoms on
 		// next load. Same durability path MarkRead uses.
-		s.rewrite(snapshot)
+		s.rewriteLocked(snapshot)
 	} else {
-		s.appendLine(e)
+		s.appendLineLocked(e)
 	}
 	if cb != nil {
 		cb(e)
@@ -156,10 +168,14 @@ func (s *Store) Record(e Event) Event {
 }
 
 func (s *Store) appendLine(e Event) {
-	// fileMu, not s.mu. The ring lock must not be held across disk I/O, but the disk writes DO have
-	// to be serialised against each other — see the note on fileMu.
 	s.fileMu.Lock()
 	defer s.fileMu.Unlock()
+	s.appendLineLocked(e)
+}
+
+// appendLineLocked requires fileMu. Callers that derive a snapshot from the ring must hold it from
+// before they release s.mu, so the snapshot cannot go stale underneath the write.
+func (s *Store) appendLineLocked(e Event) {
 	f, err := os.OpenFile(s.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return
@@ -200,10 +216,12 @@ func (s *Store) MarkRead(ids []string) {
 			changed = true
 		}
 	}
+	s.fileMu.Lock()
+	defer s.fileMu.Unlock()
 	snapshot := append([]Event(nil), s.ring...)
 	s.mu.Unlock()
 	if changed {
-		s.rewrite(snapshot)
+		s.rewriteLocked(snapshot)
 	}
 }
 
@@ -228,10 +246,12 @@ func (s *Store) ClearNeedsYou(sessionID string) []Event {
 			flipped = append(flipped, s.ring[i])
 		}
 	}
+	s.fileMu.Lock()
+	defer s.fileMu.Unlock()
 	snapshot := append([]Event(nil), s.ring...)
 	s.mu.Unlock()
 	if len(flipped) > 0 {
-		s.rewrite(snapshot)
+		s.rewriteLocked(snapshot)
 	}
 	return flipped
 }
@@ -240,6 +260,11 @@ func (s *Store) ClearNeedsYou(sessionID string) []Event {
 func (s *Store) rewrite(events []Event) {
 	s.fileMu.Lock()
 	defer s.fileMu.Unlock()
+	s.rewriteLocked(events)
+}
+
+// rewriteLocked requires fileMu, for the same reason as appendLineLocked.
+func (s *Store) rewriteLocked(events []Event) {
 	tmp := s.path + ".tmp"
 	f, err := os.Create(tmp)
 	if err != nil {
