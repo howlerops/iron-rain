@@ -55,7 +55,7 @@ func (h *Hub) synthesizeFanout(ctx context.Context, group string) (string, error
 		groupBase string
 	)
 	for _, m := range h.sessions {
-		if m.meta.fanoutGroup != group {
+		if m.snapshotMeta().fanoutGroup != group {
 			continue
 		}
 		peers = append(peers, m)

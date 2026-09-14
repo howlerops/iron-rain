@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/howlerops/oculus/daemon/mcp"
 	"github.com/howlerops/oculus/daemon/protocol"
@@ -476,19 +477,21 @@ func (h *Hub) mcpExclusiveEnabled() bool {
 func (h *Hub) discoverCwd() string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	var newest *managedSession
+	// Snapshot under m.mu, not h.mu: lastActivity is written by the event pump on every broadcast,
+	// and reading a time.Time (three words) against a concurrent write is a data race with no
+	// meaningful result — it picks the wrong project to scan for MCP config, or faults.
+	var newest sessionMeta
+	var newestAt time.Time
 	for _, m := range h.sessions {
-		if m.meta.cwd == "" {
+		meta, at := m.snapshotMeta(), m.lastActiveAt()
+		if meta.cwd == "" {
 			continue
 		}
-		if newest == nil || m.lastActivity.After(newest.lastActivity) {
-			newest = m
+		if newest.cwd == "" || at.After(newestAt) {
+			newest, newestAt = meta, at
 		}
 	}
-	if newest == nil {
-		return ""
-	}
-	return newest.meta.cwd
+	return newest.cwd
 }
 
 // discardMCPToken retracts a token minted for a session that failed to start: out of the gateway's

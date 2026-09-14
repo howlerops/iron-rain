@@ -158,6 +158,12 @@ func (p *Provider) spawn(_ context.Context, cwd, id string, extraArgs []string) 
 	go func() {
 		sawIdle := s.readLoop(stdout)
 		err := cmd.Wait()
+		// Publish the exit BEFORE anything else here, so Probe has a synchronized answer. cmd.Wait()
+		// has returned, so ProcessState is final.
+		if st := cmd.ProcessState; st != nil {
+			desc := st.String()
+			s.exited.Store(&desc)
+		}
 		// Terminal status. A clean agent_end already emitted idle. Otherwise the stream ended without
 		// one: a non-zero exit we didn't initiate is a CRASH — surface it as an error so it isn't
 		// masked as a normal "Finished"; anything else is a plain idle backstop so the app unsticks.
@@ -212,8 +218,18 @@ type session struct {
 	resumedPath string
 
 	// sawText is whether this turn has already streamed assistant text, so a following message_start
-	// knows whether a paragraph break is needed. Only ever touched from the read loop.
-	sawText bool
+	// knows whether a paragraph break is needed.
+	//
+	// Atomic, not a plain bool: this comment used to claim it was "only ever touched from the read
+	// loop" and Prompt clears it from the CALLER's goroutine two lines into its body. A prompt sent
+	// while pi is still streaming therefore raced the loop, which both reads and writes it — losing
+	// or inventing the "\n\n" separator and re-opening the run-on-paragraph defect this exists to
+	// fix. It also trips the race detector, which is how it will be found next time.
+	sawText atomic.Bool
+
+	// exited holds the process's final state description once cmd.Wait() has returned, and nil until
+	// then. It exists so Probe never reads cmd.ProcessState, which the reaper writes concurrently.
+	exited atomic.Pointer[string]
 
 	// busy is whether a turn is in flight: set when we hand pi a prompt, cleared on its agent_end.
 	// It is the answer to the hub reconciler's Probe, and it is tracked here rather than inferred
@@ -373,7 +389,7 @@ func (s *session) send(v any) error {
 func (s *session) Prompt(_ context.Context, text string) error {
 	s.busy.Store(true)
 	// A new turn starts a fresh message chain, so its first message must not open with a break.
-	s.sawText = false
+	s.sawText.Store(false)
 	return s.send(map[string]any{"type": "prompt", "message": text})
 }
 
@@ -390,8 +406,13 @@ func (s *session) Probe(context.Context) (bool, error) {
 	}
 	// The process is the session here: if it is gone, "busy" is meaningless and the truthful answer
 	// is unreachable, which is what lets the reconciler eventually declare the turn abandoned.
-	if s.cmd != nil && s.cmd.ProcessState != nil && s.cmd.ProcessState.Exited() {
-		return false, fmt.Errorf("pi: process exited (%s)", s.cmd.ProcessState)
+	//
+	// Read through `exited` rather than by touching cmd.ProcessState directly. That field is written
+	// by cmd.Wait() on the reaper goroutine, so reading it here was an unsynchronized pointer read
+	// plus a read of the struct Wait is publishing — and it sits on the path that decides whether to
+	// abandon a turn, so a half-published value is answered to the reconciler as fact.
+	if st := s.exited.Load(); st != nil {
+		return false, fmt.Errorf("pi: process exited (%s)", *st)
 	}
 	return s.busy.Load(), nil
 }
@@ -730,16 +751,16 @@ func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool) {
 			// ends, so without a separator the last sentence of one message and the first word of the
 			// next are glued into a single word and the whole reply collapses into one run-on
 			// paragraph. Same defect opencode had; different frame to hang the boundary off.
-			if messageRole(e.Message) == "assistant" && s.sawText {
+			if messageRole(e.Message) == "assistant" && s.sawText.Load() {
 				s.emit(agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: s.id, Text: "\n\n"}})
-				s.sawText = false
+				s.sawText.Store(false)
 			}
 		case "message_update":
 			switch e.Asst.Type {
 			case "text_delta":
 				if e.Asst.Delta != "" {
 					idle = false
-					s.sawText = true
+					s.sawText.Store(true)
 					s.emit(agent.Event{Type: protocol.TypeOutputDelta, Payload: protocol.OutputDelta{SessionID: s.id, Text: e.Asst.Delta}})
 				}
 			case "thinking_delta":

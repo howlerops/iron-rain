@@ -48,7 +48,12 @@ type Jira struct {
 	onRefresh    func(access, refresh string) // persist rotated tokens
 
 	// Per-instance custom-field ids (sprint + story points), discovered once via /field and cached —
-	// their ids vary per site, so they can't be hardcoded. Guarded by mu.
+	// their ids vary per site, so they can't be hardcoded. Guarded by mu; read through customFields()
+	// rather than directly, because every caller below runs on a different goroutine: the 60s tracker
+	// poll, the token refresh cron, and any issue.detail or issue.update the user triggers. An
+	// unsynchronized read here does not merely lose the sprint chip — a torn id goes into the
+	// `fields=` query parameter, and Jira 400s the ENTIRE /search/jql request when it names a field
+	// that does not exist, so the board renders empty.
 	fieldsDiscovered bool
 	sprintFieldID    string
 	pointsFieldID    string
@@ -267,9 +272,10 @@ func (j *Jira) ListAssigned(ctx context.Context) ([]Issue, error) {
 	// Best-effort: a discovery that fails leaves the id empty and we ask for the same field list as
 	// before rather than failing the board.
 	_ = j.discoverFields(ctx)
+	sprintField, _ := j.customFields()
 	fieldList := "summary,status,priority,project,updated,assignee,issuetype,description"
-	if j.sprintFieldID != "" {
-		fieldList += "," + j.sprintFieldID
+	if sprintField != "" {
+		fieldList += "," + sprintField
 	}
 	q.Set("fields", fieldList)
 	q.Set("maxResults", "50")
@@ -315,7 +321,7 @@ func (j *Jira) ListAssigned(ctx context.Context) ([]Issue, error) {
 		var custom map[string]json.RawMessage
 		_ = json.Unmarshal(is.Fields, &custom)
 
-		sprintName, sprintState := jiraSprint(custom[j.sprintFieldID])
+		sprintName, sprintState := jiraSprint(custom[sprintField])
 		out = append(out, Issue{
 			ID: is.Key, Key: is.Key, Title: f.Summary,
 			Body:   adfToText(f.Description),
@@ -550,11 +556,12 @@ func (j *Jira) Detail(ctx context.Context, issueKey string) (Issue, []Comment, [
 	// effort — a discovery failure just means those two fields are omitted, never a failed read).
 	_ = j.discoverFields(ctx)
 	fieldList := "summary,description,status,project,updated,priority,assignee,labels,duedate,comment,attachment"
-	if j.sprintFieldID != "" {
-		fieldList += "," + j.sprintFieldID
+	sprintField, pointsField := j.customFields()
+	if sprintField != "" {
+		fieldList += "," + sprintField
 	}
-	if j.pointsFieldID != "" {
-		fieldList += "," + j.pointsFieldID
+	if pointsField != "" {
+		fieldList += "," + pointsField
 	}
 	// Decode the fields blob twice: once into the typed struct for known fields, and once into a raw
 	// map so the per-instance sprint/points custom fields can be read by their discovered ids.
@@ -610,7 +617,7 @@ func (j *Jira) Detail(ctx context.Context, issueKey string) (Issue, []Comment, [
 	var custom map[string]json.RawMessage
 	_ = json.Unmarshal(top.Fields, &custom)
 
-	sprintName, sprintState := jiraSprint(custom[j.sprintFieldID])
+	sprintName, sprintState := jiraSprint(custom[sprintField])
 	labels := make([]Label, 0, len(f.Labels))
 	for _, s := range f.Labels {
 		labels = append(labels, Label{ID: s, Name: s})
@@ -623,7 +630,7 @@ func (j *Jira) Detail(ctx context.Context, issueKey string) (Issue, []Comment, [
 		BranchName: branchNameFor(top.Key, f.Summary),
 		URL:        j.base + "/browse/" + top.Key, UpdatedAt: f.Updated,
 		SprintName: sprintName, SprintState: sprintState,
-		Labels: labels, DueDate: f.DueDate, Estimate: jiraNumber(custom[j.pointsFieldID]),
+		Labels: labels, DueDate: f.DueDate, Estimate: jiraNumber(custom[pointsField]),
 	}
 	comments := make([]Comment, 0, len(f.Comment.Comments))
 	for _, c := range f.Comment.Comments {
@@ -684,18 +691,19 @@ func (j *Jira) Update(ctx context.Context, issueKey string, f UpdateFields) (Iss
 		if err := j.discoverFields(ctx); err != nil {
 			return Issue{}, err
 		}
-		if f.CycleID != nil && j.sprintFieldID != "" {
+		sprintField, pointsField := j.customFields()
+		if f.CycleID != nil && sprintField != "" {
 			if *f.CycleID == "" {
-				fields[j.sprintFieldID] = nil
+				fields[sprintField] = nil
 			} else if id, err := strconv.Atoi(*f.CycleID); err == nil {
-				fields[j.sprintFieldID] = id
+				fields[sprintField] = id
 			}
 		}
-		if f.Estimate != nil && j.pointsFieldID != "" {
+		if f.Estimate != nil && pointsField != "" {
 			if *f.Estimate == 0 {
-				fields[j.pointsFieldID] = nil
+				fields[pointsField] = nil
 			} else {
-				fields[j.pointsFieldID] = *f.Estimate
+				fields[pointsField] = *f.Estimate
 			}
 		}
 	}
@@ -709,6 +717,14 @@ func (j *Jira) Update(ctx context.Context, issueKey string, f UpdateFields) (Iss
 }
 
 // discoverFields resolves + caches the per-instance sprint and story-point custom-field ids from
+
+// customFields returns the discovered sprint and story-point field ids under the lock.
+func (j *Jira) customFields() (sprintID, pointsID string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.sprintFieldID, j.pointsFieldID
+}
+
 // GET /field. Runs once; failures are non-fatal for fields we can't find (they're simply skipped).
 func (j *Jira) discoverFields(ctx context.Context) error {
 	j.mu.Lock()

@@ -611,6 +611,31 @@ func (m *managedSession) onStatus(ss protocol.SessionStatus) {
 
 // lastActive is the unix time of the session's last event — the liveness clock the DB TTL
 // prunes against (so a session with no activity for the TTL window ages out of the store).
+// snapshotMeta returns a COPY of this session's metadata, taken under m.mu.
+//
+// meta is not immutable: session.rename writes meta.label on the connection's read loop, and
+// resolving a fan-out clears meta.fanoutGroup — both under m.mu. Several readers took only h.mu,
+// which is a different lock and therefore no mutual exclusion at all. Copying a Go string header
+// non-atomically can pair one value's data pointer with another's length, so `strings.TrimSpace` on
+// the result faults; watchPreviewPorts runs that read every four seconds from a goroutine started
+// with no recover(), which makes a rename landing on the wrong tick fatal to the whole daemon.
+//
+// h.mu → m.mu is the order the rest of the file already uses (sessionList, usageReport, the
+// heartbeat sweep), so callers holding h.mu may call this directly.
+func (m *managedSession) snapshotMeta() sessionMeta {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.meta
+}
+
+// lastActiveAt is lastActive as a time.Time, for callers comparing two sessions rather than
+// reporting an epoch on the wire.
+func (m *managedSession) lastActiveAt() time.Time {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastActivity
+}
+
 func (m *managedSession) lastActive() int64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()

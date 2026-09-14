@@ -55,6 +55,28 @@ var (
 // openTurn starts (or refreshes) the session's turn. Called on prompt-send and on the provider's own
 // StatusRunning. Idempotent while a turn is open.
 func (m *managedSession) openTurn(detail string) {
+	// Keep the machine awake for the life of the turn. A Mac that sleeps thirty seconds after you
+	// walk away stops the agent mid-thought and lets the relay registration go stale, so the phone
+	// finds a session that is neither running nor reachable — the exact failure "continue from
+	// anywhere" exists to prevent.
+	//
+	// Taken BEFORE the lock, not after it. The turn becomes closeable the instant m.mu is released,
+	// and Guard.Release deliberately ignores a release at zero so the count cannot go negative — so
+	// a closer that got there first had its Release discarded, and the Hold that arrived afterwards
+	// was never matched by anything. The refcount stayed one too high forever, `caffeinate -s` ran
+	// for the life of the daemon, and the Mac stopped idle-sleeping with nothing on any surface to
+	// say why. Holding first makes the pairing unconditional; the only cost is one surplus Hold on
+	// the already-open path, released below.
+	holding := false
+	if m.hub != nil && m.hub.awake != nil {
+		m.hub.awake.Hold()
+		holding = true
+	}
+	release := func() {
+		if holding {
+			m.hub.awake.Release()
+		}
+	}
 	m.mu.Lock()
 	if m.turnPhase != "" { // already open — just refresh
 		if detail != "" {
@@ -62,6 +84,7 @@ func (m *managedSession) openTurn(detail string) {
 		}
 		m.turnLastEvent = time.Now()
 		m.mu.Unlock()
+		release() // no new turn was opened, so this Hold has nothing to pair with
 		return
 	}
 	m.turnID = randToken()
@@ -87,14 +110,8 @@ func (m *managedSession) openTurn(detail string) {
 	m.turnRevives = 0
 	stop := make(chan struct{})
 	m.turnStopLoop = stop
+	myTurn := m.turnID
 	m.mu.Unlock()
-	// Keep the machine awake for the life of the turn. A Mac that sleeps thirty seconds after you
-	// walk away stops the agent mid-thought and lets the relay registration go stale, so the phone
-	// finds a session that is neither running nor reachable — the exact failure "continue from
-	// anywhere" exists to prevent.
-	if m.hub != nil && m.hub.awake != nil {
-		m.hub.awake.Hold()
-	}
 	m.emitTurn("")
 	// A turn EDGE is the only moment a session's rendered state changes, so it is the only moment
 	// worth telling every client about. Clients that aren't subscribed to this session (the sidebar,
@@ -105,7 +122,7 @@ func (m *managedSession) openTurn(detail string) {
 	// or the previous error was recovered from. (openTurn is idempotent while a turn is open, so an
 	// approval raised mid-turn can't be cleared by its own turn.)
 	m.clearNeedsYou()
-	go m.turnLoops(stop)
+	go m.turnLoops(stop, myTurn)
 }
 
 // noteTurnEvent marks provider liveness — called for EVERY event the provider produces (own or
@@ -941,12 +958,30 @@ func (m *managedSession) broadcastTransient(raw []byte) {
 	}
 }
 
+// stillMine reports whether the turn this supervisor was started for is still the open one.
+//
+// Checked after every blocking call, because `stop` is only consulted at the top of the loop and a
+// closed channel racing a ready ticker is a uniform random choice anyway — so even an exit that is
+// "about to happen" can take one more pass first.
+func (m *managedSession) stillMine(turnID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.turnPhase != "" && m.turnID == turnID
+}
+
 // turnLoops is the per-turn heartbeat + reconciler: while the turn is open it (a) emits turn.state at
 // least every turnHeartbeatEvery (so the client can stay patient FOREVER on a slow-but-alive turn),
 // and (b) when the provider has been silent past turnQuietAfter, asks the provider directly (Probe):
 // busy → keep waiting; idle → we lost the completion event, recover the output + close; unreachable
 // N× → abandon with the reason. This replaces every client-side timeout heuristic.
-func (m *managedSession) turnLoops(stop chan struct{}) {
+// turnID identifies WHICH turn this supervisor belongs to. Every blocking call in the loop below —
+// Probe (10s), Revive (20s), Nudge (15s), Recover (15s) — straddles the only check of `stop`, so the
+// turn can end and a NEW one can open while one of them is in flight. The loop then resumed and
+// acted on m.turnPhase, i.e. on whichever turn is open NOW: it would re-broadcast the old turn's
+// output into the new turn's stream and then close the new turn as "reconciled: completion event was
+// lost". The user watched the prompt they had just sent end instantly, with the agent still working
+// and no heartbeat left to notice.
+func (m *managedSession) turnLoops(stop chan struct{}, turnID string) {
 	// Snapshot the timings ONCE, into locals.
 	//
 	// These are package variables so tests can shrink them, and the loop used to read them on every
@@ -974,12 +1009,12 @@ func (m *managedSession) turnLoops(stop chan struct{}) {
 		case <-tick.C:
 		}
 		m.mu.Lock()
-		open := m.turnPhase != ""
+		open := m.turnPhase != "" && m.turnID == turnID
 		lastEv := m.turnLastEvent
 		fails := m.turnProbeFails
 		m.mu.Unlock()
 		if !open {
-			return
+			return // this turn is over, or a new one has taken its place
 		}
 		if time.Since(lastHB) >= hbEvery {
 			m.emitTurn("")
@@ -999,10 +1034,18 @@ func (m *managedSession) turnLoops(stop chan struct{}) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		busy, err := prober.Probe(ctx)
 		cancel()
+		// The probe took up to ten seconds. Everything below acts on the CURRENT turn, so an answer
+		// about a turn that has since ended must not be applied to its successor.
+		if !m.stillMine(turnID) {
+			return
+		}
 		switch {
 		case err != nil:
 			if !m.handleUnreachable(err, fails, failLimit) {
 				return // proven unrecoverable and reported
+			}
+			if !m.stillMine(turnID) {
+				return // Revive can block for 20s; the turn may have ended inside it
 			}
 		case busy:
 			m.mu.Lock()
@@ -1047,12 +1090,21 @@ func (m *managedSession) turnLoops(stop chan struct{}) {
 				if !m.escalateStalled(stuckFor) {
 					return // escalated all the way to needs_you; the turn is closed
 				}
+				if !m.stillMine(turnID) {
+					return // a nudge blocks for up to 15s
+				}
 			}
 		default: // provider says the turn is DONE — we missed the completion event
 			if r, ok := m.sess.(agent.Recoverer); ok {
 				rctx, rcancel := context.WithTimeout(context.Background(), 15*time.Second)
 				r.Recover(rctx) // re-emits the final output through the normal event stream
 				rcancel()
+				// Recover can block for 15s. If the turn ended while it did, its output belongs to a
+				// turn that is over — replaying it into the live one, and then closing THAT one as
+				// reconciled, is the worst outcome available here.
+				if !m.stillMine(turnID) {
+					return
+				}
 				// Recover hands its output to the PROVIDER's event channel, which the pump drains on
 				// its own goroutine. Closing the turn straight away therefore raced the very content
 				// that was just recovered, and the reconciled idle could land in front of it — the

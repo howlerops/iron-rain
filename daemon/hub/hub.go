@@ -1494,7 +1494,7 @@ func (h *Hub) watchPreviewPorts() {
 		for id, m := range h.sessions {
 			if m.meta.cwd != "" {
 				paths[id] = m.meta.cwd
-				names[id] = previewName(m.meta)
+				names[id] = previewName(m.snapshotMeta())
 			}
 		}
 		watchers := len(h.clients)
@@ -1650,7 +1650,7 @@ func (h *Hub) removeSession(id string, owner *managedSession) {
 	}
 	group := ""
 	if m := h.sessions[id]; m != nil {
-		group = m.meta.fanoutGroup
+		group = m.snapshotMeta().fanoutGroup
 	}
 	delete(h.sessions, id)
 	db := h.db
@@ -1844,7 +1844,7 @@ func (h *Hub) resolveFanout(ctx context.Context, req protocol.FanoutResolve) pro
 	h.mu.Lock()
 	var variants []*managedSession
 	for _, m := range h.sessions {
-		if m.meta.fanoutGroup == req.Group && m.sess.ID() != req.Keep {
+		if m.snapshotMeta().fanoutGroup == req.Group && m.sess.ID() != req.Keep {
 			variants = append(variants, m)
 		}
 	}
@@ -1887,7 +1887,7 @@ func (h *Hub) forgetFanoutIfEmpty(group string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, m := range h.sessions {
-		if m.meta.fanoutGroup == group {
+		if m.snapshotMeta().fanoutGroup == group {
 			return
 		}
 	}
@@ -1913,7 +1913,7 @@ func (h *Hub) checkFanoutDone(group string) {
 	}
 	var members []*managedSession
 	for _, m := range h.sessions {
-		if m.meta.fanoutGroup == group {
+		if m.snapshotMeta().fanoutGroup == group {
 			members = append(members, m)
 		}
 	}

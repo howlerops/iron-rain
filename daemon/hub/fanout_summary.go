@@ -29,7 +29,7 @@ func (h *Hub) buildFanoutSummary(group string) protocol.FanoutSummary {
 	h.mu.Lock()
 	var members []*managedSession
 	for _, m := range h.sessions {
-		if m.meta.fanoutGroup == group {
+		if m.snapshotMeta().fanoutGroup == group {
 			members = append(members, m)
 		}
 	}

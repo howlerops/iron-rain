@@ -110,9 +110,10 @@ func (h *Hub) runTestLimits(sessionID, command string, wall, inactivity time.Dur
 	h.runningTests[sessionID] = true
 	label := ""
 	if m := h.sessions[sessionID]; m != nil {
-		label = m.meta.label
+		meta := m.snapshotMeta() // label is mutable (session.rename); h.mu alone does not guard it
+		label = meta.label
 		if label == "" {
-			label = m.meta.workspaceName
+			label = meta.workspaceName
 		}
 	}
 	h.mu.Unlock()

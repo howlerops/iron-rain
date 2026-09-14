@@ -420,7 +420,7 @@ func (h *Hub) recoverSession(ctx context.Context, id string) (*managedSession, e
 	var meta sessionMeta
 	if live != nil {
 		provider = live.sess.Provider()
-		meta = live.meta
+		meta = live.snapshotMeta() // label is mutable; a bare copy races session.rename
 	} else {
 		if db == nil {
 			return nil, fmt.Errorf("no session store")
