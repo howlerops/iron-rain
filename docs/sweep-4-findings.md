@@ -19,11 +19,13 @@ examined and found clean.
 
 ---
 
-## FIXED (22) — released as v0.2.199
+## FIXED (26)
 
-Commits 67f1336, ac5979d, 6ee4277, 3281ed5, 623d6e5, dce864e, e5ea242, d7425a2.
+The first 22 shipped as **v0.2.199** (commits 67f1336, ac5979d, 6ee4277, 3281ed5, 623d6e5, dce864e,
+e5ea242, d7425a2). The fifth batch below is on main and **not tagged**.
 
-Every one has a test whose control fails when only the fix is reverted.
+Every one has a test whose control fails when only the fix is reverted — with one stated exception,
+called out at the end of the fifth batch.
 
 ### First batch — the criticals
 
@@ -67,9 +69,35 @@ Every one has a test whose control fails when only the fix is reverted.
 | loops | `Upsert` dropped `LastRun`, so editing a loop reset its schedule and launched an unrequested autonomous run within a minute. | `loops.go` |
 | issues | A DISCONNECTED tracker's tickets never left the board — the keep-cache loop keyed on success, which a disconnected provider can never achieve. | `manager.go` |
 
+### Fifth batch — provider hangs that wedge a session permanently
+
+Commits 586a970, 7313bfe, 31600ce. Not released; Phase 2 should land before the next tag.
+
+Each of these had **no recovery path**: the session sat "working" forever and `Probe` reported
+running, so the turn engine's reconciler never rescued it.
+
+| Area | What | Where |
+|---|---|---|
+| pi | `send` took **no context at all** — `Prompt`, `Stop`, `Nudge`, `Respond` all named theirs `_` — so `promptBounded`'s 15s deadline was discarded. `heartbeatTick` walks sessions SERIALLY, so one wedged pi session stopped budget enforcement, handoff indexing and stall detection for every session behind it, with no log line. `heartbeat.go:406` documents this class of hang as fixed; it was fixed for claude-code only. | `pi.go` `sendCtx`, `thread.go` |
+| claudecode, pi | `readLoop` returning early on a scanner error left the child parked in `write()` against a pipe nobody drains, so `cmd.Wait()` blocked forever and `closeEvents()` never ran. One frame over the cap (8 MB / 16 MB) — a large tool result — does it. `procutil`'s `WaitDelay` does not apply: its timer starts only once the ctx is cancelled or Wait has seen the exit. Now: drain into `io.Discard`, `TerminateGroup`, then reap. | `claudecode.go` / `pi.go` spawn goroutines |
+| pi | `readLoop` never checked `sc.Err()`, so a truncated stream returned whatever `idle` held — a clean finish if the big line landed after an `agent_end`, the exit code blamed otherwise. Everything after it discarded silently. claudecode grew this check in 8d293ac. | `pi.go` `readLoop` |
+| cli | `stream()` ran to stdout EOF **before** `cmd.Wait()`, so a backgrounded grandchild holding the inherited stdout kept the turn alive after the agent exited. Now reaps first and drains second, on an owned `os.Pipe` so the tail of the output is not cut by Wait. `orphan_test.go` could not have caught it — its fixture keeps the parent alive. | `cli.go` `runTurn` |
+
+One honest caveat, recorded because this register is the place for it: the cli fix's
+`streamDrainGrace` has **no negative control**. The "last line still arrived" assertion passes even
+with the grace removed — the reader drains the 64 KiB a pipe holds faster than `waitpid` returns —
+so that assertion is a guard against gross truncation, not proof the grace window works. The
+assertion that has a control behind it is the one about the turn ending at all.
+
 ---
 
-## REMAINING (49)
+## REMAINING (46)
+
+Counted off the list below, which is authoritative. The 71/22 arithmetic in the header implies 45;
+the list has always held one more entry than that, with no duplicate to explain it, so the intake
+count was off by one rather than a finding having gone missing. Three further items at the end are
+stale comments to correct in passing, not findings.
+
 
 ### Security / capability boundary
 
@@ -85,7 +113,7 @@ Every one has a test whose control fails when only the fix is reverted.
 - **HIGH** `hub/session.go:925` — `subscribe` registers the subscriber then **releases `m.mu` before** snapshotting the replay, so an event broadcast in between is delivered twice. Contradicts the function's own doc comment. Window is wide for a restored session (full SQLite read + sha256 per frame).
 - **MEDIUM** `hub/session.go:1540` — `run()`'s panic recover returns normally, so `detachSession`/`removeSession` never run: the session stays in `h.sessions` with a dead pump, its approvals unresolvable and its MCP token unrevoked.
 - **MEDIUM** `hub/thread.go:120` — `adoptForkedSession` copies the parent's **entire** `sessionMeta` (not just project/cwd as the comment claims), so a fork inherits `worktreePath`/`repoRoot`/`port`/`fanoutGroup`. Resolving the fan-out then tears down the *kept* winner's worktree.
-- **MEDIUM** `hub/turn.go:888` — the 15s nudge bound is decorative: no `agent.Nudger` implementation reads the context. While it blocks, `turnLoops` is parked and the turn can never reach `needs_you`; the wake Hold is never released.
+- **MEDIUM** `hub/turn.go:888` — the 15s nudge bound is only partly real: claude-code and pi now honour it, but opencode's `Nudge` still names its context `_` (`opencode.go:1449`). While it blocks, `turnLoops` is parked and the turn can never reach `needs_you`; the wake Hold is never released.
 - **MEDIUM** `hub/heartbeat.go:160` — the budget stop sends the "needs you" push twice (once via `publishVerdict`, once directly).
 - **MEDIUM** `hub/hub.go:361` — `startSession` creates the worktree and reserves a port, then has `return nil, err` paths with no cleanup. Only the bootstrap failure path cleans up. The leaked worktrees are unreachable by every sweep because no session record was written.
 
@@ -95,10 +123,6 @@ Every one has a test whose control fails when only the fix is reverted.
 - **HIGH** `agent/opencode/opencode.go:1671` — `Respond` deletes the approval→session mapping before the POST that can fail, so the file's own 3-attempt retry sends attempts 2 and 3 to the *parent* path instead of the sub-agent.
 - **MEDIUM** `agent/opencode/opencode.go:1688` — `Delete` ignores the HTTP status and returns nil for any non-2xx; the hub's "server-side delete failed" log can never fire.
 - **MEDIUM** `agent/opencode/opencode.go:1542` — `sendParts` has no interlock, so with two POSTs in flight the first to return clears `turnPending` and emits `StatusIdle` for the turn the second is still running. Also resets `sawDelta`, triggering a duplicate `resyncLast`.
-- **HIGH** `agent/pi/pi.go:382` — pi's `send` takes **no context at all**; every method names it `_`. `promptBounded`'s 15s deadline is ignored, so one wedged pi session stops budget enforcement, handoff indexing and stall detection for every session after it on the serial tick.
-- **HIGH** `agent/claudecode/claudecode.go:588`, `agent/pi/pi.go:160` — when `readLoop` returns early on a scanner error the child is still writing, so `cmd.Wait()` blocks forever and the events channel never closes. One frame over the token cap (8 MB / 16 MB) does it.
-- **MEDIUM** `agent/pi/pi.go:864` — pi's `readLoop` never checks `sc.Err()`, so a truncated stream is reported as a normal turn (or nothing). claudecode handles the identical case.
-- **HIGH** `agent/cli/cli.go:316` — `stream()` blocks on Read until stdout EOF **before** `cmd.Wait()`, so a backgrounded grandchild holding the inherited stdout keeps the turn alive forever. `Probe` returns running, so the reconciler never recovers it. `orphan_test.go` misses it (its fixture keeps the parent alive).
 - **MEDIUM** `agent/agui/agui.go:483` — an HTTP 200 with no terminal event is reported as a normally finished turn, so a misconfigured endpoint "finishes" instantly with an empty reply and no error anywhere.
 - **MEDIUM** `genui/genui.go:276` — the `iron:ui` fence body accumulates with **no size limit**; `maxPayloadBytes` is checked only after the whole body is resident, and the over-cap body is then forwarded to clients whole as one `output.delta`.
 
@@ -162,18 +186,27 @@ used for accounts/remotes/MCP/devices is the fix.
 
 ## Suggested order for what is left
 
-The capability, data-loss and turn-identity groups are done and shipped in v0.2.199. What
-remains, roughly by value:
+The capability, data-loss and turn-identity groups shipped in v0.2.199; the provider hangs are on
+main awaiting a tag. What remains, roughly by value:
 
-1. **Provider hangs** — `pi`'s context-free `send`, the `readLoop`/`cmd.Wait()` deadlock on an
-   oversized frame (both claude-code and pi), and `cli`'s stream-before-Wait. Each wedges a session
-   permanently, and the pi one stalls the serial heartbeat tick for every session behind it.
-2. **`main.go:368` `SetAccounts`** — a one-time provider snapshot, so Re-scan or editing an agent
+1. **`main.go:368` `SetAccounts`** — a one-time provider snapshot, so Re-scan or editing an agent
    silently drops the account env. Wrong API key, wrong config dir, Accounts screen still green.
-3. **opencode session attribution** — `message.updated` decodes no `sessionID`, so cost and provider
+2. **opencode session attribution** — `message.updated` decodes no `sessionID`, so cost and provider
    errors land on the wrong session whenever two share a directory.
-4. **The Swift `*Forbidden` sweep** — one pattern, ten sites, and it is why a refused list renders as
+3. **The Swift `*Forbidden` sweep** — one pattern, ten sites, and it is why a refused list renders as
    "you have none" on the default iOS tab.
-5. **`lsp.go:131`** — `didOpen` before `initialize`, which silently kills every previously-open tab
+4. **`lsp.go:131`** — `didOpen` before `initialize`, which silently kills every previously-open tab
    after a server crash.
-6. The remaining mediums.
+5. The remaining mediums.
+
+Two things the fifth batch turned up that are worth carrying forward.
+
+`turn.go:888`'s 15s nudge bound is now honoured by claude-code and pi, but **opencode's `Nudge`
+still names its context `_`** (`opencode.go:1449` → `sendParts`), so that finding stays open rather
+than closing with this batch. Its failure mode differs — an unbounded HTTP POST, not a parked pipe
+write — but the consequence at `turnLoops` is the same.
+
+And `heartbeat.go:406`'s comment now describes something that is actually true. It did not when it
+was written: it documented this class of hang as fixed while pi still discarded every deadline. That
+is the second comment in this area during this sweep to assert a fix that did not exist (the first
+was `probe_test.go`'s `deafSidecar`).
