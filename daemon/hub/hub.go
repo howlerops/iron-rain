@@ -66,16 +66,17 @@ type Hub struct {
 	approvals map[string]*managedSession // approvalID -> owning session
 	discover  DiscoverFunc
 
-	notifier     push.Notifier // optional: push actionable approvals to a device
-	slack        *slack.Client // optional: mirror agent events to a Slack channel
-	pushTokens   []string      // registered device tokens
-	attach       AttacherFactory
-	clients      map[*transport.Conn]*hubClient // all connected clients (for global broadcasts)
-	projects     *project.Registry              // optional: registered folders sessions spawn in
-	autoProjects bool                           // auto-register projects from active agents' cwds
-	issues       *issues.Manager                // optional: connected trackers (Linear/Jira)
-	telemetry    *telemetry.Client              // optional: anonymized diagnostics shipping
-	logHub       *loghub.Hub                    // optional: live daemon-log stream (Developer log panel)
+	notifier       push.Notifier     // optional: push actionable approvals to a device
+	slack          *slack.Client     // optional: mirror agent events to a Slack channel
+	pushTokens     []string          // registered device tokens
+	pushTokenOwner map[string]string // push token -> registering device's public key (hex)
+	attach         AttacherFactory
+	clients        map[*transport.Conn]*hubClient // all connected clients (for global broadcasts)
+	projects       *project.Registry              // optional: registered folders sessions spawn in
+	autoProjects   bool                           // auto-register projects from active agents' cwds
+	issues         *issues.Manager                // optional: connected trackers (Linear/Jira)
+	telemetry      *telemetry.Client              // optional: anonymized diagnostics shipping
+	logHub         *loghub.Hub                    // optional: live daemon-log stream (Developer log panel)
 	// logLines carries daemon log lines to the fan-out goroutine. Buffered and lossy on purpose, and
 	// held in an ATOMIC rather than under h.mu: the logging path must not touch that mutex at all —
 	// see enqueueLogLine.
@@ -2265,7 +2266,12 @@ var nativeAgents = map[string]bool{"opencode": true, "claude-code": true, "pi": 
 
 // agentList builds the full agent roster: every registered provider plus any user-defined agent
 // whose command isn't currently on PATH (so it's still visible/editable), classified by kind.
-func (h *Hub) agentList() protocol.AgentList {
+//
+// withEnv carries each custom agent's Env map, which the app's own editor describes as holding API
+// keys that exist nowhere else. The roster itself has to stay readable at capWatch — a steerer needs
+// it to start a session — but the secrets in it do not, so only an owner gets that field. account.list
+// is capOwner for the same reason.
+func (h *Hub) agentList(withEnv bool) protocol.AgentList {
 	h.mu.Lock()
 	registered := make(map[string]bool, len(h.providers))
 	for n := range h.providers {
@@ -2310,7 +2316,9 @@ func (h *Hub) agentList() protocol.AgentList {
 			info.Kind = "custom"
 			info.Editable = true
 			info.Command, info.Args, info.ResumeArgs, info.Models = c.Command, c.Args, c.ResumeArgs, c.Models
-			info.Env = c.Env
+			if withEnv {
+				info.Env = c.Env
+			}
 			if !info.Available {
 				info.Available = cli.Available(c.Command)
 			}
@@ -2385,15 +2393,52 @@ func (h *Hub) SetAttacherFactory(f AttacherFactory) {
 }
 
 // RegisterDevice adds a device token to receive approval pushes.
-func (h *Hub) RegisterDevice(token string) {
+func (h *Hub) RegisterDevice(token string) { h.registerDeviceFor(token, "") }
+
+// registerDeviceFor records which DEVICE a push token belongs to, so revoking that device can take
+// its notifications with it.
+//
+// Without the association the token list was anonymous, and revocation had nothing to match: a
+// revoked phone kept receiving every push for every session — "Approve <tool>", "<label> finished",
+// tests-failed, PR — each carrying a session_id and an approval_id for sessions it no longer had any
+// access to. The list was pruned only when APNs itself reported the token dead, which for a working
+// phone never happens. Meanwhile the operator's device list showed it revoked and the log agreed.
+func (h *Hub) registerDeviceFor(token, pubHex string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.pushTokenOwner == nil {
+		h.pushTokenOwner = map[string]string{}
+	}
+	if pubHex != "" {
+		h.pushTokenOwner[token] = pubHex
+	}
 	for _, t := range h.pushTokens {
 		if t == token {
 			return
 		}
 	}
 	h.pushTokens = append(h.pushTokens, token)
+}
+
+// dropDevicePushTokens removes every push token registered by one device. Returns how many went.
+func (h *Hub) dropDevicePushTokens(pubHex string) int {
+	if pubHex == "" {
+		return 0
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	kept := h.pushTokens[:0]
+	dropped := 0
+	for _, t := range h.pushTokens {
+		if h.pushTokenOwner[t] == pubHex {
+			delete(h.pushTokenOwner, t)
+			dropped++
+			continue
+		}
+		kept = append(kept, t)
+	}
+	h.pushTokens = kept
+	return dropped
 }
 
 // pushApproval delivers an approval to every registered device (best-effort, async).
@@ -3615,7 +3660,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.SessionSetModel{SessionID: req.SessionID, Model: req.Model, Provider: req.Provider})
 
 	case protocol.TypeAgentList:
-		h.sendOK(conn, env.ID, h.agentList())
+		h.sendOK(conn, env.ID, h.agentList(roleAllows(h.roles.role(conn), capOwner)))
 
 	case protocol.TypeAgentUpsert:
 		if !h.requireCapability(conn, env.ID, capOwner, "change agents") {
@@ -3671,7 +3716,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		}
 		h.Register(cli.NewProvider(cfg)) // live: shows up in provider.list immediately
 		h.broadcastProviders()
-		h.sendOK(conn, env.ID, h.agentList())
+		h.sendOK(conn, env.ID, h.agentList(true)) // capOwner arm: env is the point of the reply
 
 	case protocol.TypeAgentDelete:
 		if !h.requireCapability(conn, env.ID, capOwner, "delete an agent") {
@@ -3715,7 +3760,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			}
 		}
 		h.broadcastProviders()
-		h.sendOK(conn, env.ID, h.agentList())
+		h.sendOK(conn, env.ID, h.agentList(true)) // capOwner arm: env is the point of the reply
 
 	case protocol.TypeAgentVisible:
 		if !h.requireCapability(conn, env.ID, capOwner, "change agent visibility") {
@@ -3737,8 +3782,8 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		}
 		h.mu.Unlock()
 		h.saveHiddenSet()
-		h.broadcastProviders() // pickers refresh to the new visible set
-		h.sendOK(conn, env.ID, h.agentList())
+		h.broadcastProviders()                    // pickers refresh to the new visible set
+		h.sendOK(conn, env.ID, h.agentList(true)) // capOwner arm: env is the point of the reply
 
 	case protocol.TypeProjectList:
 		reg := h.projectRegistry()
@@ -5326,7 +5371,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, "bad device.register")
 			return
 		}
-		h.RegisterDevice(req.Token)
+		h.registerDeviceFor(req.Token, hexKey(conn.PeerPublicKey()))
 		log.Printf("hub: device registered for push (token %s…, %d chars)", safePrefix(req.Token), len(req.Token))
 		h.sendOK(conn, env.ID, nil)
 

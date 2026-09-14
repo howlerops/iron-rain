@@ -342,6 +342,12 @@ func inviteLabel(inv *invite) string {
 
 // roleForConn resolves the role a freshly-connected client should hold.
 func (h *Hub) roleForConn(pub []byte) string {
+	// A demotion the owner stored against this DEVICE outranks everything below: it is the only
+	// signal here that represents an explicit decision about this device rather than an inference
+	// from how it enrolled. Checked first so a re-issued invite cannot quietly undo it.
+	if role := h.storedDeviceRole(pub); role != "" {
+		return role
+	}
 	if role, ok := h.invites.roleFor(pub); ok {
 		return role
 	}

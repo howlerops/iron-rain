@@ -2,10 +2,13 @@ package hub
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/howlerops/oculus/daemon/agent/cli"
 )
 
 // Every message type must make a DELIBERATE decision about who may send it.
@@ -38,7 +41,12 @@ func TestEveryMessageTypeDecidesWhoMaySendIt(t *testing.T) {
 	// the owner wrote for an unattended agent. All are capSteer or capOwner now.
 	watcherReads := []string{
 		"TypeSessionList", "TypeSessionSubscribe", "TypeParticipants", "TypeClientIdentify",
-		"TypeThreadTree", "TypeTranscriptPage", "TypeProviderList", "TypeAgentList",
+		"TypeThreadTree", "TypeTranscriptPage", "TypeProviderList",
+		// TypeAgentList stays a watcher read — a steerer needs the roster to start a session — but
+		// its reply is REDACTED for non-owners. See TestAgentRosterHidesEnvFromNonOwners: the Env
+		// map on a custom agent holds API keys, and shipping them to a watch-only guest was a
+		// disclosure the census could not see, because the census reasons about types and not payloads.
+		"TypeAgentList",
 		"TypeModelList", "TypeCommandList", "TypeProjectList",
 		"TypeCheckpointList", "TypeDiscover", "TypeSessionDefaultsGet",
 		"TypeWorktreeStatus", "TypeWorktreeConflicts",
@@ -236,4 +244,50 @@ func hubFuncBody(name string) string {
 func readFileString(name string) (string, error) {
 	b, err := os.ReadFile(name)
 	return string(b), err
+}
+
+// The agent roster is readable by a watcher; the API keys in it are not.
+//
+// agent.list is capWatch because a steerer needs the roster to start a session. But a custom agent's
+// Env map is where a user's ANTHROPIC_API_KEY / OPENAI_API_KEY live — the app's own editor says as
+// much — and the reply carried it verbatim. account.list is capOwner for exactly this reason, and
+// agent.upsert/delete/visible all are too; only the read was open.
+//
+// The census above cannot catch this: it reasons about which TYPES are gated, and this type is
+// correctly ungated. What was wrong was the payload.
+func TestAgentRosterHidesEnvFromNonOwners(t *testing.T) {
+	dir := t.TempDir()
+	agents := filepath.Join(dir, "agents.json")
+	if err := cli.Save(agents, []cli.Config{{
+		Name: "work-codex", Command: "codex", Args: []string{"exec"},
+		Env: map[string]string{"OPENAI_API_KEY": "sk-secret-value"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	h := New()
+	h.SetAgentsPath(agents, filepath.Join(dir, "visibility.json"))
+
+	owner := h.agentList(true)
+	var ownerSaw bool
+	for _, a := range owner.Agents {
+		if a.Name == "work-codex" && a.Env["OPENAI_API_KEY"] == "sk-secret-value" {
+			ownerSaw = true
+		}
+	}
+	if !ownerSaw {
+		t.Fatal("the owner cannot see the env it configured — the editor would show an empty key")
+	}
+
+	watcher := h.agentList(false)
+	for _, a := range watcher.Agents {
+		if len(a.Env) != 0 {
+			t.Fatalf("a non-owner was sent agent %q's env: %v\n\n"+
+				"Those values are API keys that exist nowhere else. A watch-only guest asking for "+
+				"the roster received them.", a.Name, a.Env)
+		}
+		if a.Name == "work-codex" && a.Command != "codex" {
+			t.Fatal("redaction went too far — the roster itself must stay readable at capWatch, " +
+				"or a steerer cannot pick an agent to start a session with")
+		}
+	}
 }

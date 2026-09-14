@@ -223,7 +223,10 @@ func (h *Hub) grantRole(target, role string) bool {
 		return false
 	}
 	h.roles.setRole(match, role)
-	log.Printf("roles: %s is now a %s", target, role)
+	// …and against the DEVICE, so the decision survives the connection. Without this a demotion
+	// lasted until the next Wi-Fi blip, after which a credentialed device resolved back to owner.
+	h.setDeviceRole(match.PeerPublicKey(), role)
+	log.Printf("roles: %s is now a %s (persisted against the device)", target, role)
 	h.broadcastParticipants()
 	return true
 }

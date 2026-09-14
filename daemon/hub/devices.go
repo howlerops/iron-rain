@@ -54,6 +54,18 @@ type Device struct {
 	// their access lives and dies with the invite, so an expired or revoked invite ends it completely
 	// instead of leaving behind a device that can re-authenticate on its own.
 	Guest bool `json:"guest,omitempty"`
+	// Role is a DEMOTION the owner applied to this device with role.grant, and it has to be durable.
+	//
+	// The role registry is keyed on the live *transport.Conn and dropClient forgets it, so a
+	// demotion previously lasted exactly as long as the socket. A credentialed device — one paired
+	// with a pairing code, so not a guest and not claimed by any invite — then fell through
+	// roleForConn to RoleOwner on its next connection, silently regaining approvals, run.test,
+	// device revocation and the ability to mint pairing codes. A Wi-Fi blip was enough, and nothing
+	// logged it.
+	//
+	// Empty means "no stored decision": fall through to the invite and guest rules as before, so an
+	// owner's own devices are unaffected.
+	Role string `json:"role,omitempty"`
 }
 
 type deviceRegistry struct {
@@ -290,6 +302,18 @@ func (h *Hub) closeDeviceConns(pubHex, why string) int {
 	if pubHex == "" {
 		return 0
 	}
+	// A device's PUSH TOKENS go with its connection, and this is the one place every revocation
+	// path passes through — device revoke, invite revoke, invite expiry, sharing turned off. Doing
+	// it here rather than in each caller is what stops the next path from forgetting.
+	//
+	// Closing the socket ends what the device can DO. Until this, nothing ended what it kept being
+	// TOLD: the token list was anonymous, so revocation had nothing to match, and a revoked phone
+	// went on receiving every approval, finish, tests-failed and PR push — each carrying a
+	// session_id and approval_id — for sessions it no longer had any access to. APNs prunes a token
+	// only when the token itself dies, which for a working phone is never.
+	if n := h.dropDevicePushTokens(pubHex); n > 0 {
+		log.Printf("devices: dropped %d push token(s) for %s… (%s)", n, shortPub(pubHex), why)
+	}
 	h.mu.Lock()
 	doomed := make([]*transport.Conn, 0, 1)
 	for conn := range h.clients {
@@ -392,4 +416,46 @@ func (h *Hub) guestsToDisconnect() []string {
 		}
 	}
 	return out
+}
+
+// storedDeviceRole returns the role the owner explicitly assigned to this device, or "" when there
+// is none. See Device.Role for why this has to outlive the connection.
+func (h *Hub) storedDeviceRole(pub []byte) string {
+	if len(pub) == 0 {
+		return ""
+	}
+	reg := h.deviceRegistry()
+	if reg == nil {
+		return ""
+	}
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+	if d, ok := reg.byID[hexKey(pub)]; ok && d != nil && !d.Revoked {
+		return d.Role
+	}
+	return ""
+}
+
+// setDeviceRole persists a role decision against a device, so it survives the socket it was made on.
+// An unknown device is not an error: a grant can target a connection whose device predates the
+// registry, and the in-memory role registry still applies for the life of that connection.
+func (h *Hub) setDeviceRole(pub []byte, role string) {
+	if len(pub) == 0 {
+		return
+	}
+	reg := h.deviceRegistry()
+	if reg == nil {
+		return
+	}
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+	d, ok := reg.byID[hexKey(pub)]
+	if !ok || d == nil {
+		return
+	}
+	if d.Role == role {
+		return
+	}
+	d.Role = role
+	_ = reg.saveLocked()
 }
