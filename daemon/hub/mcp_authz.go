@@ -120,7 +120,15 @@ func (t *mcpSessionTokens) session(token string) (string, bool) {
 }
 
 // revoke drops a session's token when the session ends.
+//
+// Nil-safe because of WHERE it is called from: detachSession runs on the session-teardown path, and
+// that path is reached from the event pump's panic recover. A nil dereference there is a panic
+// inside a deferred recover, which ends the process — defeating the containment the recover exists
+// to provide. A hub with no token store has no token to revoke, which is the honest answer anyway.
 func (t *mcpSessionTokens) revoke(sessionID string) string {
+	if t == nil {
+		return ""
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	token := t.fromSess[sessionID]

@@ -157,10 +157,13 @@ func (h *Hub) heartbeatTick() {
 					log.Printf("heartbeat: could not stop %s at its budget: %v", m.sess.ID(), err)
 				}
 				cancel()
-				m.closeTurn(protocol.StatusNeedsYou, "reached its spend budget")
-				h.broadcastHeartbeat(m, hbExhausted, nudgeN, done, total, cost, budget)
-				h.pushAgentStalled(m.sess.ID(), label,
+				// One event, one push. closeTurn → publishVerdict already pushes for a NeedsYou verdict,
+				// and this branch pushed again directly: the user's phone buzzed twice for one budget
+				// stop, with two different wordings of the same fact. The richer wording is the one worth
+				// keeping, so it goes through closeTurn and the direct push is gone.
+				m.closeTurn(protocol.StatusNeedsYou,
 					fmt.Sprintf("stopped at its $%.2f budget (spent $%.2f)", budget, cost))
+				h.broadcastHeartbeat(m, hbExhausted, nudgeN, done, total, cost, budget)
 			}
 			continue
 		}

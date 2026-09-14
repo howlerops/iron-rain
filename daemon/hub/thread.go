@@ -118,8 +118,31 @@ func (h *Hub) adoptForkedSession(ctx context.Context, parent *managedSession, ne
 		return fmt.Errorf("provider %s cannot attach to an existing session", name)
 	}
 	parent.mu.Lock()
-	meta := parent.meta
+	pmeta := parent.meta
 	parent.mu.Unlock()
+	// Copy only what "lands in the same place" means — NOT the parent's whole sessionMeta, which is
+	// what this did while the comment above claimed otherwise.
+	//
+	// The inherited fields were live ownership claims. worktreePath/repoRoot/baseCommit say "this
+	// session OWNS that worktree", so resolving a fan-out tore down the kept winner's worktree on
+	// behalf of a fork that merely descended from it. port says "this session owns that allocation",
+	// so releasing the fork freed a port the parent was still serving on. fanoutGroup enrolled the
+	// fork as a lane in a competition it was never part of, and issueID/issueKey pointed a second
+	// session at the same ticket, which is what writes the result back.
+	//
+	// parentID/subtask are deliberately NOT inherited either: a fork's parent is the session it forked
+	// from, not whatever that session was delegated from. `members` is dropped for the same reason as
+	// worktreePath — RemoveWorkspace acts on it — and costs nothing here, because a workspace
+	// session's cwd IS the layout dir holding every member checkout, so the fs guard still resolves
+	// the same tree through cwd.
+	meta := sessionMeta{
+		projectID:     pmeta.projectID,
+		cwd:           pmeta.cwd,
+		workspaceName: pmeta.workspaceName,
+		branch:        pmeta.branch,
+		providerURL:   pmeta.providerURL,
+		roots:         append([]string(nil), pmeta.roots...),
+	}
 
 	sess, err := att.Attach(ctx, newID, meta.cwd)
 	if err != nil {

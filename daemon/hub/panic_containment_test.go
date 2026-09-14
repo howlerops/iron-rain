@@ -101,3 +101,49 @@ func TestPanicInOneSessionDoesNotKillTheDaemon(t *testing.T) {
 		t.Error("the healthy session stopped processing events after another session panicked")
 	}
 }
+
+// A panicked session must be torn DOWN, not left bound to a dead pump.
+//
+// The recover above returns normally, which used to skip every line after the pump loop — including
+// the detachSession/removeSession that ends the binding. So the hub kept the session in h.sessions
+// with nothing listening on the provider behind it: its pending approvals could never be answered
+// (the answer travels through that pump), its MCP token stayed valid, and every session list kept
+// offering a row that responds to nothing. The user's only recovery was restarting the daemon.
+func TestAPanickedSessionIsUnboundFromTheHub(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	h := &Hub{db: db, sessions: map[string]*managedSession{}}
+	bad := &panicSess{ch: make(chan agent.Event, 8)}
+	m := newManagedSession(h, bad, sessionMeta{})
+	h.mu.Lock()
+	h.sessions["sess_panic"] = m
+	h.mu.Unlock()
+	go m.run()
+
+	for i := 0; i < 500 && !m.pumpAlive.Load(); i++ {
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	bad.armed.Store(true)
+	bad.ch <- agent.Event{Type: protocol.TypeSessionStatus,
+		Payload: protocol.SessionStatus{SessionID: "sess_panic", Status: protocol.StatusRunning}}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		h.mu.Lock()
+		_, still := h.sessions["sess_panic"]
+		h.mu.Unlock()
+		if !still {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("the session is still bound in h.sessions after its pump panicked.\n\n" +
+		"Nothing is reading the provider any more, but the hub still offers the session: its " +
+		"approvals can never be resolved, its MCP token is never revoked, and the row stays in every " +
+		"session list answering nothing until the daemon is restarted.")
+}

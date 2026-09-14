@@ -219,6 +219,15 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 	}
 	log.Printf("session.create: provider=%s project=%s projects=%v worktree=%v plan=%v prompt=%dB",
 		req.Provider, req.ProjectID, req.ProjectIDs, req.Worktree, req.Plan, len(req.Prompt))
+	// Undo anything acquired before a session record exists to own it. Armed once the worktree is
+	// created and disarmed at addSession, after which the ordinary teardown paths take over.
+	var cleanup func()
+	bound := false
+	defer func() {
+		if !bound && cleanup != nil {
+			cleanup()
+		}
+	}()
 	h.mu.Lock()
 	p := h.providers[req.Provider]
 	h.mu.Unlock()
@@ -364,6 +373,15 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 		if err != nil {
 			return nil, err
 		}
+		// From here the worktree (and shortly a reserved port) exist, but no session record does — so
+		// every failure below has to undo them by hand. Only the bootstrap failure did; a missing cwd
+		// and a provider that refused to start both returned straight out, leaving a checkout and a
+		// port allocated to a session that never existed.
+		//
+		// Those leaks are unreachable by every sweep the daemon has. SweepOrphans works from the
+		// session records, and there is no record; the port is held by a map keyed the same way. A
+		// failing provider — a bad API key, say — leaks one checkout per retry, and the user retries.
+		armWorktreeCleanup(&cleanup, h, repoRoot, wt.Path, &meta)
 		cwd = wt.Path
 		meta.cwd = wt.Path
 		meta.branch = wt.Branch
@@ -377,6 +395,10 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 				if len(cfg.PortRange) >= 2 {
 					port = h.reservePort(cfg.PortRange[0], cfg.PortRange[1])
 				}
+				// Record it immediately, so the failure cleanup releases it however we leave. Bootstrap
+				// returns this same port back in res.Port (Result{Port: port}); the assignment below is
+				// kept because that is the value the session is documented to carry.
+				meta.port = port
 				// cfg.Setup is a `sh -c` string out of a file a non-owner can write, so whether it may
 				// run is a trust decision, not a config read. decideWorktreeSetup makes it; Bootstrap
 				// obeys it and reports back what it skipped.
@@ -390,8 +412,8 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 				}
 				res, berr := bootstrap(ctx, repoRoot, wt.Path, cfg, port, trust)
 				if berr != nil {
-					_ = worktree.Remove(repoRoot, wt.Path, true)
-					h.releasePort(port) // don't leak the reserved port on a failed bootstrap
+					// The worktree and the port are undone by the deferred cleanup, which now covers every
+					// failure on this path rather than just this one.
 					return nil, fmt.Errorf("worktree setup failed: %w", berr)
 				}
 				meta.port = res.Port
@@ -542,6 +564,9 @@ func (h *Hub) startSession(ctx context.Context, req protocol.SessionCreate, meta
 		}
 	}
 	ms := h.addSession(sess, meta)
+	// The session record now owns the worktree and the port: removing the session releases them, and
+	// the orphan sweep can see them. Anything failing past this point is a live session's problem.
+	bound = true
 	if strings.TrimSpace(req.Prompt) != "" {
 		ms.openTurn("") // created WITH a prompt → a turn is already in flight
 	}
@@ -6292,4 +6317,23 @@ func (h *Hub) SetWakeGuard(g interface {
 	h.mu.Lock()
 	h.awake = g
 	h.mu.Unlock()
+}
+
+// armWorktreeCleanup installs the undo for a worktree (and whatever port it later reserves) created
+// for a session that does not exist yet.
+//
+// meta is taken by pointer deliberately: the port is reserved AFTER this is armed, inside the
+// bootstrap branch, and the cleanup has to release whichever port ended up there — reading it at arm
+// time would always see zero.
+func armWorktreeCleanup(cleanup *func(), h *Hub, repoRoot, path string, meta *sessionMeta) {
+	*cleanup = func() {
+		log.Printf("session.create: failed after creating worktree %s — removing it and releasing port %d",
+			path, meta.port)
+		if err := worktree.Remove(repoRoot, path, true); err != nil {
+			log.Printf("session.create: could not remove the orphaned worktree %s: %v", path, err)
+		}
+		if meta.port != 0 {
+			h.releasePort(meta.port)
+		}
+	}
 }

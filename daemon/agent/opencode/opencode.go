@@ -1471,6 +1471,11 @@ func (s *session) Prompt(_ context.Context, text string) error {
 // consumed. That is why the turn engine treats a nudge as best-effort and escalates to needs_you
 // when nothing moves, instead of reaching for the abort itself. Killing a user's agent on a
 // heuristic is the failure mode this whole path exists to avoid.
+// The context is genuinely unused here, unlike the pi and claude-code adapters where the same `_`
+// discarded a real deadline. sendParts hands the POST to a goroutine and returns immediately, so
+// this cannot block turnLoops however wedged the server is. It stays `_` rather than being threaded
+// through to something that would ignore it anyway — but if sendParts ever becomes synchronous, this
+// is the line that has to change with it.
 func (s *session) Nudge(_ context.Context, text string) error {
 	return s.sendParts([]map[string]any{{"type": "text", "text": text}}, false)
 }

@@ -412,6 +412,50 @@ type subscriber struct {
 	mu        sync.Mutex
 	delivered map[string]struct{}
 	dedupTill time.Time
+
+	// buffering holds live frames aside while subscribe assembles this subscriber's replay.
+	//
+	// The replay snapshot cannot be taken under m.mu — it reads the durable transcript out of SQLite
+	// and hashes every frame — so there is a real window between "registered as a subscriber" and
+	// "we know what the replay contains". A frame broadcast inside that window went out live AND
+	// landed in the snapshot, and the dedup set did not exist yet to catch it, so the client rendered
+	// it twice. Wide open for a restored session, which is exactly the case with the most history to
+	// read. Frames that arrive while this is set are held here and appended after the replay, with
+	// seen() dropping any the snapshot already contained.
+	buffering bool
+	buffered  [][]byte
+}
+
+// startBuffering diverts live frames until stopBuffering. Called with the session lock held, so no
+// broadcast can slip between registration and this flag.
+func (s *subscriber) startBuffering() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.buffering = true
+	s.buffered = nil
+}
+
+// bufferFrame takes a live frame aside if a replay is being assembled, reporting whether it did.
+func (s *subscriber) bufferFrame(raw []byte) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.buffering {
+		return false
+	}
+	s.buffered = append(s.buffered, raw)
+	return true
+}
+
+// stopBuffering resumes live delivery and returns what arrived meanwhile. The flip and the drain are
+// one critical section, so a concurrent bufferFrame either lands in the returned slice or goes out
+// live — never into a slice nobody will read again.
+func (s *subscriber) stopBuffering() [][]byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.buffering = false
+	out := s.buffered
+	s.buffered = nil
+	return out
 }
 
 // seen reports whether this exact frame was already delivered in the replay, and stops tracking once
@@ -931,33 +975,7 @@ func boundTail(replay [][]byte, limit int) [][]byte {
 }
 
 func (m *managedSession) subscribe(conn *transport.Conn) {
-	m.mu.Lock()
-	existing, already := m.subs[conn]
-	s := existing
-	if !already {
-		s = &subscriber{conn: conn, ch: make(chan []byte, outboundBuffer), done: make(chan struct{})}
-		m.subs[conn] = s
-	}
-	m.mu.Unlock()
-	replay := m.replayFrames()
-	// Remember what this subscriber is about to receive, so a provider re-stream arriving as LIVE
-	// traffic in the next few seconds is suppressed instead of doubling the conversation on screen.
-	s.rememberReplay(replay, replayGrace)
-
-	// Deliver the CURRENT turn snapshot to this subscriber: turn.state is transient (never replayed
-	// from the transcript), so without this a client that subscribes mid-turn — including the CREATOR
-	// of a session started with a prompt, and any session switch — would see no turn state until the
-	// next ~10s heartbeat (or, for a fast turn, only the terminal frame with no `running` before it).
-	m.mu.Lock()
-	if m.turnPhase != "" {
-		ts := m.turnSnapshotLocked(m.turnPhase, "")
-		m.mu.Unlock()
-		if raw, err := (agent.Event{Type: protocol.TypeTurnState, Payload: ts}).Encode(); err == nil {
-			replay = append(replay, raw)
-		}
-	} else {
-		m.mu.Unlock()
-	}
+	s, replay, already := m.prepareSubscription(conn)
 	if already {
 		// The client RE-subscribed to a session it already had a subscription for — this is a session
 		// SWITCH (the app cleared its transcript view on open, or switched away and back). Previously we
@@ -980,6 +998,59 @@ func (m *managedSession) subscribe(conn *transport.Conn) {
 		return
 	}
 	go m.writeLoop(s, replay)
+}
+
+// prepareSubscription registers conn as a subscriber (if it is not one already) and assembles every
+// frame it is owed: the replay snapshot, the current turn state, and anything broadcast while that
+// snapshot was being read.
+//
+// Split out from subscribe because the window between registering and snapshotting is the whole
+// defect — a frame broadcast inside it went out live AND landed in the snapshot — and this is the
+// seam a test can hold both halves of at once. Delivery differs between a new and a re-subscribing
+// client; what they are owed does not.
+func (m *managedSession) prepareSubscription(conn *transport.Conn) (*subscriber, [][]byte, bool) {
+	m.mu.Lock()
+	existing, already := m.subs[conn]
+	s := existing
+	if !already {
+		s = &subscriber{conn: conn, ch: make(chan []byte, outboundBuffer), done: make(chan struct{})}
+		m.subs[conn] = s
+	}
+	// Hold live frames aside until the replay is known. Set under m.mu — the same lock broadcast
+	// takes to snapshot the subscriber list — so there is no gap between being a subscriber and
+	// being one whose live traffic is accounted for.
+	s.startBuffering()
+	m.mu.Unlock()
+	replay := m.replayFrames()
+	// Remember what this subscriber is about to receive, so a provider re-stream arriving as LIVE
+	// traffic in the next few seconds is suppressed instead of doubling the conversation on screen.
+	s.rememberReplay(replay, replayGrace)
+
+	// Deliver the CURRENT turn snapshot to this subscriber: turn.state is transient (never replayed
+	// from the transcript), so without this a client that subscribes mid-turn — including the CREATOR
+	// of a session started with a prompt, and any session switch — would see no turn state until the
+	// next ~10s heartbeat (or, for a fast turn, only the terminal frame with no `running` before it).
+	m.mu.Lock()
+	if m.turnPhase != "" {
+		ts := m.turnSnapshotLocked(m.turnPhase, "")
+		m.mu.Unlock()
+		if raw, err := (agent.Event{Type: protocol.TypeTurnState, Payload: ts}).Encode(); err == nil {
+			replay = append(replay, raw)
+		}
+	} else {
+		m.mu.Unlock()
+	}
+	// Resume live delivery and fold in whatever was broadcast while the snapshot was being read.
+	// seen() drops the ones the snapshot already contains — that overlap is the whole reason this
+	// window used to deliver frames twice — and the rest continue in broadcast order behind the
+	// replay, which is where they belong.
+	for _, raw := range s.stopBuffering() {
+		if s.seen(raw) {
+			continue
+		}
+		replay = append(replay, raw)
+	}
+	return s, replay, already
 }
 
 // writeLoop delivers the transcript snapshot, then live events, until the subscriber is
@@ -1379,6 +1450,9 @@ func (m *managedSession) broadcast(raw []byte) {
 		if s.seen(raw) {
 			continue // already delivered in this subscriber's replay — a provider re-stream
 		}
+		if s.bufferFrame(raw) {
+			continue // mid-subscribe: held aside and appended after the replay, deduped against it
+		}
 		select {
 		case s.ch <- raw:
 		default:
@@ -1561,6 +1635,28 @@ func (m *managedSession) run() {
 			m.broadcast(raw)
 		}
 		m.closeTurn(protocol.StatusError, "panic in the event pump")
+		// And tear the session DOWN, the same way the normal stream-ended path below does.
+		//
+		// Recovering used to return straight out of run(), skipping every line after the pump loop —
+		// so the session stayed in h.sessions with a dead pump behind it. Nothing was listening on the
+		// provider any more, but the hub still held the binding: its pending approvals could never be
+		// resolved (the answer goes through this pump), its MCP token stayed valid, and every session
+		// list kept offering a row that answers nothing. detachSession, not removeSession: a panic is
+		// an unexpected end, not a user stop, so the durable record must survive for the session to
+		// resurface as stopped and restartable.
+		//
+		// Under its OWN recover. This whole handler runs because something already proved it can
+		// panic, and a panic inside a deferred recover ends the process — which is precisely the
+		// outcome the containment exists to prevent. Leaving the session bound is bad; taking every
+		// other session down with it is worse, so the teardown is allowed to fail loudly and alone.
+		func() {
+			defer func() {
+				if r2 := recover(); r2 != nil {
+					log.Printf("session %s (%s): PANIC while tearing down after a pump panic: %v", sid, provider, r2)
+				}
+			}()
+			m.hub.detachSession(sid, m)
+		}()
 	}()
 	// A worktree session is the only kind that can have a PR, so it is the only kind whose CI is
 	// worth watching. Starting the hub's watcher from here (rather than from main) means a daemon
