@@ -690,7 +690,15 @@ func (m *managedSession) emitTurn2(state, reason string) {
 //     a laptop waking from sleep is not a dead agent.
 //  3. Tries to REPAIR the connection (agent.Reviver) before reporting anything, because most of
 //     these are a transport that can simply be rebuilt.
-func (m *managedSession) handleUnreachable(probeErr error, fails, failLimit int) bool {
+//
+// turnID is the turn this supervisor was started for. Every write below must re-check it: the
+// caller's stillMine check happens AFTER this returns, which is too late for the two writes inside
+// — Revive blocks for up to 20s, and a Stop plus the redirect the user typed can open a new turn
+// inside that window. The abandon then killed the redirect ("abandoned: agent unreachable for
+// 2m30s"), sealed its tool cards, and sent a needs-you push while the agent worked on it; the
+// success path instead forced `running` onto a turn it knew nothing about, clobbering an
+// awaiting_approval.
+func (m *managedSession) handleUnreachable(probeErr error, fails, failLimit int, turnID string) bool {
 	now := time.Now()
 	m.mu.Lock()
 	if m.turnProbeSince.IsZero() {
@@ -742,6 +750,13 @@ func (m *managedSession) handleUnreachable(probeErr error, fails, failLimit int)
 				m.mu.Unlock()
 				return false
 			}
+			if m.turnPhase == "" || m.turnID != turnID {
+				// A different turn is open now (or none). Reviving proved the SESSION is usable; it
+				// says nothing about this turn, and stamping a phase onto its successor is how a
+				// redirect got force-marked `running` over its own awaiting_approval.
+				m.mu.Unlock()
+				return false
+			}
 			m.turnProbeFails, m.turnProbeSince = 0, time.Time{}
 			m.turnPhase = protocol.StatusRunning
 			m.turnLastEvent = time.Now()
@@ -763,6 +778,9 @@ func (m *managedSession) handleUnreachable(probeErr error, fails, failLimit int)
 		reason += fmt.Sprintf(" (reconnected %d×, still failing)", revives)
 	}
 	reason += ": " + probeErr.Error()
+	if !m.stillMine(turnID) {
+		return false // the turn this supervisor watched is already over; do not close its successor
+	}
 	m.closeTurn(protocol.StatusAbandoned, reason)
 	return false
 }
@@ -1071,7 +1089,7 @@ func (m *managedSession) turnLoops(stop chan struct{}, turnID string) {
 		}
 		switch {
 		case err != nil:
-			if !m.handleUnreachable(err, fails, failLimit) {
+			if !m.handleUnreachable(err, fails, failLimit, turnID) {
 				return // proven unrecoverable and reported
 			}
 			if !m.stillMine(turnID) {
@@ -1162,6 +1180,17 @@ func (m *managedSession) turnLoops(stop chan struct{}, turnID string) {
 				// through to closing directly: a turn that ends slightly out of order is a blemish,
 				// a turn engine blocked on the pump is a frozen session.
 				posted := m.onPump(func() {
+					// Re-checked HERE, not at post time. The pump drains provider events with
+					// strict priority, so this task waits behind the recovered frames and the
+					// provider's real idle — which the pump handles first, closing this turn
+					// cleanly. Any turn opened before the queue next empties (a user prompt, or an
+					// autonomous nudge's openTurn on the pump itself) was the one this closure
+					// ended, instantly, as "reconciled: completion event was lost" — sealing its
+					// tool cards as errors and exiting its supervisor, so nothing watched the agent
+					// that was still working. The same stale task is force-run on pump teardown.
+					if !m.stillMine(turnID) {
+						return
+					}
 					m.flushUI(m.sess.ID())
 					m.closeTurn(protocol.StatusIdle, "reconciled: completion event was lost")
 				})
