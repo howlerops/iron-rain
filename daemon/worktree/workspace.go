@@ -98,6 +98,16 @@ func CreateWorkspace(base, name string, repoDirs []string, onProgress func(step,
 // RemoveWorkspace removes every member worktree and the layout directory. force is needed for
 // members with uncommitted changes. Best-effort: it removes what it can and returns the first
 // error, so a partially-cleaned workspace still frees most of its worktrees.
+//
+// The layout directory is removed only when EVERY member was removed. Members live at
+// layout/<name>, so the unconditional os.RemoveAll that used to run here deleted exactly what the
+// non-force path had just declined to delete: `git worktree remove` refuses a worktree with
+// uncommitted or untracked files, RemoveWorkspace recorded that refusal, and then destroyed the
+// work anyway. The user saw "contains modified or untracked files, use --force to delete it" and
+// the session still listed — while the changes were already gone, unrecoverably.
+//
+// Leaving the directory behind when a member refused is the honest outcome: the refusal means
+// something in there is worth keeping, and the caller can retry with force once the user says so.
 func RemoveWorkspace(layout string, members []Member, force bool) error {
 	var firstErr error
 	for _, m := range members {
@@ -105,7 +115,7 @@ func RemoveWorkspace(layout string, members []Member, force bool) error {
 			firstErr = err
 		}
 	}
-	if layout != "" {
+	if layout != "" && firstErr == nil {
 		_ = os.RemoveAll(layout)
 	}
 	return firstErr

@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // gcRepo builds a tiny git repo with one commit and returns its root + HEAD.
@@ -134,6 +135,20 @@ func TestSweepOrphansOnlyTakesTheDead(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The FIRST sweep only marks: "repo deleted" and "repo on an unplugged disk" are the same Stat,
+	// and this sweep runs at every daemon start. See isOrphanWorktree.
+	if n, err := SweepOrphans(base); err != nil {
+		t.Fatal(err)
+	} else if n != 0 {
+		t.Fatalf("the first sweep removed %d worktrees; it must only mark them, or an unmounted "+
+			"volume loses its uncommitted work at the next daemon start", n)
+	}
+	if _, err := os.Stat(dead.Path); err != nil {
+		t.Fatal("the first sweep deleted the orphan instead of marking it")
+	}
+
+	// Age the mark past the grace window, then sweep again.
+	backdateOrphanMark(t, dead.Path, orphanGrace+time.Hour)
 	n, err := SweepOrphans(base)
 	if err != nil {
 		t.Fatal(err)
@@ -184,5 +199,59 @@ func TestAutoLinkFindsWorkspacePackages(t *testing.T) {
 	// The root must come first, so a parent link is created before any child is considered.
 	if len(got) == 0 || filepath.ToSlash(got[0]) != "node_modules" {
 		t.Fatalf("root node_modules must sort first, got %v", got)
+	}
+}
+
+// backdateOrphanMark rewrites a worktree's orphan mark to look older than it is.
+func backdateOrphanMark(t *testing.T, dir string, age time.Duration) {
+	t.Helper()
+	marker := filepath.Join(dir, orphanMarker)
+	when := time.Now().UTC().Add(-age).Format(time.RFC3339)
+	if err := os.WriteFile(marker, []byte(when), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A repository that is merely UNREACHABLE must not lose its worktrees.
+//
+// isOrphanWorktree keys on whether the admin dir stats, and an unmounted external disk, a network
+// share that is down, or a renamed folder all fail that check exactly like a deleted repo. Since
+// SweepOrphans runs at every daemon start, remounting the disk used to find the session worktrees —
+// and every uncommitted change in them — already gone, with one line in the log.
+func TestASweepDoesNotDeleteAWorktreeWhoseRepoCameBack(t *testing.T) {
+	base := t.TempDir()
+	root, _ := gcRepo(t)
+	wt, err := Create(base, root, "feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	precious := filepath.Join(wt.Path, "notes.md")
+	if err := os.WriteFile(precious, []byte("uncommitted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The "volume" goes away: move the repo aside so the admin dir cannot be resolved.
+	parked := root + ".unmounted"
+	if err := os.Rename(root, parked); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := SweepOrphans(base); err != nil || n != 0 {
+		t.Fatalf("a sweep while the repo was unreachable removed %d worktrees (err %v) — an "+
+			"unplugged disk must not cost the user their work", n, err)
+	}
+
+	// It comes back, and its worktree must be intact and unmarked.
+	if err := os.Rename(parked, root); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := SweepOrphans(base); err != nil || n != 0 {
+		t.Fatalf("a sweep after the repo returned removed %d worktrees (err %v)", n, err)
+	}
+	if _, err := os.Stat(precious); err != nil {
+		t.Fatalf("the uncommitted file is gone: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(wt.Path, orphanMarker)); err == nil {
+		t.Fatal("the orphan mark survived the repo coming back — the next sweep past the grace " +
+			"window would delete a live worktree")
 	}
 }

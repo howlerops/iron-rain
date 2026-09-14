@@ -198,6 +198,19 @@ func (h *Hub) RestoreSessions(ctx context.Context, ttl time.Duration) {
 		// about being the old one — the "clicking it does nothing" rows.
 		if rc, ok := att.(agent.ResumeChecker); ok && !rc.CanResume(r.ID) {
 			if rows, err := db.Transcript(r.ID); err == nil && len(rows) == 0 {
+				// The write-ahead JSONL goes too, and it has to go FIRST in spirit: deleting the
+				// session record is exactly what makes that file unreachable. touchAndPrune's file
+				// sweep enumerates ids from ExpiringSessions, so once the record is gone nothing can
+				// ever name ~/.oculus/transcripts/<id>.jsonl again.
+				//
+				// It is frequently non-empty here even though SQLite is not: broadcastUserEcho, the
+				// only thing that persists the user's half durably, is gated on a non-empty author,
+				// so an unidentified client leaves the prompt in the JSONL and nowhere else. The
+				// session then vanishes from every device while the prompt text stays on disk
+				// forever — the failure transcript.Delete's own doc says it was added to prevent.
+				if tr := h.tr(); tr != nil {
+					_ = tr.Delete(r.ID)
+				}
 				_ = db.DeleteSession(r.ID)
 				_ = db.DeleteTranscript(r.ID)
 				dropped++

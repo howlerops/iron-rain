@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -73,5 +74,59 @@ func TestCreateWorkspaceNeedsTwoRepos(t *testing.T) {
 	gitInit(t, repoA)
 	if _, _, err := CreateWorkspace(t.TempDir(), "solo", []string{repoA}, nil); err == nil {
 		t.Error("expected error for a single-repo workspace")
+	}
+}
+
+// A refused removal must leave the work on disk.
+//
+// Members live at layout/<name>, and RemoveWorkspace used to os.RemoveAll(layout) unconditionally —
+// so the non-force path destroyed exactly what it had just declined to destroy. `git worktree
+// remove` refuses a worktree with uncommitted or untracked files; the refusal was recorded and
+// returned, and the files were deleted anyway. The user saw the error and the session still listed,
+// while the changes were already unrecoverable.
+//
+// Reachable from worktree.remove {force:false} (capSteer) and from fanout.resolve's teardown.
+func TestARefusedWorkspaceRemovalKeepsTheWork(t *testing.T) {
+	repo := t.TempDir()
+	gitInit(t, repo)
+	layout := t.TempDir()
+	member := filepath.Join(layout, "app")
+	if out, err := exec.Command("git", "-C", repo, "worktree", "add", "-b", "feature", member).CombinedOutput(); err != nil {
+		t.Fatalf("worktree add: %v (%s)", err, out)
+	}
+	// Uncommitted work: exactly what the non-force path exists to protect.
+	precious := filepath.Join(member, "notes.md")
+	if err := os.WriteFile(precious, []byte("hours of uncommitted work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	members := []Member{{Name: "app", RepoRoot: repo, Path: member, Branch: "feature"}}
+	err := RemoveWorkspace(layout, members, false)
+	if err == nil {
+		t.Fatal("precondition: git should have refused a dirty worktree without --force")
+	}
+
+	if _, statErr := os.Stat(precious); statErr != nil {
+		t.Fatalf("the uncommitted file was deleted despite the refusal (%v).\n\n"+
+			"RemoveWorkspace reported %q and destroyed the work anyway — the user sees the error, "+
+			"the session stays listed, and the changes are gone.", statErr, err)
+	}
+}
+
+// The success path must still clean up completely, or every removed workspace leaks its directory.
+func TestACleanWorkspaceRemovalDeletesTheLayout(t *testing.T) {
+	repo := t.TempDir()
+	gitInit(t, repo)
+	layout := t.TempDir()
+	member := filepath.Join(layout, "app")
+	if out, err := exec.Command("git", "-C", repo, "worktree", "add", "-b", "feature2", member).CombinedOutput(); err != nil {
+		t.Fatalf("worktree add: %v (%s)", err, out)
+	}
+	members := []Member{{Name: "app", RepoRoot: repo, Path: member, Branch: "feature2"}}
+	if err := RemoveWorkspace(layout, members, false); err != nil {
+		t.Fatalf("a clean workspace was refused: %v", err)
+	}
+	if _, err := os.Stat(layout); err == nil {
+		t.Fatal("the layout directory survived a fully successful removal")
 	}
 }

@@ -292,6 +292,7 @@ func SweepOrphans(base string) (int, error) {
 		for _, e := range entries {
 			wt := filepath.Join(repoDir, e.Name())
 			if !isOrphanWorktree(wt) {
+				clearOrphanMark(wt) // alive (or alive again): forget any earlier sighting
 				continue
 			}
 			if err := os.RemoveAll(wt); err == nil {
@@ -320,7 +321,55 @@ func isOrphanWorktree(dir string) bool {
 	if _, err := os.Stat(target); err == nil {
 		return false // admin dir still there → the worktree is live
 	}
-	return true
+	// The admin dir does not resolve. But "the repository was deleted" and "the repository is not
+	// reachable right now" look identical from one Stat, and only the first is an orphan. A repo on
+	// an unmounted external disk or network share, or one whose folder was renamed, took the same
+	// branch — and SweepOrphans runs at EVERY daemon start, so remounting the disk afterwards found
+	// the session worktrees and all their uncommitted agent work already deleted, with a single log
+	// line to explain it. This is also the only removal path in the package that consults neither
+	// IsDirty nor rev-list, both of which need the repo that is missing.
+	//
+	// Path existence cannot tell the two apart (/Volumes outlives the volume mounted under it), so
+	// use TIME instead: a mount comes back, a deleted repository does not. The first sweep that sees
+	// a worktree orphaned marks it and leaves it; only a later sweep, once the absence has persisted
+	// past orphanGrace, removes it. If the repo returns the worktree stops being an orphan and the
+	// mark is cleared on the next pass.
+	return orphanedLongEnough(dir)
+}
+
+// orphanGrace is how long a worktree's repository must stay missing before the sweep will delete it.
+// Long enough to cover a disk left unplugged over a holiday; short enough that genuinely dead
+// worktrees do not accumulate for the life of the install.
+const orphanGrace = 14 * 24 * time.Hour
+
+// orphanMarker is written inside a worktree the first time it is seen orphaned. It lives in the
+// worktree itself so it disappears with it and needs no external state to stay consistent.
+const orphanMarker = ".oculus-orphaned-since"
+
+// orphanedLongEnough records the first time this worktree was seen orphaned and reports whether that
+// was long enough ago to act on. It is deliberately false on the first sighting.
+func orphanedLongEnough(dir string) bool {
+	marker := filepath.Join(dir, orphanMarker)
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		// First sighting: mark it and keep it. If the write fails we simply never delete, which is
+		// the safe direction for a sweep whose mistake costs somebody's uncommitted work.
+		_ = os.WriteFile(marker, []byte(time.Now().UTC().Format(time.RFC3339)), 0o600)
+		return false
+	}
+	since, perr := time.Parse(time.RFC3339, strings.TrimSpace(string(data)))
+	if perr != nil {
+		_ = os.WriteFile(marker, []byte(time.Now().UTC().Format(time.RFC3339)), 0o600)
+		return false
+	}
+	return time.Since(since) >= orphanGrace
+}
+
+// clearOrphanMark removes the mark from a worktree that is alive again — a remounted disk, a repo
+// moved back. Without this a worktree that was briefly unreachable would carry an old timestamp and
+// be deleted by the first sweep after it crossed the grace window, long after it had recovered.
+func clearOrphanMark(dir string) {
+	_ = os.Remove(filepath.Join(dir, orphanMarker))
 }
 
 // Prune cleans stale worktree admin records (after a worktree dir was deleted manually).
