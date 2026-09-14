@@ -249,6 +249,9 @@ struct NewSessionView: View {
     @FocusState private var focus: Field?
     #if os(iOS)
     @State private var addPath = ""
+    /// Why the last "add by path" failed. addProject reports into `model.status`, which nothing on
+    /// this screen renders — so without somewhere local to put it the error had nowhere to go.
+    @State private var addPathError: String? = nil
     #endif
 
     /// Keyboard focus order through the form.
@@ -953,14 +956,20 @@ struct NewSessionView: View {
             }
             .buttonStyle(.plain)
             #else
-            HStack(spacing: 8) {
-                TextField("…or add by path", text: $addPath)
-                    .textFieldStyle(.roundedBorder)
-                    .plainInput()
-                    .focused($focus, equals: .addPath)
-                    .submitLabel(.done)
-                    .onSubmit { addTypedPath() }
-                Button("Add") { addTypedPath() }.disabled(addPath.isEmpty)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    TextField("…or add by path", text: $addPath)
+                        .textFieldStyle(.roundedBorder)
+                        .plainInput()
+                        .focused($focus, equals: .addPath)
+                        .submitLabel(.done)
+                        .onSubmit { addTypedPath() }
+                    Button("Add") { addTypedPath() }.disabled(addPath.isEmpty)
+                }
+                if let err = addPathError {
+                    Text(err).font(.caption).foregroundStyle(palette.destructive)
+                        .lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                }
             }
             #endif
         }
@@ -1103,8 +1112,19 @@ struct NewSessionView: View {
     private func addTypedPath() {
         let p = addPath.trimmingCharacters(in: .whitespaces)
         guard !p.isEmpty else { return }
-        addPath = ""
-        Task { if let proj = await model.addProject(path: p) { selectedProjects.insert(proj.id) } }
+        // Clear the field only once the add has LANDED. It used to be cleared first, so a path that
+        // was rejected — a typo, a folder that is not there, one the guard refuses — vanished from
+        // the field with nothing to show for it. addProject does report the failure, but into
+        // `model.status`, which no view on this screen renders, so it went nowhere at all.
+        Task {
+            if let proj = await model.addProject(path: p) {
+                selectedProjects.insert(proj.id)
+                addPath = ""
+                addPathError = nil
+            } else {
+                addPathError = model.status ?? "Couldn’t add that folder."
+            }
+        }
     }
     #endif
 

@@ -12,6 +12,10 @@ struct AccountsView: View {
     var onClose: (() -> Void)? = nil
 
     @State private var quota: [String: AccountQuota] = [:]
+    /// Why a quota check failed, per account. Assigning a nil result straight into `quota` REMOVES
+    /// the key — so a failed check rendered exactly like a button that was never pressed, and the
+    /// only thing distinguishing them was a spinner the user had already watched disappear.
+    @State private var quotaError: [String: String] = [:]
     @State private var checking: Set<String> = []
     /// The account a delete is staged against. Deleting one destroys the API keys stored with it and
     /// there is no copy anywhere else, so it never happens on a single tap.
@@ -264,7 +268,15 @@ struct AccountsView: View {
                 Spacer(minLength: OculusSpace.xs)
                 Button {
                     checking.insert(a.id)
-                    Task { quota[a.id] = await model.accountQuota(a.id); checking.remove(a.id) }
+                    Task {
+                        if let q = await model.accountQuota(a.id) {
+                            quota[a.id] = q
+                            quotaError[a.id] = nil
+                        } else {
+                            quotaError[a.id] = "Couldn’t read this account’s quota."
+                        }
+                        checking.remove(a.id)
+                    }
                 } label: {
                     if checking.contains(a.id) { ProgressView().controlSize(.small) }
                     else { Text("Quota").font(.caption) }
@@ -296,6 +308,9 @@ struct AccountsView: View {
                 }
             }
             if let q = quota[a.id] { quotaRow(q) }
+            if let err = quotaError[a.id] {
+                Text(err).font(.caption).foregroundStyle(palette.destructive)
+            }
         }
     }
 

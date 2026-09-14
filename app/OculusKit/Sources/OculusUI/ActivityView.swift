@@ -40,7 +40,12 @@ struct ActivityView: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
-                if model.activityFeed.isEmpty {
+                if model.activityForbidden {
+                    // NOT the empty state. This is the default destination on iOS, so a refusal here
+                    // is the first thing a guest sees — and "No activity yet" is the most confident
+                    // possible way to be wrong about a Mac that is busy right now.
+                    forbiddenState
+                } else if model.activityFeed.isEmpty {
                     emptyState
                 } else {
                     if !needsYou.isEmpty {
@@ -179,6 +184,17 @@ struct ActivityView: View {
                 Task { await model.markActivityRead([e.id]) }
             })
             .padding(.horizontal, 16).padding(.bottom, 9)
+    }
+
+    private var forbiddenState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "lock").font(.largeTitle).foregroundStyle(palette.mutedForeground.opacity(0.5))
+            Text("Only the owner can see this").font(.headline).foregroundStyle(palette.foreground)
+            Text("The activity feed spans every session on this Mac, including ones you are not watching. You're connected as a guest.")
+                .font(.callout).foregroundStyle(palette.mutedForeground)
+                .multilineTextAlignment(.center).frame(maxWidth: 340)
+        }
+        .frame(maxWidth: .infinity).padding(.top, 60).padding(.horizontal, 24)
     }
 
     private var emptyState: some View {

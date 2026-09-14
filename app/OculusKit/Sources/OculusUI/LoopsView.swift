@@ -155,7 +155,9 @@ public struct LoopsView: View {
     private var scrollBody: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                if model.loops.isEmpty {
+                if model.loopsForbidden {
+                    forbiddenState
+                } else if model.loops.isEmpty {
                     emptyState
                 } else {
                     VStack(spacing: 10) {
@@ -213,6 +215,15 @@ public struct LoopsView: View {
 
     /// Uses the shared empty state so this reads like every other empty screen — and carries the
     /// action, which the hand-rolled version left only in a header the eye doesn't visit.
+    /// A refusal, not an absence. The empty state below also offers a New-loop button, so a guest's
+    /// first act on this screen would be a second refusal with no explanation for either.
+    private var forbiddenState: some View {
+        SheetEmptyState(icon: "lock",
+                        title: "Only the owner can see this",
+                        message: "A loop carries the prompt an agent runs unattended on this Mac, so loops belong to whoever owns it. You're connected as a guest.",
+                        palette: palette)
+    }
+
     private var emptyState: some View {
         SheetEmptyState(icon: "arrow.triangle.2.circlepath",
                         title: "No loops yet",
@@ -266,10 +277,13 @@ public struct LoopsView: View {
         }
     }
 
-    /// NOTE: a failed enable/disable can't be detected here — `setLoopEnabled` returns Void and only
-    /// updates `loops` on SUCCESS, so a failure leaves the row showing the OLD value while the
-    /// binding's setter already ran. The switch appears to snap back with no explanation. The fix
-    /// belongs in the model: it needs to return `String?`.
+    /// The model reports a failed enable/disable: `setLoopEnabled` catches, leaves `loops` holding the
+    /// old value, and raises an error banner naming the loop (OculusUI.swift setLoopEnabled). The
+    /// switch snapping back is therefore explained rather than mysterious.
+    ///
+    /// This note used to say the opposite, and said it as a standing invitation to go fix the model —
+    /// which had already been fixed. A comment describing work that is done is worse than no comment:
+    /// the next person spends their time confirming it is wrong.
     private func setEnabled(_ loop: Loop, _ on: Bool) {
         Task { await model.setLoopEnabled(loop.id, on) }
     }
@@ -522,10 +536,12 @@ struct LoopEditor: View {
         }
         problem = nil
         Task {
-            await model.upsertLoop(draft)
-            // `upsertLoop` returns Void and swallows its error, then reloads. A loop that isn't in
-            // the reloaded list didn't save, and closing on that would silently discard the prompt.
-            if model.loops.contains(where: { $0.id == draft.id || $0.name == draft.name }) {
+            // Ask whether the DAEMON accepted it. The previous check — "is a loop with this id or
+            // name in the reloaded list" — is always true when editing, because the old version is
+            // still in the list whether or not the save landed. Editing a loop and failing to save it
+            // therefore closed the editor and discarded the changes, which is precisely the case the
+            // check was written to catch.
+            if await model.upsertLoop(draft) {
                 onDone()
             } else {
                 problem = "Couldn't save this loop. Check the daemon is connected — your changes are still here."

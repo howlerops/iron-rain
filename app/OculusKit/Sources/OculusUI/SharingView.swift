@@ -208,12 +208,19 @@ public struct SharingView: View {
                     Button(creating ? "…" : "Create") {
                         creating = true
                         Task {
-                            await model.createInvite(label: inviteLabel, role: inviteRole, ttlHours: 24)
-                            inviteLabel = ""
+                            // Keep the label unless a link was actually minted. Clearing it either way
+                            // made a refusal look like a completed action with nothing to show for it.
+                            if await model.createInvite(label: inviteLabel, role: inviteRole, ttlHours: 24) {
+                                inviteLabel = ""
+                            }
                             creating = false
                         }
                     }
                     .buttonStyle(.bordered).disabled(creating)
+                }
+                if let err = model.inviteError {
+                    Text(err).font(.caption).foregroundStyle(palette.destructive)
+                        .lineLimit(3).fixedSize(horizontal: false, vertical: true)
                 }
                 Text("Links admit one device, expire after 24 hours, and can never grant ownership.")
                     .font(.caption).foregroundStyle(palette.mutedForeground)

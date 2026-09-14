@@ -12,6 +12,11 @@ struct RemotesView: View {
     var onClose: (() -> Void)? = nil
 
     @State private var status: [String: RemoteStatus] = [:]
+    /// Why a status check failed to come back at all, per host. Assigning a nil result straight into
+    /// `status` REMOVES the key, so a request that never answered rendered as a host nobody had
+    /// checked yet — indistinguishable from not having pressed the button. Distinct from
+    /// RemoteStatus.error, which is the remote box answering with a problem of its own.
+    @State private var statusError: [String: String] = [:]
     @State private var loading: Set<String> = []
     /// The host a delete is staged against — one tap used to remove it outright, with no undo.
     @State private var pendingDelete: RemoteHost? = nil
@@ -253,7 +258,15 @@ struct RemotesView: View {
             HStack {
                 Button {
                     loading.insert(host.id)
-                    Task { status[host.id] = await model.remoteStatus(host.id); loading.remove(host.id) }
+                    Task {
+                        if let st = await model.remoteStatus(host.id) {
+                            status[host.id] = st
+                            statusError[host.id] = nil
+                        } else {
+                            statusError[host.id] = "Couldn’t reach the daemon to check this host."
+                        }
+                        loading.remove(host.id)
+                    }
                 } label: {
                     if loading.contains(host.id) { ProgressView().controlSize(.small) }
                     else { Label("Check worktree", systemImage: "arrow.clockwise") }
@@ -268,6 +281,9 @@ struct RemotesView: View {
                     .controlSize(.small)
                     #endif
                     .disabled(host.reachable != true)
+            }
+            if let err = statusError[host.id] {
+                Text(err).font(.caption).foregroundStyle(palette.destructive)
             }
             if let st = status[host.id] {
                 if let err = st.error, !err.isEmpty {
@@ -298,7 +314,15 @@ struct RemotesView: View {
                 .textSelection(.enabled)
             Button {
                 loading.insert(host.id)
-                Task { status[host.id] = await model.remoteStatus(host.id); loading.remove(host.id) }
+                Task {
+                    if let st = await model.remoteStatus(host.id) {
+                        status[host.id] = st
+                        statusError[host.id] = nil
+                    } else {
+                        statusError[host.id] = "Couldn’t reach the daemon to check this host."
+                    }
+                    loading.remove(host.id)
+                }
             } label: { Label("Try again", systemImage: "arrow.clockwise") }
             .buttonStyle(.bordered)
             #if os(macOS)

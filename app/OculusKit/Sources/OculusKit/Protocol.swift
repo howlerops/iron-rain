@@ -920,6 +920,15 @@ public enum OculusError {
     public static func isForbidden(_ error: Error) -> Bool {
         (error as NSError).userInfo[codeKey] as? String == forbidden
     }
+
+    /// The daemon's own sentence for this failure, for a screen that has to show one. Falls back to
+    /// the localized description, which for a request error is the same string — this exists so a
+    /// caller does not have to know that.
+    public static func message(_ error: Error) -> String {
+        let ns = error as NSError
+        if let msg = ns.userInfo[NSLocalizedDescriptionKey] as? String, !msg.isEmpty { return msg }
+        return ns.localizedDescription
+    }
 }
 public struct SessionList: Codable { public var sessions: [Session] }
 

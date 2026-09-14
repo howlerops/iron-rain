@@ -66,8 +66,15 @@ public struct IssuesView: View {
         self.model = model; self.palette = palette; self.embedded = embedded; self.onLaunched = onLaunched
     }
 
+    /// The fallback board, used before the tracker's REAL statuses are known.
+    ///
+    /// "Other" is here because the daemon normalizes four categories, not three (issues.go): a
+    /// canceled or duplicate Linear issue, and any Jira status the mapping does not recognise, all
+    /// land in "other". With only three columns those issues vanished from the board while remaining
+    /// in List view — the same ticket present or absent depending on which tab you were on, and no
+    /// count anywhere that added up.
     private let columns: [(name: String, category: String)] = [
-        ("To Do", "todo"), ("In Progress", "in_progress"), ("Done", "done"),
+        ("To Do", "todo"), ("In Progress", "in_progress"), ("Done", "done"), ("Other", "other"),
     ]
 
     public var body: some View {
@@ -208,7 +215,16 @@ public struct IssuesView: View {
     }
 
     @ViewBuilder private var surface: some View {
-        if model.connectedTrackers.isEmpty && model.issues.isEmpty {
+        if model.issuesForbidden {
+            // NOT the connect screen. "Connect a tracker" is an invitation to do something this
+            // connection is not allowed to do — the board is the OWNER's tracker account and every
+            // issue carries its full body, which is why the daemon gates it. Offering the Connect
+            // button here makes the guest's next tap a second refusal with no explanation for either.
+            SheetEmptyState(icon: "lock",
+                            title: "Only the owner can see this",
+                            message: "The ticket board is this Mac's tracker account, not part of a session. You're connected as a guest.",
+                            palette: palette)
+        } else if model.connectedTrackers.isEmpty && model.issues.isEmpty {
             connectScreen
         } else {
             VStack(spacing: 0) {
@@ -1025,12 +1041,31 @@ struct LaunchIssueSheet: View {
                 }
             }
             .navigationTitle("Start agent")
+            .safeAreaInset(edge: .bottom) {
+                // A refusal has to be visible on the screen that caused it. Without this the sheet
+                // simply stays open with no explanation, which reads as a dead button.
+                if let err = model.issueLaunchError {
+                    Text(err)
+                        .font(.footnote).foregroundStyle(palette.destructive)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12).background(palette.card)
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Start") {
                         guard let pid = projectID else { return }
-                        Task { await model.launchIssue(issue, projectID: pid, agentProvider: agent) }
-                        onDone(true)
+                        // INSIDE the Task, and gated on the result. onDone(true) used to fire here,
+                        // outside it — reporting success before the launch was even attempted, and
+                        // then dismissing the sheet whatever happened. Every real failure (no project,
+                        // the ticket gone, a refused worktree, a missing provider) is answered by the
+                        // daemon, and all of it was thrown away on the one screen whose entire purpose
+                        // is starting the agent.
+                        Task {
+                            if await model.launchIssue(issue, projectID: pid, agentProvider: agent) {
+                                onDone(true)
+                            }
+                        }
                     }.disabled(projectID == nil)
                 }
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { onDone(false) } }
@@ -1500,12 +1535,15 @@ struct NewTicketSheet: View {
         guard !t.isEmpty else { return }
         submitting = true
         Task {
-            await model.createIssue(project: pid, title: t,
-                                    description: description.isEmpty ? nil : description,
-                                    priority: priority == 0 ? nil : priority,
-                                    type: isJira ? type : nil)
+            // Ask the call whether it created anything, rather than inferring it from a field it
+            // might never have touched: createIssue returned at its own guard before clearing
+            // trackerError, so a bail-out dismissed this sheet as though the ticket had been filed.
+            let created = await model.createIssue(project: pid, title: t,
+                                                  description: description.isEmpty ? nil : description,
+                                                  priority: priority == 0 ? nil : priority,
+                                                  type: isJira ? type : nil)
             submitting = false
-            if model.trackerError == nil { dismiss() }
+            if created { dismiss() }
         }
     }
 }

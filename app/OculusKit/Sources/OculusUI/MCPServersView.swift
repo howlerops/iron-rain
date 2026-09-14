@@ -13,6 +13,10 @@ public struct MCPServersView: View {
     var onClose: (() -> Void)? = nil
 
     @State private var checking: Set<String> = []
+    /// Why a Test could not be RUN, per server — distinct from MCPServerInfo.error, which is the
+    /// server itself answering badly. Without this a failed request rendered as "Not checked yet",
+    /// which is what the row already said before the button was pressed.
+    @State private var checkError: [String: String] = [:]
     @State private var query = ""
     @State private var filter: Filter = .all
     /// The server a delete is staged against. Removing one destroys the credentials stored with it,
@@ -443,6 +447,10 @@ public struct MCPServersView: View {
                 Text(tools.prefix(8).map(\.name).joined(separator: " · ") + (tools.count > 8 ? " +\(tools.count - 8) more" : ""))
                     .font(.caption).foregroundStyle(palette.mutedForeground)
                     .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            } else if let err = checkError[s.name] {
+                Text("Couldn’t run the test: \(err)")
+                    .font(.caption).foregroundStyle(palette.destructive)
+                    .lineLimit(3).fixedSize(horizontal: false, vertical: true)
             } else {
                 Text("Not checked yet — Test to connect and list its tools.")
                     .font(.caption).italic().foregroundStyle(palette.mutedForeground)
@@ -499,15 +507,23 @@ public struct MCPServersView: View {
     private func check(_ s: MCPServerInfo) {
         checking.insert(s.name)
         Task {
-            await model.checkMCPServer(name: s.name)
+            // "Test" was a silent no-op when the check REQUEST itself failed — indistinguishable from
+            // a test that ran and found nothing, on the one button whose entire job is telling you
+            // whether the server works.
+            if let err = await model.checkMCPServer(name: s.name) {
+                checkError[s.name] = err
+            } else {
+                checkError[s.name] = nil
+            }
             checking.remove(s.name)
         }
     }
 
-    /// NOTE: a failed toggle cannot be detected here. `setMCPServerEnabled` writes the optimistic
-    /// value into `mcpServers` BEFORE the request and returns Void either way, so on failure the row
-    /// keeps showing the state the user asked for while the daemon still injects the old one. The fix
-    /// has to be in the model — it needs to return `String?` like `upsertMCPServer` does.
+    /// The model handles a failed toggle: `setMCPServerEnabled` writes the optimistic value, and on
+    /// failure REVERTS it and raises an error banner (OculusUI.swift setMCPServerEnabled). The row
+    /// therefore ends up showing what the daemon actually has.
+    ///
+    /// This note used to claim the opposite and point at work to do, which had already been done.
     private func setEnabled(_ s: MCPServerInfo, _ on: Bool) {
         Task { await model.setMCPServerEnabled(name: s.name, enabled: on) }
     }

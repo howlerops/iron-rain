@@ -2254,9 +2254,18 @@ public final class Model: ObservableObject {
     }
 
     public func loadIssues() async {
-        guard let client else { return }
-        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.issueList, payload: Optional<Int>.none) {
-            try? await client.send(env)
+        guard client != nil else { return }
+        // A real request, not a fire-and-forget send. issue.list DOES reply (and also broadcasts), and
+        // throwing the reply away meant a refusal had nowhere to land: the board rendered its
+        // "Connect a tracker" screen at a guest who is not allowed to see the owner's tracker, with a
+        // Connect button that will also be refused. The ticket board is the owner's account and every
+        // issue carries its full body, which is why the daemon gates it — so the app has to say so.
+        do {
+            let env = try await request(MessageType.issueList, payload: Optional<Int>.none)
+            if let list = try? env.payload(as: IssueList.self) { issues = list.issues }
+            issuesForbidden = false
+        } catch {
+            issuesForbidden = OculusError.isForbidden(error)
         }
     }
 
@@ -2397,31 +2406,63 @@ public final class Model: ObservableObject {
     }
 
     /// Creates a ticket on a board and refreshes the list on success.
+    /// Creates a ticket, reporting whether one was created.
+    ///
+    /// The Bool matters because the caller used to infer it from `trackerError == nil` — and this
+    /// function returned at its own guard BEFORE clearing that field, so a bail-out left the previous
+    /// (or absent) error in place and the sheet dismissed as though the ticket had been filed. The
+    /// guard is the likely path, too: it fails when the project has no tracker mapped to it.
+    @discardableResult
     public func createIssue(project: String, title: String, description: String? = nil,
-                            priority: Int? = nil, type: String? = nil) async {
-        guard client != nil, let provider = providerForProject(project) else { return }
+                            priority: Int? = nil, type: String? = nil) async -> Bool {
         trackerError = nil
+        guard client != nil else {
+            trackerError = "Not connected to the daemon."
+            return false
+        }
+        guard let provider = providerForProject(project) else {
+            trackerError = "That repo isn’t linked to a tracker, so there’s nowhere to file this."
+            return false
+        }
         do {
             _ = try await request(MessageType.issueCreate,
                 payload: IssueCreate(provider: provider, project: project, title: title,
                                      description: description, priority: priority, type: type))
                 .payload(as: Issue.self)
             await loadIssues()
+            return true
         } catch {
             trackerError = "Couldn’t create ticket: \(error.localizedDescription)"
+            return false
         }
     }
 
     /// Launches an agent on a ticket (worktree on its branch). Requires a project (repo).
-    public func launchIssue(_ issue: Issue, projectID: String, agentProvider: String? = nil) async {
-        guard let client else { return }
-        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.issueLaunch,
-                                          payload: IssueLaunch(issueID: issue.id, provider: issue.provider,
-                                                               projectID: projectID, worktree: true,
-                                                               agentProvider: agentProvider)) {
-            try? await client.send(env)
+    /// Starts an agent on a ticket, reporting whether the daemon actually started one.
+    ///
+    /// It used to be fire-and-forget through two `try?`s, and its caller reported success before the
+    /// send was even attempted. Every real failure — no project chosen, the ticket gone, the worktree
+    /// refused, the provider missing — is answered by the daemon with a message this threw away, so
+    /// "Start agent" dismissed cheerfully and nothing happened, on the screen whose entire purpose is
+    /// starting the agent.
+    @discardableResult
+    public func launchIssue(_ issue: Issue, projectID: String, agentProvider: String? = nil) async -> Bool {
+        guard client != nil else { return false }
+        do {
+            _ = try await request(MessageType.issueLaunch,
+                                  payload: IssueLaunch(issueID: issue.id, provider: issue.provider,
+                                                       projectID: projectID, worktree: true,
+                                                       agentProvider: agentProvider))
+            return true
+        } catch {
+            issueLaunchError = OculusError.message(error)
+            return false
         }
     }
+
+    /// Why the last "Start agent" failed, or nil. Rendered by the launch sheet, which otherwise has
+    /// nothing to show for a refusal.
+    @Published public var issueLaunchError: String? = nil
 
     /// Observes an existing hub-managed session (replays its transcript, then live).
     public func openSession(_ id: String) async {
@@ -2772,6 +2813,14 @@ public final class Model: ObservableObject {
     @Published public var accountsForbidden = false
     @Published public var remotesForbidden = false
     @Published public var mcpForbidden = false
+    /// The same signal for the three screens a GUEST actually lands on, which is what made these the
+    /// worse half of the pattern. Activity is the default iOS destination: a refused `activity.list`
+    /// rendered "No activity yet" — a confident claim about a Mac that is, right then, busy. Loops
+    /// and Issues follow it with an empty state plus a New/Create button that will also be refused,
+    /// so the guest's first act is a dead end with no explanation.
+    @Published public var activityForbidden = false
+    @Published public var loopsForbidden = false
+    @Published public var issuesForbidden = false
 
     public func loadNotifyPrefs() async {
         guard client != nil else { return }
@@ -3047,15 +3096,36 @@ public final class Model: ObservableObject {
            let l = try? env.payload(as: InviteList.self) { invites = l.invites }
     }
 
-    public func createInvite(label: String, role: String, ttlHours: Int) async {
-        guard client != nil else { return }
-        if let env = try? await request(MessageType.inviteCreate,
-                                        payload: InviteCreate(label: label, role: role, ttlHours: ttlHours)),
-           let created = try? env.payload(as: InviteCreated.self) {
+    /// Mints an invite link, reporting whether one was minted.
+    ///
+    /// Both failures were swallowed behind `try?`, and the caller cleared the label and stopped —
+    /// the only action on the Sharing screen with no did-it-move check. Minting an invite is exactly
+    /// the kind of thing a guest cannot do, so a refusal here is the ordinary case, not the corner.
+    @discardableResult
+    public func createInvite(label: String, role: String, ttlHours: Int) async -> Bool {
+        guard client != nil else {
+            inviteError = "Not connected to the daemon."
+            return false
+        }
+        do {
+            let env = try await request(MessageType.inviteCreate,
+                                        payload: InviteCreate(label: label, role: role, ttlHours: ttlHours))
+            guard let created = try? env.payload(as: InviteCreated.self) else {
+                inviteError = "The daemon accepted the request but sent no link back."
+                return false
+            }
             freshInviteURL = created.url
+            inviteError = nil
             await loadInvites()
+            return true
+        } catch {
+            inviteError = OculusError.message(error)
+            return false
         }
     }
+
+    /// Why the last invite could not be created, or nil.
+    @Published public var inviteError: String? = nil
 
     public func revokeInvite(id: String) async {
         guard client != nil else { return }
@@ -3243,10 +3313,20 @@ public final class Model: ObservableObject {
     }
 
     /// Connects to the server and lists its tools — the honest "does this actually work" check.
-    public func checkMCPServer(name: String) async {
-        guard client != nil else { return }
-        if let env = try? await request(MessageType.mcpCheck, payload: MCPRef(name: name)),
-           let list = try? env.payload(as: MCPList.self) { mcpServers = list.servers }
+    /// Returns nil on success, or why the check could not be run.
+    ///
+    /// It used to swallow both failures behind `try?`, so a check that never reached the daemon was
+    /// indistinguishable from one that ran and found no tools — on the one button whose whole purpose
+    /// is answering "does this server actually work".
+    public func checkMCPServer(name: String) async -> String? {
+        guard client != nil else { return "Not connected to the daemon." }
+        do {
+            let env = try await request(MessageType.mcpCheck, payload: MCPRef(name: name))
+            if let list = try? env.payload(as: MCPList.self) { mcpServers = list.servers }
+            return nil
+        } catch {
+            return OculusError.message(error)
+        }
     }
 
     /// The finished fan-out comparison, if one arrived. Set by the daemon's fanout.summary broadcast;
@@ -3582,16 +3662,30 @@ public final class Model: ObservableObject {
 
     public func loadLoops() async {
         guard client != nil else { return }
-        if let resp = try? await request(MessageType.loopList, payload: Optional<Int>.none),
-           let ll = try? resp.payload(as: LoopList.self) { loops = ll.loops; loopRuns = ll.runs }
+        do {
+            let resp = try await request(MessageType.loopList, payload: Optional<Int>.none)
+            if let ll = try? resp.payload(as: LoopList.self) { loops = ll.loops; loopRuns = ll.runs }
+            loopsForbidden = false
+        } catch {
+            // A Loop carries the verbatim prompt an agent runs unattended, so it is owner-only — and
+            // "No loops yet" is a claim about the owner's machine this connection cannot make.
+            loopsForbidden = OculusError.isForbidden(error)
+        }
     }
 
     /// Loads the cross-session activity feed (newest first) — the Activity destination + Needs-You inbox.
     public func loadActivity() async {
         guard client != nil else { return }
-        if let resp = try? await request(MessageType.activityList, payload: Optional<Int>.none),
-           let al = try? resp.payload(as: ActivityList.self) {
-            activityFeed = al.events.sorted { $0.ts > $1.ts }
+        do {
+            let resp = try await request(MessageType.activityList, payload: Optional<Int>.none)
+            if let al = try? resp.payload(as: ActivityList.self) {
+                activityFeed = al.events.sorted { $0.ts > $1.ts }
+            }
+            activityForbidden = false
+        } catch {
+            // This is the default destination on iOS, so a refusal here is the FIRST thing a guest
+            // sees — and "No activity yet" is the most confident possible way to be wrong about it.
+            activityForbidden = OculusError.isForbidden(error)
         }
     }
 
@@ -3603,10 +3697,19 @@ public final class Model: ObservableObject {
         _ = try? await client?.send(Protocol.encode(id: UUID().uuidString, type: MessageType.activityMarkRead,
                                                      payload: ActivityMarkRead(ids: ids.isEmpty ? nil : ids)))
     }
-    public func upsertLoop(_ l: Loop) async {
-        guard client != nil else { return }
-        _ = try? await request(MessageType.loopUpsert, payload: l)
+    /// Saves a loop and reports whether the daemon accepted it.
+    ///
+    /// It used to return Void and swallow the error, which left the editor with no way to ask. The
+    /// check it invented instead — "is a loop with this id or name in the reloaded list" — is
+    /// ALWAYS TRUE when editing, because the old version is still there whether or not the save
+    /// landed. So a failed save closed the editor and discarded the changes, silently, in the one
+    /// case the check existed for.
+    @discardableResult
+    public func upsertLoop(_ l: Loop) async -> Bool {
+        guard client != nil else { return false }
+        let ok = (try? await request(MessageType.loopUpsert, payload: l)) != nil
         await loadLoops()
+        return ok
     }
     public func deleteLoop(_ id: String) async {
         guard client != nil else { return }
