@@ -193,7 +193,13 @@ private struct DaemonPrefsSections: View {
     var body: some View {
         Group {
             Section("Notifications") {
-                if model.notifyPrefs.isEmpty {
+                if model.notifyPrefsForbidden {
+                    // The spinner below waits on a list that is never coming: these are the owner's
+                    // settings and this connection was refused them. An indefinite spinner is the
+                    // worst of the three possible answers.
+                    Text("Notification settings belong to whoever owns this Mac. You're connected as a guest.")
+                        .font(.callout).foregroundStyle(palette.mutedForeground)
+                } else if model.notifyPrefs.isEmpty {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
                         Text("Loading notification types…")

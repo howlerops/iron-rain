@@ -3014,9 +3014,17 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.broadcastSessionList()
 
 	case protocol.TypeNotifyPrefsGet:
+		if !h.requireCapabilityBecause(conn, env.ID, capOwner, "see notification settings",
+			"These are the OWNER's notification settings — what reaches their phone, and which events are mirrored to Slack.") {
+			return
+		}
 		h.sendOK(conn, env.ID, h.notifyPrefs())
 
 	case protocol.TypeNotifyPrefsSet:
+		if !h.requireCapabilityBecause(conn, env.ID, capOwner, "change notification settings",
+			"These decide what reaches the owner's phone; changing them is changing what they get told about.") {
+			return
+		}
 		var req protocol.NotifyPrefSet
 		if err := env.Unmarshal(&req); err != nil || req.Key == "" {
 			h.sendErr(conn, env.ID, "bad notify.prefs.set")
@@ -3211,6 +3219,10 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, nil)
 
 	case protocol.TypeAccountList:
+		if !h.requireCapabilityBecause(conn, env.ID, capOwner, "list provider accounts",
+			"Which Claude, OpenAI and GitHub accounts this Mac is signed into is the owner's business, not a session detail.") {
+			return
+		}
 		h.sendOK(conn, env.ID, h.accountList())
 
 	case protocol.TypeAccountUpsert:
@@ -3269,6 +3281,10 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, h.accountList())
 
 	case protocol.TypeAccountQuota:
+		if !h.requireCapabilityBecause(conn, env.ID, capOwner, "read an account's quota",
+			"Quota is account state — it says what the owner has left to spend.") {
+			return
+		}
 		var req protocol.AccountRef
 		_ = env.Unmarshal(&req)
 		h.mu.Lock()
@@ -3301,6 +3317,10 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, out)
 
 	case protocol.TypeRemoteList:
+		if !h.requireCapabilityBecause(conn, env.ID, capOwner, "list remote hosts",
+			"The other machines this daemon can reach are infrastructure, not the contents of a session.") {
+			return
+		}
 		h.sendOK(conn, env.ID, h.remoteList(ctx))
 
 	case protocol.TypeRemoteUpsert:
@@ -3344,6 +3364,10 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, h.remoteList(ctx))
 
 	case protocol.TypeRemoteStatus:
+		if !h.requireCapabilityBecause(conn, env.ID, capOwner, "check a remote host",
+			"The other machines this daemon can reach are infrastructure, not the contents of a session.") {
+			return
+		}
 		var req protocol.RemoteRef
 		_ = env.Unmarshal(&req)
 		h.mu.Lock()
@@ -3976,6 +4000,10 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.WorktreePRResult{SessionID: req.SessionID, Branch: branch, Pushed: true, URL: url})
 
 	case protocol.TypeDeviceList:
+		if !h.requireCapabilityBecause(conn, env.ID, capOwner, "list enrolled devices",
+			"device.revoke and device.label beside it are owner-only; listing is the same screen's reconnaissance half.") {
+			return
+		}
 		h.sendOK(conn, env.ID, h.deviceList(conn))
 
 	case protocol.TypeDeviceRevoke:
@@ -5299,6 +5327,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, resp)
 
 	case protocol.TypeLSPOpen:
+		if !h.requireEditorRead(conn, env.ID) {
+			return
+		}
 		var req protocol.LSPDocReq
 		_ = env.Unmarshal(&req)
 		// Only open a language server for a file inside an allowed root.
@@ -5313,12 +5344,18 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, nil)
 
 	case protocol.TypeLSPChange:
+		if !h.requireEditorRead(conn, env.ID) {
+			return
+		}
 		var req protocol.LSPDocReq
 		_ = env.Unmarshal(&req)
 		_ = h.lsp.Change(ctx, req.Path, req.Content)
 		h.sendOK(conn, env.ID, nil)
 
 	case protocol.TypeLSPClose:
+		if !h.requireEditorRead(conn, env.ID) {
+			return
+		}
 		var req protocol.LSPDocReq
 		_ = env.Unmarshal(&req)
 		h.lsp.Close(req.Path)
@@ -5363,6 +5400,12 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, out)
 
 	case protocol.TypeActivityMarkRead:
+		// Mutates the feed EVERY device reads. An observer marking items read would clear the
+		// owner's needs-you inbox out from under them — the one surface whose whole job is to
+		// say an agent is waiting. activity.list stays open; changing it does not.
+		if !h.requireCapability(conn, env.ID, capSteer, "mark activity read") {
+			return
+		}
 		var req protocol.ActivityMarkRead
 		_ = env.Unmarshal(&req)
 		h.mu.Lock()
@@ -5374,6 +5417,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, nil)
 
 	case protocol.TypeLSPHover:
+		if !h.requireEditorRead(conn, env.ID) {
+			return
+		}
 		var req protocol.LSPPosReq
 		_ = env.Unmarshal(&req)
 		txt, err := h.lsp.Hover(ctx, req.Path, req.Line, req.Character)
@@ -5384,6 +5430,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.LSPHover{Contents: txt})
 
 	case protocol.TypeLSPDefinition:
+		if !h.requireEditorRead(conn, env.ID) {
+			return
+		}
 		var req protocol.LSPPosReq
 		_ = env.Unmarshal(&req)
 		loc, err := h.lsp.Definition(ctx, req.Path, req.Line, req.Character)
@@ -5396,6 +5445,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		})
 
 	case protocol.TypeLSPComplete:
+		if !h.requireEditorRead(conn, env.ID) {
+			return
+		}
 		var req protocol.LSPPosReq
 		_ = env.Unmarshal(&req)
 		items, err := h.lsp.Completion(ctx, req.Path, req.Line, req.Character)
@@ -5410,6 +5462,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.LSPCompletion{Items: out})
 
 	case protocol.TypeLSPFormat:
+		if !h.requireEditorRead(conn, env.ID) {
+			return
+		}
 		var req protocol.LSPFormatReq
 		_ = env.Unmarshal(&req)
 		text, changed, err := h.lsp.Format(ctx, req.Path, req.Content)
@@ -5420,6 +5475,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.LSPFormatResult{Text: text, Changed: changed})
 
 	case protocol.TypeLSPReferences:
+		if !h.requireEditorRead(conn, env.ID) {
+			return
+		}
 		var req protocol.LSPPosReq
 		_ = env.Unmarshal(&req)
 		locs, err := h.lsp.References(ctx, req.Path, req.Line, req.Character)
@@ -5434,6 +5492,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.LSPLocations{Locations: out})
 
 	case protocol.TypeLSPSymbols:
+		if !h.requireEditorRead(conn, env.ID) {
+			return
+		}
 		var req protocol.LSPDocReq
 		_ = env.Unmarshal(&req)
 		syms, err := h.lsp.DocumentSymbols(ctx, req.Path)
@@ -5515,6 +5576,9 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		h.sendOK(conn, env.ID, protocol.FSSearchResult{Results: out})
 
 	case protocol.TypeLSPServerInfo:
+		if !h.requireEditorRead(conn, env.ID) {
+			return
+		}
 		var req protocol.LSPDocReq
 		_ = env.Unmarshal(&req)
 		info := lsp.InfoForPath(req.Path)
@@ -5812,7 +5876,14 @@ func (h *Hub) sendOK(conn *transport.Conn, id string, payload any) {
 }
 
 func (h *Hub) sendErr(conn *transport.Conn, id, msg string) {
-	if raw, err := protocol.Encode(id, protocol.TypeError, protocol.Error{Message: msg}); err == nil {
+	h.sendErrCode(conn, id, msg, "")
+}
+
+// sendErrCode is sendErr with a classification. See protocol.ErrorForbidden: a client that cannot
+// distinguish a refusal from a failure renders its empty state for both, which turns "you may not
+// see this" into "there is nothing here".
+func (h *Hub) sendErrCode(conn *transport.Conn, id, msg, code string) {
+	if raw, err := protocol.Encode(id, protocol.TypeError, protocol.Error{Message: msg, Code: code}); err == nil {
 		_ = conn.Send(raw)
 	}
 }

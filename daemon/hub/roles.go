@@ -151,6 +151,18 @@ func (h *Hub) requireCapabilityBecause(conn *transport.Conn, envID string, c cap
 		who = "an unidentified client"
 	}
 	log.Printf("roles: DENIED %s to %s (role %s)", what, who, role)
+	h.sendErrCode(conn, envID, refusalMessage(c, what, because), protocol.ErrorForbidden)
+	return false
+}
+
+// refusalMessage renders what the user is told when they are refused.
+//
+// Split out from the send so it can be asserted directly — these messages are the only place a
+// boundary is ever explained. The client renders its controls from a static layout, not from
+// capabilities the daemon told it about, so a control that fails without a reason reads as a broken
+// feature, and the honest guess from the other side is that the app is buggy rather than that the
+// limit is deliberate.
+func refusalMessage(c capability, what, because string) string {
 	var msg string
 	switch c {
 	case capApprove, capOwner:
@@ -167,8 +179,7 @@ func (h *Hub) requireCapabilityBecause(conn *transport.Conn, envID string, c cap
 	if because != "" {
 		msg += " " + because
 	}
-	h.sendErr(conn, envID, msg)
-	return false
+	return msg
 }
 
 // SetRolesEnabled turns multi-user enforcement on. Off by default: a solo user must never acquire
@@ -249,4 +260,29 @@ func (h *Hub) participants() protocol.ParticipantList {
 
 func (h *Hub) broadcastParticipants() {
 	h.broadcast(protocol.TypeParticipants, h.participants())
+}
+
+// requireEditorRead gates the language-server read family.
+//
+// These are all ways of reading the project's files: the server only answers for a document that
+// was opened through lsp.open, which is confined to an allowed root, so the confinement was never
+// the gap. The gap was that fs.read and fs.tree next door are capSteer and these were not gated at
+// all — so an observer, admitted by a watch-only link and meant to read one session, could open a
+// source file and hover, complete, list its symbols and jump to its definitions, which is the same
+// access the file browser refuses them.
+//
+// capSteer, to match the file browser exactly. lsp.rename is already capSteer and lsp.install is
+// capOwner, so this puts the read half where the write half already was.
+//
+// Carries a reason because the boundary is not self-evident: someone who was just reading a
+// transcript quite reasonably expects the editor to work, and "you can't do that" on a hover with
+// no explanation reads as a broken feature rather than a deliberate limit.
+// editorReadCap is the capability the language-server read family requires. Named so the boundary is
+// a value a test can read, rather than a literal buried in the helper below — a test that re-states
+// the intended capability alongside the code proves only that two copies agree.
+const editorReadCap = capSteer
+
+func (h *Hub) requireEditorRead(conn *transport.Conn, envID string) bool {
+	return h.requireCapabilityBecause(conn, envID, editorReadCap, "use the code editor",
+		"Reading the project's files is the same access as the file browser, which is limited to people who can steer.")
 }

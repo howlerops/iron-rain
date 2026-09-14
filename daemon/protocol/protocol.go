@@ -2053,7 +2053,18 @@ const (
 
 type Error struct {
 	Message string `json:"message"`
+	// Code classifies the failure so a client can tell "you may not" from "that went wrong".
+	// Only ErrorForbidden is defined today; everything else sends no code, which older daemons
+	// also do, so an absent code means "unclassified" and never "allowed".
+	Code string `json:"code,omitempty"`
 }
+
+// ErrorForbidden marks a refusal by the capability model rather than a failure.
+//
+// A screen that cannot tell the two apart renders its empty state for both, and an empty state is a
+// claim: "there are no devices enrolled", "no notification types", when the truth is "you are not
+// allowed to see this". Matching on the message text would work until the wording changed.
+const ErrorForbidden = "forbidden"
 
 // streamEnvelope encodes an event envelope (no id) in a single marshal pass:
 // the payload is serialized inline instead of round-tripping through a

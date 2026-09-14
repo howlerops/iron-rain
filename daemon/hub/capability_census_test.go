@@ -19,13 +19,16 @@ import (
 // Finding it one handler at a time does not scale: the dispatch switch has 137 cases. So the rule is
 // enforced here instead — a new case either gates itself, or names itself below and says why.
 //
-// THE LIST BELOW IS A BACKLOG, NOT AN ENDORSEMENT. It is what was ungated when this test was
-// written, recorded so the surface cannot grow quietly while it gets worked through. Several entries
-// are plainly fine (session.list, participants, client.identify — a watcher has to be able to see
-// the room). Several are plainly not, and are called out. Reviewing them is a design pass with a
-// real constraint on the other side: a solo user, whose every device is their own, must never
-// acquire permission friction they did not ask for. That is why this is a census and not a
-// unilateral tightening.
+// Every entry below is a DECISION, with the reason it was made. There is no residual "not looked at
+// yet" bucket: the twenty types that were once in one are now gated — the language-server read family
+// at capSteer to match the file browser it duplicates, the owner's accounts, remote hosts, devices
+// and notification settings at capOwner, and activity.mark_read at capSteer because it mutates a feed
+// every device reads.
+//
+// Gating costs the ordinary user nothing, which is what made the decision easy in the end: with
+// sharing off — the default, and the only state a solo user is ever in — roleRegistry.role() returns
+// owner for every connection, so every check here passes unconditionally. These boundaries exist
+// only once someone has deliberately turned sharing on and invited another person in.
 func TestEveryMessageTypeDecidesWhoMaySendIt(t *testing.T) {
 	// Reads a watcher is meant to have. Someone you let watch a session can see the session.
 	watcherReads := []string{
@@ -46,29 +49,13 @@ func TestEveryMessageTypeDecidesWhoMaySendIt(t *testing.T) {
 	ownConnection := []string{
 		"TypeDeviceRegister", "TypeDeviceCredentialAck", "TypeLogUnsubscribe", "TypePreviewDOMResult",
 	}
-	// UNRESOLVED — each of these deserves a decision and has not had one. Named individually rather
-	// than waved through as a group, so the list reads as the work it is.
-	//
-	//   NotifyPrefsGet/Set  — Set MUTATES the owner's notification settings from any connection.
-	//   AccountList/Quota   — the owner's provider accounts and their remaining quota.
-	//   RemoteList/Status   — the other machines this daemon can reach.
-	//   DeviceList          — the full roster of devices enrolled to this Mac.
-	//   WorktreeDiff        — the contents of the repo, for any session.
-	//   WorkspaceDiff       — the same, across every member of a cross-repo workspace.
-	//   ActivityMarkRead    — mutates the shared activity feed.
-	//   LSP*                — Open takes a PATH. This is a file-read primitive with a language
-	//                         server behind it, and it is reachable by anyone connected.
-	unresolved := []string{
-		"TypeNotifyPrefsGet", "TypeNotifyPrefsSet", "TypeAccountList", "TypeAccountQuota",
-		"TypeRemoteList", "TypeRemoteStatus", "TypeDeviceList", "TypeWorktreeDiff",
-		"TypeWorkspaceDiff", "TypeActivityMarkRead",
-		"TypeLSPOpen", "TypeLSPChange", "TypeLSPClose", "TypeLSPHover", "TypeLSPDefinition",
-		"TypeLSPComplete", "TypeLSPFormat", "TypeLSPReferences", "TypeLSPSymbols",
-		"TypeLSPServerInfo",
-	}
+	// Reads of a session's own WORK. An observer can already subscribe to the session and read its
+	// transcript, and the diff is the same content by another route: it is what the agent did. Left
+	// open deliberately — gating it would make "watch only" mean less than it says.
+	sessionWork := []string{"TypeWorktreeDiff", "TypeWorkspaceDiff"}
 
 	known := map[string]bool{}
-	for _, group := range [][]string{watcherReads, trackerReads, ownConnection, unresolved} {
+	for _, group := range [][]string{watcherReads, trackerReads, ownConnection, sessionWork} {
 		for _, n := range group {
 			known[n] = true
 		}
@@ -113,7 +100,8 @@ func TestEveryMessageTypeDecidesWhoMaySendIt(t *testing.T) {
 }
 
 // ungatedDispatchCases returns the message types whose dispatch arm performs no capability check,
-// following one level of delegation into an h.handleX helper (several arms gate inside one).
+// following one level of delegation into an h.handleX or h.requireX helper — several arms gate inside
+// one (handleMCP), and the language-server family shares a named gate that carries their common reason.
 func ungatedDispatchCases() ([]string, error) {
 	src, err := os.ReadFile("hub.go")
 	if err != nil {
@@ -122,7 +110,7 @@ func ungatedDispatchCases() ([]string, error) {
 	s := string(src)
 	caseRe := regexp.MustCompile(`\n\tcase (protocol\.Type\w+(?:,\s*\n?\s*protocol\.Type\w+)*):`)
 	nameRe := regexp.MustCompile(`protocol\.(Type\w+)`)
-	delegateRe := regexp.MustCompile(`h\.(handle\w+)\(`)
+	delegateRe := regexp.MustCompile("h\\.((?:handle|require)\\w+)\\(")
 
 	cases := caseRe.FindAllStringSubmatchIndex(s, -1)
 	var out []string

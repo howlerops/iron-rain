@@ -890,7 +890,37 @@ public struct Session: Codable, Identifiable {
         case costKnown = "cost_known"
     }
 }
-public struct ProtocolError: Codable { public var message: String }
+public struct ProtocolError: Codable {
+    public var message: String
+    /// Classifies the failure. `OculusError.forbidden` means the capability model refused this —
+    /// distinct from a request that went wrong, which matters because a screen that cannot tell them
+    /// apart renders its empty state for both, and an empty state is a claim about the world.
+    public var code: String?
+}
+
+/// Builds the error a refused or failed request throws, from the daemon's own reply.
+///
+/// Extracted from the receive loop so the wiring is testable, not just the classifier: a test that
+/// hand-builds an NSError and asks whether it looks forbidden proves only that the predicate agrees
+/// with itself. This takes the bytes the daemon actually sends.
+public func requestError(from env: Envelope) -> NSError {
+    let err = try? env.payload(as: ProtocolError.self)
+    var info: [String: Any] = [NSLocalizedDescriptionKey: err?.message ?? "request failed"]
+    if let code = err?.code, !code.isEmpty { info[OculusError.codeKey] = code }
+    return NSError(domain: "Oculus", code: -2, userInfo: info)
+}
+
+/// Error classifications the daemon sends. Absent on older daemons, and absent for every failure
+/// that is not a refusal — so a missing code means "unclassified", never "allowed".
+public enum OculusError {
+    public static let forbidden = "forbidden"
+    /// The key `code` is carried under in an NSError's userInfo.
+    public static let codeKey = "OculusErrorCode"
+    /// Whether this error is the capability model saying no.
+    public static func isForbidden(_ error: Error) -> Bool {
+        (error as NSError).userInfo[codeKey] as? String == forbidden
+    }
+}
 public struct SessionList: Codable { public var sessions: [Session] }
 
 // Usage + to-dos (agent observability events).

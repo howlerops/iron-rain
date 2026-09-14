@@ -2705,13 +2705,26 @@ public final class Model: ObservableObject {
     /// Devices registered to receive a push.
     @Published public var pushDeviceCount = 0
 
+    /// Set when the daemon REFUSED a screen's data rather than failing to produce it. Screens read
+    /// this so they can say "you can't see this" instead of rendering an empty state, which is a
+    /// claim about the world and the wrong one.
+    @Published public var notifyPrefsForbidden = false
+    @Published public var devicesForbidden = false
+
     public func loadNotifyPrefs() async {
         guard client != nil else { return }
-        if let env = try? await request(MessageType.notifyPrefsGet, payload: Optional<Int>.none),
-           let np = try? env.payload(as: NotifyPrefs.self) {
-            notifyPrefs = np.prefs
-            pushDeliverable = np.pushEnabled
-            pushDeviceCount = np.devices ?? 0
+        do {
+            let env = try await request(MessageType.notifyPrefsGet, payload: Optional<Int>.none)
+            if let np = try? env.payload(as: NotifyPrefs.self) {
+                notifyPrefs = np.prefs
+                pushDeliverable = np.pushEnabled
+                pushDeviceCount = np.devices ?? 0
+            }
+            notifyPrefsForbidden = false
+        } catch {
+            // These are the owner's settings, so a guest is refused — and the Notifications section
+            // gates its spinner on an empty list, which would have span forever.
+            notifyPrefsForbidden = OculusError.isForbidden(error)
         }
     }
 
@@ -2751,9 +2764,15 @@ public final class Model: ObservableObject {
 
     public func loadDevices() async {
         guard client != nil else { return }
-        if let env = try? await request(MessageType.deviceList, payload: Optional<Int>.none),
-           let list = try? env.payload(as: DeviceList.self) {
-            devices = list.devices
+        do {
+            let env = try await request(MessageType.deviceList, payload: Optional<Int>.none)
+            if let list = try? env.payload(as: DeviceList.self) {
+                devices = list.devices
+            }
+            devicesForbidden = false
+        } catch {
+            // "No devices enrolled" would be a lie: there are devices, this one may not see them.
+            devicesForbidden = OculusError.isForbidden(error)
         }
     }
 
@@ -4507,8 +4526,10 @@ public final class Model: ObservableObject {
                 // skip the broadcast switch. Events carry an empty id, so they fall through.
                 if let id = env.id, !id.isEmpty, let cont = pendingRequests.removeValue(forKey: id) {
                     if env.type == MessageType.error {
-                        let msg = (try? env.payload(as: [String: String].self))?["message"] ?? "request failed"
-                        cont.resume(throwing: NSError(domain: "Oculus", code: -2, userInfo: [NSLocalizedDescriptionKey: msg]))
+                        // requestError carries the classification through. Without it a refusal is
+                        // just a string, and every caller that swallows its error renders "there is
+                        // nothing here" in response to "you may not see this".
+                        cont.resume(throwing: requestError(from: env))
                     } else {
                         cont.resume(returning: env)
                     }

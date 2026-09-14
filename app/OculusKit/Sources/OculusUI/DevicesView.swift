@@ -34,7 +34,14 @@ public struct DevicesView: View {
             palette: palette,
             onClose: onClose
         ) {
-            if model.devices.isEmpty {
+            if model.devicesForbidden {
+                // NOT the empty state. There are devices; this connection may not see them, and
+                // saying "none" would be a claim about someone else's machine that is simply false.
+                SheetEmptyState(icon: "lock",
+                                title: "Only the owner can see this",
+                                message: "Devices enrolled to this Mac — and revoking them — belong to whoever owns it. You're connected as a guest.",
+                                palette: palette)
+            } else if model.devices.isEmpty {
                 SheetEmptyState(icon: "iphone.and.arrow.forward",
                                 title: "No devices enrolled",
                                 message: "Devices appear here once they pair with this Mac. Scan the pairing code on the daemon, or open an invite link.",
