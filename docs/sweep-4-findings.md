@@ -11,6 +11,13 @@ needed their *tests* rewritten because the first version passed for the wrong re
 the code, then write a test, then revert only the fix and confirm the test fails. A control
 that still passes means the test is tautological.
 
+That method earned its keep on the way through. Six more tests had to be rewritten after their
+controls passed: one returned at an early guard without reaching the line under test, one compared
+the wrong pair of source offsets, one asserted a growth property the old code also satisfied, one
+staged a race the original shape could not lose, and two drove a helper instead of the branch that
+contained the defect. Four of the findings themselves were wrong or overstated — see
+**Corrections**. Every claim below is the version that survived being checked.
+
 Finders were also asked to record what they checked and *refuted*. Those lists are in the
 session transcript and are worth reading before re-auditing an area — they include things
 like the relay's proven-beats-unproven pairing rule, the SSRF surface in `preview_fetch`,
@@ -19,13 +26,16 @@ examined and found clean.
 
 ---
 
-## FIXED (26)
+## FIXED (71 of 71)
 
-The first 22 shipped as **v0.2.199** (commits 67f1336, ac5979d, 6ee4277, 3281ed5, 623d6e5, dce864e,
-e5ea242, d7425a2). The fifth batch below is on main and **not tagged**.
+The register is closed. The first 22 shipped as **v0.2.199** (commits 67f1336, ac5979d, 6ee4277,
+3281ed5, 623d6e5, dce864e, e5ea242, d7425a2); the remaining 49 are on main and **not tagged**
+(586a970, 7313bfe, 31600ce, fd4da6c, b6fac07, 7e13a26, 343f25c, 8c2c3eb, 63948b8, 80f2131).
 
-Every one has a test whose control fails when only the fix is reverted — with one stated exception,
-called out at the end of the fifth batch.
+Every one has a test whose control fails when only that fix is reverted, with two stated exceptions
+— the cli drain grace (fifth batch) and the subscribe window (sixth batch), each explained where it
+sits. Four findings turned out to be wrong or overstated as written; those are recorded in
+**Corrections** at the end rather than quietly fixed to match.
 
 ### First batch — the criticals
 
@@ -91,122 +101,118 @@ assertion that has a control behind it is the one about the turn ending at all.
 
 ---
 
-## REMAINING (46)
+### Sixth batch — wrong account, wrong session, wrong ending
 
-Counted off the list below, which is authoritative. The 71/22 arithmetic in the header implies 45;
-the list has always held one more entry than that, with no duplicate to explain it, so the intake
-count was off by one rather than a finding having gone missing. Three further items at the end are
-stale comments to correct in passing, not findings.
+Commits fd4da6c, b6fac07, 7e13a26.
 
+| Area | What | Where |
+|---|---|---|
+| hub | `SetAccounts` wired the account-env resolver onto a one-time SNAPSHOT of providers. `agent.upsert` and `provider.refresh` both re-`Register`, so Re-scan or saving a custom agent silently dropped it — sessions then spawned with the ambient environment while the Accounts screen still showed the account active. Wiring moved into `Register`, the one path every provider arrives by. | `hub.go` |
+| opencode | `message.updated` was the only SSE case that neither decoded nor filtered `sessionID`, so every session sharing a directory claimed every other's cost, tokens and provider errors. | `opencode.go` |
+| opencode | `Respond` deleted the approval→session mapping before the POST, so the todowrite retry sent attempts 2 and 3 to the parent. The sub-agent stayed blocked on a permission nobody was shown. | `opencode.go` |
+| opencode | `Delete` ignored the HTTP status; every non-2xx read as success. | `opencode.go` |
+| opencode | `sendParts` had no interlock, so a supervisor nudge's POST returning first declared the running turn idle — and reset `sawDelta` under it, duplicating the reply through `resyncLast`. | `opencode.go` |
+| hub | `startSession` created a worktree and reserved a port, and only the BOOTSTRAP failure undid them. A provider that refuses to start leaked a checkout per retry, unreachable by every sweep because no session record was written. | `hub.go` |
+| hub | The pump's panic recover returned normally, skipping the detach — the session stayed bound to a dead pump with unresolvable approvals and a live MCP token. Runs under its own recover now, and `mcpSessionTokens.revoke` is nil-safe: the first version of the fix crashed the test binary. | `session.go` |
+| hub | `adoptForkedSession` copied the parent's whole `sessionMeta` while claiming project/cwd, so a fork inherited live ownership claims — resolving a fan-out tore down the kept winner's worktree. | `thread.go` |
+| hub | The budget stop pushed twice, with two wordings of one fact. | `heartbeat.go` |
+| hub | `subscribe` snapshotted the replay after registering, so a frame broadcast in between was delivered twice. Live frames are now held aside across the snapshot. | `session.go` |
 
-### Security / capability boundary
+### Seventh batch — daemon infrastructure
 
-- **MEDIUM** `hub/hub.go:5302` — `device.register` still has no capability GATE. Its push tokens are now revoked with the device, which was the disclosure; deciding whether a watcher may register at all is a separate call.
-- **MEDIUM** `hub/invites.go:117` — `redeem()` consumes the device slot **before** the enrollment decision, so a refused device (revoked) permanently burns a seat. Owner sees "Redeemed 1/1" for a link nobody used.
-- **MEDIUM** `hub/authlimit.go:35` — the auth throttle is a per-attempt `time.Sleep` on the handshake goroutine, so penalties elapse in parallel across N concurrent sockets. The documented "~1 guess/sec" bound does not hold. Not a practical break against 128-bit credentials; the defect is that the only rate control in the auth path provides none.
+Commit 343f25c.
 
-### Data loss
+| Area | What | Where |
+|---|---|---|
+| lsp | On server replacement every open document was re-announced with `didOpen` BEFORE the `initialize` handshake, so the server dropped them and nothing re-sent. Previously-open tabs answered nothing forever while a newly opened file worked — which is what made LSP look recovered. | `lsp.go` |
+| store | `PruneSessions` never evicted orphaned `handoffs` rows despite its comment. The table grew monotonically for the life of the install. | `store.go` |
+| hub | `persistSessionAt` had no `ephemeral` guard, so the periodic touch wrote the record `addSession` had just refused to write — breaking the prune's own orphan invariant. | `persist.go` |
+| hub | Persisting the user's prompt and echoing it were one function called only when the author was known, so an unidentified client's prompts were recorded nowhere: pi and CLI sessions restored as answers with no questions. | `session.go` |
+| main | The startup banner printed the APNs bundle from the FLAG, not the value passed to `enablePush`. | `main.go` |
 
+### Eighth batch — capability boundary, provider silences, loops
 
-### Turn engine / lifecycle
+Commit 8c2c3eb.
 
-- **HIGH** `hub/session.go:925` — `subscribe` registers the subscriber then **releases `m.mu` before** snapshotting the replay, so an event broadcast in between is delivered twice. Contradicts the function's own doc comment. Window is wide for a restored session (full SQLite read + sha256 per frame).
-- **MEDIUM** `hub/session.go:1540` — `run()`'s panic recover returns normally, so `detachSession`/`removeSession` never run: the session stays in `h.sessions` with a dead pump, its approvals unresolvable and its MCP token unrevoked.
-- **MEDIUM** `hub/thread.go:120` — `adoptForkedSession` copies the parent's **entire** `sessionMeta` (not just project/cwd as the comment claims), so a fork inherits `worktreePath`/`repoRoot`/`port`/`fanoutGroup`. Resolving the fan-out then tears down the *kept* winner's worktree.
-- **MEDIUM** `hub/turn.go:888` — the 15s nudge bound is only partly real: claude-code and pi now honour it, but opencode's `Nudge` still names its context `_` (`opencode.go:1449`). While it blocks, `turnLoops` is parked and the turn can never reach `needs_you`; the wake Hold is never released.
-- **MEDIUM** `hub/heartbeat.go:160` — the budget stop sends the "needs you" push twice (once via `publishVerdict`, once directly).
-- **MEDIUM** `hub/hub.go:361` — `startSession` creates the worktree and reserves a port, then has `return nil, err` paths with no cleanup. Only the bootstrap failure path cleans up. The leaked worktrees are unreachable by every sweep because no session record was written.
+| Area | What | Where |
+|---|---|---|
+| hub | `device.register` was ungated and excused by the census as per-connection. A push token is a standing subscription to hub-wide content, and the fan-out is not capability-aware. Now capSteer — a watch-only guest stops receiving push, deliberately. | `hub.go` |
+| hub | `redeem()` consumed the invite seat before the enrolment decision, so a refused device permanently burned a one-use link. | `invites.go` |
+| hub | The auth throttle slept per-attempt on the handshake goroutine, so penalties elapsed in parallel across sockets — the only rate control in the auth path provided none. Failures now queue. | `authlimit.go` |
+| agui | An HTTP 200 that streamed nothing was reported as a finished turn: a misconfigured endpoint "finished" instantly with an empty reply and no error anywhere. Silence is now an error; a truncated run that delivered work still finishes. | `agui.go` |
+| genui | The `iron:ui` fence body was bounded only after the whole body was resident, so an unterminated fence grew without limit and was forwarded to every client whole. | `genui.go` |
+| loops | `MaxConcurrent` was a check-then-act with the lock released across the spawn, so two overlapping refreshes each started up to the cap — two agents on one worktree. | `loops.go` |
+| loops | A task loop whose spawn failed set `Status:"error"` and dropped the reason; nothing logged either. | `loops.go` |
+| fanout | The judge spec was deleted on the first summary broadcast, so the synthesis round — the one a judgement is most useful for — never got a judge. | `fanout_summary.go` |
+| issues | The Jira `onRefresh` closure captured its adapter's cloud id, so a refresh landing after a site switch pointed the daemon back at the old site AND stranded the live adapter → `invalid_grant`, polling suspended. | `manager.go` |
 
-### Providers
+### Ninth batch — the Swift client
 
-- **HIGH** `agent/opencode/opencode.go:975` — `message.updated` is the only SSE case that neither decodes nor filters `sessionID`, so it attributes **any** session's usage and provider errors to this one. `/event` is partitioned only by `?directory=`.
-- **HIGH** `agent/opencode/opencode.go:1671` — `Respond` deletes the approval→session mapping before the POST that can fail, so the file's own 3-attempt retry sends attempts 2 and 3 to the *parent* path instead of the sub-agent.
-- **MEDIUM** `agent/opencode/opencode.go:1688` — `Delete` ignores the HTTP status and returns nil for any non-2xx; the hub's "server-side delete failed" log can never fire.
-- **MEDIUM** `agent/opencode/opencode.go:1542` — `sendParts` has no interlock, so with two POSTs in flight the first to return clears `turnPending` and emits `StatusIdle` for the turn the second is still running. Also resets `sawDelta`, triggering a duplicate `resyncLast`.
-- **MEDIUM** `agent/agui/agui.go:483` — an HTTP 200 with no terminal event is reported as a normally finished turn, so a misconfigured endpoint "finishes" instantly with an empty reply and no error anywhere.
-- **MEDIUM** `genui/genui.go:276` — the `iron:ui` fence body accumulates with **no size limit**; `maxPayloadBytes` is checked only after the whole body is resident, and the over-cap body is then forwarded to clients whole as one `output.delta`.
+Commits 63948b8, 80f2131.
 
-### Issues / loops / fan-out
+| Area | What | Where |
+|---|---|---|
+| swift | A refusal rendered as an empty state on the three screens a guest actually lands on: Activity (the default iOS destination) said "No activity yet", Loops offered a New button that would also be refused, Issues invited them to connect the owner's tracker. `loadIssues` had to become a real request for a refusal to be observable at all. | `ActivityView`, `LoopsView`, `IssuesView`, `OculusUI` |
+| swift | Seven actions reported success without checking: the loop editor's membership test (always true when editing), "Start agent" calling `onDone(true)` outside the Task, "Create ticket" reading a flag the call returns before clearing, two nil-into-Dictionary assignments that delete the key, MCP "Test", iOS add-by-path, and minting an invite. | eight files |
+| swift | The fallback Kanban board had three columns for four categories, so canceled/duplicate/unmapped tickets vanished from the board while staying in List view. | `IssuesView` |
+| swift | `nonRingFrameTypes` omitted three hub-wide broadcasts carrying `session_id`, inflating the transcript paging cursor — `session.heartbeat` without bound. Now backed by a census that reads the daemon's source. | `OculusUI` |
+| swift | `WorktreePRResult.error` and `LoopRun.error` are sent by the daemon and had no client property, so a failed PR was indistinguishable from a success and a failed loop run had no reason. | `Protocol.swift` |
+| swift | `delegateSubtask` had no `modelProvider`, so every delegation to opencode sent half an address and the child ran on the default model. | `OculusUI`, `ChatView` |
+| swift | `removeWorktree` erased the on-device transcript before a fire-and-forget send (the twin of the `stopSession` bug), and `invokeUIAction` was a silent no-op after the card had latched to "Sent". | `OculusUI`, `GenerativeUI` |
+| swift | "Delete session" — the only irreversible sidebar action — had no confirmation, and the Loops detail "Edit" button set the state it was already in. | `SessionSidebar`, `CommandDeck` |
+| swift | Three per-frame costs made once-per-change: the sidebar grouping (3× per body pass at ~25 Hz), the diff's per-file counts, and the test pane's ungated scroll-to-bottom. | `SessionSidebar`, `DiffReviewView`, `ChatView` |
 
-- **MEDIUM** `loops/loops.go:211` — `MaxConcurrent` is a check-then-act with the lock released across the whole spawn, so two overlapping refreshes both see `active=0` and start two agents on a loop capped at one.
-- **MEDIUM** `hub/fanout_summary.go:212` — the judge spec is deleted on the first summary broadcast, so the synthesis round never gets a judge.
-- **MEDIUM** `loops/loops.go:305` — a task loop whose spawn fails sets `Status:"error"` but never `Run.Error` and never logs.
-- **MEDIUM** `issues/manager.go:145` — the Jira `onRefresh` closure captures its adapter's cloud id, so a refresh landing after a site switch rewrites the persisted token back to the **old** site and strands the new adapter with a rotated refresh token → `invalid_grant` → polling suspended.
+### Stale comments corrected
 
-### Daemon infra
-
-- **HIGH** `main.go:368` + `hub/hub.go:809` — `SetAccounts` wires the account-env resolver onto a **one-time snapshot** of providers, and it is never called again. `agent.upsert` and `provider.refresh` both re-`Register` providers, which silently drops the wiring: sessions then spawn with the ambient environment while the Accounts screen still shows the account active. The "(idempotent)" comment at `hub.go:3546` is false for this wiring.
-- **HIGH** `lsp/lsp.go:131` — on server replacement, every open document is re-announced with `textDocument/didOpen` **before** the `initialize` handshake, so the server drops them and nothing re-sends. Previously-open tabs answer nothing forever. `s.notify` only writes to a pipe so the error log never fires; `restart_test.go` asserts only map bookkeeping.
-- **MEDIUM** `main.go:536` — the startup banner prints the APNs bundle from the *flag*, not the value passed to `enablePush`, so a bundle set in `~/.oculus/apns.json` is misreported to an operator debugging exactly that.
-- **MEDIUM** `store/store.go:292` — `PruneSessions` never evicts orphaned `handoffs` rows despite its comment; `DeleteHandoff`'s only caller is `removeSession`, which the TTL path never reaches. Table grows monotonically.
-- **MEDIUM** `hub/persist.go:77` — `persistSessionAt` has no `ephemeral` guard, so the periodic touch (and `setSessionMode`) persists scratch sessions that `addSession` deliberately refused to persist.
-- **MEDIUM** `hub/hub.go:4890` — the user's message reaches the durable transcript only when `author != ""`, so an unidentified client's prompts are never persisted for pi/CLI providers ("answers with no questions").
-
-### Swift client — silent failures
-
-The dominant pattern: a loader uses `try?` against a capability-gated endpoint, so a
-**refusal renders as an affirmative empty state**. The `*Forbidden` flag pattern already
-used for accounts/remotes/MCP/devices is the fix.
-
-- **HIGH** `ActivityView.swift:43` — a refused `activity.list` renders "No activity yet". Activity is the **default iOS destination**. There is no `activityForbidden`.
-- **MEDIUM** `LoopsView.swift:158` — refused `loop.list` renders "No loops yet" plus a New-loop CTA that will also be refused. Same shape at `IssuesView.swift:211`.
-- **HIGH** `LoopsView.swift:528` — the did-it-save predicate is **always true when editing**, so a failed save closes the editor and discards the changes.
-- **HIGH** `IssuesView.swift:1030` — "Start agent" calls `onDone(true)` outside the `Task`, reporting success before the launch is attempted; `launchIssue` swallows every failure path.
-- **MEDIUM** `IssuesView.swift:1508` — "Create" dismisses as though created when `createIssue` bails at its own guard (returns before clearing `trackerError`, so the stale-state check passes).
-- **MEDIUM** `AccountsView.swift:267`, `RemotesView.swift:256`/`:301` — assigning a nil result into a dictionary **removes the key**, so a failure renders as "you never pressed the button".
-- **MEDIUM** `NewSessionView.swift:1106` — iOS "add by path" clears the field before the add is attempted and routes the error to a field no visible view renders.
-- **MEDIUM** `MCPServersView.swift:502` — "Test" is a silent no-op when the check request itself fails; indistinguishable from a test that found nothing.
-- **MEDIUM** `SharingView.swift:211` — "Create" on an invite clears the label and reports nothing when minting fails; the only action on that screen without a did-it-move check.
-- **MEDIUM** `IssuesView.swift:732` — the fallback column layout renders three of four categories, so issues normalized to `"other"` (canceled/duplicate Linear, unknown Jira status) vanish from the Kanban board while remaining in List view.
-
-### Swift client — model / wire
-
-- **HIGH** `OculusUI.swift:2985`/`:4698` — `nonRingFrameTypes` omits `session.heartbeat`, `activity.event` and `worktree.status`, which carry `session_id` but never enter the ring, so the `transcript.page` cursor inflates → a permanent hole in the transcript, and once inflation exceeds ring length the live window is skipped entirely. *(This set was added by the third sweep and was incomplete.)*
-- **HIGH** `OculusUI.swift:3684` (and `:3673`) — `removeWorktree` erases the row, the on-device transcript cache and the auto-reopen key **before** a fire-and-forget send. The twin of the bug `stopSession` was already fixed for.
-- **HIGH** `OculusUI.swift:4527` — `invokeUIAction`'s `guard let client else { return }` makes a generative-UI choice button a silent no-op *after* the card has latched to "Sent — the agent will continue." Same shape in `FormView`.
-- **MEDIUM** `Protocol.swift:1522` — `WorktreePRResult` has no `error` property/key, and the result is reported only through `model.status`, which `deriveHeaderStatus` discards while connected. A failed `gh pr create` is indistinguishable from success.
-- **MEDIUM** `Protocol.swift:1323` — `LoopRun` has no `error` property/key, so a failed loop run's reason is dropped and the row's only action is `onOpenSession("")`.
-- **MEDIUM** `OculusUI.swift:1909` — `delegateSubtask` has no `modelProvider` parameter, so opencode receives a model id with no `providerID`.
-
-### Swift client — chat surface
-
-- **HIGH** `SessionSidebar.swift:834` — "Delete session" fires from a context menu with **no confirmation** and also erases the on-device transcript. The only irreversible sidebar action, while YOLO mode and "Always allow" are both gated behind dialogs.
-- **HIGH** `CommandDeck.swift:349` — `Button("Edit") { onDone() }` sets `editingLoop = false`, the state it is already in. Guaranteed no-op.
-- **MEDIUM** `SessionSidebar.swift:882` — `groups` (two dictionary builds, per-session regex `clean()` calls, partition, sort) is uncached and evaluated **three times per body pass**, and the body invalidates on every `@Published` mutation (~25 Hz during a turn).
-- **MEDIUM** `DiffReviewView.swift:334` — the parse is cached but the add/delete **counts** are not; `totals` scans the whole diff twice per rebuild and each file header four more times.
-- **MEDIUM** `ChatView.swift:3287` — the test-output pane scrolls to bottom on every line with no "is the user already at the bottom?" gate, unlike the transcript.
-
-### Stale comments to correct while nearby
-
-- `MCPServersView.swift:507` and `LoopsView.swift:269` claim these toggles fail silently; the model was since fixed (`OculusUI.swift:3230`, `:3621`). The comments will mislead.
-- `probe_test.go`'s `deafSidecar` says the sidecar is "wedged so hard its stdin loop is gone"; the script still drains stdin. (A `muteSidecar` fixture now exists in `close_deadlock_test.go`.)
-- `hub/hub.go:3546` — "Register overwrites by name (idempotent)" is false for the account-env wiring.
+All four are done: `hub.go`'s false "(idempotent)", `MCPServersView` and `LoopsView` both claiming a
+failed toggle could not be detected (the model had already been fixed to revert and raise a banner),
+and `probe_test.go`'s `deafSidecar` claiming a sidecar "wedged so hard its stdin loop is gone" whose
+script drains stdin on the next line. That last one is why the two wedged-sidecar defects went
+uncaught: the fixture could not reach them.
 
 ---
 
-## Suggested order for what is left
+## Corrections
 
-The capability, data-loss and turn-identity groups shipped in v0.2.199; the provider hangs are on
-main awaiting a tag. What remains, roughly by value:
+Four findings were wrong or overstated as written. Recorded rather than quietly adjusted, because
+the register's value depends on it being trustworthy about itself.
 
-1. **`main.go:368` `SetAccounts`** — a one-time provider snapshot, so Re-scan or editing an agent
-   silently drops the account env. Wrong API key, wrong config dir, Accounts screen still green.
-2. **opencode session attribution** — `message.updated` decodes no `sessionID`, so cost and provider
-   errors land on the wrong session whenever two share a directory.
-3. **The Swift `*Forbidden` sweep** — one pattern, ten sites, and it is why a refused list renders as
-   "you have none" on the default iOS tab.
-4. **`lsp.go:131`** — `didOpen` before `initialize`, which silently kills every previously-open tab
-   after a server crash.
-5. The remaining mediums.
+- **`session.go:925` subscribe — severity overstated.** The finding said the window is "wide for a
+  restored session (full SQLite read + sha256 per frame)". It is not: `fullHistory` snapshots the
+  ring under `m.mu` as its FIRST statement, and the durable read, the join and the hashing all happen
+  after that snapshot. The real window is a few instructions. Measured at one duplicate in 300 rounds
+  with six goroutines broadcasting into it, and zero in 300 with the fix. Real, worth fixing, and
+  with no negative control achievable at a sane runtime — the deterministic test covers the
+  mechanism instead, and says so.
+- **`turn.go:888` nudge bound — half wrong.** "No `agent.Nudger` implementation reads the context"
+  was true of claude-code and pi (both fixed in 586a970). opencode's `Nudge` names its context `_`
+  and always will: `sendParts` hands the POST to a goroutine and returns, so it cannot block
+  `turnLoops` however wedged the server is. Documented at the line.
+- **`hub.go:4890` — wrong function.** The write-ahead transcript append is unconditional; the
+  `author != ""` gate is on `broadcastUserEcho`, which is what persists the user's half of the
+  RENDERABLE transcript. Same symptom, different line.
+- **REMAINING count.** The header said 49 against a list of 50, with no duplicate to explain it.
 
-Two things the fifth batch turned up that are worth carrying forward.
+One thing the sweep did not find, which its own method did: the ring-cursor census written for
+`nonRingFrameTypes` immediately surfaced four more types the hand-maintained list had missed
+(`approval.resolved`, `approval.rules.changed`, `fs.change`, `lsp.diagnostics`). All four were
+checked against their payload structs and none carries a session id, so none was a live defect — but
+none of them was in the register either.
 
-`turn.go:888`'s 15s nudge bound is now honoured by claude-code and pi, but **opencode's `Nudge`
-still names its context `_`** (`opencode.go:1449` → `sendParts`), so that finding stays open rather
-than closing with this batch. Its failure mode differs — an unbounded HTTP POST, not a parked pipe
-write — but the consequence at `turnLoops` is the same.
+---
 
-And `heartbeat.go:406`'s comment now describes something that is actually true. It did not when it
-was written: it documented this class of hang as fixed while pi still discarded every deadline. That
-is the second comment in this area during this sweep to assert a fix that did not exist (the first
-was `probe_test.go`'s `deafSidecar`).
+## What is left
+
+Nothing from this sweep. Two things worth carrying into the next one:
+
+1. **The relay flake.** One run of the full suite hit `TestASlowClientLosesNoFrames` in `./relay`
+   ("no host for server_id") under parallel load. It did not reproduce in 5 targeted runs, 12 runs
+   of the whole relay package on the pre-change tree, or three further full-suite runs. `relay` is
+   untouched by this work. It is a pre-existing intermittent, not a regression, and it is written
+   down here so the next person does not rediscover it cold.
+2. **The two exceptions above** — the cli drain grace and the subscribe window — are the only fixes
+   in the register shipped without a control that fails. Both are argued at the line; neither is
+   load-bearing enough to block, and both are the kind of thing a future change could silently undo.
+
+The tag is deliberately not moved: `v0.2.199` shipped the first 22, and the other 49 want a real
+exercise of the app before they are cut.

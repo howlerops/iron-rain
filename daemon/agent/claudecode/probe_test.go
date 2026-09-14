@@ -24,8 +24,15 @@ while IFS= read -r line; do
 done
 `
 
-// deafSidecar accepts input and never answers anything — a sidecar wedged so hard its stdin loop is
-// gone. A probe against it must TIME OUT with an error rather than hang or claim idle.
+// deafSidecar DRAINS its stdin and answers nothing. A probe against it must time out with an error
+// rather than hang or claim idle.
+//
+// Read the script before building on this one. Its comment used to say the sidecar was "wedged so
+// hard its stdin loop is gone", and the loop is right there on the next line — so every write into
+// it completes, and the two failures that actually matter for a wedged sidecar (a write that parks
+// forever holding writeMu, and the Close that then deadlocks against it) are unreachable from here.
+// That mismatch is why both went uncaught until the fourth sweep. muteSidecar in
+// close_deadlock_test.go is the fixture that genuinely stops reading.
 const deafSidecar = `#!/bin/sh
 echo '{"t":"session","id":"'"$OCULUS_SESSION_ID"'"}'
 while IFS= read -r line; do :; done
