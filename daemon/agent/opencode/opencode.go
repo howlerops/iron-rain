@@ -751,6 +751,14 @@ type session struct {
 	// continue?/status? and got nothing" pile-up.
 	turnPending atomic.Bool
 
+	// inFlight counts the POST /message goroutines currently open. opencode runs a session serially,
+	// but nothing stops US from having two sends outstanding — a supervisor Nudge or an unsticking
+	// prompt while the user's turn is still posting — and the completion path is written as though the
+	// sender that returns is the only one there is. Without this counter the first to return declared
+	// the session idle out from under the turn that was still running, and reset sawDelta under it so
+	// its reply came back a second time through resyncLast.
+	inFlight atomic.Int64
+
 	// populated in the (single) readEvents goroutine — no mutex needed.
 	msgRoles    map[string]string // messageID -> role (from message.updated)
 	emittedUser map[string]bool   // messageIDs already forwarded as a user turn
@@ -977,10 +985,18 @@ func (s *session) handle(raw []byte) {
 		// completed assistant message — emit token/cost usage (opencode carries it on info).
 		var mu struct {
 			Info struct {
-				ID     string  `json:"id"`
-				Role   string  `json:"role"`
-				Cost   float64 `json:"cost"`
-				Tokens struct {
+				ID string `json:"id"`
+				// SessionID was ABSENT from this struct, and this was the ONLY case in the switch that
+				// neither decoded nor filtered it. opencode's /event stream is partitioned by
+				// ?directory= and nothing finer, so every session sharing a folder — a worktree, a
+				// fan-out lane, a sub-agent — saw every other session's message.updated and claimed it.
+				// Cost and token usage landed on whichever session happened to be watching, and so did
+				// provider errors: a model outage in one lane painted an unrelated session red while
+				// the lane that actually failed showed nothing.
+				SessionID string  `json:"sessionID"`
+				Role      string  `json:"role"`
+				Cost      float64 `json:"cost"`
+				Tokens    struct {
 					Input  int `json:"input"`
 					Output int `json:"output"`
 					// Reasoning was ABSENT from this struct, which is why reasoning tokens were
@@ -1006,7 +1022,16 @@ func (s *session) handle(raw []byte) {
 				} `json:"error"`
 			} `json:"info"`
 		}
-		if json.Unmarshal(e.Properties, &mu) == nil && mu.Info.ID != "" {
+		if json.Unmarshal(e.Properties, &mu) != nil || mu.Info.ID == "" {
+			return
+		}
+		// Ours, one of our `task` sub-agents, or unattributed — same rule session.error uses below,
+		// including its tolerance for a missing sessionID (opencode omits it on some frames, and an
+		// unattributed message on a stream we are reading is more likely ours than not).
+		if mu.Info.SessionID != "" && mu.Info.SessionID != s.id && !s.childIDs[mu.Info.SessionID] {
+			return
+		}
+		{
 			if s.msgRoles == nil {
 				s.msgRoles = map[string]string{}
 			}
@@ -1539,6 +1564,14 @@ func (s *session) sendParts(parts []map[string]any, abortStuck bool) error {
 	// Aborting first is the cure for that, but ONLY when the caller has evidence of a wedge; without
 	// it we queue, which is the right thing to do to an agent that is actually working.
 	priorUnfinished := s.turnPending.Swap(true)
+	// Count the POSTs actually in flight. Without this there was no interlock at all: a Nudge or an
+	// unsticking prompt sent while a turn's POST is still open gives two concurrent goroutines below,
+	// and the FIRST to return cleared turnPending and emitted StatusIdle for a turn the second was
+	// still running — the session reported finished while its agent worked on. The same entry also
+	// reset sawDelta under the running turn, so when that turn did return it looked like it had
+	// streamed nothing and resyncLast re-emitted the last assistant message on top of the reply the
+	// client had already sealed: two identical blocks, adjacent, on screen.
+	inFlight := s.inFlight.Add(1)
 	go func() {
 		if priorUnfinished && abortStuck {
 			actx, acancel := context.WithTimeout(ctx, 15*time.Second)
@@ -1552,11 +1585,20 @@ func (s *session) sendParts(parts []map[string]any, abortStuck bool) error {
 		pctx, cancel := context.WithTimeout(ctx, 3*time.Hour)
 		defer cancel()
 		s.turnActive.Store(true)
-		defer s.turnActive.Store(false)
-		s.sawDelta.Store(false) // a fresh turn has streamed nothing yet
+		// Only the LAST sender out clears these; see the inFlight comment above.
+		defer func() {
+			if s.inFlight.Load() == 0 {
+				s.turnActive.Store(false)
+			}
+		}()
+		if inFlight == 1 {
+			s.sawDelta.Store(false) // a fresh turn has streamed nothing yet
+		}
 		start := time.Now()
 		log.Printf("opencode: POST message sid=%s (turn start)", s.id)
 		err := s.p.doPost(pctx, withDir("/session/"+s.id+"/message", s.dir), body, nil, s.p.http) // pctx bounds it
+		// Decremented before the switch so `stillRunning` below is the count of OTHER senders.
+		stillRunning := s.inFlight.Add(-1) > 0
 		if ctx.Err() != nil {
 			return // the session was closed/stopped — nothing to report
 		}
@@ -1571,7 +1613,9 @@ func (s *session) sendParts(parts []map[string]any, abortStuck bool) error {
 			s.statusMu.Lock()
 			parked := s.lastStatus == protocol.StatusAwaitingApproval
 			s.statusMu.Unlock()
-			if !parked {
+			// A turn this one overlapped is still open: it owns the ending, not us. Declaring idle
+			// here is a lie about a session that is still working, and the reconciler believes it.
+			if !parked && !stillRunning {
 				s.turnPending.Store(false) // turn completed cleanly → not wedged
 				// Resync ONLY when the stream delivered no reply at all.
 				//
@@ -1601,8 +1645,12 @@ func (s *session) sendParts(parts []map[string]any, abortStuck bool) error {
 			// legit long migration also keeps this POST open while streaming over SSE).
 			log.Printf("opencode: POST message sid=%s stopped waiting after %s (turn continues on the server)", s.id, time.Since(start).Round(time.Second))
 		default:
-			// A real transport failure (opencode died / connection refused) — surface it.
-			s.turnPending.Store(false)
+			// A real transport failure (opencode died / connection refused) — surface it. The error is
+			// this sender's own and is always reported, but turnPending describes the SESSION, so it
+			// only clears when nothing else is still posting.
+			if !stillRunning {
+				s.turnPending.Store(false)
+			}
 			log.Printf("opencode: POST message sid=%s FAILED after %s: %v", s.id, time.Since(start).Round(time.Second), err)
 			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusError, Detail: "opencode: " + err.Error()}})
 		}
@@ -1668,14 +1716,24 @@ func (s *session) Respond(ctx context.Context, approvalID, decision string) erro
 		if owner, ok := s.approvalSession[approvalID]; ok && owner != "" {
 			sid = owner
 		}
-		delete(s.approvalSession, approvalID)
 	}
 	s.approvalMu.Unlock()
 	// Answering an approval RESUMES the turn. If the parent's POST already returned at the yield (so
 	// turnActive was cleared), re-arm it so a mid-turn SSE reconnect during the continuation still
 	// resyncs the latest output. It's cleared again on the parent's session.idle.
 	s.turnActive.Store(true)
-	return s.p.postJSON(ctx, withDir(fmt.Sprintf("/session/%s/permissions/%s", sid, approvalID), s.dir), map[string]string{"response": resp}, nil)
+	if err := s.p.postJSON(ctx, withDir(fmt.Sprintf("/session/%s/permissions/%s", sid, approvalID), s.dir), map[string]string{"response": resp}, nil); err != nil {
+		return err
+	}
+	// Forget the mapping only once the answer has LANDED. It used to be deleted before the POST, so a
+	// failed answer erased the one record of which session raised the approval — and the retry loop in
+	// the todowrite auto-allow path calls this three times, so attempts 2 and 3 were addressed to the
+	// PARENT while the sub-agent that asked stayed blocked server-side. The retry could not succeed by
+	// construction, and the parent's turn hung waiting on a `task` tool that would never return.
+	s.approvalMu.Lock()
+	delete(s.approvalSession, approvalID)
+	s.approvalMu.Unlock()
+	return nil
 }
 
 func (s *session) Stop(ctx context.Context) error {
@@ -1695,6 +1753,12 @@ func (s *session) Delete(ctx context.Context) error {
 		return err
 	}
 	resp.Body.Close()
+	// The status was ignored, so every non-2xx returned nil: a refused or failed delete was reported
+	// as a successful one. The hub's "server-side delete failed" log could never fire, and the session
+	// the user deleted came back on the next attach or rediscovery with nothing to explain it.
+	if resp.StatusCode/100 != 2 {
+		return fmt.Errorf("opencode DELETE /session/%s: %s", s.id, resp.Status)
+	}
 	return nil
 }
 
