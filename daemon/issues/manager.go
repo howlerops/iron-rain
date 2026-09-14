@@ -438,6 +438,11 @@ func (m *Manager) Refresh(ctx context.Context) error {
 	polled := map[string]bool{}
 	// fresh records which providers actually RETURNED this round. Everything else — skipped for
 	// backoff, or polled and failed — keeps whatever it last gave us.
+	// Which providers are still attached at all, as distinct from which answered this round.
+	connected := make(map[string]bool, len(provs))
+	for _, np := range provs {
+		connected[np.name] = true
+	}
 	fresh := map[string]bool{}
 	var wg sync.WaitGroup
 	var rmu sync.Mutex
@@ -493,10 +498,19 @@ func (m *Manager) Refresh(ctx context.Context) error {
 	// the same position as one that was skipped — it told us nothing, so the last thing it told us is
 	// still the best answer we have. Stale-but-correct is the honest thing to show while the
 	// reconnect pill explains why; the tickets did not stop existing because a poll failed.
+	// …but only for a provider that is still CONNECTED. "Did not answer" and "is no longer here"
+	// are different: a disconnected tracker can never satisfy the success test, so its tickets were
+	// kept forever. Disconnect drops the adapter and then calls Refresh precisely to clear the board,
+	// and this loop put every one of them straight back — through every later poll, until a daemon
+	// restart. The integrations screen said "disconnected" while the column stayed full, and tapping
+	// a ticket failed with "not connected".
 	kept := 0
 	for _, iss := range m.cache {
 		if fresh[iss.Provider] {
 			continue // this provider answered; `merged` already has its current list
+		}
+		if !connected[iss.Provider] {
+			continue // gone, not quiet
 		}
 		merged = append(merged, iss)
 		kept++

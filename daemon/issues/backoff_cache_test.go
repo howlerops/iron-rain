@@ -71,3 +71,45 @@ func (f *flakyProvider) ListAssigned(context.Context) ([]Issue, error) {
 	}
 	return f.issues, nil
 }
+
+// Disconnecting a tracker must clear its tickets — "gone" is not "quiet".
+//
+// The keep-what-it-last-told-us loop is right for a provider that failed or was skipped for backoff.
+// But it keyed on success-this-round, and a DISCONNECTED provider can never satisfy that, so every
+// ticket it had supplied was re-appended forever. Disconnect drops the adapter and then calls
+// Refresh precisely to clear the board; this loop put them straight back, through every later poll,
+// until a daemon restart. The integrations screen said "disconnected" while the column stayed full,
+// and tapping one of those tickets failed with "jira not connected".
+func TestDisconnectingATrackerClearsItsTickets(t *testing.T) {
+	m := NewManager(filepath.Join(t.TempDir(), "issues.json"), nil)
+	m.AddProvider("linear", &flakyProvider{failingProvider: failingProvider{name: "linear"},
+		issues: []Issue{{Key: "LIN-1", Provider: "linear", Title: "from linear"}}})
+	m.AddProvider("jira", &flakyProvider{failingProvider: failingProvider{name: "jira"},
+		issues: []Issue{{Key: "ENG-1", Provider: "jira", Title: "from jira"}}})
+
+	m.Refresh(context.Background())
+	if got := len(m.Issues()); got != 2 {
+		t.Fatalf("precondition: %d issues after a clean poll, want 2", got)
+	}
+
+	if err := m.Disconnect(context.Background(), "jira"); err != nil {
+		t.Fatalf("disconnect: %v", err)
+	}
+
+	for _, iss := range m.Issues() {
+		if iss.Provider == "jira" {
+			t.Fatal("a disconnected tracker's tickets are still on the board. They stay through " +
+				"every later poll until the daemon restarts, while the integrations screen says " +
+				"disconnected and tapping one fails with \"jira not connected\".")
+		}
+	}
+	var sawLinear bool
+	for _, iss := range m.Issues() {
+		if iss.Provider == "linear" {
+			sawLinear = true
+		}
+	}
+	if !sawLinear {
+		t.Fatal("disconnecting one tracker cleared another's tickets")
+	}
+}

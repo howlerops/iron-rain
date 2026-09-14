@@ -90,6 +90,13 @@ func (h *Hub) judgeFanout(ctx context.Context, sum protocol.FanoutSummary, provi
 		log.Printf("fanout %s: judge unavailable (%v) — the comparison is still usable", sum.Group, err)
 		return
 	}
+	// Start the pump. Without this the judge did nothing at all: startSession creates the provider
+	// session and Create-with-prompt starts its first turn, but nothing consumes the event stream, so
+	// no reply is ever read, no status is driven, no transcript is written and the run is never
+	// retired. The session is Ephemeral so it is hidden from the session list and cannot even be
+	// opened to read the answer by hand — the user who asked for a judge got the plain comparison
+	// and no error. Every other startSession caller starts the pump; this one was missed.
+	go ms.run()
 	log.Printf("fanout %s: judge session %s reviewing %d attempts", sum.Group, ms.sess.ID(), len(sum.Results))
 }
 

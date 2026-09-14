@@ -5056,9 +5056,16 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		// for it — a live waiter is what makes it real. Without this, answering that card returned
 		// "no such approval" and the agent sat blocked until the ten-minute timeout.
 		_, daemonQuestion := h.mcpApprovals[req.ApprovalID]
-		delete(h.approvals, req.ApprovalID)
-		delete(h.approvalReqs, req.ApprovalID)
 		h.mu.Unlock()
+		// NOT deleted yet. The entries used to be removed here, before m.sess.Respond was attempted,
+		// so a Respond that failed — a non-2xx from opencode's permission POST, a restarting
+		// claude-code sidecar, a relay blip — left the approval permanently unanswerable: no
+		// approval.resolved was broadcast so the card stayed up on every device, pressing Allow
+		// again found m == nil and returned "no such approval", and the harness still held the
+		// permission open so the turn never proceeded. pendingApprovals had already been
+		// decremented, so the heartbeat then read the parked turn as a stall, nudged it, and
+		// escalated to needs_you. Only restarting the session cleared it. The auto-answer path
+		// retries and re-surfaces the card for exactly this failure; the human path had neither.
 		if m == nil && !daemonQuestion {
 			h.sendErr(conn, env.ID, "no such approval")
 			return
@@ -5089,10 +5096,20 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 		// provider is waiting on — deliver it to the waiter instead of down to the harness.
 		if !h.resolveMCPApproval(req.ApprovalID, req.Decision) {
 			if err := m.sess.Respond(ctx, req.ApprovalID, req.Decision); err != nil {
+				// Put the counter back and leave the approval registered, so the card stays live and
+				// answerable rather than becoming a permanent ghost.
+				m.mu.Lock()
+				m.pendingApprovals++
+				m.mu.Unlock()
 				h.sendErr(conn, env.ID, err.Error())
 				return
 			}
 		}
+		// Answered for real: now it can go.
+		h.mu.Lock()
+		delete(h.approvals, req.ApprovalID)
+		delete(h.approvalReqs, req.ApprovalID)
+		h.mu.Unlock()
 		// ALWAYS persists ACROSS sessions, so permissions are truly asked once — not once per session.
 		// The client may narrow what "always" means (this exact command shape, this subtree, this
 		// project); with no Scope it stays the historical provider+tool rule.

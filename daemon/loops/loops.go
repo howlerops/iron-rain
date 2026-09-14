@@ -159,6 +159,15 @@ func (e *Engine) Upsert(l Loop) Loop {
 	for i := range e.loops {
 		if e.loops[i].ID == l.ID {
 			l.Handled = e.loops[i].Handled // preserve dedup state across edits
+			// LastRun too. The wire type carries it out (toProtoLoops) but loop.upsert builds its
+			// engine value without it, so every edit reset the schedule clock to zero — and
+			// runScheduled's gate is `LastRun != 0 && now-LastRun < interval`. Renaming a 6-hour
+			// loop, or tweaking its prompt, therefore launched an unrequested autonomous run
+			// (worktree, budget, the lot) within the next minute, and restarted the interval from
+			// the edit. Three adjustments in a row meant three runs. Deterministic, no race needed.
+			if l.LastRun == 0 {
+				l.LastRun = e.loops[i].LastRun
+			}
 			e.loops[i] = l
 			replaced = true
 			break
