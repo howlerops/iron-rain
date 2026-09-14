@@ -90,7 +90,7 @@ func (s *session) call(ctx context.Context, cmd string, req map[string]any) (jso
 	}
 	req["type"] = cmd
 	req["id"] = id
-	if err := s.send(req); err != nil {
+	if err := s.sendCtx(ctx, req); err != nil {
 		return nil, err
 	}
 	select {

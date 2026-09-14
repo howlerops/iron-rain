@@ -156,7 +156,23 @@ func (p *Provider) spawn(_ context.Context, cwd, id string, extraArgs []string) 
 	// it returns reaps the child and releases the stdin/stdout pipe fds. Without this the
 	// process lingers as a zombie and its fds/CommandContext watcher goroutine leak.
 	go func() {
-		sawIdle := s.readLoop(stdout)
+		sawIdle, streamErr := s.readLoop(stdout)
+		if streamErr != nil {
+			// The scanner is gone but the CHILD IS NOT: it is parked in write(), pushing the rest of
+			// that oversized frame into a 64 KiB pipe nobody is draining any more. So it never exits,
+			// cmd.Wait() below never returns, and s.closeEvents() is never reached — the session's
+			// event stream stays open forever and the hub keeps a turn "working" on a process that
+			// will never speak again. procutil's WaitDelay does not cover this: its timer only starts
+			// once the ctx is cancelled or Wait has already observed the process exit, and here
+			// neither happens.
+			//
+			// So unwedge it by hand. Drain concurrently (which releases the child from write() and
+			// ends by itself when Wait closes the read end), then kill the GROUP — pi shells out, and
+			// a grandchild holding the inherited stdout would keep the pipe open on its own.
+			go func() { _, _ = io.Copy(io.Discard, stdout) }()
+			procutil.TerminateGroup(cmd)
+			cancel()
+		}
 		err := cmd.Wait()
 		// Publish the exit BEFORE anything else here, so Probe has a synchronized answer. cmd.Wait()
 		// has returned, so ProcessState is final.
@@ -173,7 +189,10 @@ func (p *Provider) spawn(_ context.Context, cwd, id string, extraArgs []string) 
 			shuttingDown = true // Close()/Stop() killed it — not a crash
 		default:
 		}
-		if !sawIdle && !shuttingDown {
+		// streamErr already emitted the truthful terminal status ("lost the agent's output stream").
+		// Skip the backstop rather than following it with "pi exited: signal: terminated", which names
+		// the kill three lines above as the cause and sends the user looking for a crash.
+		if streamErr == nil && !sawIdle && !shuttingDown {
 			if err != nil {
 				// Carry pi's own last words, not just the exit code. "pi exited: exit status 1" is a
 				// number the user cannot look up, attached to a session that looks broken for no
@@ -373,24 +392,58 @@ func (s *session) Facts(context.Context) protocol.SessionFacts {
 	}
 }
 
-func (s *session) send(v any) error {
+// send is for the two callers with no context to honour: the fire-and-forget get_state at startup,
+// and readLoop's auto-ack of a non-gating ui request. Every method that DOES take a context must use
+// sendCtx.
+func (s *session) send(v any) error { return s.sendCtx(context.Background(), v) }
+
+// sendCtx writes one JSONL frame to pi's stdin, bounded by ctx.
+//
+// The bound is the whole point. pi's stdin is a 64 KiB pipe, and a prompt carrying a pasted file or
+// an inlined base64 image routinely exceeds it — so if pi stops draining (wedged in a tool, stopped
+// by a debugger, hung on its own model call), this Write blocks forever holding writeMu, and every
+// later caller queues behind it.
+//
+// Nothing here used to take a context at all: Prompt, Stop, Nudge and Respond all named theirs `_`.
+// The hub's heartbeat exists to notice a stuck session and it walks every session SERIALLY from one
+// ticker goroutine, wrapping each Prompt in a 15s deadline (heartbeat.go promptBounded) precisely so
+// one provider cannot stall the tick. pi ignored that deadline, so a single wedged pi session
+// stopped budget enforcement, handoff indexing and stall detection for every session behind it —
+// permanently, and with no log line, because nothing timed out to report.
+//
+// The caller's goroutine is released on ctx expiry; the write goroutine stays parked until the pipe
+// drains or the process dies, which Close's TerminateGroup guarantees. One stranded goroutine per
+// wedged child is a far better outcome than a caller that can never return. Same shape as the
+// claude-code adapter's sendCtx, deliberately — this is the identical defect in the identical place.
+func (s *session) sendCtx(ctx context.Context, v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
 	b = append(b, '\n')
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	_, err = s.stdin.Write(b)
-	return err
+	done := make(chan error, 1)
+	go func() {
+		s.writeMu.Lock()
+		defer s.writeMu.Unlock()
+		_, werr := s.stdin.Write(b)
+		done <- werr
+	}()
+	select {
+	case werr := <-done:
+		return werr
+	case <-ctx.Done():
+		return fmt.Errorf("pi: the agent is not reading its input (%w)", ctx.Err())
+	case <-s.done:
+		return errors.New("pi: session is closed")
+	}
 }
 
 // Prompt sends a user turn into the running pi session.
-func (s *session) Prompt(_ context.Context, text string) error {
+func (s *session) Prompt(ctx context.Context, text string) error {
 	s.busy.Store(true)
 	// A new turn starts a fresh message chain, so its first message must not open with a break.
 	s.sawText.Store(false)
-	return s.send(map[string]any{"type": "prompt", "message": text})
+	return s.sendCtx(ctx, map[string]any{"type": "prompt", "message": text})
 }
 
 // Probe implements agent.Prober: is a turn in flight, and is pi still there to run it?
@@ -419,31 +472,34 @@ func (s *session) Probe(context.Context) (bool, error) {
 
 // PromptImages sends a multimodal turn: pi takes an images array of {type,data,mimeType}
 // (bare base64) alongside the message.
-func (s *session) PromptImages(_ context.Context, text string, images []protocol.ImageAttachment) error {
+func (s *session) PromptImages(ctx context.Context, text string, images []protocol.ImageAttachment) error {
 	ims := make([]map[string]any, len(images))
 	for i, im := range images {
 		ims[i] = map[string]any{"type": "image", "data": im.Data, "mimeType": im.Mime}
 	}
 	s.busy.Store(true)
-	return s.send(map[string]any{"type": "prompt", "message": text, "images": ims})
+	return s.sendCtx(ctx, map[string]any{"type": "prompt", "message": text, "images": ims})
 }
 
 // Respond answers a confirm() approval. allow/always→confirmed:true.
-func (s *session) Respond(_ context.Context, approvalID, decision string) error {
+func (s *session) Respond(ctx context.Context, approvalID, decision string) error {
 	confirmed := decision == protocol.DecisionAllow || decision == protocol.DecisionAlways
-	return s.send(map[string]any{"type": "extension_ui_response", "id": approvalID, "confirmed": confirmed})
+	return s.sendCtx(ctx, map[string]any{"type": "extension_ui_response", "id": approvalID, "confirmed": confirmed})
 }
 
-func (s *session) Stop(_ context.Context) error {
-	return s.send(map[string]any{"type": "abort"})
+// Stop interrupts the running turn. It is bounded by ctx like everything else here: an abort that
+// blocks is worse than a prompt that does, because it is what the user reaches for when the session
+// is ALREADY misbehaving, and the connection goroutine that carries `session.stop` is what parks.
+func (s *session) Stop(ctx context.Context) error {
+	return s.sendCtx(ctx, map[string]any{"type": "abort"})
 }
 
 // Nudge implements agent.Nudger: append a user turn over stdin without aborting the running one.
 // pi's protocol keeps "prompt" and "abort" as separate messages, so a prompt sent mid-turn can only
 // be queued or consumed — never destructive. Delivery mid-turn is pi's call; that is exactly the
 // best-effort the Nudger contract allows.
-func (s *session) Nudge(_ context.Context, text string) error {
-	return s.send(map[string]any{"type": "prompt", "message": text})
+func (s *session) Nudge(ctx context.Context, text string) error {
+	return s.sendCtx(ctx, map[string]any{"type": "prompt", "message": text})
 }
 
 func (s *session) Close() error {
@@ -695,10 +751,11 @@ func (s *session) recordResumeHandle(command string, line []byte) {
 	s.p.setResume(s.id, st.Data.SessionFile)
 }
 
-// readLoop drains pi's JSONL stdout and returns whether it observed a clean turn end (agent_end).
+// readLoop drains pi's JSONL stdout and returns whether it observed a clean turn end (agent_end),
+// plus the scanner error that ended the stream early, if any.
 // It does NOT close s.events or emit a terminal backstop — the caller does that AFTER cmd.Wait(), so a
 // non-zero exit can be surfaced as an error instead of being masked as a normal idle.
-func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool) {
+func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool, streamErr error) {
 	// stdout EOF means the child is gone (normal exit, stop, kill, crash), so this is the one
 	// teardown path every session takes — release any card that never got its end frame here.
 	defer s.forgetToolCards()
@@ -861,7 +918,30 @@ func (s *session) readLoop(stdout io.ReadCloser) (sawIdle bool) {
 			s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{SessionID: s.id, Status: protocol.StatusIdle}})
 		}
 	}
-	return idle
+	// A scanner error — a frame past the 16 MB cap, a read failure — is a BROKEN stream, not an
+	// ending, and this check did not exist: the loop simply fell out and returned whatever `idle`
+	// happened to hold, which names neither the truncation nor its cause.
+	//
+	// Which way that lands is an accident of where the oversized line fell. After an agent_end (a
+	// large tool result early in the next turn) `idle` is still true, so the caller's
+	// `if !sawIdle && !shuttingDown` backstop is skipped entirely and a stream that died mid-frame is
+	// reported as a normally finished turn. Mid-text it is false, so the backstop fires and blames
+	// the exit code — "pi exited: signal: killed" — for a stream that was lost before the process
+	// went anywhere. Either way everything after the big line is discarded in silence.
+	//
+	// And underneath both: nothing downstream knew the child still had to be reaped by hand (see
+	// spawn), so cmd.Wait() blocked forever on a process writing into a pipe with no reader — which
+	// is why the second case above never actually reached the backstop either.
+	//
+	// claudecode.go's readLoop grew this exact check in an earlier sweep ("lost the agent's output
+	// stream", 8d293ac); this adapter has the same parser shape and never got it.
+	if err := sc.Err(); err != nil {
+		s.emit(agent.Event{Type: protocol.TypeSessionStatus, Payload: protocol.SessionStatus{
+			SessionID: s.id, Status: protocol.StatusError,
+			Detail: "lost the agent's output stream: " + err.Error()}})
+		return false, err
+	}
+	return idle, nil
 }
 
 func randID() string {
