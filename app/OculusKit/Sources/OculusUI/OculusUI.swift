@@ -126,6 +126,9 @@ public final class Model: ObservableObject {
     /// app read it. `fsWatch`, `fsChange` and the `FSChange` type were referenced nowhere outside
     /// Protocol.swift. So the built-in editor kept showing the version of the file it loaded, and
     /// the user's next save wrote that stale buffer back over the agent's work.
+    /// The session an outstanding session.attach is for, or nil when none is. Read by the ok handler
+    /// so a slow attach reply cannot adopt a session the user has since navigated away from.
+    private var awaitingAttach: String?
     @Published public private(set) var fsChangeToken = 0
     @Published public private(set) var fsChangedPath = ""
     /// The active session's live to-do list (from the agent).
@@ -646,6 +649,24 @@ public final class Model: ObservableObject {
             // Cancelling a backoff loop mid-dial (what foregrounding does) can leave an older attempt
             // still finishing its handshake. Whoever assigns `client` last wins, so close the loser's
             // socket here or it lingers open, receiving frames nobody reads.
+            // Fail whatever was in flight on the OUTGOING connection before replacing it.
+            //
+            // receiveLoop deliberately returns without failing pending requests when it notices its
+            // client has been superseded — that map is shared, and the loop that is going away must
+            // not resume continuations belonging to the new connection. Which is correct, and left
+            // nobody to resume the ones belonging to the OLD one: request() has no deadline, so those
+            // continuations were simply never resumed.
+            //
+            // Reachable by pressing ⌘R. Every other caller of connect() guards on !connected; the
+            // Reconnect menu item is gated only on there being an active daemon. Do it while a
+            // session is being created — session.create is async-dispatched and takes seconds — and
+            // `startingSession` never clears, because its `defer` sits behind the orphaned await. The
+            // app is then locked behind a full-surface overlay with no way out but force-quit.
+            if client != nil {
+                failPendingRequests(NSError(domain: "Oculus", code: -1, userInfo: [
+                    NSLocalizedDescriptionKey: "The connection was replaced before this finished.",
+                ]))
+            }
             client?.close()
             client = c
             connected = true
@@ -965,6 +986,15 @@ public final class Model: ObservableObject {
         // The daemon's log subscription went with the socket. Leaving this set would make the reopen
         // below a no-op and strand an open panel on a connection that no longer exists.
         logSubscribed = false
+        // Approvals do not survive the socket either. There is no approval-list message in the
+        // protocol, so a reconnect cannot resync them — and the daemon's clears are BROADCASTS,
+        // which only reach clients connected at that instant. A phone that misses one (the request
+        // was answered on the Mac, or swept when the session stopped) kept rendering Approve/Deny on
+        // the Activity screen and a blocked badge on the fleet card indefinitely, and tapping Approve
+        // sent a dead approval id. Dropping them is the honest state: the card comes back on the next
+        // approval.request if the agent is in fact still waiting.
+        pendingApprovals.removeAll()
+        pendingApproval = nil
         // The next attempt races from scratch and may well land somewhere else, so the old route is
         // not a fact any more — leaving it up would keep claiming "LAN" while we dial a relay.
         connectionRoute = ""
@@ -2391,6 +2421,9 @@ public final class Model: ObservableObject {
         // re-click on the active session put a live, streaming conversation into dedup mode for five
         // seconds, where any new message repeating earlier text would be silently dropped.
         if id == currentSession?.id, !messages.isEmpty { return }
+        // The user has moved on, so any attach still in flight is no longer what they asked for.
+        // Its late reply must not adopt a session out from under this one.
+        awaitingAttach = nil
         // A self-replaying provider may re-stream history right after we subscribe, on top of the
         // daemon's replay — and a trimmed ring now replays durable history in front of the live
         // window, which overlaps too. Arm the de-duplicator so those overlaps collapse instead of
@@ -2895,12 +2928,27 @@ public final class Model: ObservableObject {
     /// hundreds of `output.delta` frames fold into one row, tool events merge in place by id, UI
     /// components merge by id, and status frames render nothing at all. On any real conversation the
     /// two diverge wildly and the page is cut in the wrong place.
-    private var daemonEventsRendered = 0
+    /// internal, not private: the paging cursor is the one piece of this bookkeeping a test has to be
+    /// able to read, and what it counts has now been wrong twice.
+    var daemonEventsRendered = 0
 
     /// Frames the daemon SYNTHESIZES onto a replay or page rather than storing in its ring. They must
     /// not advance the paging cursor, or every page would be short by the number of trailers.
+    /// Frame types the daemon delivers but does NOT append to its replayable ring.
+    ///
+    /// `daemonEventsRendered` is the cursor "Show earlier messages" sends as `loaded`, and the daemon
+    /// computes `end := len(all) - loaded` against that ring. Counting a frame the ring never held
+    /// inflates the cursor, so the page it returns starts further back than where the client's
+    /// transcript actually ends — a HOLE — and once the count passes the ring's length, `end` goes to
+    /// zero and the live window is skipped entirely.
+    ///
+    /// session.status and session.facts were the two that were missing. Both are sent with
+    /// broadcastTransient specifically so they stay out of the ring (turn.go and surface.go each say
+    /// so in as many words), and both carry a session_id, so both matched the counting predicate.
+    /// publishSessionState fires per tool call, so one busy turn overcounts by dozens.
     static let nonRingFrameTypes: Set<String> = [
         MessageType.turnState, MessageType.transcriptPageBegin, MessageType.transcriptPageEnd,
+        MessageType.sessionStatus, MessageType.sessionFacts,
     ]
 
     // MARK: on-device transcript cache (see ModelTranscriptCache.swift)
@@ -3635,6 +3683,7 @@ public final class Model: ObservableObject {
     /// The daemon replies "provider cannot attach" for providers without resume support.
     public func attach(_ d: Discovered) async {
         guard let client, let sid = d.sessionID else { return }
+        awaitingAttach = sid
         // Leave the OUTGOING session cleanly, exactly as openSession does (see its stash + reset).
         //
         // This cleared `messages` and nothing in the transcript-cache group, and
@@ -4142,6 +4191,15 @@ public final class Model: ObservableObject {
     // token (worst-case O(n²) over a long response). The streaming message still lives
     // in `messages`, so the view renders it unchanged.
     private var streamBuffer = ""
+    /// Which row the buffered tokens belong to. Both the answer and the model's reasoning stream
+    /// through `streamBuffer`, and flushStream used to fold it into the last streaming ASSISTANT row
+    /// unconditionally — appending a fresh one when there wasn't one. So reasoning tokens could never
+    /// reach the `.thinking` row they were buffered for: they rendered as a full-weight answer bubble
+    /// instead of the dimmed italic row, the thinking row stayed empty, and because finalizeThinking
+    /// calls flushStream first and then seals `messages.last`, it sealed the row flushStream had just
+    /// appended — leaving the real thinking row `streaming: true` forever. Every harness emits
+    /// thinking deltas, so this was every turn with reasoning on.
+    private var streamRole: ChatMessage.Role = .assistant
     private var flushTask: Task<Void, Never>?
     private static let flushInterval: UInt64 = 40_000_000 // 40ms (~25fps) — streaming text renders
     // plain (cheap) while in-flight, so a faster flush stays smooth without stalling the main thread.
@@ -4165,14 +4223,14 @@ public final class Model: ObservableObject {
         // not resend. Two user-triggered paths do exactly that: sending a follow-up appends the user
         // row, and a generative-UI action appends its optimistic echo. Sending mid-stream is normal
         // (the composer stays live during a run), so this was reachable by typing.
-        if let idx = messages.lastIndex(where: { $0.role == .assistant && $0.streaming }) {
+        if let idx = messages.lastIndex(where: { $0.role == streamRole && $0.streaming }) {
             messages[idx].text += streamBuffer
             streamBuffer = ""
             return
         }
         // Nothing is streaming — the row was sealed while these tokens were in flight. Open one
         // rather than dropping them: losing the agent's words is never the better outcome.
-        messages.append(ChatMessage(role: .assistant, text: streamBuffer, streaming: true))
+        messages.append(ChatMessage(role: streamRole, text: streamBuffer, streaming: true))
         streamBuffer = ""
     }
 
@@ -4197,9 +4255,10 @@ public final class Model: ObservableObject {
         if let last = messages.last, last.role == .assistant, last.streaming {
             // keep buffering into the existing streaming message
         } else {
-            flushStream()
+            flushStream() // drain whatever is buffered into ITS row before the role changes
             messages.append(ChatMessage(role: .assistant, text: "", streaming: true))
         }
+        streamRole = .assistant
         streamBuffer += text
         turnStreamedText += text // the client's copy of the daemon's per-turn accumulation
         scheduleFlush()
@@ -4229,17 +4288,22 @@ public final class Model: ObservableObject {
         if let last = messages.last, last.role == .thinking, last.streaming {
             // keep buffering into the existing streaming message
         } else {
-            flushStream()
+            flushStream() // drain whatever is buffered into ITS row before the role changes
             messages.append(ChatMessage(role: .thinking, text: "", streaming: true))
         }
+        streamRole = .thinking
         streamBuffer += text
         scheduleFlush()
     }
 
     private func finalizeThinking() {
-        if let last = messages.last, last.role == .thinking, last.streaming {
-            flushStream() // fold any buffered thinking tokens before sealing the message
-            messages[messages.count - 1].streaming = false
+        guard let last = messages.last, last.role == .thinking, last.streaming else { return }
+        flushStream() // fold any buffered thinking tokens before sealing the message
+        // Seal by INDEX of the thinking row, not `messages.count - 1`. flushStream can append, and
+        // when it did (because the buffer's role did not match) this sealed the row it had just
+        // appended and left the real one streaming forever.
+        if let idx = messages.lastIndex(where: { $0.role == .thinking && $0.streaming }) {
+            messages[idx].streaming = false
         }
     }
 
@@ -4605,6 +4669,21 @@ public final class Model: ObservableObject {
             } else if keys.contains("pushed"), let pr = try? env.payload(as: WorktreePRResult.self) {
                 status = pr.url.map { "PR: \($0)" } ?? "Pushed \(pr.branch)"
             } else if keys.contains("id"), let s = try? env.payload(as: Session.self) {
+                // Only adopt it if the user is still WAITING for it.
+                //
+                // This routes by payload SHAPE with no identity check, and session.attach is
+                // fire-and-forget AND async-dispatched daemon-side (it spawns `claude --resume`), so
+                // its reply can be seconds late and out of order. Tap a different session while an
+                // attach is in flight and the late reply rewrote sessionID and currentSession back to
+                // the one being attached: the transcript on screen belonged to the session the user
+                // had picked, its live frames were then dropped by every `== sessionID` guard, the
+                // header named the other session, and the next prompt went there too. finishReconcile
+                // would then find no overlap and take the rebuild branch, clearing the transcript.
+                //
+                // `awaitingAttach` is nil unless an attach is outstanding, and openSession clears it —
+                // so a user who moved on simply is not waiting any more.
+                guard awaitingAttach == nil || awaitingAttach == s.id else { break }
+                awaitingAttach = nil
                 sessionID = s.id
                 currentSession = s
                 refreshLiveActivity()
@@ -4630,10 +4709,17 @@ public final class Model: ObservableObject {
                 if low.contains("no such session") || low.contains("no session") || low.contains("cannot attach") {
                     break
                 }
-                status = "Error"
-                statusDetail = m
+                // Do NOT touch the turn's state. protocol.Error carries no session id (Message and
+                // an optional Code, nothing else), so there is no way to know this error is about
+                // the session on screen — and usually it is not. Every fire-and-forget send produces
+                // one of these: a worktree.diff on a non-worktree session, a failed loadConflicts, a
+                // removeProject, a createPR. Clearing `busy` on any of them stopped the working bar
+                // and unlocked the composer mid-turn, while the agent was still streaming, until the
+                // next delta flipped it back.
+                //
+                // Surfacing it is still right — a fire-and-forget send the daemon rejected is
+                // otherwise silent — but as an action error only, which is what it is.
                 actionError = m
-                busy = false
             }
         case MessageType.sessionMessage:
             if let m = try? env.payload(as: SessionMessage.self), m.sessionID == sessionID {

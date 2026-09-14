@@ -314,12 +314,19 @@ public struct OculusCommands: Commands {
 
             Divider()
 
+            // Only when there is something to reconnect. Every other caller of connect() guards on
+            // !connected; this one did not, and re-entering attemptConnect while live replaces the
+            // client — which used to orphan every in-flight request, because the outgoing
+            // receiveLoop deliberately does not resume continuations it no longer owns.
+            //
+            // The connection path itself is fixed now, but the guard is still right: ⌘R on a healthy
+            // connection should be a no-op, not a teardown of a working socket mid-turn.
             Button("Reconnect") {
-                guard let model = store.active else { return }
+                guard let model = store.active, !model.connected else { return }
                 Task { await model.connect() }
             }
             .keyboardShortcut("r", modifiers: .command)
-            .disabled(store.active == nil)
+            .disabled(store.active == nil || store.active?.connected == true)
 
             Button("Refresh Sessions") {
                 guard let model = store.active else { return }
