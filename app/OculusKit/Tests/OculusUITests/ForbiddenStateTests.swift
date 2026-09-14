@@ -72,16 +72,34 @@ final class ForbiddenStateTests: XCTestCase {
 
     /// A failure that is NOT a refusal must leave the flag clear — the screen should show its
     /// ordinary empty state, not accuse the user of being a guest.
+    ///
+    /// Asked of the CLASSIFIER the loader actually calls. The previous version called loadDevices()
+    /// on a never-connected Model, which returns at its `guard client != nil` before reaching any
+    /// classification — so it set the flag itself, watched a function do nothing, and asserted the
+    /// flag was unchanged. Inverting the real line left it green.
     @MainActor
-    func testADisconnectedLoadIsNotReportedAsARefusal() async {
-        let m = Model() // never connected: request throws "not connected", with no code
+    func testAnOrdinaryFailureDoesNotSetTheForbiddenFlag() {
+        let m = Model()
+
+        m.noteDevicesLoadFailure(error(code: OculusError.forbidden))
+        XCTAssertTrue(m.devicesForbidden, "a real refusal was not recognised")
+
+        // A dropped socket, a disk error, an older daemon that sends no code at all.
+        m.noteDevicesLoadFailure(NSError(domain: "Oculus", code: -1,
+                                         userInfo: [NSLocalizedDescriptionKey: "not connected"]))
+        XCTAssertFalse(m.devicesForbidden,
+                       "an ordinary failure was classified as a refusal. The Devices screen then "
+                       + "tells the OWNER they are a guest during a routine reconnect.")
+    }
+
+    /// And the disconnected path still has to leave things alone, which is the half the old test
+    /// was actually exercising.
+    @MainActor
+    func testADisconnectedLoadChangesNothing() async {
+        let m = Model() // never connected: loadDevices returns at its guard
         m.devicesForbidden = true // stale from a previous connection as a guest
         await m.loadDevices()
         XCTAssertTrue(m.devicesForbidden,
                       "loadDevices returns early with no client, so nothing should have re-evaluated it")
-
-        m.wsURL = "ws://127.0.0.1:9/ws"
-        m.daemonPubHex = String(repeating: "0", count: 64)
-        m.secret = "unit"
     }
 }

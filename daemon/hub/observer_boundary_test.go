@@ -75,31 +75,31 @@ func TestASoloUserPassesEveryGateAdded(t *testing.T) {
 // the boundary is ever explained: the client renders its controls from a static layout, so a button
 // that fails with no reason reads as a broken feature, and the honest guess from the other side is
 // that the app is buggy rather than that the limit is deliberate.
+//
+// NOTE what this does and does not cover. It asserts the RENDERER's shape — that a steer-level
+// refusal names the reader as a watcher, and an owner-level one names the action. It deliberately no
+// longer tries to prove that the editor gate supplies a reason, because it cannot: passing the
+// reason in as a literal and then asserting it comes back only proves that refusalMessage appends
+// its argument. Stripping the reason from requireEditorRead left the old version green. That claim
+// is now made where it can actually be checked — refusal_wire_test.go demotes a real connection and
+// reads the bytes the daemon sends.
 func TestARefusalExplainsItself(t *testing.T) {
-	h := &Hub{roles: newRoleRegistry(), clients: map[*transport.Conn]*hubClient{}}
-	h.roles.SetEnabled(true)
-
-	// The editor gate carries a reason, because being able to read a transcript and not hover a
-	// symbol is not self-evident.
-	msg := refusalFor(t, editorReadCap, "use the code editor",
-		"Reading the project's files is the same access as the file browser, which is limited to people who can steer.")
+	// A steer-level refusal tells the reader what they ARE, because the action name alone ("use the
+	// code editor") does not explain why they of all people cannot.
+	msg := refusalMessage(editorReadCap, "use the code editor", "")
 	if !strings.Contains(msg, "watching this session") {
 		t.Errorf("a steer-level refusal must say the reader is a watcher, got %q", msg)
 	}
-	if !strings.Contains(msg, "file browser") {
-		t.Errorf("the editor refusal dropped its reason, got %q", msg)
-	}
 
-	// An owner-level refusal names the action rather than reciting the rule.
-	msg = refusalFor(t, capOwner, "list enrolled devices", "")
+	// An owner-level refusal names the ACTION rather than reciting the rule.
+	msg = refusalMessage(capOwner, "list enrolled devices", "")
 	if !strings.Contains(msg, "list enrolled devices") {
 		t.Errorf("an owner-only refusal must name what was refused, got %q", msg)
 	}
-}
 
-// refusalFor asks the PRODUCTION renderer what it would say. Re-deriving the string here would make
-// this a test of its own copy.
-func refusalFor(t *testing.T, c capability, what, because string) string {
-	t.Helper()
-	return refusalMessage(c, what, because)
+	// And a supplied reason is appended rather than replacing the sentence.
+	msg = refusalMessage(capOwner, "revoke a device", "Devices belong to whoever owns this Mac.")
+	if !strings.Contains(msg, "revoke a device") || !strings.Contains(msg, "belong to whoever owns") {
+		t.Errorf("a reason must be added to the refusal, not instead of it, got %q", msg)
+	}
 }

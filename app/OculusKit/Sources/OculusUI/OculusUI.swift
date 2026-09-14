@@ -2834,7 +2834,7 @@ public final class Model: ObservableObject {
             devicesForbidden = false
         } catch {
             // "No devices enrolled" would be a lie: there are devices, this one may not see them.
-            devicesForbidden = OculusError.isForbidden(error)
+            noteDevicesLoadFailure(error)
         }
     }
 
@@ -2868,13 +2868,30 @@ public final class Model: ObservableObject {
     /// silent failure would report the daemon as locked down while the secret still admits anyone
     /// holding it, which is the one direction this must not fail in.
     @discardableResult
+    /// Whether the daemon's answer says the old shared secret is actually gone.
+    ///
+    /// Named, and static, so a test can ask the PRODUCTION rule rather than restate it. This is the
+    /// one direction the screen must not fail in: reporting success on a retirement that did not
+    /// happen tells the user their Mac is locked down while anything holding the old secret still
+    /// walks in. A nil status means the daemon never told us — which is not success.
+    static func legacySecretIsRetired(_ status: PairStatus?) -> Bool {
+        status?.legacyLive == false
+    }
+
+    /// Records why a devices load failed. Split out so the classification is reachable from a test:
+    /// the loader's own early `guard client != nil` meant a test against a disconnected Model could
+    /// only ever assert that a function which did nothing changed nothing.
+    func noteDevicesLoadFailure(_ error: Error) {
+        devicesForbidden = OculusError.isForbidden(error)
+    }
+
     public func retireLegacySecret() async -> Bool {
         guard client != nil else { return false }
         do {
             let env = try await request(MessageType.pairRetireLegacy, payload: Optional<Int>.none)
             if let st = try? env.payload(as: PairStatus.self) { pairStatus = st }
             await loadPairStatus()
-            return pairStatus?.legacyLive == false
+            return Self.legacySecretIsRetired(pairStatus)
         } catch {
             setError("Couldn't retire the old pairing secret", error.localizedDescription)
             return false

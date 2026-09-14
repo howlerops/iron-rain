@@ -46,4 +46,28 @@ final class SubAgentLaneRebuildTests: XCTestCase {
                           MessageRow(message: msg, palette: OculusPalette.light),
                           "switching theme would leave open sub-agent lanes in the old colours")
     }
+
+    /// The tests above pin MessageRow's `==`, which is PRE-EXISTING code serving the parent
+    /// transcript. The fix they were written for is two `.equatable()` modifiers at the sub-agent
+    /// lane call sites — and nothing referenced those, so deleting both left every assertion green
+    /// while the per-token rebuild of every open lane came straight back.
+    ///
+    /// Asserted on the source, because a modifier being applied is not observable from a value test.
+    func testTheSubAgentLaneCallSitesApplyEquatable() throws {
+        let here = URL(fileURLWithPath: #filePath)
+        let packageRoot = here.deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let src = try String(contentsOf: packageRoot.appendingPathComponent("Sources/OculusUI/ChatView.swift"),
+                             encoding: .utf8)
+
+        // Every MessageRow inside a sub-agent lane must be .equatable(). Counting is the check: the
+        // lanes render one per row, and an unmarked one rebuilds on every token of every lane.
+        let rows = src.components(separatedBy: "MessageRow(").count - 1
+        let equatable = src.components(separatedBy: ".equatable()").count - 1
+        XCTAssertGreaterThanOrEqual(equatable, 3,
+                                    "only \(equatable) .equatable() modifier(s) for \(rows) MessageRow "
+                                    + "site(s). The sub-agent lanes rebuild every open row on every "
+                                    + "token when this is missing — which is the fix these tests were "
+                                    + "written for, and the one thing they never checked.")
+    }
 }
