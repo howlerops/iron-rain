@@ -148,11 +148,18 @@ func serve(args []string) error {
 	// Only `log` output is captured; the pairing-QR banner (printed with fmt) stays out of the stream.
 	lh := loghub.New(1000)
 	log.SetOutput(io.MultiWriter(os.Stderr, lh))
-	rollLogIfLarge(logPath()) // bound the on-disk log before this run starts adding to it
-	// Carry the previous run's tail into the ring. Without this the panel could only ever show the
-	// process that is currently healthy — a daemon that crashed took its own evidence out of reach,
-	// even though the lines were sitting in the log file the whole time.
+	// SEED FIRST, then roll. Carrying the previous run's tail into the ring is what lets the panel
+	// show the process that BROKE; without it a daemon that crashed took its own evidence out of
+	// reach even though the lines were sitting in the log file the whole time.
+	//
+	// The order is load-bearing and was wrong. rollLogIfLarge ends by logging that it rolled, and
+	// SetOutput above has already teed the standard logger into this ring — so by the time
+	// SeedFromFile ran the ring was non-empty, and it bails on exactly that condition ("this run has
+	// already logged; seeding now would report its output as history"). The seeding was therefore
+	// skipped precisely when the log had grown past its cap, which is to say on long-running daemons:
+	// the population that crashes, and the one this feature was written for.
 	lh.SeedFromFile(logPath(), 300)
+	rollLogIfLarge(logPath()) // bound the on-disk log before this run starts adding to it
 
 	// Under launchd the daemon inherits a minimal PATH, so agent harnesses installed via nvm /
 	// homebrew (which live in ~/.zshrc, not the login-only path) aren't found — the "native agents
@@ -211,7 +218,8 @@ func serve(args []string) error {
 
 	h := hub.New()
 	defer h.Shutdown() // stop language servers AND reap every agent child on exit (see hub.Shutdown)
-	h.SetWakeGuard(wake.New())
+	wakeGuard := wake.New()
+	h.SetWakeGuard(wakeGuard)
 	// Per-device enrollment: pairing records WHICH device connected and mints it a credential of its
 	// own, so one device can be revoked without rotating anything or re-pairing everything you own.
 	h.SetDevicesPath(filepath.Join(filepath.Dir(secretPath()), "devices.json"))
@@ -382,6 +390,12 @@ func serve(args []string) error {
 	// A long-running daemon (e.g. a launchd agent on a server) would otherwise never pick up a new
 	// release until it happened to restart. Re-check periodically so it stays current on its own;
 	// on an update it swaps + re-execs (sessions restore on the fresh start). No-op for dev builds.
+	//
+	// syscall.Exec replaces the image without unwinding anything, so whatever the daemon holds
+	// outside its own process has to be released here or it is orphaned. The sleep assertion is the
+	// one that matters: it is backed by a real `caffeinate -s` child in its own process group, and
+	// the new image comes up with a refcount of zero and no idea the old one is still running.
+	selfupdate.BeforeReexec = wakeGuard.ReleaseAll
 	go func() {
 		t := time.NewTicker(6 * time.Hour)
 		defer t.Stop()

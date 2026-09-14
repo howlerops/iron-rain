@@ -490,6 +490,27 @@ func (m *managedSession) publishVerdict(state, reason string, providerDriven boo
 	stopped := m.userStopped || m.userInterrupted
 	m.mu.Unlock()
 
+	// Retire the loop run HERE too, not only on the provider-driven path.
+	//
+	// retireLoopRun was called from exactly two places, both inside onStatus — the pump's idle and
+	// error branches. Every turn the daemon closes on its OWN initiative comes through here instead:
+	// needs_you when the nudge ladder is exhausted, abandoned for an unreachable agent or a dead
+	// event stream, the heartbeat's budget stop, a reconciled idle. None of them touched the loop
+	// engine, and because this function clears wasRunning, a later provider idle failed the
+	// `finished` gate and could not retire it either.
+	//
+	// The result was a permanently wedged loop. The Run row stays "running", persists to loops.json,
+	// and with MaxConcurrent defaulting to 1 every subsequent tick hits the concurrency gate and
+	// `continue`s — with no log line. A recurring autonomous workflow ran exactly once and never
+	// again, while every surface still reported it enabled and active.
+	//
+	// Unconditional: it no-ops for a session no loop started.
+	loopStatus := "done"
+	if failed || stuck {
+		loopStatus = "error"
+	}
+	m.hub.retireLoopRun(m.sess.ID(), loopStatus)
+
 	// Recorded: this is the daemon ending the turn on its own, so nothing else puts it in the ring.
 	m.publishStateRecorded(status, reason)
 	if stopped {

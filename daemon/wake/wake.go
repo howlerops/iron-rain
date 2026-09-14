@@ -64,6 +64,25 @@ func (g *Guard) Release() {
 	}
 }
 
+// ReleaseAll drops the assertion outright, whatever the count.
+//
+// For the one case that is not a turn ending: the daemon replacing its own process image. The
+// self-updater calls syscall.Exec, which unwinds nothing — no defers, no Shutdown, no turn close —
+// so the `caffeinate -s` child survives parentless while the new image starts with a refcount of
+// zero and no knowledge of it. The user's Mac then never idle-sleeps again, and gains one more
+// orphan on every update that lands mid-turn.
+func (g *Guard) ReleaseAll() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.n == 0 {
+		return
+	}
+	g.n = 0
+	if g.stop != nil {
+		g.stop()
+	}
+}
+
 func (g *Guard) spawn() error {
 	cmd := exec.Command("caffeinate", "-s") // -s: hold off system sleep while this process lives
 	procutil.Isolate(cmd)

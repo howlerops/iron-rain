@@ -40,27 +40,45 @@ func TestDeletingASessionRemovesItsTranscriptFile(t *testing.T) {
 	}
 }
 
-// The open handle has to go too. Deleting the file while the store still holds a descriptor for it
-// means the next Append silently resurrects the data into an unlinked inode — the session's prompts
-// keep being written to a file nobody can see and nothing will ever clean up.
-func TestDeleteDropsTheOpenHandleSoAppendsDoNotResurrectIt(t *testing.T) {
+// The open handle has to go too, AND a later append must not bring the file back.
+//
+// Two separate resurrections. Deleting the file while the store still holds a descriptor means the
+// next Append writes into an unlinked inode — data nobody can see and nothing will clean up. And
+// Append opens O_APPEND|O_CREATE, so once the handle was dropped it simply recreated the file.
+//
+// The second one is reachable on the ordinary delete path, not in theory: session.stop runs Close
+// then removeSession on the DISPATCH goroutine while the session's pump is still unwinding, and that
+// unwind ends in closeTurn → finalizeTurnTranscript → Append. The agent's last reply therefore landed
+// back on disk verbatim, with no session record anywhere — and nothing would ever remove it, because
+// the TTL prune enumerates ids from the session records that were just deleted.
+//
+// This asserts the stronger guarantee: after a delete, that session id is closed for writing. Session
+// ids are never reused (a restart mints a new one), so the only thing that can append afterwards is
+// the unwinding pump, and its output is exactly what must not survive.
+func TestADeletedTranscriptStaysDeleted(t *testing.T) {
 	dir := t.TempDir()
 	s := New(dir)
-	const sid = "ses_reused"
-	_ = s.Append(sid, Entry{Kind: "user", Text: "first"})
+	const sid = "ses_deleted"
+	_ = s.Append(sid, Entry{Kind: "user", Text: "something private"})
 	if err := s.Delete(sid); err != nil {
 		t.Fatal(err)
 	}
 
-	// A later append must start a NEW file containing only what came after the delete.
-	_ = s.Append(sid, Entry{Kind: "user", Text: "second"})
+	// The pump, still unwinding, writes the turn's final reply.
+	_ = s.Append(sid, Entry{Kind: "assistant", Text: "the agent's last reply"})
+
+	if _, err := os.Stat(filepath.Join(dir, sid+".jsonl")); !os.IsNotExist(err) {
+		b, _ := os.ReadFile(filepath.Join(dir, sid+".jsonl"))
+		t.Errorf("the transcript came BACK after the session was deleted, holding %q.\n\n"+
+			"There is no session record for it, so no prune will ever find it — the delete's privacy "+
+			"claim is simply untrue.", strings.TrimSpace(string(b)))
+	}
 	got, err := s.Read(sid)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].Text != "second" {
-		t.Errorf("after delete + append the transcript reads %+v, want only the new entry — the "+
-			"store is still writing through a handle to the deleted file", got)
+	if len(got) != 0 {
+		t.Errorf("reading a deleted session returned %+v, want nothing", got)
 	}
 }
 

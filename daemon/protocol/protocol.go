@@ -391,6 +391,10 @@ type LoopRun struct {
 	SessionID  string `json:"session_id"`
 	Status     string `json:"status"`
 	StartedAt  int64  `json:"started_at"`
+	// Error is why a failed run failed. Optional, so an older daemon that does not send it decodes
+	// cleanly — but without it the Loops screen shows a red dot and the bare word "error" on a row
+	// whose Open button does nothing, because a run that never started has no session to open.
+	Error string `json:"error,omitempty"`
 }
 
 // LoopList is the full loop config + run history.

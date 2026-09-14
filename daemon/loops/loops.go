@@ -7,6 +7,7 @@ package loops
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"os"
 	"sync"
 	"time"
@@ -61,6 +62,11 @@ type Run struct {
 	SessionID  string `json:"session_id"`
 	Status     string `json:"status"` // running | done | error
 	StartedAt  int64  `json:"started_at"`
+	// Error is why a run failed to start or ended badly. It had nowhere to live: spawn's error was
+	// used to set Status and then dropped, so a loop that could not start a session showed a red dot
+	// and the bare word "error" with no reason, on a row whose Open button does nothing because
+	// there is no session id. Nothing was logged either, so not even the daemon log explained it.
+	Error string `json:"error,omitempty"`
 }
 
 // Issue is the slice of a tracker ticket the engine needs.
@@ -93,6 +99,24 @@ func New(path string, spawn func(Loop, *Issue) (string, error), onChange func())
 			e.loops = p.Loops
 			e.runs = p.Runs
 		}
+	}
+	// A run cannot still be running: this process has just started, so whatever session it named is
+	// gone. Nothing reconciled this, and the runs were loaded verbatim — so a daemon that was killed
+	// mid-run (which is every reboot, since oculusd is an app-child) came back holding a "running"
+	// row forever. With MaxConcurrent defaulting to 1 that permanently wedges the loop: every tick
+	// hits the concurrency gate and continues, silently, while the UI still shows the loop enabled
+	// with a live run.
+	interrupted := 0
+	for i := range e.runs {
+		if e.runs[i].Status == "running" {
+			e.runs[i].Status = "error"
+			interrupted++
+		}
+	}
+	if interrupted > 0 {
+		log.Printf("loops: %d run(s) were still marked running from a previous daemon — retiring them, "+
+			"or their loops would never fire again", interrupted)
+		e.persist()
 	}
 	return e
 }
@@ -204,10 +228,19 @@ func (e *Engine) OnIssues(issues []Issue) {
 			}
 			issCopy := iss
 			sid, err := e.spawn(lp, &issCopy)
-			e.markHandled(lp.ID, iss.Key)
 			run := Run{LoopID: lp.ID, IssueKey: iss.Key, IssueTitle: iss.Title, SessionID: sid, StartedAt: e.now(), Status: "running"}
 			if err != nil {
 				run.Status = "error"
+				run.Error = err.Error()
+				// DO NOT mark it handled. markHandled ran before the error was even looked at, so a
+				// spawn that failed for a transient, fixable reason — the provider binary missing, a
+				// worktree that could not be created, a project path that moved — blacklisted that
+				// ticket permanently. The loop would never retry it, not even after the cause was
+				// fixed, and nothing anywhere said why.
+				log.Printf("loops: %q could not start a session for %s: %v — leaving the ticket "+
+					"unclaimed so the next tick can retry it", lp.Name, iss.Key, err)
+			} else {
+				e.markHandled(lp.ID, iss.Key)
 			}
 			e.mu.Lock()
 			e.runs = append(e.runs, run)

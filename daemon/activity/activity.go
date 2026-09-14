@@ -46,12 +46,23 @@ type Event struct {
 
 // Store appends events, keeps a ring, and notifies a listener (the hub) of each new one.
 type Store struct {
-	mu    sync.Mutex
-	path  string
-	ring  []Event
-	max   int
-	seq   int64
-	onNew func(Event)
+	mu   sync.Mutex
+	path string
+	ring []Event
+	max  int
+	seq  int64
+	// fileMu serialises the DURABLE writes. Both of them — appendLine and rewrite — deliberately run
+	// after s.mu is released, so disk I/O never blocks the in-memory ring; but that left them
+	// unserialised against each other, and they are not independent. rewrite os.Creates a FIXED temp
+	// path and renames it over the log, so two concurrent rewrites interleave into one temp file, and
+	// an append concurrent with a rewrite writes into an inode the rename is about to unlink.
+	//
+	// The loss is invisible until a restart: the event is in the ring, so every connected client sees
+	// it, and it is simply not in the file afterwards. The Activity feed and the Needs-You inbox come
+	// back missing items, and a needs-you read-flip can be lost or resurrected, because load() drops
+	// unparseable lines without comment. Two turn edges in the same millisecond is all it takes.
+	fileMu sync.Mutex
+	onNew  func(Event)
 }
 
 // New opens/creates the activity log; nil Store if the dir can't be made (daemon still runs).
@@ -145,6 +156,10 @@ func (s *Store) Record(e Event) Event {
 }
 
 func (s *Store) appendLine(e Event) {
+	// fileMu, not s.mu. The ring lock must not be held across disk I/O, but the disk writes DO have
+	// to be serialised against each other — see the note on fileMu.
+	s.fileMu.Lock()
+	defer s.fileMu.Unlock()
 	f, err := os.OpenFile(s.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return
@@ -223,6 +238,8 @@ func (s *Store) ClearNeedsYou(sessionID string) []Event {
 
 // rewrite atomically replaces the log with the current ring (used after MarkRead so read-state is durable).
 func (s *Store) rewrite(events []Event) {
+	s.fileMu.Lock()
+	defer s.fileMu.Unlock()
 	tmp := s.path + ".tmp"
 	f, err := os.Create(tmp)
 	if err != nil {

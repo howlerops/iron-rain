@@ -1199,7 +1199,7 @@ func toProtoRuns(in []loops.Run) []protocol.LoopRun {
 	for _, r := range in {
 		out = append(out, protocol.LoopRun{
 			LoopID: r.LoopID, IssueKey: r.IssueKey, IssueTitle: r.IssueTitle,
-			SessionID: r.SessionID, Status: r.Status, StartedAt: r.StartedAt,
+			SessionID: r.SessionID, Status: r.Status, StartedAt: r.StartedAt, Error: r.Error,
 		})
 	}
 	return out

@@ -24,11 +24,21 @@ const (
 	heartbeatInterval = 25 * time.Second
 	activeWindow      = 45 * time.Second // recent activity → still WORKING
 	idleGrace         = 60 * time.Second // idle must persist this long before a nudge
-	stallWindow       = 5 * time.Minute  // idle+incomplete this long with no activity → STALLED
-	awaitWindow       = 2 * time.Minute  // unanswered approval this long → remind once
-	defaultMaxNudges  = 6                // ralph-style give-up bound
-	defaultBudgetUSD  = 5.0              // cost ceiling for auto-nudging
-	checkpointTokens  = 120_000          // tokens since last handoff checkpoint → ask it to save state
+	// nudgeCooldown is the minimum gap between two nudges to the same session.
+	//
+	// m.lastNudge was WRITTEN in both nudge branches, with a comment explaining that it stops a
+	// failing provider being hot-looped — and never read anywhere in the tree. So the only spacing
+	// between nudges was the 25-second tick, and an agent that accepts a prompt but emits nothing
+	// back (the wedged case this ladder exists for) burned all six nudges roughly two and a half
+	// minutes after the first. The user's conversation received six near-identical "continue with
+	// your plan" messages inside two and a half minutes and autonomy then switched itself off — a
+	// give-up budget meant for a long unattended run, spent in the time it takes to read one message.
+	nudgeCooldown    = 3 * time.Minute
+	stallWindow      = 5 * time.Minute // idle+incomplete this long with no activity → STALLED
+	awaitWindow      = 2 * time.Minute // unanswered approval this long → remind once
+	defaultMaxNudges = 6               // ralph-style give-up bound
+	defaultBudgetUSD = 5.0             // cost ceiling for auto-nudging
+	checkpointTokens = 120_000         // tokens since last handoff checkpoint → ask it to save state
 )
 
 // Heartbeat states (derived, not stored by providers).
@@ -452,6 +462,10 @@ func deriveState(m *managedSession, now time.Time) string {
 		return hbStalled
 	}
 	if incomplete && now.Sub(m.lastActivity) > idleGrace {
+		// Honour the cooldown. Without it the nudge ladder paces itself at the tick rate.
+		if !m.lastNudge.IsZero() && now.Sub(m.lastNudge) < nudgeCooldown {
+			return hbWorking // nudged recently — give it time to actually answer
+		}
 		return hbIdleIncomplete
 	}
 	return hbWorking // within the grace window — give it room

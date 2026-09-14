@@ -31,6 +31,16 @@ type Store struct {
 	dir string
 	mu  sync.Mutex
 	fhs map[string]*os.File
+	// deleted are sessions whose file has been removed. Append refuses them.
+	//
+	// Deleting the file is not enough on its own, because the delete races the session's own
+	// shutdown. session.stop runs Close then removeSession on the DISPATCH goroutine while the pump
+	// is still unwinding, and the pump's unwind ends in closeTurn → finalizeTurnTranscript → Append.
+	// Append opens O_APPEND|O_CREATE, so it RECREATED the file that had just been unlinked — holding
+	// the agent's last reply verbatim, with no sessions row anywhere to say it exists. Nothing would
+	// ever remove it: the TTL prune enumerates ids from the session records, and that record is gone.
+	// The privacy claim the delete makes ("we removed what you typed") was quietly untrue.
+	deleted map[string]bool
 }
 
 // New opens (creating if needed) the transcripts directory; nil Store if it can't be created (the
@@ -39,7 +49,7 @@ func New(dir string) *Store {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil
 	}
-	return &Store{dir: dir, fhs: map[string]*os.File{}}
+	return &Store{dir: dir, fhs: map[string]*os.File{}, deleted: map[string]bool{}}
 }
 
 func (s *Store) path(sessionID string) string {
@@ -90,6 +100,9 @@ func (s *Store) Append(sessionID string, e Entry) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.deleted[sessionID] {
+		return nil // the session was deleted while its pump was still unwinding; do not resurrect it
+	}
 	f, err := s.file(sessionID)
 	if err != nil {
 		return err
@@ -146,12 +159,31 @@ func (s *Store) Delete(sessionID string) error {
 		_ = f.Close()
 		delete(s.fhs, sessionID)
 	}
+	if s.deleted == nil {
+		s.deleted = map[string]bool{}
+	}
+	// Bounded: session ids are never reused, so an entry only has to outlive the pump that is still
+	// unwinding — seconds. Dropping the oldest half at the cap keeps this from growing across a
+	// long-lived daemon that deletes a lot of sessions.
+	if len(s.deleted) >= maxDeletedTombstones {
+		n := 0
+		for id := range s.deleted {
+			delete(s.deleted, id)
+			if n++; n >= maxDeletedTombstones/2 {
+				break
+			}
+		}
+	}
+	s.deleted[sessionID] = true
 	s.mu.Unlock()
 	if err := os.Remove(s.path(sessionID)); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil
 }
+
+// maxDeletedTombstones bounds the set of session ids Append refuses. See Store.deleted.
+const maxDeletedTombstones = 512
 
 // Close releases open file handles (best-effort, on shutdown).
 func (s *Store) Close() {

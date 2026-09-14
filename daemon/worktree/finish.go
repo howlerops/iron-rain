@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -330,6 +331,21 @@ func Overlaps(target string, changed map[string][]string) map[string][]string {
 	return result
 }
 
+// currentBranch reports the branch a checkout is on, or "" when it is detached or git cannot say.
+// "" is the safe answer: the restore below simply does nothing, which is right — putting a detached
+// HEAD back is not something to guess at.
+func currentBranch(repoRoot string) string {
+	out, err := exec.Command("git", "-C", repoRoot, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		return ""
+	}
+	b := strings.TrimSpace(string(out))
+	if b == "HEAD" {
+		return "" // detached
+	}
+	return b
+}
+
 // MergeIntoDefault lands a worktree branch into the default branch of the MAIN checkout.
 //
 // Finishing a worktree used to offer exactly one destination — open a GitHub PR — so a repo with no
@@ -344,14 +360,37 @@ func MergeIntoDefault(ctx context.Context, repoRoot, branch string) error {
 	}
 	base := DefaultBranch(repoRoot)
 	// Refuse to touch a dirty main checkout: merging over uncommitted human work is not ours to do.
-	if out, err := exec.Command("git", "-C", repoRoot, "status", "--porcelain").Output(); err == nil {
+	//
+	// TRACKED changes only. `git status --porcelain` reports untracked files by default, so a stray
+	// .DS_Store or a scratch notes.md refused the merge with "commit or stash them first" — advice
+	// that does not even apply to an untracked file, given from a phone where the user cannot act on
+	// it. git itself merges happily over untracked files that the merge does not touch.
+	if out, err := exec.Command("git", "-C", repoRoot, "status", "--porcelain",
+		"--untracked-files=no").Output(); err == nil {
 		if strings.TrimSpace(string(out)) != "" {
 			return fmt.Errorf("the main checkout has uncommitted changes — commit or stash them first")
+		}
+	}
+	// Remember where the user was, and put them back.
+	//
+	// This checks out `base` in the user's MAIN checkout, and did so with no save or restore on
+	// either path — so someone working on feature/x who tapped Merge had their checkout silently
+	// left on main: their editor's open files changed underneath them and their next commit went to
+	// the wrong branch. The failure path was worse, aborting the merge and still leaving them there.
+	prev := currentBranch(repoRoot)
+	restore := func() {
+		if prev == "" || prev == base {
+			return
+		}
+		if out, err := exec.Command("git", "-C", repoRoot, "checkout", prev).CombinedOutput(); err != nil {
+			log.Printf("worktree: merged into %s but could not return %s to %s: %s",
+				base, repoRoot, prev, strings.TrimSpace(string(out)))
 		}
 	}
 	if out, err := exec.Command("git", "-C", repoRoot, "checkout", base).CombinedOutput(); err != nil {
 		return fmt.Errorf("checkout %s: %v: %s", base, err, strings.TrimSpace(string(out)))
 	}
+	defer restore()
 	ctx, cancel := context.WithTimeout(ctx, gitNetworkTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "-C", repoRoot, "merge", "--no-ff", "-m",

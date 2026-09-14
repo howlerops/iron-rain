@@ -634,10 +634,28 @@ func (h *Hub) touchAndPrune(ttl time.Duration) {
 	// while a session that is in memory but has produced nothing for the TTL window (e.g.
 	// a restored session whose server-side session is actually gone) keeps an old stamp
 	// and is pruned below — instead of being kept alive forever by mere presence.
-	for _, m := range live {
-		h.persistSessionAt(m, m.lastActive())
-	}
 	cutoff := time.Now().Unix() - int64(ttl.Seconds())
+	for _, m := range live {
+		at := m.lastActive()
+		// …but never stamp a session the daemon is STILL HOLDING into the prune window.
+		//
+		// "Live" meant "produced an event recently", not "is open right now", and PruneSessions
+		// unconditionally evicts every transcript_events row AND every transcript_archive chunk whose
+		// session_id is no longer in `sessions`. So a daemon up for longer than the TTL — the normal
+		// case for a launchd install, or simply one with no release to restart it — deleted the entire
+		// history of a conversation it was still serving, cold-storage archive included. The session
+		// kept rendering; opening it showed an empty replay; the next restart made it vanish while the
+		// provider-side conversation was still alive.
+		//
+		// A session that is genuinely dead is removed from h.sessions by the turn engine, and ages out
+		// from there. Destroying the history of one we are still holding is never the right answer.
+		if at < cutoff {
+			log.Printf("prune: %s has been quiet since %d but is still open — keeping its record",
+				m.sess.ID(), at)
+			at = time.Now().Unix()
+		}
+		h.persistSessionAt(m, at)
+	}
 	// Reclaim worktrees BEFORE the records go, because the record is the only thing that remembers
 	// the directory exists. Prune first and the worktree is orphaned permanently: the session
 	// vanishes from every UI while its checkout stays on disk forever — invisible AND undeletable

@@ -34,6 +34,18 @@ const releaseAPI = "https://api.github.com/repos/howlerops/iron-rain/releases/la
 // re-execs into it (this call never returns on success). Safe to call at the very start of serve;
 // any failure just logs and returns so the current binary keeps running. Bounded by an internal
 // timeout so a slow/unreachable GitHub can't delay startup for long.
+// BeforeReexec is run immediately before the process image is replaced, if set.
+//
+// syscall.Exec does not unwind anything: no defers, no Hub.Shutdown, no turn close. Anything the
+// daemon owns OUTSIDE its own process image therefore survives it, parentless. The one that bites is
+// the sleep assertion — an open turn holds a real `caffeinate -s` child, isolated into its own
+// process group so nothing else signals it, and the new image starts with a fresh refcount at zero
+// and no knowledge of the stray. The user's Mac then never idle-sleeps again, gaining one more
+// orphan per update-during-a-turn, and nothing in the app can clear it short of a reboot.
+//
+// A hook rather than an import: selfupdate sits below the hub and must not depend on it.
+var BeforeReexec func()
+
 func MaybeUpdateAndReexec(current string) {
 	if !updatable(current) {
 		return
@@ -80,6 +92,10 @@ func MaybeUpdateAndReexec(current string) {
 		return
 	}
 	log.Printf("selfupdate: updated %s → %s; re-exec", current, latest)
+	// Release anything we own outside this process image before it is replaced.
+	if BeforeReexec != nil {
+		BeforeReexec()
+	}
 	// Re-exec into the new binary with the same args/env. Never returns on success.
 	if err := syscall.Exec(exe, os.Args, os.Environ()); err != nil {
 		log.Printf("selfupdate: re-exec failed (%v) — the new binary applies on next restart", err)

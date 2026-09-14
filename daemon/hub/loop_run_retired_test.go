@@ -45,6 +45,11 @@ func TestFinishedLoopSessionRetiresItsRun(t *testing.T) {
 				t.Fatalf("seed: %v", err)
 			}
 			eng := loops.New(path, nil, func() {})
+			// Put it BACK to running after the load. New now retires anything still marked running,
+			// because a run cannot survive the process that started it — that is its own fix, and it
+			// makes "seed a running row and reload" no longer a way to reach this state. What this
+			// test is about is what happens when a LIVE run's turn ends, so set the state directly.
+			eng.SetRunStatus(sid, "running")
 			h := &Hub{loopEngine: eng, sessions: map[string]*managedSession{}}
 
 			if got := runStatus(t, eng, sid); got != "running" {
