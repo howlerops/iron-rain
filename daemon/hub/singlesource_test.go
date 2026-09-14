@@ -44,7 +44,7 @@ func TestUserPromptSurvivesRestart(t *testing.T) {
 	h := sourceHub(t)
 	m := &managedSession{hub: h, sess: &replayFakeSess{id: "s1"}}
 
-	m.broadcastUserEcho("please refactor the parser", "phone")
+	m.recordUserMessage("please refactor the parser", "phone", true)
 
 	got := durableTypes(t, h, "s1")
 	if len(got) != 1 || got[0] != protocol.TypeSessionMessage {
@@ -110,7 +110,7 @@ func TestDurableSequenceIsRaceSafe(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			m.broadcastUserEcho("msg", "dev")
+			m.recordUserMessage("msg", "dev", true)
 		}(i)
 	}
 	wg.Wait()

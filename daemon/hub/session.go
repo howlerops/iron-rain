@@ -2001,17 +2001,26 @@ func (m *managedSession) run() {
 	}
 }
 
-// broadcastUserEcho re-emits a user prompt to every subscriber tagged with who sent it, so a second
-// device can tell your message apart from its own. The sending client already rendered it
-// optimistically and dedups this echo by text.
-func (m *managedSession) broadcastUserEcho(text, author string) {
+// recordUserMessage persists the user's half of the conversation and, when echo is set, sends it to
+// this session's subscribers.
+//
+// The two are separate because only the ECHO depends on knowing who sent it — an unattributed echo
+// would render a second copy on the device that just sent the prompt. This used to be one function
+// called only when the author was known, which quietly made the durable record conditional on
+// attribution: a client that never identified itself had its prompts persisted nowhere, and a
+// restarted pi or CLI session came back showing answers to questions that had vanished. That is the
+// exact symptom the durable user-half was added to fix, still present for anyone the daemon could
+// not name. Persistence is about what was said; attribution is about who said it.
+func (m *managedSession) recordUserMessage(text, author string, echo bool) {
 	ev := agent.Event{Type: protocol.TypeSessionMessage, Payload: protocol.SessionMessage{
 		SessionID: m.sess.ID(), Role: "user", Text: text, Author: author,
 	}}
-	if raw, err := ev.Encode(); err == nil {
-		// Persist the user's half. The durable transcript used to hold only what the AGENT said, so a
-		// restarted pi or CLI session came back showing answers to questions that had vanished.
-		m.appendDurable(m.sess.ID(), "", raw)
+	raw, err := ev.Encode()
+	if err != nil {
+		return
+	}
+	m.appendDurable(m.sess.ID(), "", raw)
+	if echo {
 		m.broadcast(raw)
 	}
 }

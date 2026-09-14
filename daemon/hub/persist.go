@@ -86,6 +86,15 @@ func (h *Hub) persistSessionAt(m *managedSession, updatedAt int64) {
 	model, modelProvider := m.model, m.modelProvider
 	mode := m.mode
 	m.mu.Unlock()
+	// addSession deliberately refuses to persist an ephemeral session, and this function — which the
+	// periodic TTL touch and setSessionMode both reach directly — had no such guard, so it wrote the
+	// record addSession had just declined to write. That breaks the prune's own invariant: "no
+	// sessions row" is what marks a transcript orphaned, and a scratch chat that acquires a row keeps
+	// its rows alive. It also puts the fan-out judge and every "just chat" session into the session
+	// list on the next restart, which is the one place they are meant never to appear.
+	if meta.ephemeral {
+		return
+	}
 	pm := metaToPersisted(meta)
 	pm.Model, pm.ModelProvider = model, modelProvider
 	pm.Mode = mode

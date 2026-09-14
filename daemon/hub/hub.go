@@ -4993,11 +4993,11 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			log.Printf("session %s: prompt arriving on a STALLED turn — unsticking it first", req.SessionID)
 		}
 		m.openTurn("") // Turn Engine: a turn is now in flight (heartbeats + reconciler start)
-		// Echo the prompt back to EVERY subscriber attributed to its sender. Without this a second
-		// device shows the message with no indication of who sent it.
-		if author != "" {
-			m.broadcastUserEcho(text, author)
-		}
+		// Persist the user's half ALWAYS; echo it to subscribers only when we know who sent it.
+		// An unattributed echo would render a second copy on the device that just sent it, which is why
+		// the echo is gated — but gating the PERSISTENCE on the same condition is what left pi and CLI
+		// sessions restoring as answers with no questions whenever the client had not identified itself.
+		m.recordUserMessage(text, author, author != "")
 		log.Printf("session %s (%s): prompt received (%d chars) from %s", req.SessionID, m.sess.Provider(), len(text), authorOrLocal(author))
 		// Arm before dispatching the prompt. Some providers (notably opencode when a bash approval is
 		// raised immediately) can emit their first event before Prompt returns; arming afterwards races

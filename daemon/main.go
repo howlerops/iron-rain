@@ -435,7 +435,13 @@ func serve(args []string) error {
 		}
 	}
 	pushEnabled := false
+	// The bundle actually handed to enablePush, which is NOT always the flag: ~/.oculus/apns.json can
+	// override it, and the banner printed *apnsBundle regardless. So an operator debugging push — the
+	// one reason to read this line — was shown the default topic while the daemon was registered under
+	// the configured one, and the mismatch is invisible from anywhere else.
+	pushBundle := ""
 	if apnsKeyPath != "" {
+		pushBundle = apnsCfgBundle
 		if err := enablePush(h, apnsKeyPath, apnsCfgKeyID, apnsCfgTeamID, apnsCfgBundle, apnsCfgSandbox); err != nil {
 			return err
 		}
@@ -533,7 +539,7 @@ func serve(args []string) error {
 		fmt.Printf("  provider:       %s\n", pv)
 	}
 	if pushEnabled {
-		fmt.Printf("  push:           APNs enabled (bundle %s)\n", *apnsBundle)
+		fmt.Printf("  push:           APNs enabled (bundle %s)\n", pushBundle)
 	}
 	if slackEnabled {
 		fmt.Printf("  slack:          mirroring agent events to your webhook\n")

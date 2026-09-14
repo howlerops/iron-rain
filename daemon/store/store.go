@@ -297,6 +297,11 @@ func (s *Store) PruneSessions(cutoff int64) (int, error) {
 	// Archived chunks are the same orphan set and by far the larger one — a session's cold history
 	// outweighs its live tail. Missing them here would make the TTL stop reclaiming anything real.
 	_, _ = s.db.Exec(`DELETE FROM transcript_archive WHERE session_id NOT IN (SELECT id FROM sessions)`)
+	// Handoffs too, which the comment above has always claimed and the code never did. DeleteHandoff's
+	// only caller is removeSession, and the TTL path never reaches it — so this table grew
+	// monotonically for the life of the install, one row per indexed handoff file, none of them
+	// reachable from any session that still exists.
+	_, _ = s.db.Exec(`DELETE FROM handoffs WHERE session_id NOT IN (SELECT id FROM sessions)`)
 	if n > 0 {
 		_, _ = s.db.Exec(`PRAGMA incremental_vacuum`) // reclaim freed pages to disk
 	}

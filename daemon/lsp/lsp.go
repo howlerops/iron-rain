@@ -128,15 +128,36 @@ func (m *Manager) getOrStartServer(root, langID, command string, args []string) 
 
 	// didOpen for each, OUTSIDE the lock — a replacement server has never been told about these
 	// documents, so without this it answers nothing for them however correctly they are bound.
-	for _, d := range reopen {
-		m.mu.Lock()
-		uri, ver, lang, text := d.uri, d.version, d.langID, d.text
-		m.mu.Unlock()
-		if err := s.notify("textDocument/didOpen", didOpenParams{
-			TextDocument: textDocumentItem{URI: uri, LanguageID: lang, Version: ver, Text: text},
-		}); err != nil {
-			log.Printf("lsp: could not re-announce %s to the restarted %s server: %v", uri, langID, err)
-		}
+	//
+	// AFTER the handshake, and on its own goroutine. These notifications used to go out from here
+	// directly, which is before Open calls ensureInit: a language server drops every request that
+	// arrives before `initialize`, so the documents were announced to a server that was not listening
+	// yet and nothing ever re-sent them. Previously-open tabs then answered nothing forever, while a
+	// newly opened file worked — making LSP look recovered when it was not. It was silent twice over:
+	// s.notify only writes into a pipe, so it returns nil whatever the server does with the bytes, and
+	// restart_test asserted only the map bookkeeping.
+	//
+	// A goroutine because ensureInit blocks for the whole handshake (up to 20s for a cold
+	// rust-analyzer) and this function is called with the caller waiting to open ONE file; its own
+	// ensureInit is the same sync.Once, so the two converge rather than racing.
+	if len(reopen) > 0 {
+		go func() {
+			if err := s.ensureInit(context.Background()); err != nil {
+				log.Printf("lsp: the restarted %s server failed to initialize, %d document(s) not re-announced: %v",
+					langID, len(reopen), err)
+				return
+			}
+			for _, d := range reopen {
+				m.mu.Lock()
+				uri, ver, lang, text := d.uri, d.version, d.langID, d.text
+				m.mu.Unlock()
+				if err := s.notify("textDocument/didOpen", didOpenParams{
+					TextDocument: textDocumentItem{URI: uri, LanguageID: lang, Version: ver, Text: text},
+				}); err != nil {
+					log.Printf("lsp: could not re-announce %s to the restarted %s server: %v", uri, langID, err)
+				}
+			}
+		}()
 	}
 	return s, nil
 }

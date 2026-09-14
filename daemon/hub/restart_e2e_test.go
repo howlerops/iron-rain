@@ -32,7 +32,7 @@ func TestConversationSurvivesRestarts(t *testing.T) {
 	h1 := &Hub{db: db1, sessions: map[string]*managedSession{}}
 	m1 := &managedSession{hub: h1, sess: &replayFakeSess{id: sid}, ringFromStart: true}
 
-	m1.broadcastUserEcho("refactor the parser", "phone")
+	m1.recordUserMessage("refactor the parser", "phone", true)
 	assistant := []byte(`{"type":"session.message","payload":{"session_id":"ses_e2e","role":"assistant","text":"done","msg_id":"a1"}}`)
 	m1.appendDurable(sid, "a1", assistant)
 	m1.broadcast(assistant)
