@@ -138,6 +138,11 @@ struct SessionSidebar: View {
     @State private var filter: SessionFilter = .all
     @State private var renamingSessionID: String?
     @State private var renameText = ""
+    /// The session a Delete is staged for. Deleting a session is the only irreversible action this
+    /// sidebar offers — it ends the agent AND erases the on-device transcript — and it was the only
+    /// one that fired straight from a context menu with nothing in between. YOLO mode and "Always
+    /// allow", both far less final, each sit behind a dialog.
+    @State private var pendingDeleteSession: SidebarSession?
     /// The LIST's own selection, so macOS draws the highlight, arrow keys walk the sessions, and
     /// VoiceOver announces which row is selected. Deliberately not `$selection` itself: the host
     /// treats that binding as a one-shot "open this" command and nils it out a beat later, which
@@ -156,7 +161,16 @@ struct SessionSidebar: View {
     static let newSessionTag = "__new__"
 
     var body: some View {
-        sessionsList
+        // ONE grouping per body pass. `groups` builds two dictionaries, runs a regex-backed clean()
+        // per session, partitions, and sorts — and it used to be re-evaluated three times per pass
+        // (filterOptions, the empty-state check, and the ForEach), on a body that invalidates on
+        // every @Published mutation of the model, which during a live turn is roughly 25 Hz.
+        // `all` as well as `shown`: the filter chips carry counts for EVERY filter — "Running 3" is
+        // what tells you whether switching to it is worth a tap — so counting them off the filtered
+        // set would report 0 for every filter except the active one.
+        let all = groups
+        let shown = filtered(all)
+        return sessionsList(shown, all: all)
             .overlay {
                 // A pairing that never came up is the ONLY thing this user can act on, so it takes
                 // the whole surface. Showing the usual empty list plus a one-line grey status would
@@ -164,7 +178,7 @@ struct SessionSidebar: View {
                 // reached the Mac that has them.
                 if isUnreachable {
                     connectionFailure
-                } else if model.connected && searchText.isEmpty && filter == .all && filteredGroups.isEmpty {
+                } else if model.connected && searchText.isEmpty && filter == .all && shown.isEmpty {
                     emptyState
                 }
             }
@@ -212,6 +226,21 @@ struct SessionSidebar: View {
         } message: {
             Text("Give this session a name. Leave blank to reset to its default title.")
         }
+        .confirmationDialog(
+            "Delete “\(pendingDeleteSession?.title ?? "this session")”?",
+            isPresented: Binding(get: { pendingDeleteSession != nil },
+                                 set: { if !$0 { pendingDeleteSession = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingDeleteSession
+        ) { item in
+            Button("Delete session", role: .destructive) {
+                Task { await model.stopSession(item.id) }
+                pendingDeleteSession = nil
+            }
+            Button("Cancel", role: .cancel) { pendingDeleteSession = nil }
+        } message: { _ in
+            Text("This ends the agent and removes this device's copy of the conversation. It can't be undone.")
+        }
         // iOS-only: per-tab title + native pull-down search. On macOS these live on the deck.
         // (A trailing #if is safe — nothing follows it in the chain.)
         #if os(iOS)
@@ -224,7 +253,7 @@ struct SessionSidebar: View {
     /// is on the split view; the Sessions/Issues switch is on the detail toolbar. The window
     /// sizing is handled in RootView (windowResizability + detail clamp), so no inset hacks
     /// are needed here.
-    private var sessionsList: some View {
+    private func sessionsList(_ shown: [SessionGroup], all: [SessionGroup]) -> some View {
         // The list owns selection. It used to be a bare `List { }` with the "selected" state
         // hand-drawn behind rows, which meant the sidebar had no selection as far as the system was
         // concerned: arrow keys did nothing, Tab skipped the list, and VoiceOver read a stack of
@@ -263,7 +292,7 @@ struct SessionSidebar: View {
             // window scope for a list-scoped control. Chips rather than a segmented picker because
             // they carry live counts: "Running 3" tells you whether it is worth tapping.
             ScrollView(.horizontal, showsIndicators: false) {
-                FilterChips(selection: $filter, options: filterOptions, palette: palette)
+                FilterChips(selection: $filter, options: filterOptions(all), palette: palette)
                     .padding(.horizontal, 2)
             }
             .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 6, trailing: 6))
@@ -323,7 +352,7 @@ struct SessionSidebar: View {
             // screen. Sections cost nothing in a List, and content that is grouped on the desktop
             // should stay grouped when the layout adapts. `groups` already pulls recents out of their
             // project buckets, so nothing appears twice.
-            ForEach(filteredGroups) { group in
+            ForEach(shown) { group in
                 Section {
                     ForEach(group.items) { item in
                         sessionRow(item, showProvider: group.showProvider, showProject: group.showProject)
@@ -374,7 +403,7 @@ struct SessionSidebar: View {
     /// two sessions you only scrolled past. Keyboard traversal now opens, and only a click or Return
     /// revives.
     private func activate(_ id: String, revive: Bool = true) {
-        guard let item = filteredGroups.flatMap(\.items).first(where: { $0.id == id }) else {
+        guard let item = filtered(groups).flatMap(\.items).first(where: { $0.id == id }) else {
             selection = id
             return
         }
@@ -765,8 +794,10 @@ struct SessionSidebar: View {
 
     /// The filter's options, with live counts — the counts are the reason these are chips and not a
     /// segmented picker.
-    private var filterOptions: [FilterChips<SessionFilter>.Option] {
-        let all = groups.flatMap(\.items)
+    /// Takes the already-grouped sessions rather than re-deriving them: this is one of the three
+    /// call sites that each used to rebuild the whole grouping.
+    private func filterOptions(_ gs: [SessionGroup]) -> [FilterChips<SessionFilter>.Option] {
+        let all = gs.flatMap(\.items)
         return SessionFilter.allCases.map { f in
             .init(value: f, label: f.label, count: all.filter(f.matches).count)
         }
@@ -794,10 +825,12 @@ struct SessionSidebar: View {
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
     }
 
-    private var filteredGroups: [SessionGroup] {
+    /// The rows to show, from an already-built grouping. Kept as a computed property too (below) for
+    /// the action paths, which run once per tap rather than once per frame.
+    private func filtered(_ gs: [SessionGroup]) -> [SessionGroup] {
         let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !q.isEmpty || filter != .all else { return groups }
-        return groups.compactMap { g in
+        guard !q.isEmpty || filter != .all else { return gs }
+        return gs.compactMap { g in
             let hits = g.items.filter { item in
                 (q.isEmpty || item.title.localizedCaseInsensitiveContains(q)) && filter.matches(item)
             }
@@ -832,7 +865,7 @@ struct SessionSidebar: View {
             }
             Divider()
             Button(role: .destructive) {
-                Task { await model.stopSession(item.id) }
+                pendingDeleteSession = item
             } label: {
                 Label("Delete session", systemImage: "trash")
             }

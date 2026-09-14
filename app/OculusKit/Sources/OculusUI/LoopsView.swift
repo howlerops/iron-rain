@@ -301,18 +301,30 @@ public struct LoopsView: View {
 
     private func runRow(_ run: LoopRun) -> some View {
         Button { onOpenSession(run.sessionID) } label: {
-            HStack(spacing: 8) {
-                runStatusDot(run)
-                Text(run.issueKey == "task" ? loopName(run.loopID) : run.issueKey)
-                    .font(.caption.bold()).foregroundStyle(palette.primaryText).frame(width: 90, alignment: .leading).lineLimit(1)
-                Text(run.issueTitle).font(.caption).lineLimit(1).foregroundStyle(palette.foreground)
-                Spacer()
-                Text(liveStatus(run)).font(.caption2).foregroundStyle(palette.mutedForeground)
-                Image(systemName: "chevron.right").font(.caption2).foregroundStyle(palette.mutedForeground)
-                    .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
+                    runStatusDot(run)
+                    Text(run.issueKey == "task" ? loopName(run.loopID) : run.issueKey)
+                        .font(.caption.bold()).foregroundStyle(palette.primaryText).frame(width: 90, alignment: .leading).lineLimit(1)
+                    Text(run.issueTitle).font(.caption).lineLimit(1).foregroundStyle(palette.foreground)
+                    Spacer()
+                    Text(liveStatus(run)).font(.caption2).foregroundStyle(palette.mutedForeground)
+                    if !run.sessionID.isEmpty {
+                        Image(systemName: "chevron.right").font(.caption2).foregroundStyle(palette.mutedForeground)
+                            .accessibilityHidden(true)
+                    }
+                }
+                // The reason, when there is one. Without it a failed run is a red dot and the word
+                // "error", on a row whose only action opens a session that was never created.
+                if let err = run.error, !err.isEmpty {
+                    Text(err).font(.caption2).foregroundStyle(palette.destructive)
+                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                }
             }
             .contentShape(Rectangle())
-        }.buttonStyle(.plain)
+        }
+        .buttonStyle(.plain)
+        .disabled(run.sessionID.isEmpty) // a run that never started has nothing to open
     }
 
     private func loopName(_ id: String) -> String { model.loops.first { $0.id == id }?.name ?? "task" }

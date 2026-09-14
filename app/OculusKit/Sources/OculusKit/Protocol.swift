@@ -1336,9 +1336,13 @@ public struct LoopRun: Codable, Identifiable, Hashable {
     public var sessionID: String
     public var status: String
     public var startedAt: Int
+    /// Why this run failed. The daemon records it (loops.Run.Error); the client had no property for
+    /// it, so a failed run rendered as a red dot and the bare word "error" — on a row whose only
+    /// action is Open, which does nothing because a run that never started has no session id.
+    public var error: String?
     public var id: String { loopID + issueKey + sessionID }
     enum CodingKeys: String, CodingKey {
-        case status
+        case status, error
         case loopID = "loop_id", issueKey = "issue_key", issueTitle = "issue_title", sessionID = "session_id", startedAt = "started_at"
     }
 }
@@ -1530,7 +1534,14 @@ public struct WorktreePR: Codable {
 }
 public struct WorktreePRResult: Codable {
     public var sessionID: String; public var branch: String; public var pushed: Bool; public var url: String?
-    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case branch; case pushed; case url }
+    /// Why the pull request could not be opened, when the branch WAS pushed but `gh pr create`
+    /// failed. The daemon has always sent this; the client had no property for it, so the whole
+    /// reply reduced to "pushed, no url" — which is also what a successful push with an
+    /// uninteresting URL looks like. A failed PR was therefore indistinguishable from a success,
+    /// and the only other channel was `model.status`, which deriveHeaderStatus discards while
+    /// connected.
+    public var error: String?
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id"; case branch; case pushed; case url; case error }
 }
 public struct WorktreeCatchUp: Codable {
     public var sessionID: String

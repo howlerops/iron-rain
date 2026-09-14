@@ -918,7 +918,8 @@ public struct RootView: View {
             case .loops:
                 LoopDetail(model: model, palette: palette, loopID: selectedLoopID, editing: editingLoop,
                            onOpenSession: { sid in openSessionNav(sid, model) },
-                           onDone: { editingLoop = false })
+                           onDone: { editingLoop = false },
+                           onEdit: { editingLoop = true })
             case .issues:
                 IssuesView(model: model, palette: palette, embedded: true) { destination = .sessions }
             case .activity:

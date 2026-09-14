@@ -1906,8 +1906,14 @@ public final class Model: ObservableObject {
 
     /// Delegates a subtask to a scoped sub-agent seeded from the parent's handoff (not its
     /// transcript). On success the child becomes the active session (it arrives via the OK).
+    /// modelProvider is the sub-provider the model belongs to, and it is NOT optional decoration for
+    /// opencode: its models are addressed as {providerID, modelID}, so a model id with no providerID
+    /// is an incomplete address. SessionChild has carried the field all along and this function had
+    /// no parameter for it, so every delegation to opencode sent half an address — and the child
+    /// silently ran on the provider default instead of the model the user picked.
     public func delegateSubtask(subtask: String, files: [String]? = nil, autonomous: Bool = false,
                                 provider: String? = nil, model: String? = nil,
+                                modelProvider: String? = nil,
                                 worktree: Bool = false) async {
         guard client != nil, let parent = sessionID else { return }
         let trimmed = subtask.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1916,7 +1922,8 @@ public final class Model: ObservableObject {
             let resp = try await request(MessageType.sessionChild,
                                          payload: SessionChild(parentSessionID: parent, subtask: trimmed,
                                                                files: files, provider: provider,
-                                                               model: model, autonomous: autonomous,
+                                                               model: model, modelProvider: modelProvider,
+                                                               autonomous: autonomous,
                                                                worktree: worktree))
             let child = try resp.payload(as: Session.self)
             // Only now replace the view — a failed delegate must not lose the parent conversation.
@@ -3027,13 +3034,23 @@ public final class Model: ObservableObject {
     /// transcript actually ends — a HOLE — and once the count passes the ring's length, `end` goes to
     /// zero and the live window is skipped entirely.
     ///
-    /// session.status and session.facts were the two that were missing. Both are sent with
+    /// session.status and session.facts were the first two found missing. Both are sent with
     /// broadcastTransient specifically so they stay out of the ring (turn.go and surface.go each say
     /// so in as many words), and both carry a session_id, so both matched the counting predicate.
     /// publishSessionState fires per tool call, so one busy turn overcounts by dozens.
+    ///
+    /// The next three were found the same way and are a different shape: they are HUB-WIDE broadcasts
+    /// (h.broadcast / broadcastWithCapability), which never touch any session's ring at all, and they
+    /// carry a session_id too. session.heartbeat fires roughly every ten seconds for the whole life
+    /// of a session, so this one alone inflates the cursor without limit on any session left open.
+    ///
+    /// This set has now been wrong twice, so it is no longer maintained by hand alone: a census test
+    /// (RingCursorCensusTests) reads the daemon's own source and fails when a hub-wide broadcast type
+    /// is neither listed here nor explicitly declared as not carrying a session id.
     static let nonRingFrameTypes: Set<String> = [
         MessageType.turnState, MessageType.transcriptPageBegin, MessageType.transcriptPageEnd,
         MessageType.sessionStatus, MessageType.sessionFacts,
+        MessageType.sessionHeartbeat, MessageType.activityEvent, MessageType.worktreeStatus,
     ]
 
     // MARK: on-device transcript cache (see ModelTranscriptCache.swift)
@@ -3773,26 +3790,52 @@ public final class Model: ObservableObject {
         }
     }
 
+    /// SEND FIRST — the twin of the bug stopSession was already fixed for.
+    ///
+    /// This erased the on-device transcript before a fire-and-forget send, so on a flaky link the
+    /// cached history was deleted from the device for a worktree that is still there, with no error
+    /// anywhere. Offline it was worse: `guard let client` made the whole thing a silent no-op.
     public func removeWorktree(force: Bool = false) async {
-        guard let client, let sid = sessionID else { return }
-        forgetCached(sid)
-        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.worktreeRemove, payload: WorktreeRemove(sessionID: sid, force: force)) {
-            try? await client.send(env)
+        guard let sid = sessionID else { return }
+        guard let client else {
+            actionError = "Not connected — couldn’t remove that worktree."
+            return
         }
+        do {
+            let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.worktreeRemove,
+                                          payload: WorktreeRemove(sessionID: sid, force: force))
+            try await client.send(env)
+        } catch {
+            actionError = "Couldn’t remove that worktree: \(error.localizedDescription)"
+            return
+        }
+        forgetCached(sid) // the send landed; the cached transcript can go with the worktree
     }
 
     /// Removes a SPECIFIC session's worktree (git worktree remove + prune) and ends the session — the
     /// all-sessions manager uses this to clean up an old worktree session that isn't the active one.
     /// Mirrors stopSession's optimistic + auto-reopen cleanup so the row doesn't linger or reappear.
     public func removeWorktree(_ id: String, force: Bool = true) async {
-        guard let client else { return }
+        // SEND FIRST, for the same reason as above and as stopSession: the row, the cached transcript
+        // and the auto-reopen key were all erased before the send, so a failed send left the session
+        // gone from the list with its local history deleted — and the daemon's next session.list put
+        // the row back seconds later, now with nothing behind it.
+        guard let client else {
+            actionError = "Not connected — couldn’t remove that worktree."
+            return
+        }
+        do {
+            let env = try Protocol.encode(id: UUID().uuidString, type: MessageType.worktreeRemove,
+                                          payload: WorktreeRemove(sessionID: id, force: force))
+            try await client.send(env)
+        } catch {
+            actionError = "Couldn’t remove that worktree: \(error.localizedDescription)"
+            return
+        }
         sessions.removeAll { $0.id == id }
         if sessionID == id { newSession() }
         forgetCached(id) // the worktree is gone; its cached transcript should go with it
         if defaults.string(forKey: lastSessionKey) == id { defaults.removeObject(forKey: lastSessionKey) }
-        if let env = try? Protocol.encode(id: UUID().uuidString, type: MessageType.worktreeRemove, payload: WorktreeRemove(sessionID: id, force: force)) {
-            try? await client.send(env)
-        }
     }
 
     public func createPR(title: String, body: String? = nil) async {
@@ -4626,8 +4669,19 @@ public final class Model: ObservableObject {
     /// component can never execute a tool directly. Optimistically echoes a prompt as a user message.
     /// - Parameter values: a form's collected answers; nil for every other component. The daemon
     ///   renders them into the user turn, so the phrasing stays canonical across clients.
-    public func invokeUIAction(_ c: UIComponent, _ a: UIComponentAction, values: [String: JSONValue]? = nil) async {
-        guard let client else { return }
+    /// Returns whether the action reached the daemon, so the card can stop claiming it was sent.
+    ///
+    /// The `guard let client else { return }` was a SILENT no-op — and the card latches to "Sent —
+    /// the agent will continue." before this is even called, so tapping a generative-UI choice while
+    /// disconnected left the user looking at a card that said the agent had been told, with nothing
+    /// anywhere saying otherwise. The failed-send path below was already handled; this is the path
+    /// that never got as far as sending.
+    @discardableResult
+    public func invokeUIAction(_ c: UIComponent, _ a: UIComponentAction, values: [String: JSONValue]? = nil) async -> Bool {
+        guard let client else {
+            actionError = "Not connected — that action wasn’t sent."
+            return false
+        }
         let encoded: JSONValue? = values.map { .object($0) }
         let invoke = UIActionInvoke(sessionID: c.sessionID, messageID: c.messageID, componentID: c.id,
                                     actionID: a.id, kind: a.kind, prompt: a.prompt, values: encoded)
@@ -4657,9 +4711,10 @@ public final class Model: ObservableObject {
             if let id = echoed { markDelivery(id, .failed) }
             busy = false
             actionError = "Couldn't send that action."
-        } else if let id = echoed {
-            markDelivery(id, .ok)
+            return false
         }
+        if let id = echoed { markDelivery(id, .ok) }
+        return true
     }
 
     // MARK: sub-agent (child) transcript buffers
@@ -4824,7 +4879,16 @@ public final class Model: ObservableObject {
             } else if keys.contains("files"), let wc = try? env.payload(as: WorktreeConflicts.self), wc.files != nil {
                 conflicts = wc.files ?? []
             } else if keys.contains("pushed"), let pr = try? env.payload(as: WorktreePRResult.self) {
-                status = pr.url.map { "PR: \($0)" } ?? "Pushed \(pr.branch)"
+                // A failed `gh pr create` after a successful push is reported HERE and nowhere else.
+                // It used to reduce to "Pushed <branch>" — the same words a successful push with an
+                // uninteresting URL produces — and `status` is discarded by deriveHeaderStatus while
+                // connected anyway, so a failure to open the PR was invisible from every direction.
+                if let err = pr.error, !err.isEmpty {
+                    actionError = "Pushed \(pr.branch), but couldn’t open the pull request: \(err)"
+                    status = "Pushed \(pr.branch) — no PR"
+                } else {
+                    status = pr.url.map { "PR: \($0)" } ?? "Pushed \(pr.branch)"
+                }
             } else if keys.contains("id"), let s = try? env.payload(as: Session.self) {
                 // Only adopt it if the user is still WAITING for it.
                 //

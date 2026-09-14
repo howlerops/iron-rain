@@ -15,7 +15,10 @@ struct UIComponentView: View {
     let palette: OculusPalette
     /// Fires when the user activates an action. The second argument carries a form's collected
     /// values (nil for every other component).
-    var onAction: ((UIComponentAction, [String: JSONValue]?) -> Void)? = nil
+    /// Reports whether the action was actually sent, so a card can stop claiming it was. A card that
+    /// latches to "Sent" and then discovers nothing left the device has told the user something
+    /// untrue about their agent.
+    var onAction: ((UIComponentAction, [String: JSONValue]?) async -> Bool)? = nil
 
     /// Whether the full component is open in a sheet.
     @State private var expanded = false
@@ -114,7 +117,7 @@ struct UIComponentView: View {
             case "choice", "confirm":
                 decoded(InteractiveProps.self) {
                     InteractiveView(props: $0, actions: component.actions ?? [], palette: palette,
-                                    onAction: { a in onAction?(a, nil) })
+                                    onAction: { a in await onAction?(a, nil) ?? false })
                 }
             case "form":
                 decoded(FormProps.self) {
@@ -379,7 +382,7 @@ private struct InteractiveView: View {
     let props: InteractiveProps
     let actions: [UIComponentAction]
     let palette: OculusPalette
-    var onAction: ((UIComponentAction) -> Void)? = nil
+    var onAction: ((UIComponentAction) async -> Bool)? = nil
     @State private var chosen: String?   // simple single-select feedback
 
     var body: some View {
@@ -389,8 +392,12 @@ private struct InteractiveView: View {
             VStack(spacing: 6) {
                 ForEach(actions) { a in
                     Button {
+                        // Optimistic, then corrected: the card says "Sent" immediately because that is
+                        // the right feel, and un-says it if the action never left the device.
                         chosen = a.id
-                        onAction?(a)
+                        Task {
+                            if let onAction, await onAction(a) == false { chosen = nil }
+                        }
                     } label: {
                         HStack {
                             Text(a.label ?? a.id).font(.callout.weight(.medium))
@@ -472,7 +479,7 @@ struct FormView: View {
     let props: FormProps
     let actions: [UIComponentAction]
     let palette: OculusPalette
-    var onAction: ((UIComponentAction, [String: JSONValue]?) -> Void)? = nil
+    var onAction: ((UIComponentAction, [String: JSONValue]?) async -> Bool)? = nil
 
     /// Values keyed by field id, seeded from each field's default.
     @State private var values: [String: String] = [:]
@@ -559,7 +566,6 @@ struct FormView: View {
     }
 
     private func submit(_ a: UIComponentAction) {
-        submitted = true
         var out: [String: JSONValue] = [:]
         for f in props.fields {
             switch f.type {
@@ -574,7 +580,13 @@ struct FormView: View {
                 if !raw.isEmpty { out[f.label ?? f.id] = .string(raw) }
             }
         }
-        onAction?(a, out)
+        // Optimistic, then corrected — the same shape as InteractiveView. `submitted` disables the
+        // button, so leaving it set after a send that never happened locks the form permanently
+        // while telling the user it went through.
+        submitted = true
+        Task {
+            if let onAction, await onAction(a, out) == false { submitted = false }
+        }
     }
 }
 
@@ -586,7 +598,7 @@ struct FormView: View {
 private struct ComponentSheet: View {
     let component: UIComponent
     let palette: OculusPalette
-    var onAction: ((UIComponentAction, [String: JSONValue]?) -> Void)?
+    var onAction: ((UIComponentAction, [String: JSONValue]?) async -> Bool)?
     let onClose: () -> Void
 
     var body: some View {

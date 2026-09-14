@@ -56,15 +56,35 @@ struct DiffHunkModel: Identifiable {
     }
 }
 
-/// One file's section of the diff: its path and hunks (add/del counts are derived).
+/// One file's section of the diff: its path, its hunks, and its add/del counts.
 struct DiffFileModel: Identifiable {
     /// The path, which is what actually identifies a file in a diff. See DiffLineModel.id.
     var id: String { path }
     let path: String
     let hunks: [DiffHunkModel]
 
-    var additions: Int { hunks.reduce(0) { $0 + $1.lines.filter { $0.kind == .add }.count } }
-    var deletions: Int { hunks.reduce(0) { $0 + $1.lines.filter { $0.kind == .del }.count } }
+    /// Counted ONCE, at parse time, rather than derived on every read.
+    ///
+    /// These were computed properties that walked every line of every hunk. The parse itself is
+    /// cached (see parsedDiff) and these were not, so each file header recomputed its own counts
+    /// several times per body pass — and `totals` walked the ENTIRE diff twice more, on a view that
+    /// rebuilds on every published change while a turn streams. The parser already visits each line
+    /// exactly once; this just keeps what it saw.
+    let additions: Int
+    let deletions: Int
+
+    init(path: String, hunks: [DiffHunkModel]) {
+        self.path = path
+        self.hunks = hunks
+        var add = 0, del = 0
+        for h in hunks {
+            for l in h.lines {
+                if l.kind == .add { add += 1 } else if l.kind == .del { del += 1 }
+            }
+        }
+        self.additions = add
+        self.deletions = del
+    }
 
     /// All hunks concatenated, capped for a file-level prompt.
     func promptText(maxLines: Int = 40) -> String {
@@ -331,6 +351,7 @@ public struct DiffReviewView: View {
         parsedDiff = (d, d.isEmpty ? [] : DiffParser.parse(d))
     }
 
+    /// Summed from the per-file counts the parser already produced — O(files), not O(diff).
     private var totals: (add: Int, del: Int) {
         files.reduce(into: (0, 0)) { acc, f in acc.0 += f.additions; acc.1 += f.deletions }
     }

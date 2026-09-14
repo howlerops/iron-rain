@@ -17,6 +17,17 @@ private struct TranscriptBottomOffsetKey: PreferenceKey {
     }
 }
 
+/// The same measurement for the test-output pane, which had no equivalent: it scrolled to the bottom
+/// on EVERY appended line, so scrolling up to read the first failure yanked you back down with the
+/// next line of output — while the transcript two views away has had an "is the user already at the
+/// bottom?" gate all along.
+private struct TestOutputBottomOffsetKey: PreferenceKey {
+    static var defaultValue: CGFloat = .infinity
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 // MARK: - Header status: two independent facts, never one string
 
 /// Whether we can reach the daemon at all. Orthogonal to what the agent is doing.
@@ -698,7 +709,7 @@ public struct ChatView: View {
                             MessageRow(message: msg, palette: palette,
                                        sessionID: model.sessionID,
                                        onRetry: msg.delivery == .failed ? { Task { await model.retryFailedMessage() } } : nil,
-                                       onUIAction: { c, a, values in Task { await model.invokeUIAction(c, a, values: values) } },
+                                       onUIAction: { c, a, values in await model.invokeUIAction(c, a, values: values) },
                                        imageLoader: { path in
                                            guard let b = try? await model.fsReadBytes(path) else { return nil }
                                            return Data(base64Encoded: b.data)
@@ -1241,7 +1252,8 @@ struct MessageRow: View, Equatable {
     /// Fired when the user activates a generative-UI component's action (choice/confirm). The
     /// transcript wires this to Model.invokeUIAction.
     /// Third argument carries a form's collected values (nil for every other component).
-    var onUIAction: ((UIComponent, UIComponentAction, [String: JSONValue]?) -> Void)? = nil
+    /// Reports whether the action reached the daemon, so a generative-UI card can un-say "Sent".
+    var onUIAction: ((UIComponent, UIComponentAction, [String: JSONValue]?) async -> Bool)? = nil
     /// Loads referenced-image bytes via the daemon (nil = inline images off, e.g. child transcripts).
     var imageLoader: ((String) async -> Data?)? = nil
     // Mirror ChatMarkdownView's type prefs so the whole transcript (user bubble, thinking, streaming
@@ -1337,7 +1349,7 @@ struct MessageRow: View, Equatable {
                                 .textSelection(.enabled)
                         case .component(let component):
                             UIComponentView(component: component, palette: palette,
-                                            onAction: { action, values in onUIAction?(component, action, values) })
+                                            onAction: { action, values in await onUIAction?(component, action, values) ?? false })
                         }
                     }
                     if let load = imageLoader {
@@ -1386,7 +1398,7 @@ struct MessageRow: View, Equatable {
                 .frame(maxWidth: .infinity, alignment: .center)
         case .ui:
             if let c = message.component {
-                UIComponentView(component: c, palette: palette, onAction: { a, values in onUIAction?(c, a, values) })
+                UIComponentView(component: c, palette: palette, onAction: { a, values in await onUIAction?(c, a, values) ?? false })
             }
         }
     }
@@ -3129,6 +3141,11 @@ struct DelegateSheet: View {
                                                     autonomous: autonomous,
                                                     provider: provider.isEmpty ? nil : provider,
                                                     model: selectedModel.isEmpty ? nil : selectedModel,
+                                                    // The picked model's own provider. opencode
+                                                    // addresses models as {providerID, modelID}, so
+                                                    // sending the id alone is half an address and the
+                                                    // child quietly runs on the default instead.
+                                                    modelProvider: childModels.first { $0.id == selectedModel }?.provider,
                                                     worktree: isolate)
                     }
                     onClose()
@@ -3239,6 +3256,11 @@ struct WorkspaceReviewSheet: View {
 /// Streams a test/build run's output with a pass/fail header; a failure can be handed to the
 /// agent to fix in one tap.
 struct TestResultPanel: View {
+    /// "Is the user already at the bottom?" — the gate the transcript has had all along and this
+    /// pane did not. Without it, scrolling up to read the first failure is undone by the next line of
+    /// output, on the one pane whose purpose is reading a failure that has scrolled past.
+    @State private var isTestOutputBottomVisible = true
+    @State private var testOutputViewportHeight: CGFloat = 0
     @ObservedObject var model: Model
     let palette: OculusPalette
 
@@ -3280,11 +3302,37 @@ struct TestResultPanel: View {
                                 .foregroundStyle(palette.foreground.opacity(0.9))
                                 .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
                         }
-                        Color.clear.frame(height: 1).id("end")
+                        GeometryReader { geo in
+                            Color.clear.preference(
+                                key: TestOutputBottomOffsetKey.self,
+                                value: geo.frame(in: .named("testOutputScroll")).maxY
+                            )
+                        }
+                        .frame(height: 1)
+                        .id("end")
                     }
                     .padding(.horizontal, 12).padding(.vertical, 6)
                 }
-                .onChange(of: model.testOutput.count) { _ in proxy.scrollTo("end", anchor: .bottom) }
+                .coordinateSpace(name: "testOutputScroll")
+                .background {
+                    GeometryReader { geo in
+                        Color.clear
+                            .onAppear { testOutputViewportHeight = geo.size.height }
+                            .onChange(of: geo.size.height) { testOutputViewportHeight = $0 }
+                    }
+                }
+                .onPreferenceChange(TestOutputBottomOffsetKey.self) { bottomY in
+                    guard bottomY.isFinite, testOutputViewportHeight > 0 else { return }
+                    let visible = bottomY <= testOutputViewportHeight + 18
+                    if visible != isTestOutputBottomVisible { isTestOutputBottomVisible = visible }
+                }
+                // Follow the tail ONLY if the user is already there. Scrolling up to read the first
+                // failure used to be undone by the next line of output — on a pane whose whole
+                // purpose is reading a failure that has usually scrolled past.
+                .onChange(of: model.testOutput.count) { _ in
+                    guard isTestOutputBottomVisible else { return }
+                    proxy.scrollTo("end", anchor: .bottom)
+                }
             }
             .frame(maxHeight: 180)
         }

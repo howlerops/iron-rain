@@ -317,7 +317,12 @@ struct LoopDetail: View {
     let loopID: String?
     let editing: Bool
     var onOpenSession: (String) -> Void
+    /// Leaves the editor (used by LoopEditor when it saves or cancels).
     var onDone: () -> Void
+    /// ENTERS the editor. Distinct from onDone, which is what the Edit button used to call — setting
+    /// `editingLoop = false` while already false, so the only way into the editor from this pane was
+    /// guaranteed to do nothing.
+    var onEdit: () -> Void = {}
 
     private var loop: Loop? { model.loops.first { $0.id == loopID } }
 
@@ -346,7 +351,7 @@ struct LoopDetail: View {
                             .foregroundStyle(loop.enabled ? palette.primary : palette.mutedForeground)
                     }
                     Spacer()
-                    Button("Edit") { onDone(); }.buttonStyle(.bordered)
+                    Button("Edit") { onEdit() }.buttonStyle(.bordered)
                 }
                 Text("Recent runs").font(.caption.weight(.semibold)).tracking(0.6)
                     .foregroundStyle(palette.mutedForeground)
