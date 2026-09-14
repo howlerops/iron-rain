@@ -88,12 +88,22 @@ var ErrProtectedPath = errors.New("refusing to touch a protected directory")
 // importing upward would be a cycle. If that directory ever moves, it moves here too.
 const stateDirName = ".oculus"
 
-// stateDirOpen names the state-directory subtrees that stay reachable. Exactly one: worktrees.
-// worktree.DefaultBase puts every session worktree under ~/.oculus/worktrees/<repo>/<name>, so that
-// subtree IS ordinary project content — it is where an isolated session's agent works and where the
-// editor must be able to read and write, or the whole worktree feature stops working from the app.
+// stateDirOpen names the state-directory subtrees that stay reachable. Both of them hold ordinary
+// PROJECT CONTENT rather than daemon state, and both are places an agent works and the editor must
+// be able to read and write.
+//
+// worktrees: worktree.DefaultBase puts every session worktree under
+// ~/.oculus/worktrees/<repo>/<name>.
+//
+// workspaces: worktree.WorkspacesBase puts every cross-repo workspace layout under
+// ~/.oculus/workspaces/<name>. This one was missing, and the effect was total — hub.go sets the
+// session cwd to the layout directory AFTER validateSessionCwd has run, so the session started
+// normally and the agent worked, but fsaccess.New then dropped every root as protected. fs.tree,
+// fs.read, fs.write, fs.search and every lsp.* call answered "refusing to touch a protected
+// directory", so the entire code surface was dead for the whole session with no explanation.
+//
 // Nothing else under the state directory is content; it is all key material and trust records.
-var stateDirOpen = []string{"worktrees"}
+var stateDirOpen = []string{"worktrees", "workspaces"}
 
 // protectedRule is one absolute path Resolve refuses, whatever roots it was constructed with.
 type protectedRule struct {
@@ -220,6 +230,32 @@ var (
 	protectedHome  string
 )
 
+// macOS is case-INSENSITIVE by default, and neither os.Lstat nor filepath.EvalSymlinks normalises
+// case — EvalSymlinks("~/.SSH") returns ".SSH" unchanged while ReadDir on it lists the real ~/.ssh.
+// So every refusal below compared the spelling rather than the file, and one capital letter walked
+// straight through all of them: Resolve refused <root>/.git/config and allowed <root>/.GIT/config,
+// which is the same file. Writing core.sshCommand into it is arbitrary shell as the owner, because
+// the daemon runs git in that repo for PR, merge, catch-up and checkpoint. ProtectedPath had the
+// same hole, so ~/.Oculus/daemon.key read as unprotected and could be handed to a session as a cwd.
+//
+// Comparing case-insensitively everywhere is the conservative direction. On a case-sensitive volume
+// it can only over-refuse — a directory genuinely named ".GIT" that is not repository metadata —
+// and refusing to touch that costs nothing next to handing over a private key.
+
+// pathEqual reports whether two absolute paths name the same file.
+func pathEqual(a, b string) bool { return strings.EqualFold(a, b) }
+
+// pathWithin reports whether cand sits inside base, on a path-component boundary.
+func pathWithin(base, cand string) bool {
+	if len(cand) <= len(base) {
+		return false
+	}
+	if !strings.EqualFold(cand[:len(base)], base) {
+		return false
+	}
+	return cand[len(base)] == os.PathSeparator
+}
+
 // protectedLabel returns the label of the protected path containing cand, or "" when cand is clear.
 //
 // Every candidate is checked against BOTH forms of every rule, for the same reason Resolve checks
@@ -235,12 +271,12 @@ func protectedLabel(cand string) string {
 				continue
 			}
 			if r.file {
-				if cand == base {
+				if pathEqual(cand, base) {
 					return r.label
 				}
 				continue
 			}
-			if cand != base && !strings.HasPrefix(cand, base+string(os.PathSeparator)) {
+			if !pathEqual(cand, base) && !pathWithin(base, cand) {
 				continue
 			}
 			if openSubtree(base, r.open, cand) {
@@ -256,13 +292,13 @@ func protectedLabel(cand string) string {
 func openSubtree(base string, open []string, cand string) bool {
 	for _, name := range open {
 		sub := filepath.Join(base, name)
-		if cand == sub || strings.HasPrefix(cand, sub+string(os.PathSeparator)) {
+		if pathEqual(cand, sub) || pathWithin(sub, cand) {
 			return true
 		}
 		// The carve-out itself may be a link (a worktrees dir moved to another volume), so match its
 		// resolved form as well — a session cwd arrives already resolved.
 		if real, err := filepath.EvalSymlinks(sub); err == nil && real != sub {
-			if cand == real || strings.HasPrefix(cand, real+string(os.PathSeparator)) {
+			if pathEqual(cand, real) || pathWithin(real, cand) {
 				return true
 			}
 		}
@@ -412,7 +448,7 @@ func vcsMetaComponent(root, path string) string {
 		return ""
 	}
 	for _, part := range strings.Split(rel, string(os.PathSeparator)) {
-		if vcsMetaDirs[part] {
+		if vcsMetaDirs[strings.ToLower(part)] {
 			return part
 		}
 	}
@@ -692,7 +728,7 @@ func VCSMetadataComponent(path string) string {
 		return ""
 	}
 	for _, part := range strings.Split(NormalizePath(path), string(os.PathSeparator)) {
-		if vcsMetaDirs[part] {
+		if vcsMetaDirs[strings.ToLower(part)] {
 			return part
 		}
 	}

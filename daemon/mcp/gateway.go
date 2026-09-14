@@ -49,6 +49,15 @@ const maxRequestBytes = 8 << 20
 // answer "may this session ever call write?" when the question that matters is "may it write THIS".
 type Authorizer func(ctx context.Context, token, server, tool string, args json.RawMessage) error
 
+// authorizedMethods are the JSON-RPC methods that carry a caller-supplied selector and therefore
+// have to pass the Authorizer. Everything else the gateway forwards — initialize, tools/list,
+// resources/list, ping — is discovery: it names nothing and acts on nothing.
+var authorizedMethods = map[string]bool{
+	"tools/call":     true,
+	"resources/read": true,
+	"prompts/get":    true,
+}
+
 // Gateway is an http.Handler serving /mcp/<server>.
 type Gateway struct {
 	mgr   *Manager
@@ -167,8 +176,22 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Gate the call BEFORE connecting: a denied tool shouldn't even wake a sleeping server, and the
 	// user shouldn't wait on a spawn for a call that was never going to run.
-	if req.Method == "tools/call" && g.authorize != nil {
-		if err := g.authorize(ctx, bearer, name, toolNameFrom(req.Params), toolArgsFrom(req.Params)); err != nil {
+	//
+	// Not only tools/call. resources/read and prompts/get are ordinary MCP methods that both
+	// claude-code and opencode issue, and each carries a caller-supplied selector — a resource URI,
+	// a prompt name. Gating one method out of three meant an agent could read a resource by URI and
+	// face no mode check, no rule, no approval card and no .git refusal, while the Authorizer's own
+	// doc comment describes this as "the seam that lets MCP tools obey the same approval rules and
+	// read-only modes as native tools". `resources/read` with uri=file:///…/.ssh/id_ed25519 was a
+	// file read that nothing in this system ever saw.
+	if g.authorize != nil && authorizedMethods[req.Method] {
+		// tools/call names the tool in params; the other methods ARE the operation, so the method
+		// name is what the rule engine and the approval card should show.
+		tool, args := req.Method, req.Params
+		if req.Method == "tools/call" {
+			tool, args = toolNameFrom(req.Params), toolArgsFrom(req.Params)
+		}
+		if err := g.authorize(ctx, bearer, name, tool, args); err != nil {
 			writeRPCError(w, req.ID, -32001, err.Error())
 			return
 		}

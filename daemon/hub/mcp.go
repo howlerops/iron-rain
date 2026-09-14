@@ -371,6 +371,15 @@ func (h *Hub) gatewayServers(servers []mcp.Server, token string) []mcp.Server {
 	}
 	h.mu.Unlock()
 	if g == nil || base == "" {
+		// Hand back the RAW stdio definitions — real argv, real credentials in the environment — and
+		// say so. Every call made through them skips Gateway.ServeHTTP and therefore skips
+		// authorizeMCPTool: no mode check, no approval rule, no approval card. That is a degraded
+		// mode, not a neutral one, and it was silent for long enough to ship as the only branch
+		// opencode ever took.
+		if len(servers) > 0 && g != nil {
+			log.Printf("mcp: gateway base is not set yet — %d server(s) are being injected RAW, so "+
+				"their tool calls will bypass approval rules and modes entirely", len(servers))
+		}
 		return servers
 	}
 	out := make([]mcp.Server, 0, len(servers))

@@ -314,6 +314,26 @@ func serve(args []string) error {
 		}
 		return nil
 	})
+	// Tell the hub where the MCP gateway is reachable BEFORE any provider starts.
+	//
+	// This used to run down beside the HTTP server, ~250 lines below enableProviders, and the ordering
+	// was not cosmetic. gatewayServers rewrites a stdio server into an authenticated gateway URL only
+	// when the base is known, and otherwise falls back to handing over the RAW stdio definition. So at
+	// the moment opencode's OPENCODE_CONFIG_CONTENT was rendered the base was always "", the fallback
+	// was the only branch it ever took, and every opencode session spawned its own copy of every MCP
+	// server with the real argv and the real credentials in its environment.
+	//
+	// That is an approval bypass, not just an inefficiency: a tool call that never reaches
+	// Gateway.ServeHTTP never reaches authorizeMCPTool either, so no mode check, no approval rule, no
+	// approval card and no .git refusal ever ran for it. The identical call on a claude-code session
+	// WAS gated, because that adapter consumes the per-session config this rewrite produces.
+	//
+	// Safe to compute here: portOf is a pure function of --addr, so the value is the same one the
+	// later call produced. Harnesses are always pointed at LOOPBACK, never at whatever --addr is (the
+	// installed launchd agent binds 0.0.0.0), so an agent on this machine never routes its tool calls
+	// over the network. The route is still exposed on that interface, which is why it requires a
+	// bearer token — an MCP server runs with this machine's credentials.
+	h.SetMCPGatewayBase("http://127.0.0.1:" + portOf(*addr))
 	// Auto-detect every provider present on this host; the flags override a specific one.
 	providers := enableProviders(context.Background(), h, *opencodeURL, *claudeSidecar, *piBin, parseSetupMode(*claudeSetup))
 	if len(providers) == 0 {
@@ -556,12 +576,6 @@ func serve(args []string) error {
 	// ReadHeaderTimeout bounds header-slowloris on the plain HTTP routes
 	// (/healthz, /oauth/linear/callback) when exposed via --public-url. Leave
 	// Write/Idle timeouts unset so long-lived /ws WebSocket upgrades aren't cut off.
-	// Tell the hub where the MCP gateway is reachable, now that the bind address is settled. Harnesses
-	// are always pointed at LOOPBACK, never at whatever --addr is (the installed launchd agent binds
-	// 0.0.0.0), so an agent on this machine never routes its tool calls over the network. The route
-	// itself is still exposed on that interface, which is exactly why it requires a bearer token — an
-	// MCP server runs with this machine's credentials.
-	h.SetMCPGatewayBase("http://127.0.0.1:" + portOf(*addr))
 	httpSrv := &http.Server{Addr: *addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 
 	// Graceful shutdown. Without this the process only ever ended by signal, which meant EVERY defer

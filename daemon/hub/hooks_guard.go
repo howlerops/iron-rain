@@ -140,6 +140,9 @@ func approvalPaths(ar protocol.ApprovalRequest) []string {
 var pathKeys = []string{
 	"file_path", "filePath", "path", "notebook_path", "notebookPath",
 	"target_file", "targetFile", "old_path", "new_path", "destination", "dest", "source", "src",
+	// MCP names its target `uri`, and a resources/read is a file read by another name. Without this
+	// the guard had nothing to inspect on that method at all.
+	"uri",
 }
 
 // inputPaths pulls the filesystem targets out of a tool's raw arguments, including one level of
@@ -157,7 +160,7 @@ func inputPaths(raw json.RawMessage) []string {
 	collect := func(m map[string]any) {
 		for _, k := range pathKeys {
 			if s, ok := m[k].(string); ok && strings.TrimSpace(s) != "" {
-				out = append(out, s)
+				out = append(out, unwrapFileURI(s))
 			}
 		}
 	}
@@ -174,6 +177,21 @@ func inputPaths(raw json.RawMessage) []string {
 		}
 	}
 	return out
+}
+
+// unwrapFileURI turns a file:// URI into the plain path it names, and leaves anything else alone.
+// MCP resources are addressed by URI, so without this every path check below would be comparing
+// against a string that begins with a scheme and matching nothing.
+func unwrapFileURI(s string) string {
+	for _, prefix := range []string{"file://localhost/", "file:///", "file://"} {
+		if rest, ok := strings.CutPrefix(s, prefix); ok {
+			if strings.HasPrefix(prefix, "file:///") || prefix == "file://localhost/" {
+				return "/" + rest
+			}
+			return rest
+		}
+	}
+	return s
 }
 
 // looksLikePath is intentionally conservative: it is used to decide whether to APPLY a restriction,

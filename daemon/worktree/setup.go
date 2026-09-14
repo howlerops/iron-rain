@@ -104,10 +104,15 @@ func LoadConfig(repoRoot string) (Config, bool, error) {
 // non-zero port is exported to setup as OCULUS_PORT (allocate it via AllocPort under your own lock
 // so concurrent worktrees don't collide).
 //
-// Everything except the setup command is safe to do unconditionally: copying, symlinking and
-// hook-disabling move data around inside a directory the caller already chose. `cfg.Setup` is
-// different in kind — it is a string handed to `sh -c` as the daemon's user — so it is the one step
-// gated on trust. See SetupTrust for why the decision is a parameter and not a config field.
+// Everything except the setup command is safe to do unconditionally, but only because copy and link
+// are CONFINED — see confinedRel. They were not: filepath.Join cleans ".." away, so a pattern of
+// "../../.ssh/id_ed25519" read outside repoRoot and wrote outside worktreePath, and this comment
+// used to assert the opposite, which is exactly what justified leaving Copy outside the trust gate.
+// Config is decoded from <repoRoot>/.oculus/project.json, which a steerer can write with fs.write,
+// so that was a capSteer path to lifting the owner's private key into a directory the guard treats
+// as open. `cfg.Setup` remains different in kind — a string handed to `sh -c` as the daemon's user —
+// so it is still the one step gated on trust. See SetupTrust for why that decision is a parameter
+// and not a config field.
 // BootstrapIsolated is Bootstrap for a worktree that must NOT share mutable state with its siblings
 // — a fan-out variant. See the note at the link step for what sharing actually breaks.
 func BootstrapIsolated(ctx context.Context, repoRoot, worktreePath string, cfg Config, port int, trust SetupTrust) (Result, error) {
@@ -116,6 +121,20 @@ func BootstrapIsolated(ctx context.Context, repoRoot, worktreePath string, cfg C
 
 func Bootstrap(ctx context.Context, repoRoot, worktreePath string, cfg Config, port int, trust SetupTrust) (Result, error) {
 	return bootstrap(ctx, repoRoot, worktreePath, cfg, port, trust, false)
+}
+
+// confinedRel reports whether a repo-relative path stays inside the repository.
+//
+// Both Join calls in bootstrap CLEAN their result, so "../../.ssh/id_ed25519" silently becomes a
+// path outside both the repo and the worktree rather than an error. Checking the RELATIVE form is
+// what catches it: a rel that starts with ".." — or is absolute, which Join would honour outright —
+// has left the tree, whatever the joined result looks like afterwards.
+func confinedRel(rel string) bool {
+	if rel == "" || filepath.IsAbs(rel) {
+		return false
+	}
+	rel = filepath.Clean(rel)
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
 }
 
 // isolated is a DAEMON-set argument, deliberately not a Config field: Config is decoded from a file
@@ -132,6 +151,9 @@ func bootstrap(ctx context.Context, repoRoot, worktreePath string, cfg Config, p
 			rel, err := filepath.Rel(repoRoot, src)
 			if err != nil {
 				continue
+			}
+			if !confinedRel(rel) {
+				return res, fmt.Errorf("copy pattern %q reaches outside the repository (%s)", pat, rel)
 			}
 			dst := filepath.Join(worktreePath, rel)
 			if err := copyPath(src, dst); err != nil {
@@ -172,6 +194,9 @@ func bootstrap(ctx context.Context, repoRoot, worktreePath string, cfg Config, p
 	}
 	for _, rel := range links {
 		rel = filepath.Clean(rel)
+		if !confinedRel(rel) {
+			return res, fmt.Errorf("link %q reaches outside the repository", rel)
+		}
 		src := filepath.Join(repoRoot, rel)
 		if _, err := os.Lstat(src); err != nil {
 			continue // the repo doesn't have this dir — nothing to share
