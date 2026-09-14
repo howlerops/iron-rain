@@ -5,7 +5,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 )
 
 // A run that was still "running" when the daemon died must not wedge its loop forever.
@@ -97,5 +99,43 @@ func TestATicketWhoseSpawnFailedIsRetriedAndSaysWhy(t *testing.T) {
 		t.Fatalf("the ticket was never retried after the failure was fixed (spawns=%d). markHandled "+
 			"claimed it before the error was looked at, so this loop has silently abandoned a ticket "+
 			"it will never touch again.", spawns)
+	}
+}
+
+// Two concurrent tracker refreshes must not start two agents on one ticket.
+//
+// isHandled + spawn + markHandled was a check-then-act with the engine lock RELEASED for the entire
+// spawn — which creates a worktree and a provider session, so the window is seconds wide.
+// Manager.Refresh invokes its update callback outside its own lock and is fired from the 60s poll,
+// the startup fetch and three client-triggered handlers, each on its own goroutine. Two overlapping
+// meant both saw the ticket unclaimed and both spawned: two autonomous sessions on one ticket, in
+// two worktrees, both spending budget.
+func TestConcurrentRefreshesStartOneAgentPerTicket(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "loops.json")
+	var mu sync.Mutex
+	spawned := map[string]int{}
+	e := New(path, func(_ Loop, iss *Issue) (string, error) {
+		mu.Lock()
+		spawned[iss.Key]++
+		mu.Unlock()
+		time.Sleep(20 * time.Millisecond) // a worktree + a provider session take real time
+		return "sess-" + iss.Key, nil
+	}, nil)
+	e.Upsert(Loop{ID: "l1", Name: "tickets", Enabled: true, TriggerCategory: "todo",
+		ProjectIDs: []string{"p1"}, MaxConcurrent: 4})
+
+	issues := []Issue{{Key: "ENG-7", Title: "Fix login", Category: "todo"}}
+	var wg sync.WaitGroup
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); e.OnIssues(issues) }()
+	}
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if spawned["ENG-7"] != 1 {
+		t.Errorf("started %d agents for one ticket.\n\nEach gets its own worktree and its own "+
+			"budget, and whichever finishes badly then wedges the loop.", spawned["ENG-7"])
 	}
 }

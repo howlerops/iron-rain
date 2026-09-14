@@ -866,21 +866,47 @@ func (s *session) target(sub string) string {
 	return s.id
 }
 
-func (s *session) send(m inMsg) error {
+func (s *session) send(m inMsg) error { return s.sendCtx(context.Background(), m) }
+
+// sendCtx writes one message to the sidecar's stdin, bounded by ctx.
+//
+// The bound matters more than it looks. The sidecar's stdin is a 64 KiB pipe, and PromptImages
+// inlines base64 image data, so one prompt routinely exceeds it — if the sidecar stops draining,
+// this Write blocks forever while holding writeMu. And Close() needs that same writeMu to close
+// stdin, so the teardown deadlocks against the very write it exists to abort.
+//
+// The caller's goroutine is released on ctx expiry; the write goroutine stays parked until the pipe
+// drains or the process dies, which Close's TerminateGroup guarantees. One stranded goroutine per
+// wedged sidecar is a far better outcome than a caller that can never return — the heartbeat
+// supervisor walks every session SERIALLY, so a single blocked write there stopped budget
+// enforcement, handoff indexing and stall detection for every session after it, permanently and with
+// no log line.
+func (s *session) sendCtx(ctx context.Context, m inMsg) error {
 	b, err := json.Marshal(m)
 	if err != nil {
 		return err
 	}
 	b = append(b, '\n')
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	_, err = s.stdin.Write(b)
-	return err
+	done := make(chan error, 1)
+	go func() {
+		s.writeMu.Lock()
+		defer s.writeMu.Unlock()
+		_, werr := s.stdin.Write(b)
+		done <- werr
+	}()
+	select {
+	case werr := <-done:
+		return werr
+	case <-ctx.Done():
+		return fmt.Errorf("claudecode: the sidecar is not reading its input (%w)", ctx.Err())
+	case <-s.done:
+		return errors.New("claudecode: session is closed")
+	}
 }
 
 // Prompt sends a follow-up user turn into the SAME running session.
-func (s *session) Prompt(_ context.Context, text string) error {
-	return s.send(inMsg{T: "prompt", Text: text})
+func (s *session) Prompt(ctx context.Context, text string) error {
+	return s.sendCtx(ctx, inMsg{T: "prompt", Text: text})
 }
 
 // PromptImages sends a multimodal turn; the sidecar builds Anthropic image content blocks.

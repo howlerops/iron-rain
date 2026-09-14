@@ -406,12 +406,22 @@ func (m *managedSession) closeTurnFrom(state, reason string, providerDriven bool
 	// the terminal turn snapshot alone doesn't reach the inline cards, which key off these.
 	for _, sa := range toSeal {
 		if raw, err := (agent.Event{Type: protocol.TypeSessionSubAgent, Payload: sa}).Encode(); err == nil {
-			m.broadcast(raw)
-			// ADVANCE the stored row rather than appending. The pump wrote this lane as "running"
-			// under the same stable id, and an INSERT OR IGNORE seal is silently dropped — so the
-			// lane replayed in the state it started in and spun forever for a sub-agent that had
-			// already finished.
+			// DURABLE FIRST, then the ring — the order the pump uses everywhere else, and the one the
+			// fullHistory memo's cache key depends on.
+			//
+			// That memo is keyed on (ringSeq, txSeq). advanceDurable bumps txSeq BEFORE issuing its
+			// SQL, which is harmless when the durable write precedes the broadcast: any memo built in
+			// the window is invalidated a moment later by the ring bump. Inverted, it is not. A
+			// subscribe or a history page landing between the broadcast and the commit read
+			// (ringSeq+1, txSeq+1) — a key that already claims this seal — while db.Transcript() still
+			// returned the row as `running`, and memoized that. Nothing bumps either counter
+			// afterwards, so every later replay of that session served a sub-agent lane spinning for
+			// a turn that had ended: the exact defect the seal exists to prevent, made sticky.
+			//
+			// ADVANCE rather than append: the pump wrote this lane as "running" under the same stable
+			// id, and an INSERT OR IGNORE seal is silently dropped.
 			m.advanceDurable(m.sess.ID(), "sub:"+sa.ID, raw)
+			m.broadcast(raw)
 		}
 	}
 	if len(toSeal) > 0 {
@@ -419,11 +429,10 @@ func (m *managedSession) closeTurnFrom(state, reason string, providerDriven bool
 	}
 	for _, st := range toolSeal {
 		if raw, err := (agent.Event{Type: protocol.TypeSessionTool, Payload: st}).Encode(); err == nil {
-			m.broadcast(raw)
-			// The seal is the card's only terminal state, and persistDurable stores exactly that —
-			// it was simply never called here, so an interrupted turn's cards came back on reload
-			// still spinning.
+			// Durable first, same reasoning as the sub-agent seals above. The seal is the card's only
+			// terminal state, and persistDurable stores exactly that.
 			m.persistDurable(agent.Event{Type: protocol.TypeSessionTool, Payload: st}, raw)
+			m.broadcast(raw)
 		}
 	}
 	if len(toolSeal) > 0 {

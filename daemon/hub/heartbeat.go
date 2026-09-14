@@ -191,7 +191,7 @@ func (h *Hub) heartbeatTick() {
 					// Record the checkpoint only if the ask actually got there. Marking it first meant a
 					// refused Prompt still counted as "state externalized", and the agent was never
 					// asked again until another checkpointTokens had gone by.
-					if err := m.sess.Prompt(context.Background(), checkpointNudge(handoff)); err != nil {
+					if err := m.promptBounded(checkpointNudge(handoff)); err != nil {
 						log.Printf("heartbeat: could not ask %s to checkpoint: %v", m.sess.ID(), err)
 					} else {
 						m.mu.Lock()
@@ -214,7 +214,7 @@ func (h *Hub) heartbeatTick() {
 					// time. After maxN the session was declared exhausted and its autonomy switched off
 					// — for an agent that had never once been nudged. The budget is meant to bound how
 					// much we spend prodding an agent, not how many times we failed to reach it.
-					if err := m.sess.Prompt(context.Background(), continueNudge(todos, handoff)); err != nil {
+					if err := m.promptBounded(continueNudge(todos, handoff)); err != nil {
 						log.Printf("heartbeat: could not nudge %s: %v — not charging it against the "+
 							"%d-nudge budget", m.sess.ID(), err, maxN)
 					} else {
@@ -401,6 +401,21 @@ func toHandoffEntries(rs []store.HandoffRecord) []protocol.HandoffEntry {
 		})
 	}
 	return out
+}
+
+// nudgeSendTimeout bounds a supervisor-initiated prompt. heartbeatTick walks every session SERIALLY
+// from the ticker goroutine, and these two calls used context.Background() — no deadline at all. A
+// provider that does not return (claude-code's adapter discarded its context entirely and wrote to a
+// pipe that can fill) therefore stopped the tick permanently: every session AFTER the wedged one lost
+// budget enforcement, handoff indexing and transcript-memo expiry, with no log line and no restart.
+const nudgeSendTimeout = 15 * time.Second
+
+// promptBounded sends a supervisor nudge with a deadline. Never call Prompt from the heartbeat
+// without one.
+func (m *managedSession) promptBounded(text string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), nudgeSendTimeout)
+	defer cancel()
+	return m.sess.Prompt(ctx, text)
 }
 
 // deriveState computes a session's supervision state. Caller holds m.mu.

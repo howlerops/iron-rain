@@ -223,7 +223,8 @@ func (e *Engine) OnIssues(issues []Issue) {
 			if lp.Tracker != "" && iss.Provider != lp.Tracker {
 				continue
 			}
-			if e.isHandled(lp.ID, iss.Key) {
+			// CLAIM before spawning, not after. See Engine.claim.
+			if !e.claim(lp.ID, iss.Key) {
 				continue
 			}
 			issCopy := iss
@@ -232,15 +233,12 @@ func (e *Engine) OnIssues(issues []Issue) {
 			if err != nil {
 				run.Status = "error"
 				run.Error = err.Error()
-				// DO NOT mark it handled. markHandled ran before the error was even looked at, so a
-				// spawn that failed for a transient, fixable reason — the provider binary missing, a
-				// worktree that could not be created, a project path that moved — blacklisted that
-				// ticket permanently. The loop would never retry it, not even after the cause was
-				// fixed, and nothing anywhere said why.
+				// Hand the ticket back. A spawn that failed for a transient, fixable reason — the
+				// provider binary missing, a worktree that could not be created, a project path that
+				// moved — must not blacklist it permanently.
+				e.release(lp.ID, iss.Key)
 				log.Printf("loops: %q could not start a session for %s: %v — leaving the ticket "+
 					"unclaimed so the next tick can retry it", lp.Name, iss.Key, err)
-			} else {
-				e.markHandled(lp.ID, iss.Key)
 			}
 			e.mu.Lock()
 			e.runs = append(e.runs, run)
@@ -382,6 +380,56 @@ func (e *Engine) isHandled(loopID, key string) bool {
 		}
 	}
 	return false
+}
+
+// claim atomically reserves a ticket for a loop, returning false when it was already taken.
+//
+// isHandled + spawn + markHandled was a check-then-act with the engine lock RELEASED for the whole
+// spawn — which creates a worktree and a provider session, so the window is seconds wide. Manager
+// .Refresh runs its update callback outside its own lock and is fired from the 60s poll, the startup
+// fetch and three client-triggered handlers, each on its own goroutine; two of them overlapping
+// meant both saw the ticket unclaimed and both called spawn. Two autonomous sessions on one ticket,
+// in two worktrees, both spending budget.
+func (e *Engine) claim(loopID, key string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for i := range e.loops {
+		if e.loops[i].ID != loopID {
+			continue
+		}
+		for _, h := range e.loops[i].Handled {
+			if h == key {
+				return false
+			}
+		}
+		e.loops[i].Handled = append(e.loops[i].Handled, key)
+		if len(e.loops[i].Handled) > 500 { // bound
+			e.loops[i].Handled = e.loops[i].Handled[len(e.loops[i].Handled)-500:]
+		}
+		return true
+	}
+	return false // no such loop
+}
+
+// release gives a claimed ticket back, for a spawn that failed. Without it a transient failure —
+// a missing provider binary, a worktree that could not be created — would blacklist the ticket
+// permanently, and the loop would never retry it even after the cause was fixed.
+func (e *Engine) release(loopID, key string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for i := range e.loops {
+		if e.loops[i].ID != loopID {
+			continue
+		}
+		kept := e.loops[i].Handled[:0]
+		for _, h := range e.loops[i].Handled {
+			if h != key {
+				kept = append(kept, h)
+			}
+		}
+		e.loops[i].Handled = kept
+		return
+	}
 }
 
 func (e *Engine) markHandled(loopID, key string) {

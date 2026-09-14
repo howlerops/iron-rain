@@ -389,6 +389,18 @@ type subscriber struct {
 	done      chan struct{}
 	closeOnce sync.Once
 
+	// replayMu serialises the RE-subscribe replay (the session-switch path), which pushes a
+	// transcript snapshot into s.ch from its own goroutine.
+	//
+	// Nothing stopped two of those goroutines existing at once: switch away from a session and back
+	// while the previous replay is still draining into a slow socket — a phone over the relay — and
+	// both push up to replayTailLimit frames into the same channel, interleaved with each other and
+	// with live frames. The conversation then renders twice and shuffled: `running` tool cards
+	// arriving after their `completed` twins, so finished tools revert to spinners, and deltas after
+	// the message they belong to. That is the disorder joinHistory was written to prevent on the
+	// other path; this one had no equivalent.
+	replayMu sync.Mutex
+
 	// delivered holds a hash of every frame this subscriber already received in its replay, for a
 	// short window after it subscribed.
 	//
@@ -945,6 +957,10 @@ func (m *managedSession) subscribe(conn *transport.Conn) {
 		// Re-send the transcript to the SAME subscriber (its writeLoop drains s.ch) so the conversation
 		// repopulates. Runs in a goroutine so a full outbound buffer can't stall the event pump.
 		go func() {
+			// One replay at a time for this subscriber. A second switch waits for the first to
+			// finish rather than interleaving with it.
+			s.replayMu.Lock()
+			defer s.replayMu.Unlock()
 			for _, raw := range replay {
 				select {
 				case s.ch <- raw:
