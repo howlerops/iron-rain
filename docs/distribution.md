@@ -10,8 +10,15 @@ The marketing/support site lives in `site/` and deploys to
 - `site/support.html` — Support page (App Store required URL) + TestFlight instructions
 
 Use these URLs in App Store Connect:
-- Privacy Policy URL: `https://howlerops.github.io/iron-rain/privacy.html`
-- Support URL: `https://howlerops.github.io/iron-rain/support.html`
+- Privacy Policy URL: `https://ironrain.app/privacy.html`
+- Support URL: `https://ironrain.app/support.html`
+
+  Moved off `howlerops.github.io/iron-rain/*` in v0.2.202, when the site began serving from
+  Cloudflare on the project's own domain. **Update these in App Store Connect** — the old GitHub
+  Pages URLs still resolve, so nothing is broken today, but they are a personal account's project
+  page and retiring it would break a URL Apple requires to work. The site Worker serves these paths
+  literally (no pretty-URL redirect) precisely because they are committed externally, and CI fails
+  the deploy if either stops returning 200.
 
 ## TestFlight (fastlane)
 Auth is via the **App Store Connect API key** — no Apple ID / 2FA. Signing is Xcode-managed

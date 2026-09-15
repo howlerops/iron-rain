@@ -23,7 +23,15 @@
     // 404.html is not present today; serve index for unknown paths rather than a bare Cloudflare
     // error page. single-page-application would rewrite everything, which is wrong for a multi-page
     // static site, so this is the not-found handling that matches what the site actually is.
-    "not_found_handling": "404-page"
+    "not_found_handling": "404-page",
+    // Serve paths exactly as written: no ".html" -> pretty-URL redirect.
+    //
+    // The default rewrites /privacy.html to /privacy with a 307, and those two paths are not
+    // interchangeable here — the App Store has a privacy policy URL and a support URL registered
+    // against this site, and an externally committed URL should resolve directly rather than depend
+    // on a redirect rule staying configured. Nothing links to the pretty forms today, so there is
+    // nothing to gain and a review-time failure to lose.
+    "html_handling": "none"
   },
 
   "routes": [
