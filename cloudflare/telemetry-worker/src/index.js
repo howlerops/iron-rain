@@ -131,6 +131,9 @@ async function stats(request, env) {
 
   const days = Math.min(90, Math.max(1, Number(new URL(request.url).searchParams.get("days")) || 7));
   const since = `toDateTime(now()) - INTERVAL '${days}' DAY`;
+  // Hourly buckets for a short window, daily beyond it: 90 days of hourly points is 2160 columns of
+  // noise, and one day of daily points is a single bar.
+  const bucket = days <= 2 ? "1' HOUR" : "1' DAY";
 
   // SUM(_sample_interval), never count().
   //
@@ -139,7 +142,7 @@ async function stats(request, env) {
   // under-reports exactly when traffic is high enough to care about. Summing the interval is the
   // documented way to recover the true figure.
   const q = (sql) => sqlQuery(env, sql);
-  const [byEvent, failures, versions, platforms, installs, timing] = await Promise.all([
+  const [byEvent, failures, versions, platforms, installs, timing, series] = await Promise.all([
     q(`SELECT blob1 AS event, SUM(_sample_interval) AS n,
               SUM(IF(double2 = 0, _sample_interval, 0)) AS failed
        FROM oculus_telemetry WHERE timestamp > ${since}
@@ -161,18 +164,21 @@ async function stats(request, env) {
               SUM(_sample_interval) AS n
        FROM oculus_telemetry WHERE timestamp > ${since} AND double1 > 0 AND blob2 != ''
        GROUP BY provider ORDER BY n DESC LIMIT 20`),
+    q(`SELECT toStartOfInterval(timestamp, INTERVAL '${bucket}) AS t,
+              SUM(_sample_interval) AS n,
+              SUM(IF(double2 = 0, _sample_interval, 0)) AS failed
+       FROM oculus_telemetry WHERE timestamp > ${since}
+       GROUP BY t ORDER BY t ASC`),
   ]);
 
-  const failed = [byEvent, failures, versions, platforms, installs, timing].find((r) => r.error);
+  const failed = [byEvent, failures, versions, platforms, installs, timing, series]
+    .find((r) => r.error);
   if (failed) {
-    return html(
-      setupPage(`The Analytics Engine query failed: ${escapeHtml(failed.error)}`),
-      502
-    );
+    return html(setupPage(`The Analytics Engine query failed: ${escapeHtml(failed.error)}`), 502);
   }
 
   const total = installs.rows[0] || {};
-  return html(page({ days, byEvent, failures, versions, platforms, total, timing }));
+  return html(page({ days, byEvent, failures, versions, platforms, total, timing, series }));
 }
 
 /** Runs one SQL statement against the Analytics Engine SQL API. */
@@ -213,11 +219,13 @@ function html(body, status = 200) {
     status,
     headers: {
       "Content-Type": "text/html; charset=utf-8",
-      // This page is a credentialled view of account data; it has no business in a shared cache.
+      // A credentialled view of account data has no business in a shared cache.
       "Cache-Control": "no-store",
       "X-Content-Type-Options": "nosniff",
-      // It renders values that arrived over the wire. They are escaped, and this is the backstop.
-      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'",
+      // Everything is inline and self-contained: no scripts at all, no external fonts, no images.
+      // The charts are SVG built server-side, which is why 'none' can stay the default and why this
+      // page cannot be turned into an exfiltration path by anything that lands in the dataset.
+      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:",
     },
   });
 }
@@ -228,97 +236,256 @@ function escapeHtml(v) {
   );
 }
 
-function setupPage(why) {
-  return `<!doctype html><meta charset=utf-8><title>Iron Rain telemetry</title>
-<style>${CSS}</style><main><h1>Telemetry</h1>
-<p class=warn>${escapeHtml(why)}</p>
-<p>Set these on the Worker (Cloudflare dashboard &rarr; Workers &amp; Pages &rarr;
-oculus-telemetry &rarr; Settings &rarr; Variables and Secrets, or <code>wrangler secret put</code>):</p>
-<table>
-<tr><th>STATS_PASSWORD</th><td>any password; the browser prompts for it. Username is ignored.</td></tr>
-<tr><th>CF_ACCOUNT_ID</th><td>Workers &amp; Pages &rarr; Account ID</td></tr>
-<tr><th>CF_ANALYTICS_TOKEN</th><td>an API token with <b>Account &rarr; Account Analytics &rarr; Read</b></td></tr>
-</table>
-<p class=note>The ingest endpoint keeps working regardless — none of these affect it.</p></main>`;
-}
-
-const CSS = `
-:root{color-scheme:light dark}
-body{margin:0;font:15px/1.5 ui-sans-serif,system-ui,-apple-system,sans-serif}
-main{max-width:70rem;margin:0 auto;padding:2rem 1.25rem}
-h1{font-size:1.4rem;margin:0 0 .25rem} h2{font-size:1rem;margin:2rem 0 .5rem;font-weight:600}
-.sub{opacity:.65;margin:0 0 1.5rem;font-size:.9rem}
-.cards{display:flex;flex-wrap:wrap;gap:1rem;margin-bottom:1rem}
-.card{flex:1 1 9rem;border:1px solid color-mix(in srgb,currentColor 18%,transparent);
-border-radius:.6rem;padding:.85rem 1rem}
-.card b{display:block;font-size:1.7rem;font-variant-numeric:tabular-nums;line-height:1.2}
-.card span{opacity:.65;font-size:.8rem}
-table{border-collapse:collapse;width:100%;font-size:.9rem;overflow-x:auto;display:block}
-th,td{text-align:left;padding:.4rem .6rem;border-bottom:1px solid
-color-mix(in srgb,currentColor 12%,transparent);white-space:nowrap}
-th{font-weight:600;opacity:.75} td.n{text-align:right;font-variant-numeric:tabular-nums}
-td.err{white-space:normal;opacity:.85;max-width:38rem}
-.bad{color:#c0392b} @media (prefers-color-scheme:dark){.bad{color:#ff8a7a}}
-.warn{padding:.75rem 1rem;border-radius:.5rem;
-background:color-mix(in srgb,currentColor 8%,transparent)}
-.note{opacity:.6;font-size:.85rem} code{font-family:ui-monospace,monospace;font-size:.85em}
-nav{margin-bottom:1.25rem;font-size:.9rem} nav a{margin-right:.75rem}
-`;
-
 // num() is the ingest path's coercion, reused here: same job, same answer for a bad value.
 
 function fmt(v) {
-  return num(v).toLocaleString("en-US");
+  const n = num(v);
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(n < 10_000_000 ? 1 : 0) + "M";
+  if (n >= 10_000) return (n / 1000).toFixed(n < 100_000 ? 1 : 0) + "k";
+  return n.toLocaleString("en-US");
+}
+
+/** Formats a millisecond duration. fmt() is for magnitudes — it turned 18300ms into "18.3kms". */
+function dur(ms) {
+  const n = num(ms);
+  if (n < 1000) return `${Math.round(n)}ms`;
+  if (n < 60_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}s`;
+  const m = Math.floor(n / 60_000);
+  const rest = Math.round((n % 60_000) / 1000);
+  return rest ? `${m}m ${rest}s` : `${m}m`;
 }
 
 function rows(list, cells) {
-  if (!list.length) return `<tr><td colspan=9 class=note>no data in this window</td></tr>`;
+  if (!list.length) return `<tr><td colspan=9 class=empty>no data in this window</td></tr>`;
   return list.map(cells).join("");
 }
 
-function page({ days, byEvent, failures, versions, platforms, total, timing }) {
+// ---- charts -------------------------------------------------------------------------------------
+//
+// Hand-rolled SVG, server-rendered. A chart library would be most of this Worker's bundle, would
+// need client-side JS (and therefore a script-src hole in the CSP), and would render the same five
+// shapes. These are pure functions over numbers, which also makes them testable without a browser.
+
+/** An area chart of totals with failures drawn over it. */
+function areaChart(points, { w = 1040, h = 150 } = {}) {
+  if (points.length < 2) {
+    return `<p class=empty>not enough data in this window to plot</p>`;
+  }
+  const max = Math.max(1, ...points.map((p) => p.n));
+  // Failures get their OWN scale, and the legend says so.
+  //
+  // Sharing the events axis looked correct and showed nothing: a few dozen failures against a few
+  // thousand events is a flat line welded to the bottom edge, so the chart promised a series in its
+  // legend that was not visibly there. Failures matter at their own magnitude — the question is
+  // "when did they spike", not "how do they compare in volume to successes", which the failure-rate
+  // card already answers.
+  const failMax = Math.max(1, ...points.map((p) => p.failed));
+  const x = (i) => (i / (points.length - 1)) * w;
+  const y = (v, scale) => h - (v / scale) * (h - 8) - 2;
+
+  const line = (key, scale) =>
+    points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p[key], scale).toFixed(1)}`).join("");
+  const area = `${line("n", max)}L${w},${h}L0,${h}Z`;
+  const anyFailures = points.some((p) => p.failed > 0);
+
+  return `<svg class="chart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img"
+ aria-label="events over time, peak ${fmt(max)} events and ${fmt(failMax)} failures">
+<defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0%" stop-color="var(--gold)" stop-opacity=".38"></stop>
+<stop offset="100%" stop-color="var(--gold)" stop-opacity="0"></stop>
+</linearGradient></defs>
+<path d="${area}" fill="url(#g)"></path>
+<path d="${line("n", max)}" fill="none" stroke="var(--gold-bright)" stroke-width="1.75"
+ vector-effect="non-scaling-stroke"></path>
+${anyFailures ? `<path d="${line("failed", failMax)}" fill="none" stroke="var(--bad)"
+ stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-dasharray="4 3"></path>` : ""}
+</svg>`;
+}
+
+/** A labelled horizontal bar, used for the event and provider breakdowns. */
+function bars(list, { label, value, sub, max }) {
+  if (!list.length) return `<p class=empty>no data in this window</p>`;
+  const top = Math.max(1, ...list.map((r) => num(value(r))), max || 0);
+  return `<div class=bars>${list
+    .map((r) => {
+      const v = num(value(r));
+      const pct = ((v / top) * 100).toFixed(1);
+      return `<div class=bar>
+<span class=bar-label title="${escapeHtml(label(r))}">${escapeHtml(label(r))}</span>
+<span class=bar-track><span class=bar-fill style="width:${pct}%"></span></span>
+<span class=bar-val>${escapeHtml(sub(r))}</span>
+</div>`;
+    })
+    .join("")}</div>`;
+}
+
+const CSS = `
+/* Tokens lifted from site/style.css so this page is the same product as the marketing site —
+   same gold, same ink, same dark-first-with-light-override. Copied rather than imported because a
+   Worker cannot read a file from another directory at runtime, and one <link> to the site would make
+   this page depend on that deploy staying up. */
+:root{
+  --bg:#09090a; --fg:#f0ece2; --muted:#6e6860; --muted-med:#9a9088;
+  --gold:#c49b21; --gold-bright:#d4b820; --gold-light:#d4c066; --gold-soft:#e8d48b;
+  --gold-gradient:linear-gradient(135deg,#d4c066,#c49b21,#9a7a18);
+  --amber-dim:rgba(196,155,33,.12); --amber-border:rgba(196,155,33,.28);
+  --card:#111013; --card-hover:#181620; --border:#1e1c22; --border-sub:#141318;
+  --bad:#e0664f; --ok:#6f9a5a;
+  --font-sans:'DM Sans',-apple-system,BlinkMacSystemFont,system-ui,sans-serif;
+  --font-display:'Instrument Serif',Georgia,'Times New Roman',serif;
+  --font-mono:ui-monospace,'SF Mono','Fira Code',Menlo,monospace;
+  --radius:18px; --radius-sm:12px; --radius-xs:8px;
+}
+@media (prefers-color-scheme:light){:root{
+  --bg:#fafaf7; --fg:#0e0d0b; --muted:#706860; --muted-med:#908880;
+  --card:#f1ede6; --card-hover:#e8e4dc; --border:#ddd9d0; --border-sub:#e8e4dc;
+  --amber-dim:rgba(196,155,33,.10); --bad:#b8452c; --ok:#4f7a3a;
+}}
+*,*::before,*::after{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font-sans);
+ font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased}
+main{max-width:1080px;margin:0 auto;padding:3rem 1.5rem 5rem}
+header{display:flex;flex-wrap:wrap;align-items:baseline;gap:.75rem;margin-bottom:.35rem}
+.wordmark{font-family:var(--font-mono);font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+ font-size:.95rem;background:var(--gold-gradient);-webkit-background-clip:text;background-clip:text;
+ -webkit-text-fill-color:transparent;color:transparent}
+h1{font-family:var(--font-display);font-weight:400;font-size:2rem;margin:0;letter-spacing:-.01em}
+.sub{color:var(--muted-med);margin:0 0 1.75rem;font-size:.875rem;max-width:56ch}
+nav{display:flex;gap:.4rem;margin-bottom:2rem}
+nav a{font-size:.8rem;padding:.3rem .8rem;border-radius:999px;text-decoration:none;
+ color:var(--muted-med);border:1px solid var(--border);font-variant-numeric:tabular-nums}
+nav a.on{color:var(--gold-soft);border-color:var(--amber-border);background:var(--amber-dim)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(10rem,1fr));gap:.9rem;margin-bottom:2rem}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);
+ padding:1rem 1.15rem}
+.card b{display:block;font-family:var(--font-display);font-weight:400;font-size:2.1rem;
+ line-height:1.1;font-variant-numeric:tabular-nums}
+.card span{display:block;color:var(--muted);font-size:.75rem;text-transform:uppercase;
+ letter-spacing:.06em;margin-top:.25rem}
+.card.accent b{background:var(--gold-gradient);-webkit-background-clip:text;background-clip:text;
+ -webkit-text-fill-color:transparent;color:transparent}
+h2{font-size:.78rem;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);
+ font-weight:600;margin:2.5rem 0 .75rem}
+.panel{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);
+ padding:1.1rem 1.25rem;overflow:hidden}
+.chart{display:block;width:100%;height:150px}
+.legend{display:flex;gap:1.1rem;margin-top:.6rem;font-size:.75rem;color:var(--muted)}
+.legend i{display:inline-block;width:.7rem;height:.15rem;vertical-align:middle;margin-right:.35rem;
+ border-radius:2px}
+.bars{display:flex;flex-direction:column;gap:.45rem}
+.bar{display:grid;grid-template-columns:minmax(6rem,11rem) 1fr minmax(4rem,auto);
+ align-items:center;gap:.75rem;font-size:.85rem}
+.bar-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg)}
+.bar-track{background:var(--border-sub);border-radius:999px;height:.5rem;overflow:hidden}
+.bar-fill{display:block;height:100%;border-radius:999px;background:var(--gold-gradient)}
+.bar-val{text-align:right;font-variant-numeric:tabular-nums;color:var(--muted-med);font-size:.8rem}
+.tbl{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:.85rem;min-width:24rem}
+th{text-align:left;padding:.5rem .7rem;font-size:.7rem;text-transform:uppercase;
+ letter-spacing:.06em;color:var(--muted);font-weight:600;border-bottom:1px solid var(--border)}
+td{padding:.5rem .7rem;border-bottom:1px solid var(--border-sub);white-space:nowrap}
+tr:last-child td{border-bottom:0}
+tr:hover td{background:var(--card-hover)}
+td.n{text-align:right;font-variant-numeric:tabular-nums}
+td.err{white-space:normal;color:var(--muted-med);font-family:var(--font-mono);font-size:.78rem;
+ max-width:40rem;line-height:1.45}
+td.mono{font-family:var(--font-mono);font-size:.8rem}
+.bad{color:var(--bad)} .zero{color:var(--muted)}
+.empty{color:var(--muted);font-size:.85rem;margin:.4rem 0;text-align:center;padding:1.5rem 0}
+footer{margin-top:3rem;padding-top:1.25rem;border-top:1px solid var(--border-sub);
+ color:var(--muted);font-size:.75rem}
+.warn{background:var(--card);border:1px solid var(--amber-border);border-radius:var(--radius-sm);
+ padding:1rem 1.15rem;color:var(--gold-soft)}
+code{font-family:var(--font-mono);font-size:.85em;color:var(--gold-soft)}
+`;
+
+function shell(title, body) {
+  return `<!doctype html><html lang=en><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>${title}</title><style>${CSS}</style><body><main>${body}</main></body></html>`;
+}
+
+function setupPage(why) {
+  return shell(
+    "Telemetry — Iron Rain",
+    `<header><span class=wordmark>Iron Rain</span><h1>Telemetry</h1></header>
+<p class=warn>${escapeHtml(why)}</p>
+<h2>Configuration</h2>
+<div class=panel><div class=tbl><table>
+<tr><th>variable</th><th>what it does</th></tr>
+<tr><td class=mono>STATS_PASSWORD</td><td>the password this page prompts for. The username is ignored.</td></tr>
+<tr><td class=mono>CF_ACCOUNT_ID</td><td>Workers &amp; Pages &rarr; Account ID</td></tr>
+<tr><td class=mono>CF_ANALYTICS_TOKEN</td><td>API token with Account &rarr; Account Analytics &rarr; Read</td></tr>
+</table></div></div>
+<footer>Set these as GitHub repository secrets and the deploy workflow syncs them to the Worker.
+The ingest endpoint is unaffected by all of them.</footer>`
+  );
+}
+
+function page({ days, byEvent, failures, versions, platforms, total, timing, series }) {
   const failedTotal = byEvent.rows.reduce((a, r) => a + num(r.failed), 0);
   const eventTotal = byEvent.rows.reduce((a, r) => a + num(r.n), 0);
-  const rate = eventTotal ? ((failedTotal / eventTotal) * 100).toFixed(1) : "0.0";
+  const rate = eventTotal ? (failedTotal / eventTotal) * 100 : 0;
 
-  return `<!doctype html><meta charset=utf-8><title>Iron Rain telemetry</title>
-<meta name=viewport content="width=device-width,initial-scale=1"><style>${CSS}</style><main>
-<h1>Iron Rain telemetry</h1>
-<p class=sub>Anonymised. No paths, prompts, tokens or repo names — install ids are random and
-self-assigned. Last ${days} day${days === 1 ? "" : "s"}.</p>
-<nav>${[1, 7, 30, 90].map((d) => `<a href="?days=${d}">${d}d</a>`).join("")}</nav>
+  const points = series.rows.map((r) => ({ n: num(r.n), failed: num(r.failed) }));
+  const ranges = [1, 7, 30, 90]
+    .map((d) => `<a href="?days=${d}"${d === days ? " class=on" : ""}>${d}d</a>`)
+    .join("");
+
+  return shell(
+    "Telemetry — Iron Rain",
+    `<header><span class=wordmark>Iron Rain</span><h1>Telemetry</h1></header>
+<p class=sub>Anonymised: no paths, prompts, tokens or repo names, and install ids are random values
+each daemon assigns itself. Nothing here identifies a person.</p>
+<nav>${ranges}</nav>
 
 <div class=cards>
-  <div class=card><b>${fmt(total.installs)}</b><span>installs seen</span></div>
+  <div class="card accent"><b>${fmt(total.installs)}</b><span>installs seen</span></div>
   <div class=card><b>${fmt(total.events)}</b><span>events</span></div>
-  <div class=card><b class="${failedTotal ? "bad" : ""}">${rate}%</b><span>failure rate</span></div>
-  <div class=card><b>${fmt(versions.rows.length)}</b><span>versions in the wild</span></div>
+  <div class=card><b class="${failedTotal ? "bad" : ""}">${rate.toFixed(1)}%</b><span>failure rate</span></div>
+  <div class=card><b>${fmt(versions.rows.length)}</b><span>versions live</span></div>
 </div>
 
+<h2>Activity — last ${days} day${days === 1 ? "" : "s"}</h2>
+<div class=panel>${areaChart(points)}
+<div class=legend><span><i style="background:var(--gold-bright)"></i>events · peak ${fmt(
+      Math.max(1, ...points.map((p) => p.n))
+    )}</span>
+<span><i style="background:var(--bad)"></i>failures · peak ${fmt(
+      Math.max(0, ...points.map((p) => p.failed))
+    )} (own scale)</span></div></div>
+
 <h2>Events</h2>
-<table><tr><th>event</th><th>count</th><th>failed</th></tr>
-${rows(byEvent.rows, (r) => `<tr><td>${escapeHtml(r.event)}</td><td class=n>${fmt(r.n)}</td>
-<td class="n ${num(r.failed) ? "bad" : ""}">${fmt(r.failed)}</td></tr>`)}</table>
+<div class=panel>${bars(byEvent.rows.slice(0, 12), {
+      label: (r) => r.event,
+      value: (r) => r.n,
+      sub: (r) => (num(r.failed) ? `${fmt(r.n)} · ${fmt(r.failed)} failed` : fmt(r.n)),
+    })}</div>
 
 <h2>Failures</h2>
-<table><tr><th>event</th><th>error</th><th>count</th></tr>
+<div class="panel tbl"><table><tr><th>event</th><th>error</th><th>count</th></tr>
 ${rows(failures.rows, (r) => `<tr><td>${escapeHtml(r.event)}</td>
-<td class=err>${escapeHtml(r.error)}</td><td class=n>${fmt(r.n)}</td></tr>`)}</table>
+<td class=err>${escapeHtml(r.error)}</td><td class="n bad">${fmt(r.n)}</td></tr>`)}</table></div>
+
+<h2>Turn duration by provider</h2>
+<div class=panel>${bars(timing.rows, {
+      label: (r) => r.provider,
+      value: (r) => r.p95,
+      sub: (r) => `p50 ${dur(r.p50)} · p95 ${dur(r.p95)}`,
+    })}</div>
 
 <h2>Versions</h2>
-<table><tr><th>version</th><th>installs</th><th>events</th></tr>
-${rows(versions.rows, (r) => `<tr><td>${escapeHtml(r.version) || "<i>unknown</i>"}</td>
-<td class=n>${fmt(r.installs)}</td><td class=n>${fmt(r.events)}</td></tr>`)}</table>
+<div class="panel tbl"><table><tr><th>version</th><th>installs</th><th>events</th></tr>
+${rows(versions.rows, (r) => `<tr><td class=mono>${escapeHtml(r.version) || "unknown"}</td>
+<td class=n>${fmt(r.installs)}</td><td class=n>${fmt(r.events)}</td></tr>`)}</table></div>
 
 <h2>Platforms</h2>
-<table><tr><th>os</th><th>arch</th><th>installs</th></tr>
-${rows(platforms.rows, (r) => `<tr><td>${escapeHtml(r.os)}</td><td>${escapeHtml(r.arch)}</td>
-<td class=n>${fmt(r.installs)}</td></tr>`)}</table>
+<div class="panel tbl"><table><tr><th>os</th><th>arch</th><th>installs</th></tr>
+${rows(platforms.rows, (r) => `<tr><td>${escapeHtml(r.os)}</td>
+<td class=mono>${escapeHtml(r.arch)}</td><td class=n>${fmt(r.installs)}</td></tr>`)}</table></div>
 
-<h2>Duration by provider</h2>
-<table><tr><th>provider</th><th>p50 ms</th><th>p95 ms</th><th>samples</th></tr>
-${rows(timing.rows, (r) => `<tr><td>${escapeHtml(r.provider)}</td>
-<td class=n>${fmt(Math.round(num(r.p50)))}</td><td class=n>${fmt(Math.round(num(r.p95)))}</td>
-<td class=n>${fmt(r.n)}</td></tr>`)}</table>
-</main>`;
+<footer>Counts are SUM(_sample_interval), not count(): Analytics Engine samples under load and
+count() would report only the rows that survived it — under-reporting exactly when traffic is high
+enough to matter.</footer>`
+  );
 }

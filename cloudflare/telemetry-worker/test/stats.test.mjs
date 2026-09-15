@@ -137,3 +137,92 @@ test("/stats is GET-only and unknown paths still 404", async () => {
   const other = await GET("/nope");
   assert.equal(other.status, 404);
 });
+
+// ---- rendering bugs a passing test suite did not catch -------------------------------------------
+//
+// Both of these shipped green and were found by rendering the page and looking at it. They are
+// pinned here because "the tests pass" was true while the chart was missing a series and a duration
+// read "18.3kms".
+
+const renderPage = async (fixtures) => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (_u, init) => {
+    const sql = String(init?.body || "");
+    const pick = sql.includes("toStartOfInterval")
+      ? fixtures.series
+      : sql.includes("quantileWeighted")
+        ? fixtures.timing
+        : [];
+    return new Response(JSON.stringify({ data: pick }), { status: 200 });
+  };
+  try {
+    const res = await worker.fetch(
+      new Request("https://telemetry.test/stats?days=30", {
+        headers: { Authorization: "Basic " + btoa("x:hunter2") },
+      }),
+      envWith()
+    );
+    return await res.text();
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+};
+
+test("the failures series is drawn as a sibling, not swallowed by the previous path", async () => {
+  // The bug: `vector-effect=non-scaling-stroke/>` — an UNQUOTED attribute value takes the `/` into
+  // itself, so the tag never self-closes and the next <path> is parsed as its CHILD. SVG does not
+  // render path children, so the failures line vanished while remaining present in the markup.
+  const body = await renderPage({
+    series: Array.from({ length: 10 }, (_, i) => ({ t: i, n: 100 + i, failed: 3 + i })),
+    timing: [],
+  });
+
+  assert.match(body, /stroke="var\(--bad\)"/, "no failures path was emitted at all");
+
+  const opens = (body.match(/<path\b/g) || []).length;
+  const closes = (body.match(/<\/path>/g) || []).length;
+  assert.equal(
+    opens,
+    closes,
+    `${opens} <path> opened but ${closes} closed. An unclosed path adopts everything after it as ` +
+      `children, which SVG does not render — the element is in the DOM and paints nothing.`
+  );
+
+  assert.deepEqual(
+    body.match(/=[^"'\s>]+\/>/g),
+    null,
+    "an unquoted attribute value is immediately followed by '/>', which puts the slash INSIDE the " +
+      "value and stops the tag self-closing. Quote the value."
+  );
+});
+
+test("failures are plotted on their own scale, or they are a flat line on the axis", async () => {
+  // A few dozen failures against a few thousand events share an axis and the failure line welds
+  // itself to the bottom edge — the legend then advertises a series that is not visibly there.
+  const body = await renderPage({
+    series: Array.from({ length: 12 }, (_, i) => ({ t: i, n: 5000 + i * 100, failed: 2 + (i % 4) })),
+    timing: [],
+  });
+
+  const failPath = body.match(/<path d="([^"]+)" fill="none" stroke="var\(--bad\)"/);
+  assert.ok(failPath, "no failures path");
+  const ys = [...failPath[1].matchAll(/[ML][\d.]+,([\d.]+)/g)].map((m) => Number(m[1]));
+  const spread = Math.max(...ys) - Math.min(...ys);
+  assert.ok(
+    spread > 40,
+    `the failures line spans only ${spread.toFixed(1)} of 150 vertical units, so its shape is ` +
+      `invisible next to a much larger events series. It needs its own scale.`
+  );
+  assert.match(body, /own scale/, "the legend must say the failure axis is independent");
+});
+
+test("durations are formatted as durations", async () => {
+  // fmt() abbreviates magnitudes, so 18300 became "18.3k" and the page read "p95 18.3kms".
+  const body = await renderPage({
+    series: [],
+    timing: [{ provider: "opencode", p50: 840, p95: 18300, n: 10 }],
+  });
+  assert.doesNotMatch(body, /kms|Mms/, "a magnitude abbreviation was concatenated with 'ms'");
+  assert.match(body, /p50 840ms/);
+  assert.match(body, /p95 18s/, "18300ms should read as seconds, not as an abbreviated count");
+});
