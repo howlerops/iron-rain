@@ -330,31 +330,43 @@ jobs:
         # custom domain can still be provisioning. An apex that 522s is worse than one that 404s,
         # because it looks like the whole product is down.
         run: |
-          # The App Store has privacy and support URLs registered against this site, so those exact
-          # paths are checked rather than just the root: a deploy that serves / but 404s or redirects
-          # /privacy.html is a review failure waiting to happen, and the root alone would not show it.
-          for i in $(seq 1 30); do
-            code=$(curl -s -o /tmp/site.html -w "%{http_code}" --max-time 10 https://ironrain.app/ || echo "000")
-            echo "attempt $i: HTTP $code"
-            if [ "$code" = "200" ]; then
-              if ! grep -qi "iron rain" /tmp/site.html; then
-                echo "200, but the body does not look like the site — wrong assets deployed?"
-                exit 1
-              fi
-              for path in /privacy /support /docs; do
-                sub=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "https://ironrain.app$path")
-                echo "  $path -> HTTP $sub"
-                if [ "$sub" != "200" ]; then
-                  echo "  $path must serve directly (200): it is registered with the App Store or"
-                  echo "  linked from the site. The .html forms redirect here, so this is the"
-                  echo "  address to commit externally."
-                  exit 1
+          # Every check retries, including the subpages.
+          #
+          # A deploy reports success when the assets upload, and the edge takes a moment to serve
+          # them consistently. The root check always retried; the subpage checks did not, fired once
+          # inside the first successful root fetch, and failed the deploy on a /privacy that was 200
+          # a minute later. That is the third time an impatient probe has reported a healthy deploy
+          # as broken in this file — hence one helper rather than a fourth hand-rolled loop.
+          #
+          # The paths matter: / alone would pass on a site serving nothing else, which is exactly
+          # what happened when html_handling was set to "none". /privacy and /support are registered
+          # with the App Store, so their failure is a review failure rather than a broken link.
+          serves() {
+            for i in $(seq 1 30); do
+              code=$(curl -s -o /tmp/page.html -w "%{http_code}" --max-time 10 "https://ironrain.app$1" || echo "000")
+              if [ "$code" = "200" ]; then
+                if [ -n "$2" ] && ! grep -qi "$2" /tmp/page.html; then
+                  echo "  $1 -> 200 but the body does not contain \"$2\" — wrong assets deployed?"
+                  return 1
                 fi
-              done
-              echo "ironrain.app is serving the site"
-              exit 0
-            fi
-            sleep 10
+                echo "  $1 -> 200"
+                return 0
+              fi
+              echo "  $1 -> HTTP $code (attempt $i)"
+              sleep 10
+            done
+            echo "  $1 never served."
+            return 1
+          }
+          serves / "iron rain" || exit 1
+          for path in /privacy /support /docs; do
+            serves "$path" || {
+              echo "  $path must serve directly. The .html forms redirect here, so this is the"
+              echo "  address committed to the App Store and linked from the site."
+              exit 1
+            }
           done
+          echo "ironrain.app is serving the site"
+          exit 0
           echo "ironrain.app never served. The worker deployed but the custom domain is not routing."
           exit 1
