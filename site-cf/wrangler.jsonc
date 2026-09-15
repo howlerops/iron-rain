@@ -1,0 +1,35 @@
+// The marketing + docs site, served from Cloudflare instead of GitHub Pages.
+//
+// Why move it: the relay and the telemetry ingest already live here, ironrain.app is a zone in this
+// account, and a Worker's custom domain is one line of committed config — whereas GitHub Pages on an
+// apex domain means A records to GitHub's IPs plus a certificate negotiated between two providers,
+// with the proxy mode as a standing trap. One account, one deploy path, one place to look.
+//
+// Why a Worker with static assets rather than Cloudflare Pages: Pages sets its custom domains in a
+// dashboard, so that part would not be in the repo — and "the deployment exists only in a provider's
+// control plane" is exactly the failure that got the Fly relay removed. Here the domain, the routes
+// and the headers are all committed and applied by CI.
+//
+// JSONC, like the other two: in TOML a bare key belongs to the table header above it, which silently
+// disabled workers.dev on both other Workers. JSON has no implicit scoping.
+{
+  "name": "ironrain-site",
+  "compatibility_date": "2026-09-01",
+
+  // No "main": assets-only. There is no server-side logic here and nothing should creep in — this
+  // is static HTML, and the moment it needs a Worker script it should be a deliberate decision.
+  "assets": {
+    "directory": "../site",
+    // 404.html is not present today; serve index for unknown paths rather than a bare Cloudflare
+    // error page. single-page-application would rewrite everything, which is wrong for a multi-page
+    // static site, so this is the not-found handling that matches what the site actually is.
+    "not_found_handling": "404-page"
+  },
+
+  "routes": [
+    { "pattern": "ironrain.app", "custom_domain": true },
+    { "pattern": "www.ironrain.app", "custom_domain": true }
+  ],
+
+  "observability": { "enabled": true }
+}

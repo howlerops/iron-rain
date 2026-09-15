@@ -34,14 +34,16 @@ on:
       target:
         description: "Which worker to deploy"
         required: true
-        default: "both"
+        default: "all"
         type: choice
-        options: ["both", "relay", "telemetry"]
+        options: ["all", "relay", "telemetry", "site"]
   push:
     branches: ["main"]
     paths:
       - "relay-cf/**"
       - "cloudflare/telemetry-worker/**"
+      - "site/**"
+      - "site-cf/**"
       - ".github/workflows/deploy-workers.yml"
 
 concurrency:
@@ -137,7 +139,7 @@ jobs:
   relay:
     name: deploy relay
     needs: [preflight, test]
-    if: ${{ github.event_name == 'push' || inputs.target == 'both' || inputs.target == 'relay' }}
+    if: ${{ github.event_name == 'push' || inputs.target == 'all' || inputs.target == 'relay' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -210,7 +212,7 @@ jobs:
   telemetry:
     name: deploy telemetry
     needs: [preflight, test]
-    if: ${{ github.event_name == 'push' || inputs.target == 'both' || inputs.target == 'telemetry' }}
+    if: ${{ github.event_name == 'push' || inputs.target == 'all' || inputs.target == 'telemetry' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -304,4 +306,42 @@ jobs:
           echo "The workers.dev ingest endpoint stopped accepting. Every daemon already in the"
           echo "field posts there and has just gone silent, with no error raised anywhere."
           echo "Check that workers_dev = true is at ROOT scope in wrangler.toml."
+          exit 1
+
+  site:
+    name: deploy site
+    needs: [preflight, test]
+    if: ${{ github.event_name == 'push' || inputs.target == 'all' || inputs.target == 'site' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # Static assets only — no Worker script — so the same pinned wrangler as the telemetry job.
+      - name: deploy
+        working-directory: site-cf
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx --yes wrangler@4.118.0 deploy
+      - name: the site must actually serve
+        # Same reasoning as the other two: wrangler reports success when the script uploads, while a
+        # custom domain can still be provisioning. An apex that 522s is worse than one that 404s,
+        # because it looks like the whole product is down.
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /tmp/site.html -w "%{http_code}" --max-time 10 https://ironrain.app/ || echo "000")
+            echo "attempt $i: HTTP $code"
+            if [ "$code" = "200" ]; then
+              if grep -qi "iron rain" /tmp/site.html; then
+                echo "ironrain.app is serving the site"
+                exit 0
+              fi
+              echo "200, but the body does not look like the site — wrong assets deployed?"
+              exit 1
+            fi
+            sleep 10
+          done
+          echo "ironrain.app never served. The worker deployed but the custom domain is not routing."
           exit 1
