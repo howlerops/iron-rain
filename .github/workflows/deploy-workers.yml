@@ -341,12 +341,13 @@ jobs:
                 echo "200, but the body does not look like the site — wrong assets deployed?"
                 exit 1
               fi
-              for path in /privacy.html /support.html /docs.html; do
+              for path in /privacy /support /docs; do
                 sub=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "https://ironrain.app$path")
                 echo "  $path -> HTTP $sub"
                 if [ "$sub" != "200" ]; then
-                  echo "  $path must serve directly (200), not redirect or 404: it is a URL"
-                  echo "  registered with the App Store or linked from the site itself."
+                  echo "  $path must serve directly (200): it is registered with the App Store or"
+                  echo "  linked from the site. The .html forms redirect here, so this is the"
+                  echo "  address to commit externally."
                   exit 1
                 fi
               done

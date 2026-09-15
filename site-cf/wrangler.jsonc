@@ -23,15 +23,19 @@
     // 404.html is not present today; serve index for unknown paths rather than a bare Cloudflare
     // error page. single-page-application would rewrite everything, which is wrong for a multi-page
     // static site, so this is the not-found handling that matches what the site actually is.
-    "not_found_handling": "404-page",
-    // Serve paths exactly as written: no ".html" -> pretty-URL redirect.
+    "not_found_handling": "404-page"
+    // html_handling is left at its default, which serves /privacy for /privacy.html and redirects
+    // the .html form to it with a 307.
     //
-    // The default rewrites /privacy.html to /privacy with a 307, and those two paths are not
-    // interchangeable here — the App Store has a privacy policy URL and a support URL registered
-    // against this site, and an externally committed URL should resolve directly rather than depend
-    // on a redirect rule staying configured. Nothing links to the pretty forms today, so there is
-    // nothing to gain and a review-time failure to lose.
-    "html_handling": "none"
+    // "none" was tried, to keep the externally-registered App Store URLs resolving without a
+    // redirect, and it broke the homepage: with literal-path-only serving, "/" stops mapping to
+    // index.html and the apex returned 404. The deploy check caught it, but only because it had
+    // just been extended past "/" — the previous version tested the root alone and would have
+    // reported success on a site serving nothing but subpages.
+    //
+    // The better answer was never "no redirects" but "register the URLs that do not redirect":
+    // /privacy and /support return 200 directly, and the .html forms keep working for any link
+    // already in the wild.
   },
 
   "routes": [
