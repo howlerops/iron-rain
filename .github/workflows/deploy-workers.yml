@@ -181,6 +181,23 @@ jobs:
           echo "relay.ironrain.app never answered. The worker deployed, but the custom domain is not"
           echo "routing yet — do NOT ship a release against this name until it does."
           exit 1
+      - name: the OLD hostname must still serve
+        # Adding [[routes]] silently disables the workers.dev subdomain unless workers_dev = true,
+        # and the first custom-domain deploy did exactly that: both old names went from serving to
+        # 404 in one step. It was caught by probing them by hand, which is not a control.
+        #
+        # The old address is what every already-paired device and every shipped build still talks to.
+        # Losing it is not a cosmetic regression, so it is asserted on every deploy from now on.
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 \
+            https://oculus-relay.jacobbeck-dev.workers.dev/ws || echo "000")
+          echo "old relay hostname: HTTP $code"
+          case "$code" in
+            400|426|405|101) echo "still serving" ;;
+            *) echo "The workers.dev name stopped serving (HTTP $code). Anything paired against it"
+               echo "can no longer reach its daemon. Check workers_dev = true in wrangler.toml."
+               exit 1 ;;
+          esac
 
   telemetry:
     name: deploy telemetry
@@ -233,3 +250,19 @@ jobs:
             exit 1
           fi
           echo "telemetry.ironrain.app is serving and sends no CORS headers"
+      - name: the OLD endpoint must still accept telemetry
+        # Same regression, and worse here: DefaultEndpoint is a single URL with no fallback list, so
+        # every build already in the field posts to this address forever. It going quiet raises no
+        # error on either side — it is invisible until a graph flatlines.
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 \
+            -X POST -H 'Content-Type: application/json' -d '{"events":[]}' \
+            https://oculus-telemetry.jacobbeck-dev.workers.dev/ingest || echo "000")
+          echo "old telemetry endpoint: HTTP $code"
+          case "$code" in
+            2*|401) echo "still accepting" ;;
+            *) echo "The workers.dev ingest endpoint stopped accepting (HTTP $code). Every daemon"
+               echo "already in the field posts there and has just gone silent, with no error"
+               echo "anywhere. Check workers_dev = true in wrangler.toml."
+               exit 1 ;;
+          esac

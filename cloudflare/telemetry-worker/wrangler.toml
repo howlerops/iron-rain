@@ -17,6 +17,14 @@ compatibility_date = "2026-01-01"
 binding = "TELEMETRY"
 dataset = "oculus_telemetry"
 
+# workers_dev MUST stay true now that a custom domain exists.
+#
+# Defining [[routes]] makes wrangler DISABLE the workers.dev subdomain unless this is set, and that
+# is not a cosmetic loss: it is the address every already-shipped build still talks to. Deploying the
+# custom domain without this took both old hostnames from serving to 404 in one step — caught only
+# because the endpoints were probed by hand afterwards.
+workers_dev = true
+
 # Custom domain — same reasoning as the relay: the workers.dev name belongs to a personal account.
 #
 # The telemetry endpoint has a sharper edge than the relay, and it is worth stating where someone
