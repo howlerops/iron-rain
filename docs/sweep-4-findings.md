@@ -205,11 +205,9 @@ none of them was in the register either.
 
 Nothing from this sweep. Two things worth carrying into the next one:
 
-1. **The relay flake.** One run of the full suite hit `TestASlowClientLosesNoFrames` in `./relay`
-   ("no host for server_id") under parallel load. It did not reproduce in 5 targeted runs, 12 runs
-   of the whole relay package on the pre-change tree, or three further full-suite runs. `relay` is
-   untouched by this work. It is a pre-existing intermittent, not a regression, and it is written
-   down here so the next person does not rediscover it cold.
+1. ~~**The relay flake.**~~ RESOLVED by the fifth sweep — see docs/sweep-5-findings.md. Three relay
+   tests dialled a host and a client with no synchronisation; the refusal they hit was correct relay
+   behaviour and the race was in the tests.
 2. **The two exceptions above** — the cli drain grace and the subscribe window — are the only fixes
    in the register shipped without a control that fails. Both are argued at the line; neither is
    load-bearing enough to block, and both are the kind of thing a future change could silently undo.
