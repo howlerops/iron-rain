@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"sync"
 )
 
@@ -316,9 +317,69 @@ const (
 
 // Envelope is the outer frame for every message.
 type Envelope struct {
-	ID      string          `json:"id,omitempty"`
-	Type    string          `json:"type"`
+	ID   string `json:"id,omitempty"`
+	Type string `json:"type"`
+	// Seq is this frame's position in the session's DURABLE transcript, and it is the client's
+	// paging cursor. Present only on frames the daemon persisted; absent (0) on everything else —
+	// streaming deltas, transient status, hub-wide broadcasts.
+	//
+	// That absence is the point. The client used to derive its cursor by COUNTING frames and
+	// guessing, by message type, which ones the daemon had stored. The guess was a hand-maintained
+	// list that was wrong in three consecutive sweeps — each time inflating the cursor, which asks
+	// for a page that starts before the transcript actually ends and leaves a hole. Carrying the
+	// number on the frame replaces the guess with the fact.
+	Seq     int64           `json:"seq,omitempty"`
 	Payload json.RawMessage `json:"payload,omitempty"`
+}
+
+// StripSeq removes what StampSeq wrote, returning the frame's identity bytes.
+//
+// It exists because a frame's sequence is envelope METADATA, not content: the same message
+// re-streamed after a restart is the same message, and it carries a different number. Anything that
+// asks "are these two frames the same" — joinHistory's dedup above all — must compare what was said,
+// not where it landed. Deliberately recognises only the exact shape StampSeq emits (the member
+// first, right after the brace) rather than parsing: the two are one mechanism and must stay
+// symmetric, and a general JSON rewrite here would be both slower and looser than the thing it
+// reverses.
+func StripSeq(frame []byte) []byte {
+	const pfx = `{"seq":`
+	if len(frame) < len(pfx) || string(frame[:len(pfx)]) != pfx {
+		return frame
+	}
+	for i := len(pfx); i < len(frame); i++ {
+		switch frame[i] {
+		case ',':
+			return append([]byte{'{'}, frame[i+1:]...)
+		case '}':
+			return append([]byte{'{'}, frame[i:]...)
+		case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+		default:
+			return frame // not ours after all; leave it alone
+		}
+	}
+	return frame
+}
+
+// StampSeq returns frame with seq written into its envelope.
+//
+// A splice rather than a decode/re-encode: these are hot-path bytes that are already valid JSON and
+// already about to be both stored and broadcast, and re-marshalling every frame to add one integer
+// would cost more than it is worth. The envelope is always a JSON object, so inserting the member
+// directly after the opening brace is well-formed by construction.
+func StampSeq(frame []byte, seq int64) []byte {
+	if seq <= 0 || len(frame) == 0 || frame[0] != '{' {
+		return frame
+	}
+	head := []byte(`{"seq":` + strconv.FormatInt(seq, 10))
+	// The comma is needed only when a member follows. `{}` has none, and emitting one there produces
+	// `{"seq":3,}` — invalid JSON, and invalid in the one direction that matters: the frame still
+	// LOOKS fine in a log and fails at the client's decoder.
+	if len(frame) > 1 && frame[1] != '}' {
+		head = append(head, ',')
+	}
+	out := make([]byte, 0, len(head)+len(frame)-1)
+	out = append(out, head...)
+	return append(out, frame[1:]...)
 }
 
 // Payload types.
@@ -2460,8 +2521,16 @@ type MCPExclusiveSet struct {
 // the client currently has, so the daemon needs no per-client cursor state.
 type TranscriptPage struct {
 	SessionID string `json:"session_id"`
-	Loaded    int    `json:"loaded"`
-	Limit     int    `json:"limit,omitempty"`
+	// BeforeSeq is the cursor: send the frames immediately BEFORE this sequence. It is the lowest
+	// seq the client currently holds, read straight off a frame it was given.
+	//
+	// Loaded is the old cursor and is still honoured for clients that have not updated. It was a
+	// COUNT the client derived by tallying frames it believed the daemon had stored — a guess by
+	// message type, wrong three sweeps running, and wrong in the direction that silently drops
+	// conversation. A client that sends BeforeSeq is not guessing about anything.
+	BeforeSeq int64 `json:"before_seq,omitempty"`
+	Loaded    int   `json:"loaded,omitempty"`
+	Limit     int   `json:"limit,omitempty"`
 }
 
 // TranscriptPageBegin marks the start of a page's frames.

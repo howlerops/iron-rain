@@ -3308,7 +3308,7 @@ func (h *Hub) dispatch(ctx context.Context, conn *transport.Conn, env protocol.E
 			h.sendErr(conn, env.ID, "no such session")
 			return
 		}
-		m.sendHistoryPage(conn, req.Loaded, req.Limit)
+		m.sendHistoryPage(conn, req.BeforeSeq, req.Loaded, req.Limit)
 		h.sendOK(conn, env.ID, nil)
 
 	case protocol.TypeSessionModeSet:

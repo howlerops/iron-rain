@@ -2521,7 +2521,7 @@ public final class Model: ObservableObject {
         hasEarlierHistory = false
         loadingEarlier = false
         pageAnchor = nil
-        daemonEventsRendered = 0
+        oldestSeqHeld = nil
         turn = nil // the new session's turn.state will repopulate
         clearChildState() // a new parent session starts with no expanded/subscribed children
         // If this session's frames are already in memory, paint them in THIS tick — no loader, no
@@ -3022,36 +3022,20 @@ public final class Model: ObservableObject {
     /// two diverge wildly and the page is cut in the wrong place.
     /// internal, not private: the paging cursor is the one piece of this bookkeeping a test has to be
     /// able to read, and what it counts has now been wrong twice.
-    var daemonEventsRendered = 0
+    /// The lowest durable sequence this client currently holds for the open session, and therefore
+    /// what "Show earlier messages" asks to page before. nil = nothing sequenced yet, so the daemon
+    /// falls back to sending the tail.
+    var oldestSeqHeld: Int64? = nil
 
-    /// Frames the daemon SYNTHESIZES onto a replay or page rather than storing in its ring. They must
-    /// not advance the paging cursor, or every page would be short by the number of trailers.
-    /// Frame types the daemon delivers but does NOT append to its replayable ring.
-    ///
-    /// `daemonEventsRendered` is the cursor "Show earlier messages" sends as `loaded`, and the daemon
-    /// computes `end := len(all) - loaded` against that ring. Counting a frame the ring never held
-    /// inflates the cursor, so the page it returns starts further back than where the client's
-    /// transcript actually ends — a HOLE — and once the count passes the ring's length, `end` goes to
-    /// zero and the live window is skipped entirely.
-    ///
-    /// session.status and session.facts were the first two found missing. Both are sent with
-    /// broadcastTransient specifically so they stay out of the ring (turn.go and surface.go each say
-    /// so in as many words), and both carry a session_id, so both matched the counting predicate.
-    /// publishSessionState fires per tool call, so one busy turn overcounts by dozens.
-    ///
-    /// The next three were found the same way and are a different shape: they are HUB-WIDE broadcasts
-    /// (h.broadcast / broadcastWithCapability), which never touch any session's ring at all, and they
-    /// carry a session_id too. session.heartbeat fires roughly every ten seconds for the whole life
-    /// of a session, so this one alone inflates the cursor without limit on any session left open.
-    ///
-    /// This set has now been wrong twice, so it is no longer maintained by hand alone: a census test
-    /// (RingCursorCensusTests) reads the daemon's own source and fails when a hub-wide broadcast type
-    /// is neither listed here nor explicitly declared as not carrying a session id.
-    static let nonRingFrameTypes: Set<String> = [
-        MessageType.turnState, MessageType.transcriptPageBegin, MessageType.transcriptPageEnd,
-        MessageType.sessionStatus, MessageType.sessionFacts,
-        MessageType.sessionHeartbeat, MessageType.activityEvent, MessageType.worktreeStatus,
-    ]
+    // nonRingFrameTypes lived here: a hand-maintained list of message types the daemon does NOT put
+    // in its ring, used to decide which frames advanced the paging cursor. It is gone, along with the
+    // census test that policed it and the sha256 replay-dedup that compensated for it.
+    //
+    // All three existed to reconstruct one fact the daemon already knew: where a frame sits in the
+    // durable transcript. The list was wrong in three consecutive sweeps (each time inflating the
+    // cursor, each time a silent hole), the census found four more the day it was written, and the
+    // dedup window it papered over produced a defect of its own. Carrying the sequence on the frame
+    // replaces the reconstruction with the fact — see Envelope.seq.
 
     // MARK: on-device transcript cache (see ModelTranscriptCache.swift)
 
@@ -3073,7 +3057,7 @@ public final class Model: ObservableObject {
     /// them to the on-device cache would make "not saved" untrue on the one device that matters.
     var ephemeralSessionIDs: Set<String> = []
 
-    func resetDaemonEventCount() { daemonEventsRendered = 0 }
+    func resetDaemonEventCount() { oldestSeqHeld = nil }
 
     /// Seals streaming rows after a cache paint — a frame captured mid-stream would otherwise leave a
     /// caret blinking on text that finished long ago.
@@ -3095,7 +3079,7 @@ public final class Model: ObservableObject {
         // method tests it — so "Load earlier" was permanently dead for the rest of the session, with
         // no error and no spinner to explain why.
         if (try? await request(MessageType.transcriptPage,
-                               payload: TranscriptPage(sessionID: sid, loaded: daemonEventsRendered))) == nil {
+                               payload: TranscriptPage(sessionID: sid, beforeSeq: oldestSeqHeld))) == nil {
             loadingEarlier = false
             actionError = "Couldn't load earlier messages."
         }
@@ -4853,9 +4837,12 @@ public final class Model: ObservableObject {
     /// either changed, and the divergence would surface as a transcript that looks subtly different
     /// depending on whether you happened to have opened the session before.
     @MainActor func applyEvent(_ env: Envelope, raw: Data) {
-        if !Self.nonRingFrameTypes.contains(env.type),
+        // The paging cursor, taken from the frame rather than derived. A frame with no seq was not
+        // stored by the daemon and holds no position, so it cannot move the cursor — which is the
+        // whole reason the old type-list guess kept being wrong.
+        if let seq = env.seq, seq > 0,
            let fs = try? env.payload(as: FrameSessionID.self), let fsid = fs.sessionID, fsid == sessionID {
-            daemonEventsRendered += 1
+            if oldestSeqHeld == nil || seq < oldestSeqHeld! { oldestSeqHeld = seq }
         }
         switch env.type {
         case MessageType.ok:

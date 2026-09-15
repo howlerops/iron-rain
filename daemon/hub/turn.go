@@ -431,8 +431,7 @@ func (m *managedSession) closeTurnFrom(state, reason string, providerDriven bool
 		if raw, err := (agent.Event{Type: protocol.TypeSessionTool, Payload: st}).Encode(); err == nil {
 			// Durable first, same reasoning as the sub-agent seals above. The seal is the card's only
 			// terminal state, and persistDurable stores exactly that.
-			m.persistDurable(agent.Event{Type: protocol.TypeSessionTool, Payload: st}, raw)
-			m.broadcast(raw)
+			m.broadcast(m.persistDurable(agent.Event{Type: protocol.TypeSessionTool, Payload: st}, raw))
 		}
 	}
 	if len(toolSeal) > 0 {

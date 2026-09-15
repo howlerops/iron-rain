@@ -83,7 +83,17 @@ A turn only becomes `abandoned` when the DAEMON declares it (below). Client time
 - `session.subscribe` gains `since_seq`; the daemon replays `(since_seq, now]` from
   SQLite+memory, then live. Client tracks its cursor per session and re-subscribes with
   it after ANY reconnect/app-restart — no duplicate-and-no-gap delivery.
-- Client dedup (`dedupReplay` heuristics) dies; replaced by exact cursor semantics.
+- Client cursor GUESSING dies; replaced by exact cursor semantics.
+
+  **Correction, found while building it.** This line said the client dedup "dies", and that was too
+  broad: the dedup was doing two jobs. One was paging overlap — "is this live frame also in the
+  replay I am about to send" — and that is gone, because a page is now exactly the frames before a
+  sequence. The other is a provider RE-STREAM: opencode and claude-code push their own history back
+  through the pump on recover and on a late attach. Those are deduplicated in the database by
+  message id, but they are still broadcast, and under this change they carry a NEW sequence — so no
+  cursor can recognise them, and deleting the content dedup renders the whole conversation twice.
+  It is kept, and it now hashes with the sequence STRIPPED, because a re-streamed frame is the same
+  frame at a different position. Two existing tests caught this within minutes of the deletion.
 - Streaming deltas stay unsequenced/ephemeral (they're superseded by the finalized
   message which IS sequenced) — keeps SQLite write volume unchanged.
 
@@ -137,7 +147,7 @@ Feed recorded `turn.state` sequences; assert: spinner iff state==running/awaitin
 | 1 | Turn struct + `turn.state` event + heartbeat (client keeps old watchdog, ALSO renders new state — shadow mode, compare in logs) | none (additive) |
 | 2 | Prober + reconciler (daemon-side); client still on old watchdog | low |
 | 3 | Client cuts over: render `turn.state`, delete all client timers | medium (feature-flag: fall back to watchdog if no turn.state seen — old daemon) |
-| 4 | seq + cursor subscribe; delete dedupReplay | medium |
+| 4 | **SHIPPED.** seq + cursor paging; the client's frame-counting and its type list are gone | medium |
 | 5 | agentsim + chaos suite + soak in CI | none |
 
 Compatibility: old app + new daemon = fine (extra events ignored). New app + old daemon =

@@ -2242,11 +2242,21 @@ public struct EnvelopeHeader: Decodable {
 public struct Envelope {
     public let id: String?
     public let type: String
+    /// This frame's position in the session's DURABLE transcript, or nil for a frame the daemon did
+    /// not store — streaming deltas, transient status, hub-wide broadcasts.
+    ///
+    /// It is the paging cursor, and its ABSENCE is as meaningful as its value. The client used to
+    /// derive the cursor by counting frames and guessing, by message type, which ones the daemon had
+    /// stored; that list was wrong in three consecutive sweeps, and every over-count asks for a page
+    /// starting before the transcript actually ends — a hole nothing downstream can see, because a
+    /// short page looks exactly like the beginning of the conversation.
+    public let seq: Int64?
     private let payloadJSON: Any?
 
-    init(id: String?, type: String, payloadJSON: Any?) {
+    init(id: String?, type: String, seq: Int64? = nil, payloadJSON: Any?) {
         self.id = id
         self.type = type
+        self.seq = seq
         self.payloadJSON = payloadJSON
     }
 
@@ -2310,7 +2320,8 @@ public enum Protocol {
         guard let dict = obj as? [String: Any], let type = dict["type"] as? String else {
             throw NSError(domain: "OculusKit", code: 2, userInfo: [NSLocalizedDescriptionKey: "invalid envelope"])
         }
-        return Envelope(id: dict["id"] as? String, type: type, payloadJSON: dict["payload"])
+        let seq = (dict["seq"] as? NSNumber)?.int64Value
+        return Envelope(id: dict["id"] as? String, type: type, seq: seq, payloadJSON: dict["payload"])
     }
 
     /// Reads just the envelope header (id + type).
@@ -2731,12 +2742,14 @@ public struct MCPExclusiveSet: Codable {
 /// holds, so the daemon needs no per-client cursor.
 public struct TranscriptPage: Codable {
     public var sessionID: String
-    public var loaded: Int
+    /// The cursor: send the frames immediately BEFORE this sequence. It is the lowest seq this
+    /// client holds, read straight off a frame the daemon gave it — not a number the client derived.
+    public var beforeSeq: Int64?
     public var limit: Int?
-    public init(sessionID: String, loaded: Int, limit: Int? = nil) {
-        self.sessionID = sessionID; self.loaded = loaded; self.limit = limit
+    public init(sessionID: String, beforeSeq: Int64?, limit: Int? = nil) {
+        self.sessionID = sessionID; self.beforeSeq = beforeSeq; self.limit = limit
     }
-    enum CodingKeys: String, CodingKey { case sessionID = "session_id", loaded, limit }
+    enum CodingKeys: String, CodingKey { case sessionID = "session_id", beforeSeq = "before_seq", limit }
 }
 
 public struct TranscriptPageBegin: Codable {

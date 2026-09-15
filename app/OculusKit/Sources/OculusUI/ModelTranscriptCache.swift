@@ -103,13 +103,27 @@ extension Model {
 
     // MARK: - Reconcile
 
+    /// Frames that describe the session's CURRENT state rather than its history, and so are applied
+    /// during a reconcile instead of being buffered behind it.
+    ///
+    /// This used to borrow Model.nonRingFrameTypes, which answered a different question — "does this
+    /// frame move the paging cursor" — and merely happened to hold the same names. That cursor is now
+    /// carried on the frame itself (Envelope.seq) and the shared list is gone; keeping a small local
+    /// one here states the actual intent, and stops a change made for paging reasons from silently
+    /// altering what the reconcile buffers.
+    static let stateNotHistory: Set<String> = [
+        MessageType.turnState, MessageType.transcriptPageBegin, MessageType.transcriptPageEnd,
+        MessageType.sessionStatus, MessageType.sessionFacts,
+        MessageType.sessionHeartbeat, MessageType.activityEvent, MessageType.worktreeStatus,
+    ]
+
     /// Buffers a replay frame instead of applying it. Returns true when the frame was taken.
     func bufferForReconcile(_ raw: Data, env: Envelope) -> Bool {
         guard transcriptReconciling, let sid = sessionID else { return false }
         // Trailers the daemon synthesizes onto a replay (turn.state, the page bracket) are state, not
         // history — apply them immediately so the turn indicator and the Load-earlier affordance stay
         // live while the transcript reconciles.
-        if Model.nonRingFrameTypes.contains(env.type) { return false }
+        if Self.stateNotHistory.contains(env.type) { return false }
         guard let fs = try? env.payload(as: FrameSessionID.self), fs.sessionID == sid else { return false }
         let first = transcriptReplayBuffer.isEmpty
         transcriptReplayBuffer.append(raw)

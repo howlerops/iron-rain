@@ -401,6 +401,16 @@ type subscriber struct {
 	// other path; this one had no equivalent.
 	replayMu sync.Mutex
 
+	// KEPT, and the plan that said it would die was too broad about why it existed.
+	//
+	// It was doing TWO jobs. One was paging overlap — "is this live frame also in the replay I am
+	// about to send" — and that is gone: every durable frame now carries its sequence and a page is
+	// exactly the frames before a cursor, so there is nothing left to guess. The other is a provider
+	// RE-STREAM: opencode and claude-code push their own history back through the pump on recover and
+	// on a late attach. Those frames are deduplicated in the DATABASE by message id, but they are
+	// still broadcast, and under the sequence change they arrive carrying a NEW number — so a cursor
+	// cannot recognise them and the conversation would render twice. Different problem, same
+	// symptom, and only the first one is solved by counting properly.
 	// delivered holds a hash of every frame this subscriber already received in its replay, for a
 	// short window after it subscribed.
 	//
@@ -474,7 +484,10 @@ func (s *subscriber) seen(raw []byte) bool {
 		s.delivered = nil // window over: a repeat now is genuinely a repeat
 		return false
 	}
-	h := sha256.Sum256(raw)
+	// Hashed WITHOUT the sequence, for the same reason joinHistory is: a re-streamed frame is the
+	// same frame and carries a different number. Comparing raw bytes made every re-stream a stranger
+	// to the copy already delivered, which is the doubling this dedup exists to prevent.
+	h := sha256.Sum256(protocol.StripSeq(raw))
 	k := string(h[:])
 	if _, dup := s.delivered[k]; dup {
 		delete(s.delivered, k) // one replay frame suppresses exactly one re-stream copy
@@ -488,7 +501,7 @@ func (s *subscriber) rememberReplay(frames [][]byte, window time.Duration) {
 	defer s.mu.Unlock()
 	s.delivered = make(map[string]struct{}, len(frames))
 	for _, f := range frames {
-		h := sha256.Sum256(f)
+		h := sha256.Sum256(protocol.StripSeq(f))
 		s.delivered[string(h[:])] = struct{}{}
 	}
 	s.dedupTill = time.Now().Add(window)
@@ -853,9 +866,13 @@ func joinHistory(durable, ring [][]byte) [][]byte {
 	}
 	// Where each durable frame sits in the ring, if at all. Duplicate byte sequences consume ring
 	// positions in order, so repeats line up one-for-one instead of all matching the first.
+	// Hashed WITHOUT the sequence. A frame's seq is where it landed, not what it says: the same
+	// message re-streamed after a restart is the same message and carries a different number, and the
+	// durable copy is stamped while a provider's fresh re-stream is not. Comparing the raw bytes made
+	// every re-streamed frame a stranger to its own durable twin, so the conversation rendered twice.
 	ringAt := make(map[string][]int, len(ring))
 	for i, r := range ring {
-		h := sha256.Sum256(r)
+		h := sha256.Sum256(protocol.StripSeq(r))
 		k := string(h[:])
 		ringAt[k] = append(ringAt[k], i)
 	}
@@ -863,7 +880,7 @@ func joinHistory(durable, ring [][]byte) [][]byte {
 	// pos = ring index this durable frame maps to; -1 means "older than the ring".
 	mapped := make([]placed, len(durable))
 	for i, d := range durable {
-		h := sha256.Sum256(d)
+		h := sha256.Sum256(protocol.StripSeq(d))
 		k := string(h[:])
 		if idxs := ringAt[k]; len(idxs) > 0 {
 			mapped[i] = placed{pos: idxs[0], seq: i}
@@ -1025,11 +1042,8 @@ func (m *managedSession) prepareSubscription(conn *transport.Conn) (*subscriber,
 	// being one whose live traffic is accounted for.
 	s.startBuffering()
 	m.mu.Unlock()
-	// Whatever happens below, this subscriber must not be left muted. replayFrames reads the durable
-	// transcript out of SQLite and decodes every frame; if that panics, `buffering` would stay set
-	// and the connection would silently receive nothing further from this session for the rest of its
-	// life — a worse failure than the duplicate delivery being fixed. On the normal path stopBuffering
-	// has already run and this returns nothing.
+	// Whatever happens below, this subscriber must not be left muted: on the normal path
+	// stopBuffering has already run and this returns nothing.
 	defer func() {
 		for _, raw := range s.stopBuffering() {
 			select {
@@ -1039,8 +1053,8 @@ func (m *managedSession) prepareSubscription(conn *transport.Conn) (*subscriber,
 		}
 	}()
 	replay := m.replayFrames()
-	// Remember what this subscriber is about to receive, so a provider re-stream arriving as LIVE
-	// traffic in the next few seconds is suppressed instead of doubling the conversation on screen.
+	// A self-replaying provider pushes its history through broadcast AFTER this snapshot; suppress
+	// the repeat rather than doubling the conversation on screen.
 	s.rememberReplay(replay, replayGrace)
 
 	// Deliver the CURRENT turn snapshot to this subscriber: turn.state is transient (never replayed
@@ -1057,10 +1071,6 @@ func (m *managedSession) prepareSubscription(conn *transport.Conn) (*subscriber,
 	} else {
 		m.mu.Unlock()
 	}
-	// Resume live delivery and fold in whatever was broadcast while the snapshot was being read.
-	// seen() drops the ones the snapshot already contains — that overlap is the whole reason this
-	// window used to deliver frames twice — and the rest continue in broadcast order behind the
-	// replay, which is where they belong.
 	for _, raw := range s.stopBuffering() {
 		if s.seen(raw) {
 			continue
@@ -1138,8 +1148,7 @@ func (m *managedSession) emitUIComponents(sessionID string, comps []protocol.UIC
 	for _, c := range comps {
 		c.SessionID = sessionID
 		if raw, err := (agent.Event{Type: protocol.TypeUIComponent, Payload: c}).Encode(); err == nil {
-			m.persistRenderable(protocol.TypeUIComponent, raw)
-			m.broadcast(raw)
+			m.broadcast(m.persistRenderable(protocol.TypeUIComponent, raw))
 		}
 	}
 }
@@ -1283,10 +1292,12 @@ func ownEvent(ev agent.Event, sid string) bool {
 // are ACCUMULATED (not written per-token); only finalized messages / completed tool cards / errors
 // are written, keyed by the provider's message id (when known) for cross-restart dedup. Scoped to the
 // PARENT session's own events. run()-goroutine only (no lock needed for txSeq/asst*).
-func (m *managedSession) persistDurable(ev agent.Event, raw []byte) {
+// Returns the frame to BROADCAST: the same bytes it stored, sequence included, or raw unchanged for
+// anything it did not store.
+func (m *managedSession) persistDurable(ev agent.Event, raw []byte) []byte {
 	db := m.hub.db
 	if db == nil || m.meta.ephemeral {
-		return // ephemeral scratch chats aren't persisted (keeps "no sessions row" == orphan for prune)
+		return raw // ephemeral scratch chats aren't persisted (keeps "no sessions row" == orphan for prune)
 	}
 	sid := m.sess.ID()
 	var msgID string
@@ -1294,7 +1305,7 @@ func (m *managedSession) persistDurable(ev agent.Event, raw []byte) {
 	case protocol.TypeSessionMessage:
 		msg, ok := ev.Payload.(protocol.SessionMessage)
 		if !ok || msg.SessionID != sid {
-			return
+			return raw
 		}
 		msgID = msg.MsgID
 		if msg.Role == "assistant" {
@@ -1305,7 +1316,7 @@ func (m *managedSession) persistDurable(ev agent.Event, raw []byte) {
 	case protocol.TypeSessionTool:
 		t, ok := ev.Payload.(protocol.SessionTool)
 		if !ok || t.SessionID == "" || (t.Status != "completed" && t.Status != "error") {
-			return // only the final tool state is durable
+			return raw // only the final tool state is durable
 		}
 		// Child-addressed cards are durable too. The guard used to be `t.SessionID != sid`, which
 		// dropped every sub-agent's tool cards on the floor: opencode's lanes rendered them live and
@@ -1322,7 +1333,7 @@ func (m *managedSession) persistDurable(ev agent.Event, raw []byte) {
 	case protocol.TypeSessionStatus:
 		ss, ok := ev.Payload.(protocol.SessionStatus)
 		if !ok || ss.SessionID != sid || ss.Status != protocol.StatusError {
-			return
+			return raw
 		}
 		// error marker: NULL id (each distinct)
 	case protocol.TypeOutputDelta:
@@ -1344,9 +1355,9 @@ func (m *managedSession) persistDurable(ev agent.Event, raw []byte) {
 			}
 			m.accMu.Unlock()
 		}
-		return
+		return raw
 	default:
-		return
+		return raw
 	}
 	// The sequence ALWAYS advances. It is a position counter, not an identity.
 	//
@@ -1359,7 +1370,7 @@ func (m *managedSession) persistDurable(ev agent.Event, raw []byte) {
 	//
 	// Gaps in the sequence are harmless slack: nothing reads seq except ORDER BY. De-duplication is the
 	// msg_id unique index's job, and it does it whether or not the number moved.
-	m.appendDurable(sid, msgID, raw)
+	return m.appendDurable(sid, msgID, raw)
 }
 
 // finalizeTurnTranscript runs on idle: if the turn streamed assistant text but no finalized assistant
@@ -1412,7 +1423,7 @@ func (m *managedSession) finalizeTurnTranscript() {
 			// turn that ended with an iron:ui block rendered prose, card, then the same prose again.
 			// Tool cards seal the row the same way. On REPLAY this frame is deduplicated against the
 			// text the deltas rebuild, which is exactly why the fault only ever showed up live.
-			m.appendDurable(m.sess.ID(), "", raw)
+			raw = m.appendDurable(m.sess.ID(), "", raw)
 			m.recordOnly(raw)
 		}
 	}
@@ -1427,7 +1438,7 @@ func (m *managedSession) finalizeTurnTranscript() {
 		ev := agent.Event{Type: protocol.TypeSessionMessage,
 			Payload: protocol.SessionMessage{SessionID: child, Role: "assistant", Text: text}}
 		if raw, err := ev.Encode(); err == nil {
-			m.appendDurable(m.sess.ID(), "sub-msg:"+child, raw)
+			raw = m.appendDurable(m.sess.ID(), "sub-msg:"+child, raw)
 			m.recordOnly(raw)
 		}
 	}
@@ -1556,6 +1567,60 @@ func (m *managedSession) expireHistoryCache(now time.Time) {
 
 // historyPage returns the events immediately BEFORE the newest `loaded` ones, oldest-first, plus
 // whether anything older still remains.
+// historyPageBefore returns the frames immediately before beforeSeq — the cursor-based pager.
+//
+// The count-based historyPage below computes `len(all) - loaded` and therefore requires the client's
+// tally to agree exactly with the daemon's ring. It never reliably did: the client had to guess, by
+// message type, which frames the daemon stored, and every over-count asks for a page that starts
+// before the transcript actually ends, leaving a hole the client cannot see. Here the cursor is a
+// number the daemon itself put on a frame, so there is nothing to agree about.
+//
+// Unsequenced frames (streaming deltas, transient status) ride along inside the range but never
+// serve as the boundary: they are superseded by the finalized, sequenced frame and must not move a
+// cursor they have no position in.
+func (m *managedSession) historyPageBefore(beforeSeq int64, limit int) (page [][]byte, more bool) {
+	all := m.fullHistory()
+	end := len(all)
+	for i, raw := range all {
+		if s := frameSeq(raw); s > 0 && s >= beforeSeq {
+			end = i
+			break
+		}
+	}
+	// Walk back `limit` SEQUENCED frames, keeping everything in between.
+	start, kept := end, 0
+	for start > 0 && kept < limit {
+		start--
+		if frameSeq(all[start]) > 0 {
+			kept++
+		}
+	}
+	page = all[start:end]
+	if start > 0 {
+		return page, true
+	}
+	// Reached the front of the live window; the rest is archived, not gone.
+	if kept >= limit {
+		return page, m.hasArchived()
+	}
+	older, err := m.archivedBefore(limit - kept)
+	if err != nil || len(older) == 0 {
+		return page, false
+	}
+	return append(older, page...), true
+}
+
+// frameSeq reads a frame's durable sequence, or 0 for one that has none.
+func frameSeq(raw []byte) int64 {
+	var f struct {
+		Seq int64 `json:"seq"`
+	}
+	if json.Unmarshal(raw, &f) != nil {
+		return 0
+	}
+	return f.Seq
+}
+
 func (m *managedSession) historyPage(loaded, limit int) (page [][]byte, more bool) {
 	all := m.fullHistory()
 	end := len(all) - loaded
@@ -1985,8 +2050,10 @@ func (m *managedSession) run() {
 		if err != nil {
 			continue
 		}
-		m.persistDurable(ev, raw)         // finalized messages / completed tools / error markers
-		m.persistRenderable(ev.Type, raw) // sub-agent rows render as conversation and must survive too
+		// Broadcast what was STORED, sequence and all: the client's paging cursor is that number,
+		// so the live frame and the frame a later page returns have to be the same bytes.
+		raw = m.persistDurable(ev, raw)
+		raw = m.persistRenderable(ev.Type, raw) // sub-agent rows render as conversation and must survive too
 		m.broadcast(raw)
 		if len(extractedComps) > 0 {
 			m.emitUIComponents(m.sess.ID(), extractedComps) // right after the cleaned message
@@ -2036,7 +2103,9 @@ func (m *managedSession) recordUserMessage(text, author string, echo bool) {
 	if err != nil {
 		return
 	}
-	m.appendDurable(m.sess.ID(), "", raw)
+	// Broadcast the STORED copy: its sequence is what the client pages from, and an echo without one
+	// would leave the user's own message re-delivered by the next page.
+	raw = m.appendDurable(m.sess.ID(), "", raw)
 	if echo {
 		m.broadcast(raw)
 	}
@@ -2059,29 +2128,38 @@ func (m *managedSession) advanceDurable(sid, msgID string, raw []byte) {
 	}
 }
 
-func (m *managedSession) appendDurable(sid, msgID string, raw []byte) {
+// It returns the frame with its sequence STAMPED IN — the copy the caller must broadcast, so the
+// bytes a client receives live and the bytes a later page returns are the same. Returns raw
+// unchanged when nothing was stored (no db, or an ephemeral session), which is also the honest
+// answer: an unpersisted frame has no cursor position and must not claim one.
+func (m *managedSession) appendDurable(sid, msgID string, raw []byte) []byte {
 	db := m.hub.db
 	if db == nil || m.meta.ephemeral {
-		return
+		return raw
 	}
 	m.txMu.Lock()
 	m.txSeq++
 	seq := m.txSeq
 	m.txMu.Unlock()
-	if _, err := db.AppendTranscript(sid, seq, msgID, raw); err != nil {
+	stamped := protocol.StampSeq(raw, seq)
+	if _, err := db.AppendTranscript(sid, seq, msgID, stamped); err != nil {
 		log.Printf("transcript: append %s failed: %v", sid, err)
 	}
+	return stamped
 }
 
 // persistRenderable stores a frame that RENDERS as conversation content but that the provider never
 // finalizes into a message — generative-UI cards and sub-agent rows. Without these a restart leaves
 // visible holes where the cards used to be.
-func (m *managedSession) persistRenderable(typ string, raw []byte) {
+// Returns the frame to broadcast — stamped with its sequence when it was stored, unchanged when it
+// was not. Disjoint from persistDurable by type (that one takes messages and tools, this one UI
+// components and sub-agent rows), so exactly one of the pair ever assigns a given frame's sequence.
+func (m *managedSession) persistRenderable(typ string, raw []byte) []byte {
 	id := renderableID(typ, raw)
 	if id == "" {
-		return
+		return raw
 	}
-	m.appendDurable(m.sess.ID(), id, raw)
+	return m.appendDurable(m.sess.ID(), id, raw)
 }
 
 // renderableID derives a STABLE durable key for a frame that renders as conversation but that no
@@ -2139,7 +2217,7 @@ func todosChanged(prev, next []protocol.Todo) bool {
 // The frames go through that subscriber's own outbound channel — the same path the initial replay
 // uses — so begin, the events, and end arrive in that order. Sending the bracket over the request
 // socket while the events went through the subscriber queue would race.
-func (m *managedSession) sendHistoryPage(conn *transport.Conn, loaded, limit int) {
+func (m *managedSession) sendHistoryPage(conn *transport.Conn, beforeSeq int64, loaded, limit int) {
 	if limit <= 0 {
 		limit = replayTailLimit
 	}
@@ -2149,7 +2227,13 @@ func (m *managedSession) sendHistoryPage(conn *transport.Conn, loaded, limit int
 	if sub == nil {
 		return
 	}
-	page, more := m.historyPage(loaded, limit)
+	var page [][]byte
+	var more bool
+	if beforeSeq > 0 {
+		page, more = m.historyPageBefore(beforeSeq, limit)
+	} else {
+		page, more = m.historyPage(loaded, limit)
+	}
 	sid := m.sess.ID()
 	begin, err1 := (agent.Event{Type: protocol.TypeTranscriptPageBegin, Payload: protocol.TranscriptPageBegin{SessionID: sid}}).Encode()
 	end, err2 := (agent.Event{Type: protocol.TypeTranscriptPageEnd, Payload: protocol.TranscriptPageEnd{SessionID: sid, Count: len(page), HasMore: more}}).Encode()
