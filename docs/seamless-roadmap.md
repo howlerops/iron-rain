@@ -96,7 +96,13 @@ This is the known candidate, and it belongs in Phase 4 — not earlier, delibera
 
 - **Per-device credentials:** enroll each device's static pubkey at pairing (Noise already proves identity), Devices list with revoke, `oculusd rotate-secret` fallback (today: one permanent shared secret, no revocation — main.go:147-149).
 - **Silent push pre-warm:** `content-available` background push on turn completion; `PushDelegate` connects, drains the transcript delta into the cache, exits (push.go:141 is alert-only).
-- **Branded relay domains** (relay1/relay2.ironrain.dev) with workers.dev as third fallback; per-relay health in status detail (main.go:67 is a personal workers.dev subdomain).
+- ~~**Branded relay domains**~~ — DONE (v0.2.202): the relay and the telemetry ingest both answer on
+  ironrain.app, a zone in the project's own Cloudflare account, so an account change no longer
+  strands every daemon on the default. Note the shape differs from what was planned here: a SECOND
+  url is not kept as a fallback, because both names route to one Worker and the Durable Object is
+  keyed by sid alone — a daemon dialling both opens two host claims for one server_id and evicts
+  itself. Two relay URLs are only safe when they are two separate deployments. Still open from this
+  line: per-relay health in status detail.
 - **Reboot-survival prompt:** offer the LaunchAgent the first time a *remote* device pairs, default on; "survives reboot: yes/no" in status; document the FileVault login-screen limitation (LoginItemManager.swift:4-11).
 - **Non-Prober honesty:** cheap subprocess Prober (process alive + output-pipe write age) or "quiet for Nm" in turn.state detail (turn.go:264-266).
 - **Cache hygiene:** wire the orphaned `forgetCached(_:)` into stopSession/removeWorktree; verify purge-on-unpair (ModelTranscriptCache.swift:250 has zero call sites).
@@ -184,6 +190,9 @@ changed in a hurry. Stage 1 delivered the user-visible win — complete history
 across restarts, for every provider. Stage 2 is an internal cleanup and should
 be planned on its own.
 
-**Branded relay hostnames.** The addresses are personal hostnames; moving them
-to `relay1/relay2.ironrain.dev` is a DNS and deploy task, not a code change. The
-code has one place to edit and now says so.
+**Branded relay hostnames.** Done in v0.2.202 — `relay.ironrain.app` and
+`telemetry.ironrain.app`, deployed from CI with the config committed. It was indeed a DNS
+and deploy task rather than a code change, but not for the reason assumed here: the
+blocker was owning a zone on Cloudflare at all, since a Worker custom domain requires it.
+The old workers.dev names keep serving for anything already paired; they are not dialled
+in addition, which would make a daemon evict itself.
