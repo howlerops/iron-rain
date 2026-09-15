@@ -76,7 +76,7 @@ to your Mac once and you're driving sessions from either.
 | --- | --- |
 | [`app/`](app/) | SwiftUI universal app (iOS + macOS). The product. |
 | [`daemon/`](daemon/) | Go daemon that drives the agents and exposes the E2E-encrypted WebSocket protocol. |
-| [`relay/`](relay/) | Stateless ciphertext forwarder for remote access (Cloudflare Durable Objects primary, Fly fallback; hosted or self-host). |
+| [`relay/`](relay/) | Stateless ciphertext forwarder for remote access (hosted on Cloudflare Durable Objects; self-host with `--relay`/`OCULUS_RELAY`). |
 | [`protocol/`](protocol/) | The shared wire contract + parity test vectors. |
 
 End-to-end encryption is enforced at the protocol layer — the relay only ever forwards ciphertext,

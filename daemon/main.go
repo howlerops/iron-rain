@@ -66,19 +66,53 @@ var version = "0.0.0-dev"
 
 // defaultRelayURL is the comma-separated list of shared relays a daemon registers on by default so
 // the app can reach it from anywhere (off-LAN) with zero setup. The app races them (plus LAN), so
-// order is preference: the Cloudflare Durable-Object relay is primary (edge-local, hibernates so
-// idle cost ≈ 0, no single-region SPOF); the Fly relay is a portable fallback. Override with
-// --relay (or "" for LAN-only).
+// order is preference. Override with --relay (or "" for LAN-only).
 //
-// A relay only ever sees CIPHERTEXT — the Noise channel is end-to-end between the daemon and the
-// paired device — so pointing this at someone else's host leaks metadata (that a daemon exists, and
-// when it is busy) but never code or conversation. That is what makes a shared default acceptable
-// at all, and why self-hosting is a one-flag change rather than a fork.
+// A relay only ever sees CIPHERTEXT — the channel is end-to-end between the daemon and the paired
+// device — so pointing this at someone else's host leaks metadata (that a daemon exists, and when it
+// is busy) but never code or conversation. That is what makes a shared default acceptable at all,
+// and why self-hosting is a one-flag change rather than a fork.
 //
-// TODO(ops): these are personal hostnames. Move to relay1/relay2.ironrain.dev with the workers.dev
-// and fly.dev names kept as trailing fallbacks, so the addresses survive an account change. That is
-// a DNS + deploy task, not a code change: the list below is the only place to edit.
-const defaultRelayURL = "wss://oculus-relay.jacobbeck-dev.workers.dev/ws,wss://oculus-relay-howlerops.fly.dev/ws"
+// WHY THE FLY FALLBACK IS GONE. It was here for vendor diversity, and the intent was right: this
+// product's entire remote story otherwise rests on one account at one vendor. What was actually
+// shipped did not deliver it.
+//
+//   - It was never a standby. The loop below registers a host connection on EVERY relay in this
+//     list at once, so Fly held a permanently-open socket from every daemon and could never idle to
+//     zero. Cloudflare's hibernation makes that same socket cost ≈ 0; Fly has no equivalent, so it
+//     billed continuously to carry traffic only during a Cloudflare outage.
+//   - It could not be rebuilt. There is no fly.toml in this repo — the deployment existed only in
+//     Fly's control plane. A fallback you cannot redeploy from a clean checkout does not survive the
+//     account-level failure it is supposedly insurance against, which is the one failure Cloudflare
+//     redundancy cannot cover.
+//   - The two implementations had already drifted, with nothing to catch it: they are tested
+//     separately (go test ./relay, vitest in relay-cf) and never against a shared conformance suite.
+//     The fifth sweep found a low-order `sid` that threw a 500 out of the Worker where the Go relay
+//     returned a clean refusal.
+//
+// Nothing was deleted to do this. daemon/cmd/oculus-relay is the self-hosting path (--relay /
+// OCULUS_RELAY) and stays built and tested; what went away is one hosted instance. Re-introducing a
+// second hosted relay is a good idea the day it comes with its deploy config committed and a
+// conformance suite both implementations run in CI. Without those two things it is a monthly bill
+// for a comforting comment.
+//
+// TODO(ops): this is a personal hostname on a personal Cloudflare account's workers.dev subdomain.
+// An account change strands every daemon running on the default, which is the whole reason to want
+// a custom domain here — not vanity.
+//
+// The obvious candidate is NOT available. Checked 2026-09-15: ironrain.dev is registered to someone
+// else (nameservers at Vercel, serving DEPLOYMENT_NOT_FOUND; relay*.ironrain.dev resolve only to a
+// Vercel wildcard that 404s). So this needs a domain that is actually owned first.
+//
+// When there is one, the ORDER matters more than the edit. A daemon bakes this list into its pair
+// URL, so a device paired today keeps dialling whatever it was paired with: the new name has to be
+// serving BEFORE it is added, and workers.dev has to stay in the list as a trailing fallback until
+// the fleet has rolled over — dropping it early strands exactly the daemons too old to have heard
+// about the new one. Buying the domain at Cloudflare Registrar avoids a nameserver migration
+// entirely, since the zone lands on Cloudflare already.
+//
+// The list below is still the only place to edit.
+const defaultRelayURL = "wss://oculus-relay.jacobbeck-dev.workers.dev/ws"
 
 // relayEnvOverride lets a self-hoster point every daemon at their own relay without editing flags in
 // a launchd plist or a systemd unit — the two places these processes usually start from, where
