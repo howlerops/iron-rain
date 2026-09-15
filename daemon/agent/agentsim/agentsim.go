@@ -98,7 +98,26 @@ type Session struct {
 	nudgeMu sync.Mutex
 	nudges  []string
 
-	quit chan struct{}
+	// emitMu guards the CLOSE of ch against concurrent sends.
+	//
+	// There are two senders — the script goroutine and Recover — and closing a channel out from under
+	// either one is a data race, not merely a panic to recover from. So senders take RLock and
+	// re-check chClosed; the closer takes the write lock. A sender may park inside the select while
+	// holding RLock, which is why quit MUST be closed before the closer asks for the write lock:
+	// closing quit is what releases a parked sender. Same ordering, and the same reason, as the
+	// opencode adapter's own emitMu.
+	emitMu   sync.RWMutex
+	chClosed bool
+
+	// quit is closed exactly once, through quitOnce.
+	//
+	// Both Stop and Close end the session, the hub calls them from more than one goroutine, and
+	// closing a closed channel is an unrecoverable panic — which in a test binary takes every other
+	// test down with it, reported as a crash somewhere unrelated. A `select`/`default` guard does not
+	// help: two goroutines can both find it open and both proceed to close.
+	quitOnce  sync.Once
+	closeOnce sync.Once
+	quit      chan struct{}
 }
 
 // New builds a session that will run sc when its events are first read.
@@ -188,7 +207,11 @@ func (s *Session) step(st Step) bool {
 }
 
 func (s *Session) send(ev agent.Event) {
-	defer func() { _ = recover() }() // a send racing Close is the stream dying, not a test failure
+	s.emitMu.RLock()
+	defer s.emitMu.RUnlock()
+	if s.chClosed {
+		return
+	}
 	select {
 	case s.ch <- ev:
 	case <-s.quit:
@@ -196,10 +219,18 @@ func (s *Session) send(ev agent.Event) {
 }
 
 func (s *Session) closeStream() {
-	s.closed.CompareAndSwap(false, true)
-	defer func() { _ = recover() }()
-	close(s.ch)
+	s.closeOnce.Do(func() {
+		s.closed.Store(true)
+		s.stop() // release any sender parked in send's select BEFORE asking for the write lock
+		s.emitMu.Lock()
+		s.chClosed = true
+		close(s.ch)
+		s.emitMu.Unlock()
+	})
 }
+
+// stop closes quit, at most once.
+func (s *Session) stop() { s.quitOnce.Do(func() { close(s.quit) }) }
 
 // Probe answers the reconciler. The default — busy while the script runs, not busy once it has
 // finished — is the behaviour of a provider that tells the truth, which is exactly what makes a lost
@@ -250,17 +281,13 @@ func (s *Session) Respond(context.Context, string, string) error { return nil }
 
 func (s *Session) Stop(context.Context) error {
 	s.stops.Add(1)
-	close(s.quit)
+	s.stop()
 	s.closeStream()
 	return nil
 }
 
 func (s *Session) Close() error {
-	select {
-	case <-s.quit:
-	default:
-		close(s.quit)
-	}
+	s.stop()
 	s.closeStream()
 	return nil
 }
