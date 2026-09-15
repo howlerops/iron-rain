@@ -19,9 +19,22 @@ npx wrangler login        # if not already authenticated
 npx wrangler deploy
 ```
 
-The deployed ingest URL is `https://oculus-telemetry.<your-subdomain>.workers.dev/ingest`. It must
-match `telemetry.DefaultEndpoint` in `daemon/telemetry/telemetry.go` (currently
-`https://oculus-telemetry.jacobbeck-dev.workers.dev/ingest`) — update whichever is wrong.
+The ingest URL is `https://telemetry.ironrain.app/ingest` (the `[[routes]]` custom domain in
+`wrangler.toml`), and it must match `telemetry.DefaultEndpoint` in `daemon/telemetry/telemetry.go`
+— update whichever is wrong.
+
+The old `oculus-telemetry.<subdomain>.workers.dev/ingest` address must keep serving. `DefaultEndpoint`
+is a single URL with no fallback list, so every build already in the field posts to whatever address
+it shipped with, forever. Telemetry stopping produces no error on either side — it just goes quiet —
+so removing that route is a failure nobody is told about until a graph flatlines.
+
+### The key
+
+`INGEST_KEY` is optional and the check only engages when it is bound, which is what makes the
+rollout order not matter: deploy the worker first and nothing breaks, ship the daemon first and
+nothing breaks. Set it with `npx wrangler secret put INGEST_KEY`, matching `telemetry.IngestKey`.
+It is a cost-and-noise filter, not authentication — the key ships inside a public binary and anyone
+who wants it can read it out.
 
 ## Query the data
 

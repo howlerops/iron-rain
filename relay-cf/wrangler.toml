@@ -16,3 +16,20 @@ new_sqlite_classes = ["RelayDO"]
 
 [observability]
 enabled = true
+
+# Custom domain. This is not cosmetic: the workers.dev name is a PERSONAL account's subdomain, so an
+# account change would strand every daemon whose baked-in relay URL points at it, with no way to
+# reach them. relay.ironrain.app is the address that survives that.
+#
+# custom_domain = true makes wrangler create the DNS record and the certificate on deploy. It works
+# because ironrain.app is a zone in this same Cloudflare account; it is exactly what a Worker cannot
+# do for a zone hosted elsewhere, which is why this waited on owning the domain.
+#
+# DO NOT also list the workers.dev name in the daemon's relay list as a "fallback". Both names route
+# to THIS worker, and the DO is chosen by idFromName(sid) alone — so a daemon registering on both
+# opens two host claims for one server_id against one Durable Object, and a proven host evicts
+# another host on the same sid. The daemon would evict itself, repeatedly. Two relay URLs are only
+# ever safe when they are two separate DEPLOYMENTS.
+[[routes]]
+pattern = "relay.ironrain.app"
+custom_domain = true

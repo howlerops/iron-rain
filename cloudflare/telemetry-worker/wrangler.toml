@@ -16,3 +16,14 @@ compatibility_date = "2026-01-01"
 [[analytics_engine_datasets]]
 binding = "TELEMETRY"
 dataset = "oculus_telemetry"
+
+# Custom domain — same reasoning as the relay: the workers.dev name belongs to a personal account.
+#
+# The telemetry endpoint has a sharper edge than the relay, and it is worth stating where someone
+# will read it before changing DefaultEndpoint. telemetry.DefaultEndpoint is a SINGLE url with no
+# fallback list, so a build that shipped with the old address posts there forever. Keep the
+# workers.dev route serving after the cutover: telemetry going quiet produces no error anywhere, on
+# either side, so the failure is invisible until someone notices a graph stopped.
+[[routes]]
+pattern = "telemetry.ironrain.app"
+custom_domain = true

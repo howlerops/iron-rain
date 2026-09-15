@@ -56,19 +56,29 @@ func TestTheDefaultRelayListHasNoDuplicates(t *testing.T) {
 	}
 }
 
-// Fly is gone, and must not drift back in without the two things that would make it real.
+// Two entries are only ever safe when they are two separate DEPLOYMENTS — never two names for one.
 //
-// This is a decision, not a bug, so it is pinned where someone re-adding the URL will read why: a
-// second hosted relay needs its deploy config committed and a conformance suite both implementations
-// run, or it is a monthly bill for an untested path that cannot be rebuilt. See the long comment on
-// defaultRelayURL. Delete this test WITH those two things, not instead of them.
-func TestNoRelayIsShippedWithoutADeployConfigInThisRepo(t *testing.T) {
+// This cannot be checked statically in general (nothing here can resolve a hostname to a worker), so
+// it guards the two aliases that actually exist and would actually be reached for: the workers.dev
+// name, which is the SAME Cloudflare worker as relay.ironrain.app, and the retired Fly host.
+//
+// Adding an alias is not a harmless redundancy. The registration loop opens a host connection per
+// entry, the relay picks its Durable Object by idFromName(sid) alone, and a proven host evicts
+// another host holding that sid — so a daemon listing both names evicts itself, repeatedly, and
+// remote access flaps for as long as it runs.
+func TestTheDefaultListHasNoAliasOfADeploymentAlreadyInIt(t *testing.T) {
+	if strings.Contains(defaultRelayURL, "workers.dev") && strings.Contains(defaultRelayURL, "ironrain.app") {
+		t.Fatal("the shipped list contains BOTH relay.ironrain.app and its workers.dev alias. They " +
+			"route to one worker, and the Durable Object is keyed by sid alone, so the daemon opens " +
+			"two host claims for one server_id and evicts itself in a loop. The old name should keep " +
+			"SERVING for anything already paired against it — it must not be DIALLED as well.")
+	}
 	if strings.Contains(defaultRelayURL, "fly.dev") {
-		t.Fatal("a Fly relay is back in the shipped default. If that is deliberate, it needs " +
-			"fly.toml committed (the old deployment existed only in Fly's control plane and could " +
-			"not be rebuilt from a checkout) and a conformance suite both relay implementations run " +
-			"in CI (they are tested separately today, and have already drifted once). Without both, " +
-			"this is billing for a fallback nobody can verify or restore.")
+		t.Fatal("a Fly relay is back in the shipped default. If that is deliberate it needs fly.toml " +
+			"committed (the old deployment existed only in Fly's control plane and could not be " +
+			"rebuilt from a checkout) and a conformance suite both relay implementations run in CI " +
+			"(they are tested separately today, and have already drifted once). Without both, this " +
+			"is billing for a fallback nobody can verify or restore.")
 	}
 }
 

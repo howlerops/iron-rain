@@ -32,7 +32,7 @@ import (
 func main() {
 	// Defaults to the hosted Cloudflare relay; pass a URL to point it at your own. It used to
 	// default to the Fly relay, which is no longer deployed (see defaultRelayURL in daemon/main.go).
-	relayURL := "wss://oculus-relay.jacobbeck-dev.workers.dev/ws"
+	relayURL := "wss://relay.ironrain.app/ws"
 	if len(os.Args) > 1 {
 		relayURL = os.Args[1]
 	}

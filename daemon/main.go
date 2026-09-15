@@ -96,23 +96,16 @@ var version = "0.0.0-dev"
 // conformance suite both implementations run in CI. Without those two things it is a monthly bill
 // for a comforting comment.
 //
-// TODO(ops): this is a personal hostname on a personal Cloudflare account's workers.dev subdomain.
-// An account change strands every daemon running on the default, which is the whole reason to want
-// a custom domain here — not vanity.
+// ON KEEPING A SECOND URL HERE. Two entries are only safe when they are two separate DEPLOYMENTS.
+// The registration loop opens a host connection per entry, the Cloudflare relay picks its Durable
+// Object by idFromName(sid) alone, and a proven host evicts another host holding the same sid — so
+// listing two hostnames that route to the SAME worker makes a daemon evict itself, repeatedly. That
+// is why the workers.dev name is not kept here as a "fallback" after the cutover: it is an alias of
+// this address, not an alternative to it.
 //
-// The obvious candidate is NOT available. Checked 2026-09-15: ironrain.dev is registered to someone
-// else (nameservers at Vercel, serving DEPLOYMENT_NOT_FOUND; relay*.ironrain.dev resolve only to a
-// Vercel wildcard that 404s). So this needs a domain that is actually owned first.
-//
-// When there is one, the ORDER matters more than the edit. A daemon bakes this list into its pair
-// URL, so a device paired today keeps dialling whatever it was paired with: the new name has to be
-// serving BEFORE it is added, and workers.dev has to stay in the list as a trailing fallback until
-// the fleet has rolled over — dropping it early strands exactly the daemons too old to have heard
-// about the new one. Buying the domain at Cloudflare Registrar avoids a nameserver migration
-// entirely, since the zone lands on Cloudflare already.
-//
-// The list below is still the only place to edit.
-const defaultRelayURL = "wss://oculus-relay.jacobbeck-dev.workers.dev/ws"
+// The old name stays SERVING (its route is still on the worker) so anything already paired against
+// it keeps working; it is simply not something a daemon should dial in addition.
+const defaultRelayURL = "wss://relay.ironrain.app/ws"
 
 // relayEnvOverride lets a self-hoster point every daemon at their own relay without editing flags in
 // a launchd plist or a systemd unit — the two places these processes usually start from, where

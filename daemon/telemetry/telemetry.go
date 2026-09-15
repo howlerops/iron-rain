@@ -28,7 +28,7 @@ import (
 )
 
 // DefaultEndpoint is the telemetry Worker's ingest URL (see cloudflare/telemetry-worker).
-const DefaultEndpoint = "https://oculus-telemetry.jacobbeck-dev.workers.dev/ingest"
+const DefaultEndpoint = "https://telemetry.ironrain.app/ingest"
 
 // IngestKey is sent as a bearer token on every batch. The Worker checks it only once INGEST_KEY is
 // configured there, so this can ship in any order relative to the deploy — see the Worker's comment.
