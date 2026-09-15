@@ -1,0 +1,145 @@
+name: Deploy Cloudflare Workers
+
+# Deploying the relay and the telemetry ingest from CI rather than from someone's laptop.
+#
+# Two reasons, and the second is the one that bit this repo already. The first is access: the
+# credential lives in a GitHub secret added through the web UI, so a deploy needs no shell and no
+# local wrangler auth — the OAuth grant on the maintainer's machine silently expired after six weeks
+# of disuse, and nothing noticed until a deploy was needed.
+#
+# The second is that a deployment which exists only in a provider's control plane is not a
+# deployment you own. The Fly relay was dropped from the shipped default precisely because it had no
+# committed config and could not be rebuilt from a clean checkout — a fallback nobody could restore.
+# Anything deployed from here is reproducible by definition: the config is in the repo and the action
+# that applies it is this file.
+#
+# SETUP (once, all in the browser — no terminal):
+#   1. dash.cloudflare.com → Profile → API Tokens → Create Custom Token, with
+#        Account  → Workers Scripts   → Edit    (deploy, DO migrations, secrets)
+#        Zone     → Workers Routes    → Edit    (attach the custom_domain routes)
+#        Zone     → DNS               → Edit    (custom_domain creates the record + cert)
+#        Account  → Account Settings  → Read    (account resolution)
+#      Scope Zone Resources to ironrain.app only.
+#   2. GitHub → repo → Settings → Secrets and variables → Actions → New repository secret
+#        CLOUDFLARE_API_TOKEN   = the token
+#        CLOUDFLARE_ACCOUNT_ID  = dash.cloudflare.com → Workers & Pages → Account ID
+#   3. Actions tab → this workflow → Run workflow.
+#
+# The token never leaves GitHub's secret store; it is not printed, and a PR from a fork cannot reach
+# it (this has no pull_request trigger, deliberately).
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Which worker to deploy"
+        required: true
+        default: "both"
+        type: choice
+        options: ["both", "relay", "telemetry"]
+  push:
+    branches: ["main"]
+    paths:
+      - "relay-cf/**"
+      - "cloudflare/telemetry-worker/**"
+      - ".github/workflows/deploy-workers.yml"
+
+concurrency:
+  # Never two deploys of the same worker at once: the second would race the first's DO migration.
+  group: deploy-workers
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: test before deploying
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: relay worker tests
+        working-directory: relay-cf
+        run: npm ci && npm test
+      - name: telemetry worker tests
+        working-directory: cloudflare/telemetry-worker
+        # No dependencies and no wrangler: node's own test runner over the fetch handler.
+        # Passing the file explicitly — `node --test test/` fails to resolve the module.
+        run: node --test "test/ingest.test.mjs"
+
+  relay:
+    name: deploy relay
+    needs: test
+    if: ${{ github.event_name == 'push' || inputs.target == 'both' || inputs.target == 'relay' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: relay-cf
+      - name: the new hostname must actually answer
+        # A deploy that reports success while the custom domain is still provisioning is the failure
+        # mode worth catching here: the daemon's baked-in default points at this name, so a build
+        # shipped against a name that does not resolve strands every daemon that installs it.
+        #
+        # A bare GET is not a WebSocket upgrade, so the relay is SUPPOSED to refuse it. What is being
+        # checked is that something at this address refuses it — an unprovisioned name gives a
+        # connection error or a Cloudflare edge error page instead.
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://relay.ironrain.app/ws || echo "000")
+            echo "attempt $i: HTTP $code"
+            case "$code" in
+              400|426|405|101) echo "relay.ironrain.app is serving"; exit 0 ;;
+            esac
+            sleep 10
+          done
+          echo "relay.ironrain.app never answered. The worker deployed, but the custom domain is not"
+          echo "routing yet — do NOT ship a release against this name until it does."
+          exit 1
+
+  telemetry:
+    name: deploy telemetry
+    needs: test
+    if: ${{ github.event_name == 'push' || inputs.target == 'both' || inputs.target == 'telemetry' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: cloudflare/telemetry-worker
+      - name: the endpoint must reject a browser and accept the daemon
+        # Asserting the two properties the worker exists to have, against the LIVE deployment rather
+        # than a local fetch handler: no CORS headers for a drive-by page, and a POST that works.
+        #
+        # INGEST_KEY is deliberately not set here. The check only engages when that secret is bound,
+        # which is what makes the rollout order irrelevant — set it later from the dashboard and
+        # nothing in the field breaks. If it IS already bound, an unkeyed POST gets a 401, so both
+        # 2xx and 401 are accepted below: either answer proves the worker is live and reachable.
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+              -X POST -H 'Content-Type: application/json' \
+              -d '{"events":[]}' https://telemetry.ironrain.app/ingest || echo "000")
+            echo "attempt $i: HTTP $code"
+            case "$code" in
+              2*|401) break ;;
+            esac
+            if [ "$i" = "30" ]; then
+              echo "telemetry.ironrain.app never answered; the custom domain is not routing yet."
+              exit 1
+            fi
+            sleep 10
+          done
+          cors=$(curl -s -i -X OPTIONS --max-time 10 https://telemetry.ironrain.app/ingest \
+            | grep -ci "access-control-allow-origin" || true)
+          if [ "$cors" != "0" ]; then
+            echo "The live endpoint still answers with CORS headers, so any page can write into"
+            echo "Analytics Engine — poisoned data on billed writes. An old build is deployed."
+            exit 1
+          fi
+          echo "telemetry.ironrain.app is serving and sends no CORS headers"
