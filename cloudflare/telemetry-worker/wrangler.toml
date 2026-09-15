@@ -10,6 +10,17 @@
 name = "oculus-telemetry"
 main = "src/index.js"
 compatibility_date = "2026-01-01"
+# workers_dev MUST stay true now that a custom domain exists.
+#
+# Defining [[routes]] makes wrangler DISABLE the workers.dev subdomain unless this is set, and that
+# is not a cosmetic loss: it is the address every already-shipped build still talks to. Deploying the
+# custom domain without it took both old hostnames from serving to 404 in one step.
+#
+# It lives HERE, above the first table header, because TOML scopes a bare key to the table it follows
+# — put after [observability] it silently became observability.workers_dev and did nothing at all,
+# which cost a whole deploy cycle to notice.
+workers_dev = true
+
 
 # Analytics Engine: cheap, high-cardinality, queryable via the SQL API. No dataset pre-creation
 # needed — the first writeDataPoint creates it.
@@ -17,13 +28,6 @@ compatibility_date = "2026-01-01"
 binding = "TELEMETRY"
 dataset = "oculus_telemetry"
 
-# workers_dev MUST stay true now that a custom domain exists.
-#
-# Defining [[routes]] makes wrangler DISABLE the workers.dev subdomain unless this is set, and that
-# is not a cosmetic loss: it is the address every already-shipped build still talks to. Deploying the
-# custom domain without this took both old hostnames from serving to 404 in one step — caught only
-# because the endpoints were probed by hand afterwards.
-workers_dev = true
 
 # Custom domain — same reasoning as the relay: the workers.dev name belongs to a personal account.
 #
