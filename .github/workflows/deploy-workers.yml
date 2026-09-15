@@ -50,6 +50,73 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  preflight:
+    name: verify the credential
+    runs-on: ubuntu-latest
+    steps:
+      # Ask Cloudflare directly whether this token is usable, instead of inferring it from a deploy
+      # failure. Three runs were spent guessing at 9109/10000 — "invalid access token" and
+      # "authentication error" are not the same fault, and neither message says which of {revoked,
+      # expired, not-yet-active, malformed, wrong-value} it is. /user/tokens/verify does say.
+      #
+      # Nothing secret is printed. The verify response carries the token's ID and status, never its
+      # value; the length and trim checks describe the string without revealing it, and those exist
+      # because a trailing newline picked up when pasting into the secret box produces exactly this
+      # error and is invisible in every UI involved.
+      - name: is the token valid at all
+        env:
+          TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "CLOUDFLARE_API_TOKEN is empty or the secret does not exist."; exit 1
+          fi
+          trimmed=$(printf '%s' "$TOKEN" | tr -d '[:space:]')
+          echo "token length: ${#TOKEN}  (without whitespace: ${#trimmed})"
+          if [ "${#TOKEN}" != "${#trimmed}" ]; then
+            echo "The secret contains whitespace — almost certainly a newline captured on paste."
+            echo "Re-paste it with no trailing newline; that alone causes 9109."
+          fi
+          echo "account id length: ${#ACCOUNT}  (a Cloudflare account id is 32 hex characters)"
+
+          echo "--- GET /user/tokens/verify ---"
+          code=$(curl -s -o /tmp/verify.json -w "%{http_code}" \
+            -H "Authorization: Bearer $trimmed" \
+            https://api.cloudflare.com/client/v4/user/tokens/verify)
+          echo "HTTP $code"
+          cat /tmp/verify.json; echo
+          # status "active" is the only one that can deploy. "expired" means the TTL was set to a
+          # date that has already passed — including "today", which is a same-day expiry.
+          if ! grep -q '"success":true' /tmp/verify.json; then
+            echo
+            echo "The token is not usable. Read the error above:"
+            echo "  1000 / 9109  → the value is wrong, truncated, or has stray whitespace"
+            echo "  expired      → the TTL is in the past; create one with no expiry or a future date"
+            echo "  disabled     → the token exists but is switched off in the dashboard"
+            exit 1
+          fi
+
+          echo "--- GET /accounts (the call that was returning 9109) ---"
+          code=$(curl -s -o /tmp/accounts.json -w "%{http_code}" \
+            -H "Authorization: Bearer $trimmed" \
+            https://api.cloudflare.com/client/v4/accounts)
+          echo "HTTP $code"
+          python3 - <<'EOF'
+          import json
+          d = json.load(open("/tmp/accounts.json"))
+          if not d.get("success"):
+              print("errors:", d.get("errors"))
+              raise SystemExit("the token cannot list accounts — Account Resources is probably unset")
+          ids = [a["id"] for a in d.get("result", [])]
+          print("accounts this token can see:", len(ids))
+          import os
+          want = os.environ.get("ACCOUNT", "")
+          if want and want not in ids:
+              raise SystemExit("CLOUDFLARE_ACCOUNT_ID is not among them — the account id is wrong, "
+                               "or Account Resources excludes it")
+          print("the configured account id is in scope")
+          EOF
+
   test:
     name: test before deploying
     runs-on: ubuntu-latest
@@ -69,7 +136,7 @@ jobs:
 
   relay:
     name: deploy relay
-    needs: test
+    needs: [preflight, test]
     if: ${{ github.event_name == 'push' || inputs.target == 'both' || inputs.target == 'relay' }}
     runs-on: ubuntu-latest
     steps:
@@ -117,7 +184,7 @@ jobs:
 
   telemetry:
     name: deploy telemetry
-    needs: test
+    needs: [preflight, test]
     if: ${{ github.event_name == 'push' || inputs.target == 'both' || inputs.target == 'telemetry' }}
     runs-on: ubuntu-latest
     steps:
