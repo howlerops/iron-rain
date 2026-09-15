@@ -148,7 +148,7 @@ Feed recorded `turn.state` sequences; assert: spinner iff state==running/awaitin
 | 2 | Prober + reconciler (daemon-side); client still on old watchdog | low |
 | 3 | Client cuts over: render `turn.state`, delete all client timers | medium (feature-flag: fall back to watchdog if no turn.state seen — old daemon) |
 | 4 | **SHIPPED.** seq + cursor paging; the client's frame-counting and its type list are gone | medium |
-| 5 | agentsim + chaos suite + soak in CI | none |
+| 5 | **SHIPPED.** agentsim + chaos suite + transport soak (see the note below on part D) | none |
 
 Compatibility: old app + new daemon = fine (extra events ignored). New app + old daemon =
 feature-flag fallback in stage 3.
@@ -157,3 +157,42 @@ feature-flag fallback in stage 3.
 - No provider protocol changes (opencode/claude-code/pi/cli untouched externally).
 - No per-token delta persistence (finalized-only stays).
 - The 3h POST leak-bound stays (it's a leak guard, not a liveness signal anymore).
+
+---
+
+## Stage 5 as built
+
+Shipped as `daemon/agent/agentsim` (scriptable provider), `daemon/hub/turnengine_e2e_test.go`
+(chaos through the real hub), `daemon/hub/turn_transitions_test.go` (the illegal-input table),
+`daemon/hub/soak_test.go` (severable-proxy soak) and
+`app/OculusKit/Tests/OculusUITests/TurnStateInvariantsTests.swift` (client invariants). Every
+assertion has a negative control that fails with only the mechanism it names reverted.
+
+Four places where the build departed from this plan, and why:
+
+**No fake clock (part C).** The plan asked for bounded ticks on a fake clock. `turn.go` reads wall
+time in a dozen places — `turnLastEvent`, `turnToolAt`, the unreachable and slow windows — and
+threading a clock through all of them is a refactor of the engine, not a test of it. The suite
+instead compresses the real timings through the per-session knobs. Same convergence assertions;
+what it gives up is immunity from a loaded machine, so every wait is generous relative to its tick.
+
+**Part D is the transport half only.** A real `opencode serve` on a big prompt, ten times a night,
+spends model credits on a schedule and needs a key a stock runner does not have. That is a call for
+whoever owns the budget, not a unilateral commit. What shipped is the half that costs nothing and
+catches the same class of bug: a severable TCP proxy under the real adapter and the real encrypted
+wire, so the socket dies mid-frame the way it dies on a handover. Pointing it at a live server is a
+one-line change of backend address. **Not wired to CI nightly** — that is the decision above.
+
+**Scenario 3 was wrong about the abstraction.** "SSE drop mid-turn" does not reach the hub as a
+dropped stream: every adapter absorbs its own reconnects, and a closed `Events()` channel means the
+session is over, at which point the hub detaches it. The test was rewritten to assert what is
+actually true (the turn closes promptly rather than spinning) and the transport-blip property moved
+to a scenario the hub can really see — quiet-but-busy.
+
+**The suite found a bug, which is the point of having built it.** The opencode adapter turned any
+POST transport failure into `StatusError`, which the hub treats as the provider declaring the turn
+failed. Since that POST blocks for the whole turn, a network blip on a long turn ended it with a raw
+Go error as the explanation — stream inference beating provider truth, arriving through the one door
+the engine does not guard. Fixed in `connectionBroke`: a connection that was established and then
+died is left to the reconciler; one that was never made is still reported at once.
+

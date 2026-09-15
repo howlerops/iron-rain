@@ -34,7 +34,15 @@ and looked right.
 
 ---
 
-## FOUND, NOT FIXED (1)
+## FOUND, NOT FIXED (0) — the one entry below was closed later; kept for the reasoning
+
+**Closed in a later commit.** The rollout-order problem was real and the answer was to remove it
+rather than decide it: the key check engages only when `INGEST_KEY` is bound, so either half can
+ship first with no gap. CORS came out entirely — the daemon is not a browser and never sent a
+preflight, so the headers only ever enabled the drive-by writes. The key ships in a binary and is a
+cost-and-noise filter, not authentication; the worker's comment says so rather than implying more.
+
+The original entry:
 
 - **MEDIUM `cloudflare/telemetry-worker/src/index.js` — `/ingest` is unauthenticated and CORS-open
   (`Access-Control-Allow-Origin: *`).** Anyone can POST arbitrary batches and write them into
@@ -80,3 +88,27 @@ coverage here would be false.
 
 If a sixth pass runs, the untouched-by-both list is the place to start: `cloudflare/`, the
 `OculusUIAutomation` target, `fastlane/`, and the `site/` and `marketing/` trees.
+
+---
+
+## Addendum: found by the stage-5 chaos suite
+
+**MEDIUM `agent/opencode/opencode.go` — any POST transport failure was reported as a failed turn.**
+Found by the severable-proxy soak, which is the first test in this repo to cut a live socket under
+the real adapter. The message POST blocks server-side for the entire turn, so on a long turn it is
+the most likely thing to break; the `default` branch emitted `StatusError`, which the hub treats as
+the PROVIDER declaring the turn failed. A wifi handover therefore ended a turn whose agent was still
+working, explained by a raw Go transport error — stream inference beating provider truth, through
+the one door the Turn Engine does not guard.
+
+Fixed: a connection established and then broken is left to the reconciler's probe (the authority);
+one never established is still reported immediately, the same refusal-versus-timeout distinction the
+engine already draws. Control: with the classification reverted, no round of the soak reconnects.
+
+Worth recording about method: the first version of `connectionBroke` checked the typed errors AND
+matched message fragments for the same conditions, and deleting the typed half changed nothing — the
+fragments caught everything. Emptying the fragment list instead left the soak green, which is what
+identified the typed check as the load-bearing one. The fragment list is now narrowed to the two
+errors `net/http` builds with `errors.New` and no wrapped cause, so both halves have teeth and each
+has a control that fails.
+

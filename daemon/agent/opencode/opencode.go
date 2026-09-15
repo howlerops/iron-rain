@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -18,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/howlerops/oculus/daemon/agent"
@@ -1649,10 +1651,31 @@ func (s *session) sendParts(parts []map[string]any, abortStuck bool) error {
 			// prompt aborts this stuck turn instead of queuing behind it. We don't declare an error (a
 			// legit long migration also keeps this POST open while streaming over SSE).
 			log.Printf("opencode: POST message sid=%s stopped waiting after %s (turn continues on the server)", s.id, time.Since(start).Round(time.Second))
+		case connectionBroke(err):
+			// The connection was ESTABLISHED and then died — a wifi handover, a sleep, a proxy
+			// timing out an idle socket. This POST blocks for the entire turn, so on any turn longer
+			// than a few minutes it is the single most likely thing to fail, and the agent on the
+			// other side is almost always still working.
+			//
+			// This used to emit StatusError, which the hub treats as the PROVIDER declaring the turn
+			// failed: the turn closed instantly, with a raw Go transport error as its explanation,
+			// and the reconciler never got to ask. That is the stream-inference-beats-provider-truth
+			// mistake the Turn Engine was built to end, arriving through the one door the engine does
+			// not guard — the provider's own status channel.
+			//
+			// So: say nothing. The turn stays open and the reconciler probes, which is the
+			// authoritative answer. If the agent really is gone the probe finds that out and the
+			// turn is abandoned with a reason that says so; if it is still working, the turn simply
+			// continues and the next stream reconnect picks the output back up.
+			if !stillRunning {
+				s.turnPending.Store(false)
+			}
+			log.Printf("opencode: POST message sid=%s lost its connection after %s (%v) — leaving the turn to the reconciler",
+				s.id, time.Since(start).Round(time.Second), err)
 		default:
-			// A real transport failure (opencode died / connection refused) — surface it. The error is
-			// this sender's own and is always reported, but turnPending describes the SESSION, so it
-			// only clears when nothing else is still posting.
+			// Nothing was ever listening (connection refused, DNS failure, a bad URL). That IS
+			// evidence of absence rather than of a broken pipe, so it is reported immediately: the
+			// distinction is the same one the Turn Engine draws between a refusal and a timeout.
 			if !stillRunning {
 				s.turnPending.Store(false)
 			}
@@ -1661,6 +1684,40 @@ func (s *session) sendParts(parts []map[string]any, abortStuck bool) error {
 		}
 	}()
 	return nil
+}
+
+// connectionBroke reports whether err is a connection that was established and then died, as opposed
+// to one that was never made.
+//
+// The difference decides who gets to end a turn. A broken pipe says nothing about whether the AGENT
+// is alive — only that this daemon can no longer see it — so the reconciler's probe must be the one
+// to judge. A refusal says nothing is listening, which is evidence in itself.
+//
+// The typed checks carry this, and the message matching below is NOT a duplicate of them — that was
+// checked rather than assumed. http.Client wraps its transport error in *url.Error, which unwraps,
+// so a real severed connection arrives as `Post "…": EOF` and still satisfies errors.Is(err, io.EOF);
+// emptying the fragment list leaves the soak green, and dropping the typed branch does not. The two
+// fragments that remain are the ones net/http builds with errors.New and no wrapped cause, so they
+// are unreachable by errors.Is however they are wrapped.
+func connectionBroke(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EHOSTUNREACH) ||
+		errors.Is(err, syscall.ENETUNREACH) {
+		return false // never established: absence, not a broken pipe
+	}
+	msg := err.Error()
+	for _, frag := range []string{"server closed idle connection", "http2: client connection lost"} {
+		if strings.Contains(msg, frag) {
+			return true
+		}
+	}
+	return false
 }
 
 func extForMime(mime string) string {
