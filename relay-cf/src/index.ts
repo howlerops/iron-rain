@@ -132,10 +132,18 @@ export class RelayDO {
       // Any earlier pending socket is dropped first: a pending socket costs a connection slot and
       // nothing may accumulate them.
       this.closePending();
-      const { challenge, want } = await popChallenge(decodeHex(params.get("sid")!)!);
+      let issued: { challenge: string; want: string };
+      try {
+        issued = await popChallenge(decodeHex(params.get("sid")!)!);
+      } catch {
+        // A sid we cannot build a sound challenge against (a low-order point, see popChallenge).
+        // Refuse rather than throwing out of fetch, which would surface as a 500 and tell the caller
+        // nothing about which half was wrong.
+        return refuse(CLOSE_BAD_PROOF, "host proof failed");
+      }
       this.ctx.acceptWebSocket(server, [role]);
-      server.serializeAttachment({ role, want } satisfies Attachment);
-      server.send(challenge);
+      server.serializeAttachment({ role, want: issued.want } satisfies Attachment);
+      server.send(issued.challenge);
       return upgraded();
     }
 
@@ -305,6 +313,10 @@ async function popChallenge(sid: Uint8Array): Promise<{ challenge: string; want:
   // is `public`, per the Secure Curves API.
   const agree = { name: "X25519", public: sidKey } as unknown as SubtleCryptoDeriveKeyAlgorithm;
   const shared = new Uint8Array(await crypto.subtle.deriveBits(agree, eph.privateKey, 256));
+  // No explicit low-order check here, deliberately: WebCrypto's X25519 already rejects a degenerate
+  // (all-zero) shared secret, as the Secure Curves spec requires — measured, by deleting a redundant
+  // check and watching nothing change. What that rejection needs is a CALLER that turns it into a
+  // refusal instead of an exception; see the try/catch in fetch.
 
   const nonce = crypto.getRandomValues(new Uint8Array(32));
   const prk = await hmac(new TextEncoder().encode(POP_LABEL), shared);

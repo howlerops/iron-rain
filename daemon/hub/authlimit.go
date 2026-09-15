@@ -86,6 +86,13 @@ func (a *authThrottle) penalty(now time.Time) time.Duration {
 		start = a.gate
 	}
 	a.gate = start.Add(step)
+	// The queue may not build past what anyone will actually serve. Without this the gate only ever
+	// moves forward: a sustained flood pushes it minutes into the future and it never comes back, so
+	// long after the failures have aged out the OWNER's next mistyped code still waits the full cap.
+	// Bounding it here keeps the penalty a function of the CURRENT failure rate.
+	if limit := now.Add(authQueueMax); a.gate.After(limit) {
+		a.gate = limit
+	}
 	wait := a.gate.Sub(now)
 	// The honest residual, stated rather than hidden: a flood still gets a bounded wait per attempt,
 	// because a connection goroutine parked for minutes is its own denial of service — the daemon has

@@ -147,3 +147,31 @@ func TestAuthThrottlePenaltiesQueueRatherThanOverlap(t *testing.T) {
 			"age out with the failures, or one burst throttles the owner for good", d)
 	}
 }
+
+// The queue must not outlive the flood that built it.
+//
+// The gate only ever moved forward, so a sustained attack pushed it minutes into the future and
+// nothing brought it back. Long after the failures had aged out of the window, the OWNER's next
+// mistyped pairing code still waited the full cap — a penalty for someone else's traffic.
+func TestTheThrottleQueueDoesNotOutliveTheFlood(t *testing.T) {
+	var a authThrottle
+	now := time.Now()
+	for i := 0; i < 500; i++ { // the flood
+		a.penalty(now)
+	}
+
+	a.mu.Lock()
+	gate := a.gate
+	a.mu.Unlock()
+	if gate.After(now.Add(authQueueMax)) {
+		t.Fatalf("the gate is %v into the future, past the %v anyone actually waits.\n\n"+
+			"It never comes back, so every later failure — including the owner's own — inherits a "+
+			"queue built by traffic that is long gone.", gate.Sub(now).Round(time.Second), authQueueMax)
+	}
+
+	// And once the window has emptied, a single failure is back inside the grace.
+	later := now.Add(authFailureWindow + time.Second)
+	if d := a.penalty(later); d != 0 {
+		t.Errorf("a lone failure after the window still waited %v", d)
+	}
+}

@@ -428,11 +428,15 @@ type subscriber struct {
 
 // startBuffering diverts live frames until stopBuffering. Called with the session lock held, so no
 // broadcast can slip between registration and this flag.
+// Additive, NOT a reset. Two prepareSubscriptions can overlap for one (session, conn) —
+// session.subscribe is dispatched inline, but session.create/attach/recover are async and also
+// subscribe — and clearing here would drop whatever the first one was holding. Dropping frames is
+// strictly worse than the duplicate this whole mechanism exists to prevent; the second drain simply
+// returns nothing, and seen() dedupes anything the other replay already carried.
 func (s *subscriber) startBuffering() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.buffering = true
-	s.buffered = nil
 }
 
 // bufferFrame takes a live frame aside if a replay is being assembled, reporting whether it did.
@@ -1021,6 +1025,19 @@ func (m *managedSession) prepareSubscription(conn *transport.Conn) (*subscriber,
 	// being one whose live traffic is accounted for.
 	s.startBuffering()
 	m.mu.Unlock()
+	// Whatever happens below, this subscriber must not be left muted. replayFrames reads the durable
+	// transcript out of SQLite and decodes every frame; if that panics, `buffering` would stay set
+	// and the connection would silently receive nothing further from this session for the rest of its
+	// life — a worse failure than the duplicate delivery being fixed. On the normal path stopBuffering
+	// has already run and this returns nothing.
+	defer func() {
+		for _, raw := range s.stopBuffering() {
+			select {
+			case s.ch <- raw:
+			default:
+			}
+		}
+	}()
 	replay := m.replayFrames()
 	// Remember what this subscriber is about to receive, so a provider re-stream arriving as LIVE
 	// traffic in the next few seconds is suppressed instead of doubling the conversation on screen.

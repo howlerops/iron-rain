@@ -190,6 +190,21 @@ describe("relay DO", () => {
     expect(daemon.closeInfo).toBeNull();
   });
 
+  it("refuses a pop registration for a low-order sid", async () => {
+    // A low-order sid makes the X25519 shared secret degenerate, and WebCrypto rejects deriving it —
+    // so the security question answers itself and the remaining one is what the relay DOES with that
+    // rejection. It threw out of fetch: an exception surfacing as a 500, on a caller-supplied value,
+    // with nothing saying which half was wrong. Now a clean proof refusal, matching the Go relay.
+    //
+    // (An explicit all-zero check was written here first and then deleted: removing it changed
+    // nothing, because the platform had already refused. The try/catch is the part that carries.)
+    const lowOrder = "00".repeat(32);
+    const peer = await Peer.connect(lowOrder, "host", true);
+    const closed = await peer.waitClose();
+    expect(closed.code).toBe(1008);
+    expect(closed.reason).toBe("host proof failed");
+  });
+
   it("lets a proven host reclaim its own slot", async () => {
     // The protection must not lock the daemon out of its own registration: its re-dial loop opens a
     // fresh socket for every client, and each of those proves itself.

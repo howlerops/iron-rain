@@ -303,7 +303,14 @@ func (s *session) runTurn(ctx context.Context, argv []string) {
 		turnErr = err
 		return
 	}
-	defer pr.Close()
+	// detached means a backgrounded grandchild still holds the write end and a goroutine has taken
+	// the read end over; closing it here would then be closing it under that goroutine.
+	detached := false
+	defer func() {
+		if !detached {
+			pr.Close()
+		}
+	}()
 	cmd.Stdout = pw
 	cmd.Stderr = pw // fold stderr into the streamed output (agents log progress there)
 	// No stdin. These are third-party CLIs invoked with flags we believe are non-interactive, but
@@ -349,15 +356,30 @@ func (s *session) runTurn(ctx context.Context, argv []string) {
 	}()
 	waitErr := cmd.Wait()
 	// The agent is gone. Give the drain a moment to pick up whatever is still sitting in the pipe —
-	// output the agent wrote immediately before exiting, which is where its error message lives — and
-	// then close the read end so a surviving grandchild's open write end cannot hold the turn open.
-	// stream() unblocks on ErrFileClosed and returns; joining it before we read s.tail below keeps
-	// that field owned by one goroutine at a time.
+	// output the agent wrote immediately before exiting, which is where its error message lives.
 	select {
 	case <-streamed:
+		// Nothing else held the write end, so the pipe reached EOF on its own: the ordinary case.
 	case <-time.After(streamDrainGrace):
-		pr.Close()
+		// Something the agent BACKGROUNDED still holds the write end. Stop reading, but do NOT close
+		// the read end: closing it delivers SIGPIPE to that process on its next write and kills it.
+		// The whole point of this fix is a turn that ends when `npm run dev &` is left running — it
+		// must not end by killing the dev server a second later. (Verified: a child writing into a
+		// pipe whose read end we closed exits `signal: broken pipe`.)
+		//
+		// A read deadline unblocks the reader without touching the descriptor, which works because
+		// this is an os.Pipe and therefore runtime-poller backed.
+		_ = pr.SetReadDeadline(time.Now())
 		<-streamed
+		detached = true
+		// Keep a live reader on the pipe so the backgrounded process never sees EPIPE, and discard
+		// what it writes — this turn is over and its output belongs to nothing. Ends by itself when
+		// the last write end closes (including when Stop/Close terminates the process group).
+		go func() {
+			_ = pr.SetReadDeadline(time.Time{})
+			_, _ = io.Copy(io.Discard, pr)
+			pr.Close()
+		}()
 	}
 	if err := waitErr; err != nil && ctx.Err() == nil {
 		// A non-zero exit that wasn't from our Stop(): keep the trailing line (preserves partial output)

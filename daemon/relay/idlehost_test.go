@@ -62,7 +62,8 @@ func TestIdleHostAnswersPings(t *testing.T) {
 // Once a client pairs, frames must still flow both ways — the idle reader must hand over cleanly
 // rather than swallowing the conversation.
 func TestPairedBridgeStillCarriesFrames(t *testing.T) {
-	srv := httptest.NewServer(New().Handler())
+	r := New()
+	srv := httptest.NewServer(r.Handler())
 	defer srv.Close()
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -73,7 +74,7 @@ func TestPairedBridgeStillCarriesFrames(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer host.CloseNow()
-	time.Sleep(150 * time.Millisecond) // let the host register
+	waitForHost(t, r, "bridged") // not a sleep: the slot is claimed on serveHost's own goroutine
 
 	client, _, err := websocket.Dial(ctx, wsURL+"/ws?sid=bridged&role=client", nil)
 	if err != nil {

@@ -169,3 +169,73 @@ func drainAll(ch chan []byte) [][]byte {
 		}
 	}
 }
+
+// Two overlapping prepareSubscriptions for one (session, conn) must not lose frames.
+//
+// startBuffering used to CLEAR the held slice, so the second call threw away whatever the first was
+// holding — turning the duplicate this mechanism prevents into a hole, which is strictly worse.
+// session.subscribe is dispatched inline, but session.create/attach/recover are async and also
+// subscribe, so two can overlap for one connection.
+func TestOverlappingSubscribesDoNotDropHeldFrames(t *testing.T) {
+	s := &subscriber{ch: make(chan []byte, 8), done: make(chan struct{})}
+	first := []byte(`{"type":"session.message","payload":{"text":"held by the first"}}`)
+
+	s.startBuffering()
+	if !s.bufferFrame(first) {
+		t.Fatal("the frame was not held at all")
+	}
+	s.startBuffering() // a second subscribe arrives while the first is still assembling
+
+	held := s.stopBuffering()
+	if len(held) != 1 || string(held[0]) != string(first) {
+		t.Fatalf("the second startBuffering discarded the first one's held frames (got %d).\n\n"+
+			"That is a hole in the conversation, which is worse than the duplicate delivery this "+
+			"buffering exists to prevent.", len(held))
+	}
+}
+
+// A subscriber must never be left muted if the replay assembly fails partway.
+//
+// replayFrames reads the durable transcript out of SQLite and decodes every frame. If that panics
+// with buffering set, the connection silently receives nothing further from this session for the
+// rest of its life — a failure mode that did not exist before the buffering was introduced.
+func TestAFailedReplayDoesNotMuteTheSubscriberForever(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	h := &Hub{db: db, sessions: map[string]*managedSession{}}
+	sess := &forkSess{ch: make(chan agent.Event, 4), id: "muted"}
+	m := newManagedSession(h, sess, sessionMeta{})
+
+	conn := &transport.Conn{}
+	s := &subscriber{conn: conn, ch: make(chan []byte, 16), done: make(chan struct{})}
+	m.mu.Lock()
+	m.subs[conn] = s
+	m.mu.Unlock()
+
+	// Simulate the panic path: buffering was armed and prepareSubscription never reached its drain.
+	s.startBuffering()
+	held := encodeMessage(t, sess.ID(), "arrived while the replay was being read")
+	m.broadcast(held)
+
+	// The deferred drain in prepareSubscription is what must rescue this. Run the same recovery.
+	for _, raw := range s.stopBuffering() {
+		select {
+		case s.ch <- raw:
+		default:
+		}
+	}
+	if got := drainAll(s.ch); len(got) != 1 {
+		t.Fatalf("the held frame was never delivered (%d frames) — this subscriber is mute", len(got))
+	}
+
+	// And live delivery has resumed.
+	after := encodeMessage(t, sess.ID(), "after")
+	m.broadcast(after)
+	if got := drainAll(s.ch); len(got) != 1 {
+		t.Fatalf("live delivery did not resume (%d frames): the connection is permanently silent "+
+			"for this session", len(got))
+	}
+}

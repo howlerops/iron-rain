@@ -29,7 +29,8 @@ import (
 // it and the phone can never reconnect — the owner has to pair from scratch, while the log says the
 // credential was delivered.
 func TestASlowClientLosesNoFrames(t *testing.T) {
-	srv := httptest.NewServer(New().Handler())
+	r := New()
+	srv := httptest.NewServer(r.Handler())
 	defer srv.Close()
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
 
@@ -41,6 +42,8 @@ func TestASlowClientLosesNoFrames(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer host.CloseNow()
+	// The host socket is upgraded; the relay has not necessarily claimed the slot yet.
+	waitForHost(t, r, "backpressure")
 
 	client, _, err := websocket.Dial(ctx, wsURL+"/ws?sid=backpressure&role=client", nil)
 	if err != nil {
@@ -113,6 +116,7 @@ func TestASecondClientIsRefusedRatherThanParked(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer host.CloseNow()
+	waitForHost(t, r, "onlyone")
 	go func() { // a real daemon reads while parked
 		for {
 			if _, _, err := host.Read(ctx); err != nil {
