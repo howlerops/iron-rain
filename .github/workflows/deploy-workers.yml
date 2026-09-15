@@ -74,11 +74,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: cloudflare/wrangler-action@v3
+      - uses: actions/setup-node@v4
         with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: relay-cf
+          node-version: "22"
+      # Deploying with the repo's OWN wrangler, from the lockfile, rather than through
+      # cloudflare/wrangler-action.
+      #
+      # The action installs a wrangler version of its own choosing (3.90.0 by default) and that
+      # collided head-on with this project: relay-cf pins wrangler ^4.45.0 and
+      # @cloudflare/workers-types ^5, so `npm i wrangler@3.90.0` died in ERESOLVE before it ever
+      # reached Cloudflare. Pinning the action's wranglerVersion would trade that for a second place
+      # where the version lives — and the lockfile is already the right answer.
+      - name: install
+        working-directory: relay-cf
+        run: npm ci
+      - name: deploy
+        working-directory: relay-cf
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler deploy
       - name: the new hostname must actually answer
         # A deploy that reports success while the custom domain is still provisioning is the failure
         # mode worth catching here: the daemon's baked-in default points at this name, so a build
@@ -107,11 +122,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: cloudflare/wrangler-action@v3
+      - uses: actions/setup-node@v4
         with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: cloudflare/telemetry-worker
+          node-version: "22"
+      # This worker has no package.json on purpose — it is one file with no dependencies, and its
+      # tests run on node's own runner. So wrangler is fetched for the occasion, pinned to the same
+      # version relay-cf's lockfile resolves to rather than left floating on @latest: a deploy tool
+      # that silently changes under you is how the other job failed.
+      - name: deploy
+        working-directory: cloudflare/telemetry-worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx --yes wrangler@4.118.0 deploy
       - name: the endpoint must reject a browser and accept the daemon
         # Asserting the two properties the worker exists to have, against the LIVE deployment rather
         # than a local fetch handler: no CORS headers for a drive-by page, and a POST that works.
