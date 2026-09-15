@@ -94,9 +94,15 @@ test("values from the dataset are escaped into the page", async () => {
   }
 });
 
-test("a failing Analytics query reports instead of rendering an empty dashboard", async () => {
+test("a failing Analytics query is reported in the page, not rendered as zeroes", async () => {
   // Silently showing zeroes is worse than an error: it reads as "nothing is happening" when the
   // truth is "nothing was asked".
+  //
+  // This asserts the BODY, not the status, and that is a deliberate consequence of streaming. The
+  // response head goes out before the queries run — that is what lets the skeleton appear
+  // immediately — so by the time a query fails the status is long since committed to 200. The
+  // status code is therefore no longer available to carry this, and the thing that actually reaches
+  // a human is the message on the page.
   const realFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response("bad token", { status: 403 });
   try {
@@ -106,8 +112,14 @@ test("a failing Analytics query reports instead of rendering an empty dashboard"
       }),
       envWith()
     );
-    assert.equal(res.status, 502);
-    assert.match(await res.text(), /query failed/i);
+    const body = await res.text();
+    assert.match(body, /query failed/i, "the failure is not reported anywhere in the page");
+    assert.match(body, /403/, "the underlying cause is not shown, so it cannot be acted on");
+    assert.doesNotMatch(
+      body,
+      /failure rate/,
+      "a dashboard was rendered alongside the error — zeroes next to a warning read as real data"
+    );
   } finally {
     globalThis.fetch = realFetch;
   }
@@ -225,4 +237,113 @@ test("durations are formatted as durations", async () => {
   assert.doesNotMatch(body, /kms|Mms/, "a magnitude abbreviation was concatenated with 'ms'");
   assert.match(body, /p50 840ms/);
   assert.match(body, /p95 18s/, "18300ms should read as seconds, not as an abbreviated count");
+});
+
+// ---- filtering ----------------------------------------------------------------------------------
+
+/** Captures the SQL the page sends, so the filter plumbing can be asserted on directly. */
+const capture = async (query) => {
+  const sent = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (_u, init) => {
+    sent.push(String(init?.body || ""));
+    return new Response(JSON.stringify({ data: [] }), { status: 200 });
+  };
+  try {
+    const res = await worker.fetch(
+      new Request(`https://telemetry.test/stats${query}`, {
+        headers: { Authorization: "Basic " + btoa("x:hunter2") },
+      }),
+      envWith()
+    );
+    return { sql: sent, body: await res.text() };
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+};
+
+test("a filter constrains every query", async () => {
+  const { sql } = await capture("?days=7&provider=opencode&status=failed");
+  const constrained = sql.filter((s) => s.includes("blob2 = 'opencode'"));
+  assert.ok(constrained.length >= 6, `only ${constrained.length} queries were filtered by provider`);
+  assert.ok(
+    sql.some((s) => s.includes("double2 = 0")),
+    "status=failed did not reach the SQL"
+  );
+});
+
+test("a hostile filter value never reaches the SQL", async () => {
+  // These values are concatenated into a query, so they are RESTRICTED rather than escaped: event
+  // names, providers, semver and GOOS/GOARCH all fit a short alphabet, and anything outside it is
+  // dropped. A rejected filter renders the unfiltered page — it can never run someone else's SQL.
+  for (const evil of [
+    "opencode' OR '1'='1",
+    "x'; DROP TABLE oculus_telemetry; --",
+    "a' UNION SELECT blob7 FROM oculus_telemetry WHERE '1'='1",
+    "opencode\\", 
+    "a b",
+  ]) {
+    const { sql } = await capture(`?provider=${encodeURIComponent(evil)}`);
+    const joined = sql.join("\n");
+    assert.doesNotMatch(
+      joined,
+      /DROP|UNION|OR '1'='1/i,
+      `the value ${JSON.stringify(evil)} reached the query`
+    );
+    assert.ok(
+      !joined.includes(`blob2 = '${evil}'`),
+      `the value ${JSON.stringify(evil)} was interpolated verbatim`
+    );
+  }
+});
+
+test("a valid filter survives and an invalid one is simply ignored", async () => {
+  const ok = await capture("?provider=claude-code");
+  assert.ok(ok.sql.some((s) => s.includes("blob2 = 'claude-code'")), "a legitimate value was dropped");
+
+  const bad = await capture("?provider=' OR 1=1 --");
+  assert.ok(
+    !bad.sql.some((s) => s.includes("blob2 = ")),
+    "an invalid value must drop the filter, not apply a mangled one"
+  );
+});
+
+test("the facet query is NOT filtered, so a selection can be backed out of", async () => {
+  const { sql } = await capture("?provider=opencode");
+  const facet = sql.find((s) => s.includes("GROUP BY event, provider, version"));
+  assert.ok(facet, "no facet query was issued, so the dropdowns have nothing to offer");
+  assert.ok(
+    !facet.includes("blob2 = 'opencode'"),
+    "the facet query is constrained by the current filter, so each dropdown only offers what is " +
+      "already selected — a dead end the user cannot navigate out of"
+  );
+});
+
+test("the skeleton is sent before the data and hidden after it", async () => {
+  const { body } = await capture("?days=7");
+  const sk = body.indexOf('class="sk"');
+  const hide = body.indexOf(".sk{display:none}");
+  assert.ok(sk > -1, "no skeleton was emitted, so a slow query shows the previous page");
+  assert.ok(hide > sk, "the rule hiding the skeleton must come AFTER it, or it never appears");
+  assert.ok(
+    body.indexOf("<style>") < sk,
+    "the stylesheet must precede the skeleton or it renders unstyled"
+  );
+});
+
+test("the CSP allows Cloudflare's injected beacon and nothing else executable", async () => {
+  // Cloudflare injects its Web Analytics beacon into HTML on a proxied hostname, and with
+  // default-src 'none' the browser logged a violation on every load. This page still ships no
+  // script of its own — the allowance is one exact origin, not a blanket script-src.
+  const res = await worker.fetch(
+    new Request("https://telemetry.test/stats", {
+      headers: { Authorization: "Basic " + btoa("x:hunter2") },
+    }),
+    envWith({ CF_ANALYTICS_TOKEN: undefined })
+  );
+  const csp = res.headers.get("Content-Security-Policy") || "";
+  assert.match(csp, /default-src 'none'/);
+  assert.match(csp, /script-src https:\/\/static\.cloudflareinsights\.com/);
+  assert.doesNotMatch(csp, /script-src[^;]*'unsafe-inline'/, "inline script must stay forbidden");
+  assert.doesNotMatch(csp, /script-src[^;]*\*/, "a wildcard script source defeats the point");
 });
