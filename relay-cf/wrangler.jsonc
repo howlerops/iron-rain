@@ -1,0 +1,42 @@
+// Iron Rain relay on Cloudflare — one Durable Object per server_id bridges a daemon (host) and an
+// app (client). Runs at the edge nearest whoever connects, and WebSocket Hibernation makes the
+// always-open idle host connection cost ~nothing.
+//
+// JSONC, not TOML, and that is a deliberate correctness choice rather than a style one. In TOML a
+// bare key belongs to whatever table header precedes it, so `workers_dev = true` written below
+// [observability] silently became observability.workers_dev — it parsed, it deployed, and it did
+// nothing, which took the workers.dev subdomain offline for every already-paired device. JSON has no
+// implicit scoping: a key is exactly where it is written, and nesting is visible in the brackets.
+{
+  "name": "oculus-relay",
+  "main": "src/index.ts",
+  // enables web_socket_auto_reply_to_close + current DO semantics
+  "compatibility_date": "2026-04-07",
+
+  // Keep the workers.dev subdomain serving alongside the custom domain.
+  //
+  // Defining routes makes wrangler DISABLE workers.dev unless this is true, and that address is what
+  // every already-paired device still dials. Losing it is not cosmetic.
+  "workers_dev": true,
+
+  // Custom domain. Not cosmetic either: the workers.dev name is a PERSONAL account's subdomain, so
+  // an account change would strand every daemon whose baked-in relay URL points at it, with no way
+  // left to reach them. custom_domain creates the DNS record and certificate on deploy, which works
+  // only because ironrain.app is a zone in this same Cloudflare account.
+  //
+  // DO NOT also list the workers.dev name in the daemon's relay list as a "fallback". Both names
+  // route to THIS worker and the DO is chosen by idFromName(sid) alone, so a daemon registering on
+  // both opens two host claims for one server_id against one Durable Object — and a proven host
+  // evicts another host on the same sid. The daemon would evict itself, repeatedly. Two relay URLs
+  // are only ever safe when they are two separate DEPLOYMENTS.
+  "routes": [{ "pattern": "relay.ironrain.app", "custom_domain": true }],
+
+  "durable_objects": {
+    "bindings": [{ "name": "RELAY", "class_name": "RelayDO" }]
+  },
+
+  // SQLite-backed DO class (required for the free plan; the bridge itself keeps no storage).
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RelayDO"] }],
+
+  "observability": { "enabled": true }
+}

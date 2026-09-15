@@ -1,0 +1,29 @@
+// Iron Rain anonymized telemetry ingest.
+//
+// JSONC rather than TOML, deliberately: in TOML a bare key belongs to whatever table header precedes
+// it, so `workers_dev = true` written after [[analytics_engine_datasets]] silently became part of
+// that table — it parsed, it deployed, and it did nothing, taking the workers.dev endpoint offline
+// for every daemon already in the field. JSON has no implicit scoping.
+{
+  "name": "oculus-telemetry",
+  "main": "src/index.js",
+  "compatibility_date": "2026-01-01",
+
+  // Keep workers.dev serving alongside the custom domain.
+  //
+  // Sharper here than for the relay: telemetry.DefaultEndpoint in the daemon is a SINGLE url with no
+  // fallback list, so every build already shipped posts to the address it was built with, forever.
+  // This endpoint going quiet raises no error on either side — it is invisible until a graph
+  // flatlines. Defining routes disables workers.dev unless this is true.
+  "workers_dev": true,
+
+  // Custom domain — the workers.dev name belongs to a personal account, and an account change would
+  // silently end telemetry from every build that shipped against it.
+  "routes": [{ "pattern": "telemetry.ironrain.app", "custom_domain": true }],
+
+  // Analytics Engine: cheap, high-cardinality, queryable via the SQL API. No dataset pre-creation
+  // needed — the first writeDataPoint creates it.
+  "analytics_engine_datasets": [{ "binding": "TELEMETRY", "dataset": "oculus_telemetry" }],
+
+  "observability": { "enabled": true }
+}
