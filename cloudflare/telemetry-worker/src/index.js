@@ -199,7 +199,7 @@ async function stats(request, env) {
   const enc = new TextEncoder();
   const send = (chunk) => writer.write(enc.encode(chunk));
 
-  send(shellHead("Telemetry — Iron Rain") + headerBlock(days, active) + skeleton());
+  send(shellHead("Telemetry — Iron Rain") + headerBlock() + skeleton());
 
   (async () => {
     try {
@@ -439,6 +439,11 @@ const CSS = `
   --amber-dim:rgba(196,155,33,.12); --amber-border:rgba(196,155,33,.28);
   --card:#111013; --card-hover:#181620; --border:#1e1c22; --border-sub:#141318;
   --bad:#e0664f; --ok:#6f9a5a;
+  /* Accent used as TEXT, as opposed to --gold used as a fill.
+     They cannot be the same token: gold is tuned to sit on near-black, and reusing it on a light
+     card measured 1.27:1 — the filter chips were very nearly invisible. Each mode gets a value that
+     clears 4.5:1 against the surface it actually lands on, checked by a test rather than by eye. */
+  --accent-fg:#e8d48b; --accent-strong:#d4c066;
   --font-sans:'DM Sans',-apple-system,BlinkMacSystemFont,system-ui,sans-serif;
   --font-display:'Instrument Serif',Georgia,'Times New Roman',serif;
   --font-mono:ui-monospace,'SF Mono','Fira Code',Menlo,monospace;
@@ -448,6 +453,12 @@ const CSS = `
   --bg:#fafaf7; --fg:#0e0d0b; --muted:#706860; --muted-med:#908880;
   --card:#f1ede6; --card-hover:#e8e4dc; --border:#ddd9d0; --border-sub:#e8e4dc;
   --amber-dim:rgba(196,155,33,.10); --bad:#b8452c; --ok:#4f7a3a;
+  --muted-med:#787070;            /* 3.34:1 before — under AA for body text */
+  --accent-fg:#8b6200;            /* 4.68:1 on --card */
+  --accent-strong:#946b01;        /* 4.60:1 on --bg, for the wordmark */
+}}
+@media (prefers-color-scheme:dark){:root{
+  --muted:#807a6c;                /* 3.61:1 before — under AA for the small uppercase labels */
 }}
 *,*::before,*::after{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font-sans);
@@ -456,28 +467,50 @@ main{max-width:1080px;margin:0 auto;padding:3rem 1.5rem 5rem}
 a{color:inherit}
 header{display:flex;flex-wrap:wrap;align-items:baseline;gap:.75rem;margin-bottom:.35rem}
 .wordmark{font-family:var(--font-mono);font-weight:700;letter-spacing:.08em;text-transform:uppercase;
- font-size:.95rem;background:var(--gold-gradient);-webkit-background-clip:text;background-clip:text;
- -webkit-text-fill-color:transparent;color:transparent}
+ font-size:.95rem;color:var(--accent-strong)}
 h1{font-family:var(--font-display);font-weight:400;font-size:2rem;margin:0;letter-spacing:-.01em}
 .sub{color:var(--muted-med);margin:0 0 1.5rem;font-size:.875rem;max-width:56ch}
-nav{display:flex;gap:.4rem;margin-bottom:1rem;flex-wrap:wrap}
-nav a{font-size:.8rem;padding:.3rem .8rem;border-radius:999px;text-decoration:none;
- color:var(--muted-med);border:1px solid var(--border);font-variant-numeric:tabular-nums}
-nav a.on{color:var(--gold-soft);border-color:var(--amber-border);background:var(--amber-dim)}
-form.filters{display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;margin-bottom:1.5rem;
- padding:.85rem 1rem;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm)}
-form.filters label{display:flex;flex-direction:column;gap:.2rem;font-size:.65rem;
- text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
-form.filters select{font:inherit;font-size:.82rem;padding:.3rem .5rem;border-radius:var(--radius-xs);
- border:1px solid var(--border);background:var(--bg);color:var(--fg);min-width:8.5rem;max-width:13rem}
-form.filters button{font:inherit;font-size:.8rem;padding:.42rem 1rem;border-radius:999px;
- border:1px solid var(--amber-border);background:var(--amber-dim);color:var(--gold-soft);
- cursor:pointer;align-self:flex-end}
-form.filters .clear{font-size:.78rem;color:var(--muted-med);align-self:flex-end;padding:.42rem .2rem}
-.chips{display:flex;flex-wrap:wrap;gap:.4rem;margin:-.75rem 0 1.5rem}
-.chip{font-size:.75rem;padding:.2rem .6rem;border-radius:999px;background:var(--amber-dim);
- border:1px solid var(--amber-border);color:var(--gold-soft);text-decoration:none}
-.chip b{font-weight:600} .chip span{opacity:.6;margin-left:.3rem}
+/* One toolbar holding every lever, the way an analytics tool does it: time range first, then the
+   dimensions, then the action. The range used to be a separate row of links above the form, which
+   meant two controls that both reloaded the page and neither of which knew about the other — pick a
+   range after changing a dropdown and the dropdown was discarded. Inside the form, everything
+   applies together. */
+/* Named .filters, NOT .bar.
+   ".bar" was already taken by a row in the horizontal bar charts below — a three-column
+   narrow/wide/narrow layout — and being defined later in the sheet it won, so the toolbar silently
+   rendered with the bar chart grid at every viewport. Nothing errored; the class just meant two
+   things. Note the quotes rather than backticks: this stylesheet is a template literal, and a
+   backtick inside a comment ends it, which is exactly what happened on the first attempt.
+
+   A grid, not a wrapping flex row. Flex with stretched dividers looked tidy at one width and fell
+   apart at every other, so auto-fit columns wrap predictably and the actions get their own row. */
+.filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(8.5rem,1fr));gap:.7rem .6rem;
+ align-items:end;margin-bottom:1rem;padding:.95rem 1rem;background:var(--card);
+ border:1px solid var(--border);border-radius:14px}
+.filters .grp{display:flex;flex-direction:column;gap:.3rem;min-width:0}
+.filters .grp>span{font-size:.62rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);
+ font-weight:600;padding-left:.15rem}
+/* min-width:0 matters: a <select> is intrinsically as wide as its LONGEST OPTION, and that
+   min-content floor wins over a 1fr track. Without it the Event column — whose options are
+   "worktree.create" and friends — stretched while its neighbours stayed narrow, so an equal-column
+   grid rendered visibly unequal. */
+.filters select{font:inherit;font-size:.82rem;width:100%;min-width:0;padding:.45rem 1.9rem .45rem .6rem;
+ border-radius:9px;border:1px solid var(--border);background-color:var(--bg);color:var(--fg);
+ appearance:none;cursor:pointer;text-overflow:ellipsis;
+ background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23999' stroke-width='1.5'/%3E%3C/svg%3E");
+ background-repeat:no-repeat;background-position:right .6rem center}
+.filters select:focus-visible{outline:2px solid var(--accent-fg);outline-offset:1px}
+/* The actions sit on their own full-width row so they never wrap into the middle of the filters. */
+.filters .act{grid-column:1/-1;display:flex;align-items:center;gap:.9rem;margin-top:.15rem}
+.filters .go{font:inherit;font-size:.82rem;font-weight:600;padding:.48rem 1.4rem;border-radius:999px;
+ border:1px solid transparent;background:var(--gold);color:#130e00;cursor:pointer}
+.filters .go:hover{background:var(--gold-bright)}
+.filters .clear{font-size:.8rem;color:var(--muted-med);text-decoration:underline}
+.chips{display:flex;flex-wrap:wrap;gap:.4rem;margin:0 0 1.75rem}
+.chip{font-size:.76rem;padding:.24rem .65rem;border-radius:999px;background:var(--amber-dim);
+ border:1px solid var(--amber-border);color:var(--accent-fg);text-decoration:none}
+.chip b{font-weight:600} .chip span{opacity:.7;margin-left:.35rem}
+.chip:hover{background:var(--card-hover)}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(10rem,1fr));gap:.9rem;margin-bottom:2rem}
 .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);
  padding:1rem 1.15rem}
@@ -485,8 +518,7 @@ form.filters .clear{font-size:.78rem;color:var(--muted-med);align-self:flex-end;
  line-height:1.1;font-variant-numeric:tabular-nums}
 .card span{display:block;color:var(--muted);font-size:.75rem;text-transform:uppercase;
  letter-spacing:.06em;margin-top:.25rem}
-.card.accent b{background:var(--gold-gradient);-webkit-background-clip:text;background-clip:text;
- -webkit-text-fill-color:transparent;color:transparent}
+.card.accent b{color:var(--accent-strong)}
 h2{font-size:.78rem;text-transform:uppercase;letter-spacing:.09em;color:var(--muted);
  font-weight:600;margin:2.5rem 0 .75rem}
 .panel{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);
@@ -500,7 +532,7 @@ h2{font-size:.78rem;text-transform:uppercase;letter-spacing:.09em;color:var(--mu
  align-items:center;gap:.75rem;font-size:.85rem}
 .bar-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg);
  text-decoration:none}
-a.bar-label:hover{color:var(--gold-soft)}
+a.bar-label:hover{color:var(--accent-fg)}
 .bar-track{background:var(--border-sub);border-radius:999px;height:.5rem;overflow:hidden}
 .bar-fill{display:block;height:100%;border-radius:999px;background:var(--gold-gradient)}
 .bar-val{text-align:right;font-variant-numeric:tabular-nums;color:var(--muted-med);font-size:.8rem}
@@ -520,8 +552,8 @@ td.mono{font-family:var(--font-mono);font-size:.8rem}
 footer{margin-top:3rem;padding-top:1.25rem;border-top:1px solid var(--border-sub);
  color:var(--muted);font-size:.75rem}
 .warn{background:var(--card);border:1px solid var(--amber-border);border-radius:var(--radius-sm);
- padding:1rem 1.15rem;color:var(--gold-soft)}
-code{font-family:var(--font-mono);font-size:.85em;color:var(--gold-soft)}
+ padding:1rem 1.15rem;color:var(--accent-fg)}
+code{font-family:var(--font-mono);font-size:.85em;color:var(--accent-fg)}
 /* Skeleton. Shown while the queries run, hidden by a rule sent at the END of the same response —
    which is why this needs no JavaScript: CSS applies as it is parsed. */
 .sk-block{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);
@@ -539,19 +571,10 @@ function shellHead(title) {
 <title>${escapeHtml(title)}</title><style>${CSS}</style></head><body><main>`;
 }
 
-function headerBlock(days, active) {
-  const ranges = [1, 7, 30, 90]
-    .map(
-      (d) =>
-        `<a href="${escapeHtml(withParam(active, days, "days", d))}"${
-          d === days ? ' class="on"' : ""
-        }>${d}d</a>`
-    )
-    .join("");
+function headerBlock() {
   return `<header><span class="wordmark">Iron Rain</span><h1>Telemetry</h1></header>
 <p class="sub">Anonymised: no paths, prompts, tokens or repo names, and install ids are random values
-each daemon assigns itself. Nothing here identifies a person.</p>
-<nav>${ranges}</nav>`;
+each daemon assigns itself. Nothing here identifies a person.</p>`;
 }
 
 /** Placeholder shown while the queries run; removed by a style rule at the end of the stream. */
@@ -586,7 +609,7 @@ function filterBar(facetRows, days, active) {
           )}</option>`
       )
       .join("");
-    return `<label>${f.label}<select name="${f.key}"><option value="">any</option>${opts}</select></label>`;
+    return `<label class="grp"><span>${f.label}</span><select name="${f.key}"><option value="">any</option>${opts}</select></label>`;
   }).join("");
 
   const statusOpts = [
@@ -616,12 +639,21 @@ function filterBar(facetRows, days, active) {
       : []),
   ].join("");
 
+  const rangeOpts = [
+    [1, "last 24 hours"],
+    [7, "last 7 days"],
+    [30, "last 30 days"],
+    [90, "last 90 days"],
+  ]
+    .map(([d, l]) => `<option value="${d}"${d === days ? " selected" : ""}>${l}</option>`)
+    .join("");
+
   return `<form class="filters" method="get">
-<input type="hidden" name="days" value="${days}">
+<label class="grp"><span>Time range</span><select name="days">${rangeOpts}</select></label>
 ${selects}
-<label>Status<select name="status">${statusOpts}</select></label>
-<button type="submit">Apply</button>
-<a class="clear" href="?days=${days}">clear</a>
+<label class="grp"><span>Status</span><select name="status">${statusOpts}</select></label>
+<div class="act"><button class="go" type="submit">Apply</button>
+<a class="clear" href="?days=${days}">Reset</a></div>
 </form>${chips ? `<div class="chips">${chips}</div>` : ""}`;
 }
 

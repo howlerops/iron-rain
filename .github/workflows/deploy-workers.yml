@@ -132,7 +132,7 @@ jobs:
         working-directory: cloudflare/telemetry-worker
         # No dependencies and no wrangler: node's own test runner over the fetch handler.
         # Files passed explicitly — `node --test test/` fails to resolve the module.
-        run: node --test "test/ingest.test.mjs" "test/wrangler-config.test.mjs" "test/stats.test.mjs"
+        run: node --test "test/ingest.test.mjs" "test/wrangler-config.test.mjs" "test/stats.test.mjs" "test/contrast.test.mjs"
 
   relay:
     name: deploy relay
