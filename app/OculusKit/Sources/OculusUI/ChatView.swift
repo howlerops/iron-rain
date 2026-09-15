@@ -10,6 +10,22 @@ import AppKit
 import UIKit
 #endif
 
+/// Is the bottom of a scrolling pane currently on screen?
+///
+/// `bottomY` is the bottom sentinel's maxY in the scroll view's coordinate space; `viewportHeight`
+/// is the visible height. The slack absorbs sub-pixel layout and the last row's padding, so a pane
+/// scrolled to the end is not judged to be a few points short of it.
+///
+/// Extracted because two panes ask it — the transcript and the test-output pane — and they answered
+/// it with two copies of the same arithmetic. The second copy was added to stop the test output
+/// yanking the user back down on every appended line, which is the one thing that pane must not do:
+/// it exists to be read while a run is still producing output. Pure, so the decision is testable
+/// even though the scrolling it drives is not.
+func scrollBottomIsVisible(bottomY: CGFloat, viewportHeight: CGFloat, slack: CGFloat = 18) -> Bool {
+    guard bottomY.isFinite, viewportHeight > 0 else { return false }
+    return bottomY <= viewportHeight + slack
+}
+
 private struct TranscriptBottomOffsetKey: PreferenceKey {
     static var defaultValue: CGFloat = .infinity
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
@@ -764,7 +780,7 @@ public struct ChatView: View {
             }
             .onPreferenceChange(TranscriptBottomOffsetKey.self) { bottomY in
                 guard bottomY.isFinite, transcriptViewportHeight > 0 else { return }
-                let visible = bottomY <= transcriptViewportHeight + 18
+                let visible = scrollBottomIsVisible(bottomY: bottomY, viewportHeight: transcriptViewportHeight)
                 if visible != isTranscriptBottomVisible {
                     isTranscriptBottomVisible = visible
                 }
@@ -3323,7 +3339,7 @@ struct TestResultPanel: View {
                 }
                 .onPreferenceChange(TestOutputBottomOffsetKey.self) { bottomY in
                     guard bottomY.isFinite, testOutputViewportHeight > 0 else { return }
-                    let visible = bottomY <= testOutputViewportHeight + 18
+                    let visible = scrollBottomIsVisible(bottomY: bottomY, viewportHeight: testOutputViewportHeight)
                     if visible != isTestOutputBottomVisible { isTestOutputBottomVisible = visible }
                 }
                 // Follow the tail ONLY if the user is already there. Scrolling up to read the first

@@ -1,9 +1,14 @@
 package telemetry
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestScrubRedactsPaths is the privacy guardrail: no absolute path or home-dir string may survive
@@ -77,5 +82,36 @@ func TestScrubKeepsTheFailureShape(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("the failure shape was lost: %q (missing %q)", got, want)
 		}
+	}
+}
+
+// Every batch carries the ingest key, unconditionally.
+//
+// Unconditional is what makes the rollout order irrelevant: an older Worker ignores the header, a
+// newer one with INGEST_KEY set requires it, and neither ordering drops a daemon. See the Worker's
+// own comment for what this is and is not — it ships in a binary, so it closes the drive-by path
+// rather than authenticating anyone.
+func TestEveryBatchCarriesTheIngestKey(t *testing.T) {
+	got := make(chan string, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got <- r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer srv.Close()
+
+	c := New(filepath.Join(t.TempDir(), "telemetry.json"), "test")
+	c.endpoint = srv.URL
+	c.Record("session.create", "opencode", time.Millisecond, nil)
+	c.flush(context.Background())
+
+	select {
+	case auth := <-got:
+		if auth != "Bearer "+IngestKey {
+			t.Fatalf("Authorization = %q, want %q.\n\nThe Worker refuses a batch with no key once "+
+				"INGEST_KEY is configured, so a daemon that does not send one stops reporting the "+
+				"moment that secret is set.", auth, "Bearer "+IngestKey)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no batch was sent at all")
 	}
 }

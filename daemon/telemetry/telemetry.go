@@ -30,6 +30,16 @@ import (
 // DefaultEndpoint is the telemetry Worker's ingest URL (see cloudflare/telemetry-worker).
 const DefaultEndpoint = "https://oculus-telemetry.jacobbeck-dev.workers.dev/ingest"
 
+// IngestKey is sent as a bearer token on every batch. The Worker checks it only once INGEST_KEY is
+// configured there, so this can ship in any order relative to the deploy — see the Worker's comment.
+//
+// It is NOT a secret in the meaningful sense: it ships inside a binary anyone can download. It
+// raises the bar from "curl a documented URL" to "extract a constant from a Go binary" and, with
+// CORS removed at the Worker, closes the drive-by path. Overridable at build time
+// (-ldflags "-X .../telemetry.IngestKey=...") so a fork or a private deployment can use its own
+// without patching source.
+var IngestKey = "ir-telemetry-v1"
+
 const (
 	flushInterval = 20 * time.Second
 	maxBuffer     = 200 // hard cap so a long offline stretch can't grow memory unbounded
@@ -171,6 +181,9 @@ func (c *Client) flush(ctx context.Context) {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if IngestKey != "" {
+		req.Header.Set("Authorization", "Bearer "+IngestKey)
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		// Re-queue on network failure so a transient outage doesn't lose the trace.
