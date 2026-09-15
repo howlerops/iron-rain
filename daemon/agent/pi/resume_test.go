@@ -1,6 +1,7 @@
 package pi
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -135,17 +136,24 @@ func TestAttachResumesTheSessionFileAndReplaysIt(t *testing.T) {
 		t.Errorf("replayed %v, want the user turn then the assistant turn", texts)
 	}
 
-	// The child writes its argv asynchronously; poll rather than race it.
+	// The child writes TWO lines — argv, then its resolved cwd — and they are two separate writes.
+	//
+	// Waiting for the file to be merely non-empty was a race: the poll could win between the printf
+	// and the pwd append, and the directory assertion below then searched a file whose second line
+	// had not been written yet. It failed as "pi ran in the wrong directory" roughly once in a
+	// hundred full-suite runs, naming a path that was simply absent rather than wrong — which is why
+	// it read as a /var vs /private/var mismatch and not as a truncated read.
 	var argv []byte
 	for wait := time.Now().Add(10 * time.Second); time.Now().Before(wait); {
-		if b, err := os.ReadFile(argsOut); err == nil && len(b) > 0 {
+		if b, err := os.ReadFile(argsOut); err == nil && bytes.Count(b, []byte("\n")) >= 2 {
 			argv = b
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	if len(argv) == 0 {
-		t.Fatal("fake pi never recorded its argv — it was not started")
+		t.Fatal("fake pi never finished recording its argv and cwd — it was not started, or it " +
+			"wrote only the first of its two lines within the timeout")
 	}
 	if !strings.Contains(string(argv), "--session "+path) {
 		t.Errorf("pi was started with %q — it must be pointed at the existing session file %q, or it starts a new conversation", strings.TrimSpace(string(argv)), path)
