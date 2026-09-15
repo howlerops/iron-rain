@@ -188,16 +188,24 @@ jobs:
         #
         # The old address is what every already-paired device and every shipped build still talks to.
         # Losing it is not a cosmetic regression, so it is asserted on every deploy from now on.
+        # Retried, for the same reason the new-hostname check is: RE-enabling a workers.dev subdomain
+        # propagates on a delay just like provisioning a custom domain does. A single request
+        # immediately after deploy failed this check while the endpoint was already on its way back
+        # up — the config was right and the check was impatient, which is its own kind of false alarm.
         run: |
-          code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 \
-            https://oculus-relay.jacobbeck-dev.workers.dev/ws || echo "000")
-          echo "old relay hostname: HTTP $code"
-          case "$code" in
-            400|426|405|101) echo "still serving" ;;
-            *) echo "The workers.dev name stopped serving (HTTP $code). Anything paired against it"
-               echo "can no longer reach its daemon. Check workers_dev = true in wrangler.toml."
-               exit 1 ;;
-          esac
+          for i in $(seq 1 18); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 \
+              https://oculus-relay.jacobbeck-dev.workers.dev/ws || echo "000")
+            echo "attempt $i: old relay hostname HTTP $code"
+            case "$code" in
+              400|426|405|101) echo "still serving"; exit 0 ;;
+            esac
+            sleep 10
+          done
+          echo "The workers.dev name stopped serving. Anything paired against it can no longer"
+          echo "reach its daemon. Check that workers_dev = true is at ROOT scope in wrangler.toml"
+          echo "— after a [table] header it belongs to that table and does nothing."
+          exit 1
 
   telemetry:
     name: deploy telemetry
@@ -254,15 +262,19 @@ jobs:
         # Same regression, and worse here: DefaultEndpoint is a single URL with no fallback list, so
         # every build already in the field posts to this address forever. It going quiet raises no
         # error on either side — it is invisible until a graph flatlines.
+        # Retried for the same propagation reason as the relay check above.
         run: |
-          code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 \
-            -X POST -H 'Content-Type: application/json' -d '{"events":[]}' \
-            https://oculus-telemetry.jacobbeck-dev.workers.dev/ingest || echo "000")
-          echo "old telemetry endpoint: HTTP $code"
-          case "$code" in
-            2*|401) echo "still accepting" ;;
-            *) echo "The workers.dev ingest endpoint stopped accepting (HTTP $code). Every daemon"
-               echo "already in the field posts there and has just gone silent, with no error"
-               echo "anywhere. Check workers_dev = true in wrangler.toml."
-               exit 1 ;;
-          esac
+          for i in $(seq 1 18); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 \
+              -X POST -H 'Content-Type: application/json' -d '{"events":[]}' \
+              https://oculus-telemetry.jacobbeck-dev.workers.dev/ingest || echo "000")
+            echo "attempt $i: old telemetry endpoint HTTP $code"
+            case "$code" in
+              2*|401) echo "still accepting"; exit 0 ;;
+            esac
+            sleep 10
+          done
+          echo "The workers.dev ingest endpoint stopped accepting. Every daemon already in the"
+          echo "field posts there and has just gone silent, with no error raised anywhere."
+          echo "Check that workers_dev = true is at ROOT scope in wrangler.toml."
+          exit 1
