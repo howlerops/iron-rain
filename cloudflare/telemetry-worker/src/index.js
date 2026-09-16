@@ -130,12 +130,19 @@ const FILTERS = [
 // unfiltered page; it can never show someone else's data or run someone else's SQL.
 const SAFE_VALUE = /^[A-Za-z0-9._:\/-]{1,64}$/;
 
-/** Reads the filter state out of the query string, discarding anything that fails SAFE_VALUE. */
+/** Reads the filter state out of the query string, discarding anything that fails SAFE_VALUE.
+ *
+ * Each dimension holds a LIST. A single value per dimension could only ever narrow, so the obvious
+ * question — "how do opencode and claude-code compare?" — had no expression in the UI at all; you
+ * had to load the page twice and remember the first set of numbers. */
 function readFilters(url) {
   const out = {};
   for (const f of FILTERS) {
-    const v = (url.searchParams.get(f.key) || "").trim();
-    if (v && SAFE_VALUE.test(v)) out[f.key] = v;
+    const vals = url.searchParams
+      .getAll(f.key)
+      .map((v) => v.trim())
+      .filter((v) => v && SAFE_VALUE.test(v));
+    if (vals.length) out[f.key] = [...new Set(vals)].sort();
   }
   const status = url.searchParams.get("status");
   if (status === "ok" || status === "failed") out.status = status;
@@ -146,28 +153,44 @@ function readFilters(url) {
 function whereClause(active, since) {
   const parts = [`timestamp > ${since}`];
   for (const f of FILTERS) {
-    if (active[f.key]) parts.push(`${f.col} = '${active[f.key]}'`);
+    const vals = active[f.key];
+    if (!vals || !vals.length) continue;
+    // Every value has already passed SAFE_VALUE; values within a dimension are OR-ed (IN) and the
+    // dimensions AND together, which is what a reader expects from "provider: opencode, pi".
+    parts.push(`${f.col} IN (${vals.map((v) => `'${v}'`).join(", ")})`);
   }
   if (active.status === "ok") parts.push("double2 = 1");
   if (active.status === "failed") parts.push("double2 = 0");
   return parts.join(" AND ");
 }
 
-/** Rebuilds the query string with one key changed, so links preserve the rest of the state. */
-function withParam(active, days, key, value) {
+/** The current state as a query string, with one dimension replaced. */
+function queryWith(active, days, overrides = {}) {
   const p = new URLSearchParams();
-  p.set("days", String(days));
-  for (const f of FILTERS) if (active[f.key]) p.set(f.key, active[f.key]);
-  if (active.status) p.set("status", active.status);
-  if (value === null || value === "") p.delete(key);
-  else p.set(key, String(value));
-  if (key === "days") p.set("days", String(value));
+  p.set("days", String(overrides.days ?? days));
+  for (const f of FILTERS) {
+    const vals = f.key in overrides ? overrides[f.key] : active[f.key];
+    for (const v of vals || []) p.append(f.key, v);
+  }
+  const status = "status" in overrides ? overrides.status : active.status;
+  if (status) p.set("status", status);
   return "?" + p.toString();
+}
+
+/** A link that REPLACES a dimension with a single value — what clicking a chart row means. */
+function only(active, days, key, value) {
+  return queryWith(active, days, { [key]: [value] });
+}
+
+/** A link that removes one value from a dimension, leaving the rest — the badge's x. */
+function without(active, days, key, value) {
+  const rest = (active[key] || []).filter((v) => v !== value);
+  return queryWith(active, days, { [key]: rest });
 }
 
 async function stats(request, env) {
   if (!env.STATS_PASSWORD) {
-    return html(setupPage("STATS_PASSWORD is not set on this Worker."), 503);
+    return await html(setupPage("STATS_PASSWORD is not set on this Worker."), 503);
   }
   const auth = request.headers.get("Authorization") || "";
   if (!auth.startsWith("Basic ") || !checkBasic(auth, env.STATS_PASSWORD)) {
@@ -177,7 +200,7 @@ async function stats(request, env) {
     });
   }
   if (!env.CF_ACCOUNT_ID || !env.CF_ANALYTICS_TOKEN) {
-    return html(
+    return await html(
       setupPage("CF_ACCOUNT_ID and CF_ANALYTICS_TOKEN are needed to read the dataset."),
       503
     );
@@ -199,7 +222,7 @@ async function stats(request, env) {
   const enc = new TextEncoder();
   const send = (chunk) => writer.write(enc.encode(chunk));
 
-  send(shellHead("Telemetry — Iron Rain") + headerBlock() + skeleton());
+  send(shellHead("Telemetry — Iron Rain") + headerBlock() + skeletonTemplate() + skeleton());
 
   (async () => {
     try {
@@ -207,12 +230,12 @@ async function stats(request, env) {
     } catch (e) {
       send(`<p class="warn">Rendering failed: ${escapeHtml(String(e).slice(0, 200))}</p>`);
     } finally {
-      send(`<style>.sk{display:none}</style></main></body></html>`);
+      send(`<style>.sk{display:none}</style><script>${ENHANCE}</script></main></body></html>`);
       await writer.close();
     }
   })();
 
-  return new Response(readable, { status: 200, headers: htmlHeaders() });
+  return new Response(readable, { status: 200, headers: htmlHeaders(await scriptHash()) });
 }
 
 /** Runs every query and renders the result body. */
@@ -254,22 +277,34 @@ async function body(env, days, active) {
                 SUM(_sample_interval) AS n,
                 SUM(IF(double2 = 0, _sample_interval, 0)) AS failed
          FROM oculus_telemetry WHERE ${where} GROUP BY t ORDER BY t ASC`),
-      // Facets come from the WINDOW, not the current filter: a dropdown that only offers what is
+      // Facets come from the WINDOW, not the current filter: a list that only offers what is
       // already selected is a dead end you cannot back out of.
-      q(`SELECT blob1 AS event, blob2 AS provider, blob4 AS version, blob5 AS os, blob6 AS arch
-         FROM oculus_telemetry WHERE timestamp > ${since} GROUP BY event, provider, version, os, arch
-         LIMIT 400`),
+      //
+      // Counted, because a facet list without counts makes you guess which values are worth
+      // opening — and the count is the cheapest possible answer to "is this even represented".
+      q(`SELECT blob1 AS event, blob2 AS provider, blob4 AS version, blob5 AS os, blob6 AS arch,
+                SUM(_sample_interval) AS n
+         FROM oculus_telemetry WHERE timestamp > ${since}
+         GROUP BY event, provider, version, os, arch LIMIT 600`),
     ]);
 
   const failed = [byEvent, failures, versions, platforms, installs, timing, series, facets]
     .find((r) => r.error);
   if (failed) {
-    return `<p class="warn">The Analytics Engine query failed: ${escapeHtml(failed.error)}</p>`;
+    return `<div id="chips"></div><div id="results"><p class="warn">The Analytics Engine query failed: ${escapeHtml(
+      failed.error
+    )}</p></div>`;
   }
 
   const total = installs.rows[0] || {};
+  // Two regions, and only these are swapped when a filter changes: the chips (which describe the
+  // query) and the results (which are the query's answer). The header and the form controls are
+  // deliberately left alone — replacing the form would close whatever popover is open and discard
+  // focus, which is precisely the "page forgot what I was doing" that the swap exists to avoid.
   return filterBar(facets.rows, days, active) +
-    content({ days, byEvent, failures, versions, platforms, total, timing, series, active });
+    `<div id="results">` +
+    content({ days, byEvent, failures, versions, platforms, total, timing, series, active }) +
+    `</div>`;
 }
 
 /** Runs one SQL statement against the Analytics Engine SQL API. */
@@ -305,7 +340,7 @@ function checkBasic(header, password) {
   return timingSafeEqual(given, password);
 }
 
-function htmlHeaders() {
+function htmlHeaders(hash) {
   return {
     "Content-Type": "text/html; charset=utf-8",
     // A credentialled view of account data has no business in a shared cache.
@@ -319,15 +354,22 @@ function htmlHeaders() {
     // on every page load. The choice is to allow Cloudflare's own beacon on Cloudflare's own edge or
     // to turn Web Analytics off for this hostname in the dashboard; neither affects the page, and
     // the allowance is one exact origin rather than a blanket script-src.
+    // script-src is a HASH plus one exact origin — never 'unsafe-inline' and never a wildcard.
+    //
+    // The page renders values that arrived over the wire (an error string originates in a provider's
+    // output), so the property worth keeping is that nothing from the dataset can execute. A hash
+    // keeps exactly that: only the one script whose bytes match may run, and any injected script —
+    // inline or not — still cannot. static.cloudflareinsights.com is Cloudflare's own beacon, which
+    // it injects into HTML on a proxied hostname whether or not we want it.
     "Content-Security-Policy":
       "default-src 'none'; style-src 'unsafe-inline'; img-src data:; " +
-      "script-src https://static.cloudflareinsights.com; " +
-      "connect-src https://cloudflareinsights.com",
+      `script-src '${hash}' https://static.cloudflareinsights.com; ` +
+      "connect-src 'self' https://cloudflareinsights.com",
   };
 }
 
-function html(bodyHtml, status = 200) {
-  return new Response(bodyHtml, { status, headers: htmlHeaders() });
+async function html(bodyHtml, status = 200) {
+  return new Response(bodyHtml, { status, headers: htmlHeaders(await scriptHash()) });
 }
 
 function escapeHtml(v) {
@@ -425,6 +467,88 @@ function bars(list, { label, value, sub, href }) {
     .join("")}</div>`;
 }
 
+
+// ---- progressive enhancement -------------------------------------------------------------------
+//
+// The form works with no JavaScript at all: Apply submits, the server renders, done. That path is
+// what every assertion about filtering still exercises, and it is why this file can be read without
+// holding a client-side state model in your head.
+//
+// What this script adds is that changing a filter swaps only the parts whose DATA changed. Without
+// it, every filter change reloaded the document — which threw away the scroll position, closed any
+// open facet popover, and re-rendered a header and a filter bar that had not changed. The cost of a
+// full reload is not the bytes; it is that the page visibly forgets what you were doing.
+//
+// It is pinned in the CSP by HASH, not by 'unsafe-inline'. That distinction is the whole reason this
+// is acceptable on a page that renders values from the dataset: only this exact source can execute,
+// so an error string that reaches the DOM still cannot become script. Change one byte here and the
+// browser refuses to run it — which is why a test recomputes the hash and compares it to the header.
+const ENHANCE = `
+(() => {
+  const form = document.getElementById('f');
+  if (!form || !window.fetch || !window.DOMParser) return;
+  const results = document.getElementById('results');
+  const chips = document.getElementById('chips');
+  const skel = document.getElementById('sk');
+  if (!results || !chips || !skel) return;
+
+  let inflight = 0;
+
+  async function load(url, push) {
+    const seq = ++inflight;
+    results.innerHTML = skel.innerHTML;
+    results.setAttribute('aria-busy', 'true');
+    if (push) history.pushState({}, '', url);
+    try {
+      const res = await fetch(url, { headers: { 'X-Partial': '1' } });
+      const html = await res.text();
+      // A stale response must never paint: filters change faster than seven analytics queries
+      // return, and the last request to START is the one whose answer the user is waiting for.
+      if (seq !== inflight) return;
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const r = doc.getElementById('results');
+      const c = doc.getElementById('chips');
+      if (!r) { location.assign(url); return; }
+      results.innerHTML = r.innerHTML;
+      chips.innerHTML = c ? c.innerHTML : '';
+    } catch (e) {
+      if (seq === inflight) location.assign(url);
+    } finally {
+      if (seq === inflight) results.removeAttribute('aria-busy');
+    }
+  }
+
+  function urlFromForm() {
+    const q = new URLSearchParams(new FormData(form));
+    // FormData keeps empty selects; they would serialise as status= and read as a filter.
+    for (const k of [...q.keys()]) if (!q.get(k)) q.delete(k);
+    return location.pathname + '?' + q.toString();
+  }
+
+  form.addEventListener('submit', (e) => { e.preventDefault(); load(urlFromForm(), true); });
+  form.addEventListener('change', () => load(urlFromForm(), true));
+
+  // Links inside the swapped regions (a bar row, a version cell, a chip's x) are filter changes
+  // too. Delegated from the containers, because the nodes they live on are replaced on every load.
+  for (const root of [results, chips]) {
+    root.addEventListener('click', (e) => {
+      const a = e.target.closest('a[href^="?"]');
+      if (!a || e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+      e.preventDefault();
+      load(location.pathname + a.getAttribute('href'), true);
+    });
+  }
+
+  addEventListener('popstate', () => load(location.pathname + location.search, false));
+})();
+`;
+
+/** The CSP hash for ENHANCE. Verified against the source by a test, so the two cannot drift. */
+async function scriptHash() {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(ENHANCE));
+  return "sha256-" + btoa(String.fromCharCode(...new Uint8Array(digest)));
+}
+
 // ---- page ---------------------------------------------------------------------------------------
 
 const CSS = `
@@ -475,37 +599,59 @@ h1{font-family:var(--font-display);font-weight:400;font-size:2rem;margin:0;lette
    meant two controls that both reloaded the page and neither of which knew about the other — pick a
    range after changing a dropdown and the dropdown was discarded. Inside the form, everything
    applies together. */
-/* Named .filters, NOT .bar.
-   ".bar" was already taken by a row in the horizontal bar charts below — a three-column
-   narrow/wide/narrow layout — and being defined later in the sheet it won, so the toolbar silently
-   rendered with the bar chart grid at every viewport. Nothing errored; the class just meant two
-   things. Note the quotes rather than backticks: this stylesheet is a template literal, and a
-   backtick inside a comment ends it, which is exactly what happened on the first attempt.
+/* Faceted filter bar.
+   Named .filters, NOT .bar — ".bar" is already a row in the horizontal bar charts below, and being
+   defined later it would win, silently rendering this with a three-column chart grid. (Quotes, not
+   backticks: this stylesheet is a template literal and a backtick in a comment ends it.)
 
-   A grid, not a wrapping flex row. Flex with stretched dividers looked tidy at one width and fell
-   apart at every other, so auto-fit columns wrap predictably and the actions get their own row. */
-.filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(8.5rem,1fr));gap:.7rem .6rem;
- align-items:end;margin-bottom:1rem;padding:.95rem 1rem;background:var(--card);
- border:1px solid var(--border);border-radius:14px}
-.filters .grp{display:flex;flex-direction:column;gap:.3rem;min-width:0}
-.filters .grp>span{font-size:.62rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);
- font-weight:600;padding-left:.15rem}
-/* min-width:0 matters: a <select> is intrinsically as wide as its LONGEST OPTION, and that
-   min-content floor wins over a 1fr track. Without it the Event column — whose options are
-   "worktree.create" and friends — stretched while its neighbours stayed narrow, so an equal-column
-   grid rendered visibly unequal. */
-.filters select{font:inherit;font-size:.82rem;width:100%;min-width:0;padding:.45rem 1.9rem .45rem .6rem;
- border-radius:9px;border:1px solid var(--border);background-color:var(--bg);color:var(--fg);
- appearance:none;cursor:pointer;text-overflow:ellipsis;
+   The popovers are <details>/<summary>. That is a disclosure widget the browser opens and closes on
+   its own, which is the whole reason this page can offer multi-select facets while shipping no
+   JavaScript at all and keeping script-src closed. */
+.filters{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;margin-bottom:.85rem}
+.filters .range{font:inherit;font-size:.8rem;padding:.4rem 1.8rem .4rem .7rem;border-radius:999px;
+ border:1px solid var(--border);background-color:var(--card);color:var(--fg);appearance:none;
+ cursor:pointer;
  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23999' stroke-width='1.5'/%3E%3C/svg%3E");
- background-repeat:no-repeat;background-position:right .6rem center}
-.filters select:focus-visible{outline:2px solid var(--accent-fg);outline-offset:1px}
-/* The actions sit on their own full-width row so they never wrap into the middle of the filters. */
-.filters .act{grid-column:1/-1;display:flex;align-items:center;gap:.9rem;margin-top:.15rem}
-.filters .go{font:inherit;font-size:.82rem;font-weight:600;padding:.48rem 1.4rem;border-radius:999px;
+ background-repeat:no-repeat;background-position:right .65rem center}
+.facet{position:relative}
+.facet>summary{display:flex;align-items:center;gap:.4rem;list-style:none;cursor:pointer;
+ font-size:.8rem;padding:.4rem .8rem;border-radius:999px;border:1px dashed var(--border);
+ color:var(--muted-med);white-space:nowrap;user-select:none}
+.facet>summary::-webkit-details-marker{display:none}
+.facet>summary:hover{border-color:var(--amber-border);color:var(--fg)}
+.facet.active>summary{border-style:solid;border-color:var(--amber-border);color:var(--fg);
+ background:var(--card)}
+.facet .plus{font-weight:600;opacity:.75}
+.facet.active .plus{display:none}
+.facet .div{width:1px;height:.9rem;background:var(--border)}
+.facet .badge{font-size:.72rem;padding:.1rem .45rem;border-radius:6px;background:var(--amber-dim);
+ color:var(--accent-fg);max-width:8rem;overflow:hidden;text-overflow:ellipsis}
+.facet[open]>summary{border-color:var(--amber-border)}
+.pop{position:absolute;z-index:20;top:calc(100% + .35rem);left:0;min-width:15rem;max-width:22rem;
+ background:var(--card);border:1px solid var(--border);border-radius:12px;padding:.35rem;
+ box-shadow:0 12px 30px rgba(0,0,0,.28)}
+.opts{max-height:17rem;overflow-y:auto}
+.opt{display:flex;align-items:center;gap:.5rem;padding:.33rem .5rem;border-radius:8px;
+ font-size:.82rem;cursor:pointer}
+.opt:hover{background:var(--card-hover)}
+.opt input{position:absolute;opacity:0;width:0;height:0}
+.opt .tick{flex:none;width:.95rem;height:.95rem;border-radius:4px;border:1px solid var(--border);
+ display:inline-block;position:relative}
+.opt.on .tick,.opt input:checked+.tick{background:var(--gold);border-color:var(--gold)}
+.opt.on .tick::after,.opt input:checked+.tick::after{content:"";position:absolute;left:.28rem;
+ top:.08rem;width:.22rem;height:.5rem;border:solid #130e00;border-width:0 2px 2px 0;
+ transform:rotate(45deg)}
+.opt input:focus-visible+.tick{outline:2px solid var(--accent-fg);outline-offset:1px}
+.opt .name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.opt .cnt{font-size:.72rem;color:var(--muted);font-variant-numeric:tabular-nums}
+.popclear{display:block;margin-top:.25rem;padding:.4rem .5rem;border-top:1px solid var(--border-sub);
+ font-size:.78rem;color:var(--muted-med);text-decoration:none;text-align:center}
+.popclear:hover{color:var(--accent-fg)}
+.filters .go{font:inherit;font-size:.8rem;font-weight:600;padding:.42rem 1.1rem;border-radius:999px;
  border:1px solid transparent;background:var(--gold);color:#130e00;cursor:pointer}
 .filters .go:hover{background:var(--gold-bright)}
-.filters .clear{font-size:.8rem;color:var(--muted-med);text-decoration:underline}
+.filters .reset{font-size:.79rem;color:var(--muted-med);text-decoration:none;padding:.42rem .3rem}
+.filters .reset:hover{color:var(--accent-fg)}
 .chips{display:flex;flex-wrap:wrap;gap:.4rem;margin:0 0 1.75rem}
 .chip{font-size:.76rem;padding:.24rem .65rem;border-radius:999px;background:var(--amber-dim);
  border:1px solid var(--amber-border);color:var(--accent-fg);text-decoration:none}
@@ -577,6 +723,12 @@ function headerBlock() {
 each daemon assigns itself. Nothing here identifies a person.</p>`;
 }
 
+/** The same skeleton, parked in a template so the client can re-show it during a filter swap
+ * without rebuilding the markup in JavaScript — one definition, two consumers. */
+function skeletonTemplate() {
+  return `<template id="sk">${skeleton().replace(/^<div class="sk">/, "<div>").replace(/<\/div>$/, "</div>")}</template>`;
+}
+
 /** Placeholder shown while the queries run; removed by a style rule at the end of the stream. */
 function skeleton() {
   const lines = (n, w = 100) =>
@@ -593,68 +745,120 @@ function skeleton() {
 </div>`;
 }
 
-/** The GET form. No JavaScript: selects plus a submit button is a complete filtering UI. */
+/** The faceted filter bar: one popover per dimension, multi-select, with counts.
+ *
+ * Built on <details>/<summary>, which is a popover the browser already knows how to open and close.
+ * The alternative is a script, and this page's entire security posture is that it has none —
+ * script-src stays closed, so nothing that lands in the dataset can ever become executable here.
+ *
+ * What that costs: the list is not type-to-filter, and changes need Apply rather than applying live.
+ * What it buys, beyond the CSP: a form that works before, during and after any script would have
+ * loaded, and a URL that fully describes the view — which is what makes a filtered dashboard
+ * something you can send to someone.
+ */
 function filterBar(facetRows, days, active) {
-  const distinct = (key) =>
-    [...new Set(facetRows.map((r) => String(r[key] ?? "")).filter((v) => v && SAFE_VALUE.test(v)))]
-      .sort()
-      .slice(0, 200);
+  // Count each value across the window. Facet rows are grouped tuples, so one row contributes its
+  // weight to every dimension it names.
+  const counts = {};
+  for (const f of FILTERS) counts[f.key] = new Map();
+  for (const r of facetRows) {
+    const n = num(r.n) || 1;
+    for (const f of FILTERS) {
+      const v = String(r[f.key] ?? "");
+      if (!v || !SAFE_VALUE.test(v)) continue;
+      counts[f.key].set(v, (counts[f.key].get(v) || 0) + n);
+    }
+  }
 
-  const selects = FILTERS.map((f) => {
-    const opts = distinct(f.key)
-      .map(
-        (v) =>
-          `<option value="${escapeHtml(v)}"${active[f.key] === v ? " selected" : ""}>${escapeHtml(
-            v
-          )}</option>`
-      )
+  const facet = (f) => {
+    const chosen = active[f.key] || [];
+    const values = [...counts[f.key].entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    if (!values.length && !chosen.length) return "";
+
+    const options = values
+      .slice(0, 60)
+      .map(([v, n]) => {
+        const on = chosen.includes(v);
+        return `<label class="opt${on ? " on" : ""}">
+<input type="checkbox" name="${f.key}" value="${escapeHtml(v)}"${on ? " checked" : ""}>
+<span class="tick" aria-hidden="true"></span>
+<span class="name" title="${escapeHtml(v)}">${escapeHtml(v)}</span>
+<span class="cnt">${fmt(n)}</span></label>`;
+      })
       .join("");
-    return `<label class="grp"><span>${f.label}</span><select name="${f.key}"><option value="">any</option>${opts}</select></label>`;
-  }).join("");
+
+    // Selected values ride on the trigger, as they do in the pattern this follows: the point of a
+    // faceted bar is that the current query is readable without opening anything.
+    const badges = chosen
+      .slice(0, 2)
+      .map((v) => `<span class="badge">${escapeHtml(v)}</span>`)
+      .join("");
+    const more = chosen.length > 2 ? `<span class="badge">+${chosen.length - 2}</span>` : "";
+
+    return `<details class="facet${chosen.length ? " active" : ""}">
+<summary><span class="plus" aria-hidden="true">+</span><span class="dim">${f.label}</span>${
+      chosen.length ? `<span class="div"></span>${badges}${more}` : ""
+    }</summary>
+<div class="pop">
+<div class="opts">${options || '<p class="empty">nothing in this window</p>'}</div>
+${
+  chosen.length
+    ? `<a class="popclear" href="${escapeHtml(queryWith(active, days, { [f.key]: [] }))}">Clear ${escapeHtml(
+        f.label.toLowerCase()
+      )}</a>`
+    : ""
+}
+</div></details>`;
+  };
+
+  const ranges = [
+    [1, "24 hours"],
+    [7, "7 days"],
+    [30, "30 days"],
+    [90, "90 days"],
+  ]
+    .map(([d, l]) => `<option value="${d}"${d === days ? " selected" : ""}>Last ${l}</option>`)
+    .join("");
 
   const statusOpts = [
-    ["", "any"],
-    ["ok", "succeeded"],
-    ["failed", "failed"],
+    ["", "Any outcome"],
+    ["ok", "Succeeded"],
+    ["failed", "Failed"],
   ]
-    .map(
-      ([v, l]) =>
-        `<option value="${v}"${(active.status || "") === v ? " selected" : ""}>${l}</option>`
-    )
+    .map(([v, l]) => `<option value="${v}"${(active.status || "") === v ? " selected" : ""}>${l}</option>`)
     .join("");
 
-  const chips = [
-    ...FILTERS.filter((f) => active[f.key]).map(
-      (f) =>
-        `<a class="chip" href="${escapeHtml(withParam(active, days, f.key, null))}"><b>${
-          f.label
-        }</b> ${escapeHtml(active[f.key])}<span>&times;</span></a>`
-    ),
-    ...(active.status
-      ? [
-          `<a class="chip" href="${escapeHtml(
-            withParam(active, days, "status", null)
-          )}"><b>Status</b> ${escapeHtml(active.status)}<span>&times;</span></a>`,
-        ]
-      : []),
-  ].join("");
+  const anyActive = FILTERS.some((f) => (active[f.key] || []).length) || !!active.status;
 
-  const rangeOpts = [
-    [1, "last 24 hours"],
-    [7, "last 7 days"],
-    [30, "last 30 days"],
-    [90, "last 90 days"],
-  ]
-    .map(([d, l]) => `<option value="${d}"${d === days ? " selected" : ""}>${l}</option>`)
-    .join("");
+  return `<form class="filters" method="get" id="f">
+<select class="range" name="days" aria-label="Time range">${ranges}</select>
+${FILTERS.map(facet).join("")}
+<select class="range" name="status" aria-label="Outcome">${statusOpts}</select>
+<button class="go" type="submit">Apply</button>
+${anyActive ? `<a class="reset" href="?days=${days}">Reset <span aria-hidden="true">&times;</span></a>` : ""}
+</form><div id="chips">${activeChips(active, days)}</div>`;
+}
 
-  return `<form class="filters" method="get">
-<label class="grp"><span>Time range</span><select name="days">${rangeOpts}</select></label>
-${selects}
-<label class="grp"><span>Status</span><select name="status">${statusOpts}</select></label>
-<div class="act"><button class="go" type="submit">Apply</button>
-<a class="clear" href="?days=${days}">Reset</a></div>
-</form>${chips ? `<div class="chips">${chips}</div>` : ""}`;
+/** Active values as removable chips, so the current query is legible without opening a popover. */
+function activeChips(active, days) {
+  const chips = [];
+  for (const f of FILTERS) {
+    for (const v of active[f.key] || []) {
+      chips.push(
+        `<a class="chip" href="${escapeHtml(without(active, days, f.key, v))}"><b>${f.label}</b> ${escapeHtml(
+          v
+        )}<span>&times;</span></a>`
+      );
+    }
+  }
+  if (active.status) {
+    chips.push(
+      `<a class="chip" href="${escapeHtml(queryWith(active, days, { status: "" }))}"><b>Outcome</b> ${escapeHtml(
+        active.status
+      )}<span>&times;</span></a>`
+    );
+  }
+  return chips.length ? `<div class="chips">${chips.join("")}</div>` : "";
 }
 
 function setupPage(why) {
@@ -679,7 +883,7 @@ function content({ days, byEvent, failures, versions, platforms, total, timing, 
   const eventTotal = byEvent.rows.reduce((a, r) => a + num(r.n), 0);
   const rate = eventTotal ? (failedTotal / eventTotal) * 100 : 0;
   const points = series.rows.map((r) => ({ n: num(r.n), failed: num(r.failed) }));
-  const link = (key) => (r) => withParam(active, days, key, r[key]);
+  const link = (key) => (r) => only(active, days, key, r[key]);
 
   return `<div class="cards">
   <div class="card accent"><b>${fmt(total.installs)}</b><span>installs seen</span></div>
@@ -722,14 +926,14 @@ ${rows(failures.rows, (r) => `<tr><td>${escapeHtml(r.event)}</td>
 <div class="panel tbl"><table><tr><th>version</th><th>installs</th><th>events</th></tr>
 ${rows(versions.rows, (r) => `<tr><td class="mono">${
     r.version
-      ? `<a href="${escapeHtml(withParam(active, days, "version", r.version))}">${escapeHtml(r.version)}</a>`
+      ? `<a href="${escapeHtml(only(active, days, "version", r.version))}">${escapeHtml(r.version)}</a>`
       : "unknown"
   }</td><td class="n">${fmt(r.installs)}</td><td class="n">${fmt(r.events)}</td></tr>`)}</table></div>
 
 <h2>Platforms</h2>
 <div class="panel tbl"><table><tr><th>os</th><th>arch</th><th>installs</th></tr>
 ${rows(platforms.rows, (r) => `<tr>
-<td><a href="${escapeHtml(withParam(active, days, "os", r.os))}">${escapeHtml(r.os)}</a></td>
+<td><a href="${escapeHtml(only(active, days, "os", r.os))}">${escapeHtml(r.os)}</a></td>
 <td class="mono">${escapeHtml(r.arch)}</td><td class="n">${fmt(r.installs)}</td></tr>`)}</table></div>
 
 <footer>Counts are SUM(_sample_interval), not count(): Analytics Engine samples under load and

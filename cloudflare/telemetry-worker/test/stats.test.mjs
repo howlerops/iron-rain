@@ -264,7 +264,10 @@ const capture = async (query) => {
 
 test("a filter constrains every query", async () => {
   const { sql } = await capture("?days=7&provider=opencode&status=failed");
-  const constrained = sql.filter((s) => s.includes("blob2 = 'opencode'"));
+  // IN rather than =, because a dimension holds a list now: "opencode and pi" is a question the
+  // single-value form could not express at all, so comparing two providers meant loading the page
+  // twice and remembering the first set of numbers.
+  const constrained = sql.filter((s) => s.includes("blob2 IN ('opencode')"));
   assert.ok(constrained.length >= 6, `only ${constrained.length} queries were filtered by provider`);
   assert.ok(
     sql.some((s) => s.includes("double2 = 0")),
@@ -291,7 +294,7 @@ test("a hostile filter value never reaches the SQL", async () => {
       `the value ${JSON.stringify(evil)} reached the query`
     );
     assert.ok(
-      !joined.includes(`blob2 = '${evil}'`),
+      !joined.includes(`'${evil}'`),
       `the value ${JSON.stringify(evil)} was interpolated verbatim`
     );
   }
@@ -299,11 +302,11 @@ test("a hostile filter value never reaches the SQL", async () => {
 
 test("a valid filter survives and an invalid one is simply ignored", async () => {
   const ok = await capture("?provider=claude-code");
-  assert.ok(ok.sql.some((s) => s.includes("blob2 = 'claude-code'")), "a legitimate value was dropped");
+  assert.ok(ok.sql.some((s) => s.includes("blob2 IN ('claude-code')")), "a legitimate value was dropped");
 
   const bad = await capture("?provider=' OR 1=1 --");
   assert.ok(
-    !bad.sql.some((s) => s.includes("blob2 = ")),
+    !bad.sql.some((s) => s.includes("blob2 IN")),
     "an invalid value must drop the filter, not apply a mangled one"
   );
 });
@@ -331,10 +334,11 @@ test("the skeleton is sent before the data and hidden after it", async () => {
   );
 });
 
-test("the CSP allows Cloudflare's injected beacon and nothing else executable", async () => {
-  // Cloudflare injects its Web Analytics beacon into HTML on a proxied hostname, and with
-  // default-src 'none' the browser logged a violation on every load. This page still ships no
-  // script of its own — the allowance is one exact origin, not a blanket script-src.
+test("script-src is a hash and one origin — never unsafe-inline, never a wildcard", async () => {
+  // The page renders values that arrived over the wire: an error string originates in a provider's
+  // output and lands in a table cell. So the property worth keeping, now that there IS a script, is
+  // that nothing FROM THE DATASET can execute. A hash keeps exactly that — only the one script whose
+  // bytes match may run — where 'unsafe-inline' would have given it away entirely.
   const res = await worker.fetch(
     new Request("https://telemetry.test/stats", {
       headers: { Authorization: "Basic " + btoa("x:hunter2") },
@@ -343,7 +347,127 @@ test("the CSP allows Cloudflare's injected beacon and nothing else executable", 
   );
   const csp = res.headers.get("Content-Security-Policy") || "";
   assert.match(csp, /default-src 'none'/);
-  assert.match(csp, /script-src https:\/\/static\.cloudflareinsights\.com/);
+  assert.match(csp, /script-src 'sha256-[A-Za-z0-9+/=]+'/, "script-src carries no hash");
+  assert.match(csp, /https:\/\/static\.cloudflareinsights\.com/);
   assert.doesNotMatch(csp, /script-src[^;]*'unsafe-inline'/, "inline script must stay forbidden");
   assert.doesNotMatch(csp, /script-src[^;]*\*/, "a wildcard script source defeats the point");
+});
+
+test("the CSP hash matches the script actually served", async () => {
+  // What this can and cannot catch, stated because the obvious reading is wrong. The hash is
+  // COMPUTED from the same constant that is served, so "someone edited the script and forgot to
+  // update the hash" is impossible by construction — that control passes, and a test for it would
+  // be tautological.
+  //
+  // What is real is the EMBEDDING diverging from the hashed bytes: a stray space in the <script>
+  // wrapper, a future minifier, anything that transforms the string between hashing and serving.
+  // The browser then refuses to run it and every filter change silently falls back to a full page
+  // reload — working, slower, with no error anywhere. So this rehashes what was actually SERVED.
+  const res = await worker.fetch(
+    new Request("https://telemetry.test/stats?days=7", {
+      headers: { Authorization: "Basic " + btoa("x:hunter2") },
+    }),
+    envWith()
+  );
+  const csp = res.headers.get("Content-Security-Policy") || "";
+  const body = await res.text();
+
+  const m = body.match(/<script>([\s\S]*?)<\/script>/);
+  assert.ok(m, "no inline script was served, but the CSP allows one");
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(m[1]));
+  const hash = "sha256-" + Buffer.from(new Uint8Array(digest)).toString("base64");
+
+  assert.ok(
+    csp.includes(`'${hash}'`),
+    `the served script hashes to ${hash}, which the CSP does not list. The browser will refuse to ` +
+      `run it and every filter change will fall back to a full page reload, silently.`
+  );
+});
+
+test("the swap targets exist and the script can find them", async () => {
+  // The queries have to succeed for the filter bar to render at all: the failure path deliberately
+  // replaces the whole body with a warning, which is why this mocks them rather than letting the
+  // real endpoint 401 and then asserting against an error page.
+  const { body } = await capture("?days=7");
+  for (const id of ["f", "results", "chips", "sk"]) {
+    assert.ok(
+      body.includes(`id="${id}"`),
+      `#${id} is missing. The script bails out when any of its anchors is absent — which fails ` +
+        `safe (full reloads) but silently, so this is the only thing that would notice.`
+    );
+  }
+});
+
+// ---- faceted, multi-select filtering -------------------------------------------------------------
+
+test("several values in one dimension are OR-ed, and dimensions AND together", async () => {
+  const { sql } = await capture("?provider=opencode&provider=pi&os=darwin");
+  const q = sql.find((s) => s.includes("blob1 AS event"));
+  assert.match(
+    q,
+    /blob2 IN \('opencode', 'pi'\)/,
+    "two providers must widen within the dimension, not collide or drop one"
+  );
+  assert.match(q, /blob5 IN \('darwin'\)/);
+  assert.ok(
+    q.indexOf("blob2 IN") < q.indexOf("AND blob5 IN") || q.includes("AND"),
+    "dimensions must AND together — a reader of 'provider: opencode, pi / os: darwin' expects " +
+      "both constraints, not either"
+  );
+});
+
+test("one bad value does not poison the rest of its dimension", async () => {
+  const { sql } = await capture("?provider=opencode&provider=' OR 1=1 --&provider=pi");
+  const q = sql.find((s) => s.includes("blob1 AS event"));
+  assert.match(q, /blob2 IN \('opencode', 'pi'\)/, "the two legitimate values should survive");
+  assert.doesNotMatch(q, /OR 1=1/);
+});
+
+test("duplicate values collapse", async () => {
+  const { sql } = await capture("?provider=pi&provider=pi&provider=pi");
+  const q = sql.find((s) => s.includes("blob1 AS event"));
+  assert.match(q, /blob2 IN \('pi'\)/, "a repeated value must not be repeated in the query");
+});
+
+test("the facet list is multi-select, counted, and reachable without script", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (_u, init) => {
+    const sql = String(init?.body || "");
+    const rows = sql.includes("GROUP BY event, provider, version, os, arch")
+      ? [
+          { event: "session.create", provider: "opencode", version: "1", os: "darwin", arch: "arm64", n: 90 },
+          { event: "turn.complete", provider: "pi", version: "1", os: "linux", arch: "amd64", n: 10 },
+        ]
+      : [];
+    return new Response(JSON.stringify({ data: rows }), { status: 200 });
+  };
+  try {
+    const res = await worker.fetch(
+      new Request("https://telemetry.test/stats?provider=opencode", {
+        headers: { Authorization: "Basic " + btoa("x:hunter2") },
+      }),
+      envWith()
+    );
+    const body = await res.text();
+
+    assert.match(body, /<details class="facet/, "the facets are not disclosure widgets");
+    assert.match(
+      body,
+      /<input type="checkbox" name="provider" value="pi">/,
+      "an unselected facet value must be an unchecked checkbox, so several can be chosen at once"
+    );
+    assert.match(
+      body,
+      /<input type="checkbox" name="provider" value="opencode" checked>/,
+      "the active value is not reflected back into the list"
+    );
+    assert.match(body, /class="cnt">90</, "facet values carry no count, so which to open is a guess");
+    // The no-JS path must stay intact: this is a real GET form with real checkboxes, and the
+    // script only upgrades it. Asserting the markup rather than the absence of script, because
+    // there IS a script now and the thing worth protecting is that it is optional.
+    assert.match(body, /<form class="filters" method="get"/, "the form no longer submits on its own");
+    assert.match(body, /<button class="go" type="submit">/, "there is no way to apply without script");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
