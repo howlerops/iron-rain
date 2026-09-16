@@ -1,6 +1,6 @@
 #!/bin/sh
 # Iron Rain installer.
-#   curl -fsSL https://howlerops.github.io/iron-rain/install.sh | sh
+#   curl -fsSL https://ironrain.app/install.sh | sh
 #
 # macOS: installs the daemon + the Iron Rain app, then launches the app (which starts the
 # daemon for you — no terminal). Linux/headless: installs the daemon and starts it.

@@ -124,7 +124,7 @@
     the app's and daemon's keypairs; traffic is sealed with ChaCha20-Poly1305. Only your paired
     devices can read a session.</li>
     <li><strong>Stateless relay.</strong> When you're away, the daemon holds an outbound connection
-    to a relay — Cloudflare Durable Objects as primary, Fly as fallback — that forwards only
+    to a relay — Cloudflare Durable Objects — that forwards only
     ciphertext. No inbound ports open on your Mac.</li>
     <li><strong>Races LAN + relays.</strong> At home the app connects directly over the LAN for the
     lowest latency and falls back to the relay automatically when you leave. You never switch modes
@@ -255,13 +255,14 @@
 
   <h2 id="privacy">Privacy</h2>
   <p>Iron Rain runs entirely on your hardware and uses your own agent subscriptions and keys. The
-  phone-to-Mac link is end-to-end encrypted, and there is no analytics or tracking by default.
-  Optional diagnostics are scrubbed and strictly opt-in. Read the
+  phone-to-Mac link is end-to-end encrypted, and there are no ads or third-party trackers.
+  Anonymous diagnostics are on by default — scrubbed of paths, prompts and repo names — and can be
+  switched off in Settings. Read the
   <a href="./privacy.html">full privacy policy</a> — it's short and plain-English.</p>
 
   <h2 id="install">Install</h2>
   <p><strong>Mac (app + daemon), one line:</strong></p>
-  <p><code>curl -fsSL https://howlerops.github.io/iron-rain/install.sh | sh</code></p>
+  <p><code>curl -fsSL https://ironrain.app/install.sh | sh</code></p>
   <p>This installs the Iron Rain Mac app and daemon and launches the app. The app auto-starts the
   daemon, which auto-detects your installed agents and shows a pairing QR to scan from your phone.</p>
   <p><strong>iPhone / iPad:</strong> Iron Rain for iOS is in beta via TestFlight — see

@@ -125,7 +125,7 @@
         </div>
         <div>
           <h3>Remote from anywhere</h3>
-          <p>The app races your LAN and encrypted relays (Cloudflare Durable Objects, Fly fallback) so a session reaches you at home, on Wi-Fi, or on cellular — with APNs push.</p>
+          <p>The app races your LAN and an encrypted relay (Cloudflare Durable Objects) so a session reaches you at home, on Wi-Fi, or on cellular — with APNs push. If the relay ever drops, the app says so instead of looking like your Mac went away.</p>
         </div>
       </div>
       <div class="problem-card">
@@ -134,7 +134,7 @@
         </div>
         <div>
           <h3>Your hardware, your keys</h3>
-          <p>Nothing runs in our cloud. Your code, prompts, and credentials stay on your Mac. No analytics or tracking by default — diagnostics are scrubbed and opt-in.</p>
+          <p>Nothing runs in our cloud. Your code, prompts, and credentials stay on your Mac. No ads or third-party trackers. Anonymous diagnostics are on by default, scrubbed of paths and prompts, and switchable off.</p>
         </div>
       </div>
     </div>
@@ -614,7 +614,7 @@
         </div>
         <h3>End-to-end encrypted</h3>
         <p>The iPhone/iPad app and Mac daemon establish keys with X25519 and encrypt every session
-        with ChaCha20-Poly1305. The relay — Cloudflare Durable Objects, with a Fly fallback —
+        with ChaCha20-Poly1305. The relay — Cloudflare Durable Objects —
         forwards only opaque ciphertext.</p>
       </div>
       <div class="trust-card">
@@ -638,8 +638,9 @@
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
         </div>
         <h3>No analytics, no tracking</h3>
-        <p>No ads, no third-party trackers, nothing on by default. Optional diagnostics are
-        scrubbed and strictly opt-in. Read the <a href="./privacy.html">full privacy policy</a> —
+        <p>No ads, no third-party trackers, and nothing of yours leaves your Mac. Anonymous
+        diagnostics are on by default — lifecycle events and scrubbed error classes, never your
+        code, prompts, paths or repo names — and one switch in Settings turns them off. Read the <a href="./privacy.html">full privacy policy</a> —
         it's short and plain-English.</p>
       </div>
     </div>
@@ -664,7 +665,7 @@
           <p>One command installs the Iron Rain Mac app and daemon, then launches the app.
           It auto-detects opencode, claude-code, pi, prime-agent and oh-my-pi, sets up the integration on first run,
           and shows a pairing QR code to scan from your phone.</p>
-          <pre class="cmd"><code>curl -fsSL https://howlerops.github.io/iron-rain/install.sh | sh</code></pre>
+          <pre class="cmd"><code>curl -fsSL https://ironrain.app/install.sh | sh</code></pre>
           <p class="step-note">
             Headless or Linux? The same command installs just the daemon
             (<code>~/.oculus/oculusd.log</code>). Prefer source?

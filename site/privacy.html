@@ -18,16 +18,40 @@
 <main class="doc wrap">
   <a class="back" href="./index.html">← Back</a>
   <h1>Privacy Policy</h1>
-  <p class="updated">Last updated: 16 July 2026</p>
+  <p class="updated">Last updated: 15 September 2026</p>
 
   <p>Iron Rain is a tool for driving coding-agent sessions that run on <em>your own</em> Mac. It is
   designed to be private by construction. This policy explains what it does and does not do with
   your data.</p>
 
   <h2>What Iron Rain does not collect</h2>
-  <p>Iron Rain has no analytics, no ads, and no third-party trackers. We do not operate servers that
+  <p>Iron Rain has no ads and no third-party trackers. We do not operate servers that
   receive your source code, prompts, agent output, API keys, or credentials. We cannot see any of
   it.</p>
+
+  <h2>Anonymous diagnostics</h2>
+  <p>
+    The Mac daemon sends anonymous diagnostics, and <strong>this is on by default</strong>. You can
+    turn it off at any time: on the Mac, <em>Settings &rarr; Send anonymous diagnostics</em>. Turning
+    it off stops all reporting immediately.
+  </p>
+  <p>Each report contains only:</p>
+  <ul>
+    <li>the name of a lifecycle event (for example, that a session started or a turn finished);</li>
+    <li>which agent provider was used (opencode, claude-code, pi, or a CLI agent);</li>
+    <li>whether it succeeded, and how long it took;</li>
+    <li>an error <em>class</em> when something failed, with absolute paths and your home directory
+        stripped out;</li>
+    <li>the app version and your operating system and CPU architecture;</li>
+    <li>a random identifier the daemon generates for itself on first run.</li>
+  </ul>
+  <p>
+    That identifier is not derived from your hardware, your account, or anything about you — it
+    exists so that ten reports from one machine are not mistaken for ten machines, and it can be
+    reset by deleting <code>~/.oculus/telemetry.json</code>. Diagnostics never include your source
+    code, prompts, agent output, file paths, repository names, branch names, API keys, or
+    credentials. We use them only to find out which failures are actually happening to people.
+  </p>
 
   <h2>How your data flows</h2>
   <p>Iron Rain connects the iOS app directly to a daemon you run on your Mac. That connection is
