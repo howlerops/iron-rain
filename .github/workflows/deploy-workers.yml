@@ -243,6 +243,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           INGEST_KEY: ${{ secrets.TELEMETRY_INGEST_KEY }}
+          INGEST_STRICT: ${{ secrets.TELEMETRY_INGEST_STRICT }}
           STATS_PASSWORD: ${{ secrets.TELEMETRY_STATS_PASSWORD }}
           CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CF_ANALYTICS_TOKEN: ${{ secrets.CF_ANALYTICS_TOKEN }}
@@ -253,6 +254,11 @@ jobs:
             echo "$1: set"
           }
           put INGEST_KEY        "$INGEST_KEY"
+          # Strict mode is a SEPARATE secret from the key on purpose. Binding a key should not
+          # silently begin discarding real data — setting INGEST_KEY alone once rejected every
+          # report in the field for a day, behind a 401 that nothing surfaces. Set this only when
+          # /stats shows zero unkeyed installs.
+          put INGEST_STRICT     "$INGEST_STRICT"
           put STATS_PASSWORD    "$STATS_PASSWORD"
           put CF_ACCOUNT_ID     "$CF_ACCOUNT_ID"
           put CF_ANALYTICS_TOKEN "$CF_ANALYTICS_TOKEN"
