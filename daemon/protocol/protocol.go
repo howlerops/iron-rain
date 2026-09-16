@@ -54,6 +54,7 @@ const (
 	TypeInviteList            = "invite.list"       // outstanding invites
 	TypeInviteRevoke          = "invite.revoke"     // drop one invite
 	TypeProviderList          = "provider.list"     // agent providers registered on this daemon
+	TypeRelayHealth           = "relay.health"      // per-relay registration state, for the status detail
 	TypeProviderRefresh       = "provider.refresh"  // re-detect agent harnesses on PATH (rescan) + rebroadcast the list
 	TypeAgentList             = "agent.list"        // full agent roster (native + detected + custom)
 	TypeAgentUpsert           = "agent.upsert"      // add/edit a custom CLI agent (persisted, live)
@@ -2672,4 +2673,32 @@ type DeviceList struct {
 type DeviceRef struct {
 	Pub   string `json:"pub"`
 	Label string `json:"label,omitempty"`
+}
+
+// RelayHealth reports the daemon's registration state on each shared relay it was told to use.
+//
+// The daemon holds one host registration per relay so the app can reach it off-LAN, and until now
+// that was visible only in the daemon's own log. A daemon that could not register was SILENT from
+// the app's side — the phone simply failed to reach it and reported "daemon not running", which
+// sends someone to restart a process that is running perfectly. Remote access being down and the
+// daemon being down are different problems with different fixes, and the app could not tell them
+// apart.
+type RelayHealth struct {
+	Relays []RelayState `json:"relays"`
+}
+
+// RelayState is one relay's registration.
+type RelayState struct {
+	URL string `json:"url"`
+	// Connected is true while a host registration is live on this relay.
+	Connected bool `json:"connected"`
+	// LastOKAt is when the registration last succeeded (unix seconds, 0 if never).
+	//
+	// Kept alongside Connected rather than derived from it: "down for two minutes" and "never came
+	// up since the daemon started" look identical in a boolean and want different responses.
+	LastOKAt int64 `json:"last_ok_at,omitempty"`
+	// Failures counts consecutive registration failures, reset by any success.
+	Failures int `json:"failures,omitempty"`
+	// Detail is the last error, scrubbed to its reason.
+	Detail string `json:"detail,omitempty"`
 }

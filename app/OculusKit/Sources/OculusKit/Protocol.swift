@@ -18,6 +18,7 @@ public enum MessageType {
     public static let discover = "discover.list"
     public static let deviceRegister = "device.register"
     public static let providerList = "provider.list"
+    public static let relayHealth = "relay.health"
     public static let providerRefresh = "provider.refresh"
     public static let agentList = "agent.list"
     public static let agentUpsert = "agent.upsert"
@@ -2939,4 +2940,49 @@ public struct WorktreeRef: Codable {
     public var message: String?
     public init(sessionID: String, message: String? = nil) { self.sessionID = sessionID; self.message = message }
     enum CodingKeys: String, CodingKey { case sessionID = "session_id", message }
+}
+
+/// The daemon's registration state on each shared relay it was configured to use.
+///
+/// Remote access being down and the daemon being down are different problems with different fixes,
+/// and until this existed the app could not tell them apart: a daemon that failed to register was
+/// silent from here, so an unreachable daemon was reported as "not running" and sent people to
+/// restart something that was working.
+public struct RelayHealth: Codable, Sendable, Equatable {
+    public let relays: [RelayState]
+    public init(relays: [RelayState] = []) { self.relays = relays }
+}
+
+public struct RelayState: Codable, Sendable, Equatable, Identifiable {
+    public let url: String
+    public let connected: Bool
+    /// Unix seconds of the last successful registration; nil/0 means it has never come up.
+    public let lastOkAt: Int64?
+    public let failures: Int?
+    public let detail: String?
+
+    public var id: String { url }
+
+    enum CodingKeys: String, CodingKey {
+        case url, connected, failures, detail
+        case lastOkAt = "last_ok_at"
+    }
+
+    /// Never registered since the daemon started, as opposed to registered and since dropped.
+    /// A boolean cannot express the difference and the two want different responses.
+    public var neverConnected: Bool { (lastOkAt ?? 0) == 0 }
+
+    /// The host part, for display: the full ws URL is long and the scheme and path never vary.
+    public var host: String {
+        URLComponents(string: url)?.host ?? url
+    }
+
+    public init(url: String, connected: Bool, lastOkAt: Int64? = nil,
+                failures: Int? = nil, detail: String? = nil) {
+        self.url = url
+        self.connected = connected
+        self.lastOkAt = lastOkAt
+        self.failures = failures
+        self.detail = detail
+    }
 }

@@ -51,6 +51,8 @@ type DiscoverFunc func(context.Context) ([]protocol.Discovered, error)
 
 // Hub owns providers and live sessions.
 type Hub struct {
+	// relays tracks per-relay registration state for the status detail (relayhealth.go).
+	relays relayHealth
 	// auth throttles failed authentication attempts (see authlimit.go).
 	auth authThrottle
 	// previewDOM correlates an outstanding DOM ask with the client that answers it (preview_dom.go).
@@ -2772,6 +2774,12 @@ func (h *Hub) Serve(ctx context.Context, conn *transport.Conn) error {
 		// cannot reconnect, "was the credential ever handed over, and did it land?" is the first
 		// question and currently the hardest to answer.
 		log.Printf("device: delivering credential to %s", hexKey(conn.PeerPublicKey())[:16])
+		// Relay state, on connect.
+		//
+		// It is broadcast on change, but a device that connects while a relay is already down would
+		// otherwise wait for the next transition to hear about it — which, for a relay that is simply
+		// unreachable, never comes.
+		h.sendEvent(conn, protocol.TypeRelayHealth, h.RelayHealth())
 		h.sendEvent(conn, protocol.TypeDeviceCredential, protocol.DeviceCredential{
 			Pub: hexKey(conn.PeerPublicKey()), Credential: cred, IssuedAt: time.Now().Unix(),
 		})

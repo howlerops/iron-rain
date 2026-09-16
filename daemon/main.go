@@ -503,7 +503,7 @@ func serve(args []string) error {
 	// same end-to-end-encrypted session runs over it. The relay server_id is the daemon pubkey, so
 	// pairing needs nothing extra beyond the relay URL (the app already has `pub`).
 	for _, ru := range splitRelays(*relayURL) {
-		go relayHost(ru, hex.EncodeToString(kp.Public()), kp.PrivateBytes(), srv)
+		go relayHost(ru, hex.EncodeToString(kp.Public()), kp.PrivateBytes(), srv, h)
 	}
 
 	mux := http.NewServeMux()
@@ -700,7 +700,7 @@ const shutdownDeadline = 30 * time.Second
 // that client disconnects), then returns — so we loop to re-register for the next client. A quick
 // return means the relay was unreachable (down / network), so we back off; a long-lived return
 // means we served a real session, so we re-register promptly. Traffic stays end-to-end encrypted.
-func relayHost(relayURL, serverID string, hostPriv []byte, srv *server.Server) {
+func relayHost(relayURL, serverID string, hostPriv []byte, srv *server.Server, h *hub.Hub) {
 	ctx := context.Background()
 	backoff := time.Second
 	relayFailures := 0 // consecutive registration failures, for a bounded log trail
@@ -716,6 +716,10 @@ func relayHost(relayURL, serverID string, hostPriv []byte, srv *server.Server) {
 		// It degrades rather than fails: a relay not yet redeployed ignores the offer, and a key that
 		// doesn't match serverID falls back to an unproven registration, so this cannot break remote
 		// access on its own.
+		// Registered, as far as this daemon can tell: ServeHostKey blocks once the relay has accepted
+		// the host slot, so reaching the call is not evidence — returning quickly from it is evidence
+		// of the opposite. The optimistic mark is corrected below if it comes straight back.
+		h.SetRelayConnected(relayURL)
 		err := relay.ServeHostKey(ctx, relayURL, serverID, hostPriv, relay.DefaultKeepalive, srv.ServeConn)
 		if time.Since(start) > 5*time.Second {
 			backoff = time.Second // served a client (or waited on one) — re-register immediately
@@ -730,6 +734,7 @@ func relayHost(relayURL, serverID string, hostPriv []byte, srv *server.Server) {
 		// fine. Logged on the first failure and then every tenth, so a relay outage leaves a trail
 		// without filling the log at the backoff rate.
 		relayFailures++
+		h.SetRelayFailed(relayURL, err)
 		if err != nil && (relayFailures == 1 || relayFailures%10 == 0) {
 			log.Printf("relay %s: not registered (attempt %d): %v — remote access is unavailable; "+
 				"LAN still works", relayURL, relayFailures, err)

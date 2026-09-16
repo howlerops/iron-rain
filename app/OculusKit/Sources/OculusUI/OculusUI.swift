@@ -58,6 +58,13 @@ public final class Model: ObservableObject {
     @Published public var connecting = false // a connect/handshake attempt is in flight (not an error)
     @Published public var status = "Not connected"
     @Published public var statusDetail: String? // human reason when not connected (unreachable, wrong secret, key mismatch)
+
+    /// The daemon's registration state on each shared relay (empty until the daemon reports).
+    ///
+    /// Remote access being down and the daemon being down are different problems, and this is the
+    /// only thing that can tell them apart from here: without it an unreachable daemon was reported
+    /// as "not running", which sends someone to restart a process that is working perfectly.
+    @Published public var relays: [RelayState] = []
     /// Which route the live connection won on — "this Mac", "LAN", or "relay". Empty when not
     /// connected. Every route ends in an identical working client, so this is the only thing that
     /// distinguishes "slow because it's going through Cloudflare" from "slow for some other reason".
@@ -5270,6 +5277,9 @@ public final class Model: ObservableObject {
             }
         case MessageType.loopList: // a loop config changed or a run started
             if let ll = try? env.payload(as: LoopList.self) { loops = ll.loops; loopRuns = ll.runs }
+        case MessageType.relayHealth:
+            if let h = try? env.payload(as: RelayHealth.self) { relays = h.relays }
+
         case MessageType.providerList: // pushed after a custom agent is added/removed
             if let pl = try? env.payload(as: ProviderList.self) { applyProviders(pl.providers); providersLoaded = true }
         case MessageType.participants: // someone joined, left, or had their role changed
