@@ -65,6 +65,34 @@ public final class Model: ObservableObject {
     /// only thing that can tell them apart from here: without it an unreachable daemon was reported
     /// as "not running", which sends someone to restart a process that is working perfectly.
     @Published public var relays: [RelayState] = []
+
+    /// A sentence about remote access, or nil when there is nothing to say.
+    ///
+    /// This is deliberately NOT folded into the connection banner, which is about reaching the
+    /// daemon and hides itself when that works. The state worth surfacing here is the one where both
+    /// things are true at once: the app is talking to the daemon perfectly well over the LAN, and
+    /// nothing will be able to reach it from outside. That combination has no other symptom until
+    /// someone leaves the building and finds the app dead, and then the failure looks like the
+    /// daemon rather than the relay.
+    ///
+    /// Silent when no relay is configured at all: LAN-only is a choice (`--relay ""`), not a fault,
+    /// and warning about it would train people to ignore the warning.
+    public var remoteAccessWarning: String? {
+        guard !relays.isEmpty else { return nil }
+        let down = relays.filter { !$0.connected }
+        guard down.count == relays.count else { return nil }
+
+        // "Never came up" and "dropped" want different sentences: one is usually configuration, the
+        // other is usually the network, and telling someone to check the wrong one wastes the trip.
+        let reason = down.compactMap { $0.detail }.first
+        let never = down.allSatisfy { $0.neverConnected }
+        let host = down.first?.host ?? "the relay"
+        if never {
+            return "Remote access unavailable — never reached \(host)"
+                + (reason.map { ": \($0)" } ?? "")
+        }
+        return "Remote access down — lost \(host)" + (reason.map { ": \($0)" } ?? "")
+    }
     /// Which route the live connection won on — "this Mac", "LAN", or "relay". Empty when not
     /// connected. Every route ends in an identical working client, so this is the only thing that
     /// distinguishes "slow because it's going through Cloudflare" from "slow for some other reason".

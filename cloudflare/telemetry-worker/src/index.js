@@ -338,7 +338,7 @@ async function body(env, range, active) {
   // under-reports exactly when traffic is high enough to care about. Summing the interval is the
   // documented way to recover the true figure.
   const q = (sql) => sqlQuery(env, sql);
-  const [byEvent, failures, versions, platforms, installs, timing, series, facets] =
+  const [byEvent, failures, versions, platforms, installs, timing, series, rollover, facets] =
     await Promise.all([
       q(`SELECT blob1 AS event, SUM(_sample_interval) AS n,
                 SUM(IF(double2 = 0, _sample_interval, 0)) AS failed
@@ -362,6 +362,13 @@ async function body(env, range, active) {
                 SUM(_sample_interval) AS n,
                 SUM(IF(double2 = 0, _sample_interval, 0)) AS failed
          FROM oculus_telemetry WHERE ${where} GROUP BY t ORDER BY t ASC`),
+      // How much of the fleet carries the ingest key yet.
+      //
+      // This is the fact that decides when INGEST_STRICT can be switched on, and without it that
+      // decision is a guess — which is how enabling the key came to reject every report for a day.
+      // blob8 is written by the ingest path as "keyed"/"unkeyed".
+      q(`SELECT blob8 AS keyed, COUNT(DISTINCT blob7) AS installs, SUM(_sample_interval) AS events
+         FROM oculus_telemetry WHERE ${range.where} AND blob8 != '' GROUP BY keyed`),
       // Facets come from the WINDOW, not the current filter: a list that only offers what is
       // already selected is a dead end you cannot back out of.
       //
@@ -373,7 +380,7 @@ async function body(env, range, active) {
          GROUP BY event, provider, version, os, arch LIMIT 600`),
     ]);
 
-  const failed = [byEvent, failures, versions, platforms, installs, timing, series, facets]
+  const failed = [byEvent, failures, versions, platforms, installs, timing, series, rollover, facets]
     .find((r) => r.error);
   if (failed) {
     return `<div id="chips"></div><div id="results"><p class="warn">The Analytics Engine query failed: ${escapeHtml(
@@ -388,7 +395,7 @@ async function body(env, range, active) {
   // focus, which is precisely the "page forgot what I was doing" that the swap exists to avoid.
   return filterBar(facets.rows, range, active) +
     `<div id="results">` +
-    content({ range, byEvent, failures, versions, platforms, total, timing, series, active }) +
+    content({ range, byEvent, failures, versions, platforms, total, timing, series, rollover, active }) +
     `</div>`;
 }
 
@@ -735,6 +742,7 @@ h1{font-family:var(--font-display);font-weight:400;font-size:2rem;margin:0;lette
 .dt span{color:var(--muted)}
 .dt input{font:inherit;font-size:.8rem;padding:.25rem .4rem;border-radius:7px;
  border:1px solid var(--border);background:var(--bg);color:var(--fg)}
+.panel .note{font-size:.78rem;color:var(--muted);margin:.75rem 0 0;line-height:1.5}
 .pop .note{font-size:.72rem;color:var(--muted);margin:.5rem 0 0;line-height:1.4}
 .popclear{display:block;margin-top:.25rem;padding:.4rem .5rem;border-top:1px solid var(--border-sub);
  font-size:.78rem;color:var(--muted-med);text-decoration:none;text-align:center}
@@ -988,7 +996,7 @@ The ingest endpoint is unaffected by all of them.</footer></main></body></html>`
   );
 }
 
-function content({ range, byEvent, failures, versions, platforms, total, timing, series, active }) {
+function content({ range, byEvent, failures, versions, platforms, total, timing, series, rollover, active }) {
   const failedTotal = byEvent.rows.reduce((a, r) => a + num(r.failed), 0);
   const eventTotal = byEvent.rows.reduce((a, r) => a + num(r.n), 0);
   const rate = eventTotal ? (failedTotal / eventTotal) * 100 : 0;
@@ -1032,6 +1040,9 @@ ${rows(failures.rows, (r) => `<tr><td>${escapeHtml(r.event)}</td>
     href: link("provider"),
   })}</div>
 
+<h2>Ingest key rollover</h2>
+<div class="panel">${rolloverPanel(rollover.rows)}</div>
+
 <h2>Versions</h2>
 <div class="panel tbl"><table><tr><th>version</th><th>installs</th><th>events</th></tr>
 ${rows(versions.rows, (r) => `<tr><td class="mono">${
@@ -1049,4 +1060,32 @@ ${rows(platforms.rows, (r) => `<tr>
 <footer>Counts are SUM(_sample_interval), not count(): Analytics Engine samples under load and
 count() would report only the rows that survived it — under-reporting exactly when traffic is high
 enough to matter.</footer>`;
+}
+
+/** How much of the fleet sends the ingest key — the fact that decides when it can be enforced. */
+function rolloverPanel(rows) {
+  const by = Object.fromEntries(rows.map((r) => [String(r.keyed || ""), r]));
+  const keyed = num(by.keyed?.installs);
+  const unkeyed = num(by.unkeyed?.installs);
+  const total = keyed + unkeyed;
+  if (!total) return `<p class="empty">no data for this selection</p>`;
+
+  const pct = ((keyed / total) * 100).toFixed(0);
+  const done = unkeyed === 0;
+  return `<div class="bars">
+<div class="bar"><span class="bar-label">sending the key</span>
+<span class="bar-track"><span class="bar-fill" style="width:${(keyed / total) * 100}%"></span></span>
+<span class="bar-val">${fmt(keyed)} install${keyed === 1 ? "" : "s"}</span></div>
+<div class="bar"><span class="bar-label">not yet</span>
+<span class="bar-track"><span class="bar-fill" style="width:${(unkeyed / total) * 100}%;background:var(--bad)"></span></span>
+<span class="bar-val">${fmt(unkeyed)} install${unkeyed === 1 ? "" : "s"}</span></div>
+</div>
+<p class="note">${
+    done
+      ? `${pct}% — every install seen in this window sends the key. INGEST_STRICT can be set; ` +
+        `until it is, the key filters nothing.`
+      : `${pct}% — ${fmt(unkeyed)} install${unkeyed === 1 ? "" : "s"} predate the key. Setting ` +
+        `INGEST_STRICT now would drop their telemetry silently: the daemon does not surface a ` +
+        `failed report, so the data would simply stop and read as a quiet fleet.`
+  }</p>`;
 }

@@ -571,3 +571,44 @@ test("the range control offers presets and a date pair, and reflects the active 
       "controls disagreeing about which window is displayed"
   );
 });
+
+// ---- ingest key rollover ------------------------------------------------------------------------
+
+test("the rollover panel says whether enforcing the key is safe yet", async () => {
+  // This exists because the decision was made blind once: INGEST_KEY was set while the whole fleet
+  // predated it, and every report was rejected for a day behind a status code nothing surfaces.
+  const realFetch = globalThis.fetch;
+  const withRows = (rows) => async (_u, init) =>
+    new Response(
+      JSON.stringify({ data: String(init?.body || "").includes("blob8 AS keyed") ? rows : [] }),
+      { status: 200 }
+    );
+  const render = async (rows) => {
+    globalThis.fetch = withRows(rows);
+    const res = await worker.fetch(
+      new Request("https://telemetry.test/stats", {
+        headers: { Authorization: "Basic " + btoa("x:hunter2") },
+      }),
+      envWith()
+    );
+    return res.text();
+  };
+
+  try {
+    const mixed = await render([
+      { keyed: "keyed", installs: 3, events: 900 },
+      { keyed: "unkeyed", installs: 2, events: 400 },
+    ]);
+    assert.match(mixed, /2 installs predate the key/,
+      "a fleet that has not rolled must say so in numbers, not just show a bar");
+    assert.match(mixed, /would drop their telemetry silently/,
+      "the consequence of enforcing early is the whole point of the panel");
+
+    const done = await render([{ keyed: "keyed", installs: 4, events: 1200 }]);
+    assert.match(done, /INGEST_STRICT can be set/,
+      "a fully rolled fleet must say enforcing is now safe, or the flip never happens");
+    assert.doesNotMatch(done, /predate the key/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

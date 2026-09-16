@@ -229,6 +229,7 @@ public struct ChatView: View {
             // Connection first, above everything: it explains why the rest of the pane may be
             // frozen, and it must not be mistaken for a session state (see HeaderStatus).
             connectionBanner
+            relayBanner
             if isWorktreeSession { worktreeBanner }
             if isStopped { stoppedBanner }
             // (Removed the top-of-chat "Fleet" awareness strip — it auto-appeared whenever any OTHER
@@ -1094,6 +1095,29 @@ public struct ChatView: View {
             // gets the same neutral chrome as the other banners rather than an alarm colour.
             .background(headerStatus.connection == .offline
                         ? palette.destructive.opacity(0.12) : palette.muted.opacity(0.35))
+        }
+    }
+
+    /// Remote access, which is a different question from whether the app can reach the daemon.
+    ///
+    /// Shown even while the connection is healthy, because the state worth warning about is exactly
+    /// the one where both are true: talking to the daemon fine over the LAN, and unreachable from
+    /// anywhere else. Until now that had no symptom at all until someone left the building, and then
+    /// it looked like the daemon was down rather than the relay.
+    ///
+    /// Amber, not red: nothing is broken where you are standing, and the thing that is broken is
+    /// often the network rather than anything the user did.
+    @ViewBuilder private var relayBanner: some View {
+        if let warning = model.remoteAccessWarning {
+            HStack(spacing: 8) {
+                Image(systemName: "antenna.radiowaves.left.and.right.slash")
+                    .font(.caption).foregroundStyle(palette.mutedForeground)
+                Text(warning).font(.caption).foregroundStyle(palette.mutedForeground)
+                    .lineLimit(2).truncationMode(.tail)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 7)
+            .background(palette.muted.opacity(0.35))
         }
     }
 

@@ -84,3 +84,78 @@ final class RelayHealthTests: XCTestCase {
         XCTAssertTrue(m.relays[0].connected)
     }
 }
+
+// MARK: - the sentence a user actually reads
+
+extension RelayHealthTests {
+
+    private func model(_ relays: [RelayState]) -> Model {
+        let m = Model()
+        m.relays = relays
+        return m
+    }
+
+    /// LAN-only is a choice (`--relay ""`), not a fault. Warning about it would train people to
+    /// ignore the warning, which costs the one case that matters.
+    func testNoRelaysConfiguredSaysNothing() {
+        XCTAssertNil(model([]).remoteAccessWarning)
+    }
+
+    func testAHealthyRelaySaysNothing() {
+        let m = model([RelayState(url: "wss://relay.ironrain.app/ws", connected: true, lastOkAt: 1)])
+        XCTAssertNil(m.remoteAccessWarning,
+                     "a working relay must be silent; a banner that is always present is chrome")
+    }
+
+    /// The state this exists for: the daemon is reachable on the LAN and nothing can reach it from
+    /// outside. It has no other symptom until someone leaves the building, at which point it looks
+    /// like the daemon is down rather than the relay.
+    func testEveryRelayDownWarns() {
+        let m = model([
+            RelayState(url: "wss://relay.ironrain.app/ws", connected: false, lastOkAt: 1_750_000_000,
+                       detail: "EOF")
+        ])
+        let w = m.remoteAccessWarning
+        XCTAssertNotNil(w, "remote access is down and the app says nothing")
+        XCTAssertTrue(w!.contains("relay.ironrain.app"), "the warning does not name the host: \(w!)")
+        XCTAssertTrue(w!.contains("EOF"), "the reason is dropped, so there is nothing to act on")
+    }
+
+    /// "Never came up" is usually configuration; "dropped" is usually the network. Sending someone
+    /// to check the wrong one wastes the trip, so the two read differently.
+    func testNeverConnectedReadsDifferentlyFromDropped() {
+        let never = model([RelayState(url: "wss://a.example/ws", connected: false)])
+        let dropped = model([
+            RelayState(url: "wss://a.example/ws", connected: false, lastOkAt: 1_750_000_000)
+        ])
+        XCTAssertNotEqual(never.remoteAccessWarning, dropped.remoteAccessWarning,
+                          "a relay that never came up and one that dropped produce the same "
+                          + "sentence, so the reader cannot tell configuration from network")
+        XCTAssertTrue(never.remoteAccessWarning!.lowercased().contains("never"))
+    }
+
+    /// One relay up is working remote access. Warning because a SECOND is down would report a
+    /// problem the user does not have.
+    func testOneHealthyRelayIsEnoughToStaySilent() {
+        let m = model([
+            RelayState(url: "wss://up.example/ws", connected: true, lastOkAt: 1),
+            RelayState(url: "wss://down.example/ws", connected: false, detail: "refused"),
+        ])
+        XCTAssertNil(m.remoteAccessWarning,
+                     "remote access works through the healthy relay; this warns about a problem "
+                     + "that does not exist")
+    }
+
+    /// The banner is mounted, not merely defined.
+    func testTheBannerIsActuallyRendered() throws {
+        let here = URL(fileURLWithPath: #filePath)
+        let root = here.deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let src = try String(contentsOf: root.appendingPathComponent("Sources/OculusUI/ChatView.swift"),
+                             encoding: .utf8)
+        XCTAssertTrue(src.contains("private var relayBanner"), "the banner view is gone")
+        XCTAssertTrue(src.contains("\n            relayBanner\n"),
+                      "relayBanner is defined but never placed in the view tree — the derivation "
+                      + "runs and nobody sees it, which is the half-delivered state this closes")
+    }
+}
