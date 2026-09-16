@@ -126,3 +126,24 @@ changing the App ID's capabilities each run and invalidating every profile — s
 ## Secrets hygiene
 - `*.p8`, `.env`, `.env.*` are gitignored (only `fastlane/.env.example` is tracked).
 - Never commit the `.p8` or the issuer/key IDs; keep them in `fastlane/.env` or CI secrets.
+
+## Telemetry soak
+
+`scripts/telemetry-soak.sh [n]` drives n real agent turns through the local daemon, so the dashboard
+at `https://ironrain.app`'s telemetry endpoint has continuous real data rather than whatever the
+maintainer happened to do that week. `--install-schedule` installs a launchd agent that runs it
+nightly at 03:17.
+
+It reuses `cmd/turn-smoke` rather than reimplementing a driver: that already connects over the real
+encrypted wire, creates a session on a real provider, sends a prompt and watches `turn.state` to a
+verdict. Credentials come from `~/.oculus/pairing.json`, which the daemon writes at startup.
+
+**Why local rather than CI.** opencode here authenticates with a refreshing OAuth token. A refreshing
+credential in a GitHub secret goes stale and cannot write the new one back, so a CI soak would work
+for a few days and then stop silently — which is the exact failure this is meant to make visible. If
+an API-key provider is ever configured, a CI variant becomes worth having.
+
+**A gap worth knowing about:** launchd skips a calendar job whose time falls while the Mac is asleep
+rather than deferring it, so an overnight-asleep machine produces no run and the dashboard shows a
+gap indistinguishable from a broken pipeline. Watch the keyed/unkeyed split on `/stats` for the same
+reason: it is what tells a quiet fleet apart from a rejected one.
