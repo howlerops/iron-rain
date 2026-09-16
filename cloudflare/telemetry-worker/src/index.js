@@ -37,9 +37,25 @@ export default {
     // it closes the drive-by and browser-origin paths entirely. The threat here is poisoned
     // analytics and billed writes, not user data — the daemon scrubs paths and never sends prompts,
     // tokens or repo names.
+    // The ingest key is a FILTER, and enforcing it has to cost less than what it protects.
+    //
+    // Turning it on rejected every daemon built before the key existed — which is the whole fleet
+    // until an update reaches it — and their telemetry was dropped with a 401 nobody sees, because
+    // the daemon does not surface a failed report and nothing else was watching. The comment three
+    // paragraphs up said this was the one step with a wrong order; setting it anyway is how that
+    // prediction got tested.
+    //
+    // So an unkeyed batch is ACCEPTED and marked. What the key is worth is filtering drive-by junk
+    // and billed writes, and it still does that once the fleet carries it — the `keyed` dimension
+    // below is how you watch the rollover and decide when refusing is finally free. What the key is
+    // NOT is authentication: it ships inside a binary anyone can download.
+    let keyed = false;
     if (env.INGEST_KEY) {
       const auth = request.headers.get("Authorization") || "";
-      if (!timingSafeEqual(auth, `Bearer ${env.INGEST_KEY}`)) {
+      keyed = timingSafeEqual(auth, `Bearer ${env.INGEST_KEY}`);
+      if (!keyed && env.INGEST_STRICT === "1") {
+        // Opt-in hard refusal, for once the fleet has rolled. Deliberately a separate switch from
+        // the key itself: binding a key should not silently start discarding real data.
         return new Response("unauthorized", { status: 401 });
       }
     }
@@ -63,15 +79,16 @@ export default {
       if (!e || typeof e.event !== "string" || !e.event) continue;
       env.TELEMETRY.writeDataPoint({
         // blob1..blob7 — string dimensions.
-        blobs: [str(e.event), str(e.provider), str(e.error), version, os, arch, installID],
-        // double1 duration ms, double2 ok (1/0), double3 client timestamp.
-        doubles: [num(e.dur_ms), e.ok ? 1 : 0, num(e.ts)],
+        blobs: [str(e.event), str(e.provider), str(e.error), version, os, arch, installID,
+          keyed ? "keyed" : "unkeyed"],
+        // double1 duration ms, double2 ok (1/0), double3 client timestamp, double4 keyed (1/0).
+        doubles: [num(e.dur_ms), e.ok ? 1 : 0, num(e.ts), keyed ? 1 : 0],
         // Sampling index (<=96 bytes): group by event name.
         indexes: [str(e.event).slice(0, 32)],
       });
       accepted++;
     }
-    return Response.json({ ok: true, accepted });
+    return Response.json({ ok: true, accepted, keyed });
   },
 };
 
@@ -112,6 +129,71 @@ function timingSafeEqual(a, b) {
 // never sends prompts, tokens or repo names, and the only per-install value here is a random id it
 // generated for itself. Nothing below can identify a person, and nothing below should ever start to.
 
+
+// ---- time range ---------------------------------------------------------------------------------
+//
+// "days" was the whole vocabulary, with a minimum of one. That is useless for the question this page
+// is most often opened to answer — something just broke, what changed — where the useful window is
+// the last hour or two and a day of data buries it.
+//
+// So: presets down to 15 minutes, plus an explicit from/to for the case a preset cannot express
+// ("the deploy on Tuesday afternoon"). Both collapse to the same three values the queries need.
+
+const PRESETS = [
+  ["15m", "Last 15 minutes", 0.25],
+  ["1h", "Last hour", 1],
+  ["2h", "Last 2 hours", 2],
+  ["6h", "Last 6 hours", 6],
+  ["12h", "Last 12 hours", 12],
+  ["24h", "Last 24 hours", 24],
+  ["7d", "Last 7 days", 168],
+  ["30d", "Last 30 days", 720],
+  ["90d", "Last 90 days", 2160],
+];
+
+/** A calendar date, exactly, so a hand-typed value cannot reach the query as anything else. */
+const SAFE_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Resolves the requested window into the SQL predicate, a bucket size and a human label.
+ *
+ * Buckets are chosen so a chart has somewhere between a few dozen and a few hundred points: minutes
+ * over an hour, hours over days, days beyond a fortnight. 90 days of hourly points is 2160 columns
+ * of noise and one hour of daily points is a single bar, and both look like a broken chart rather
+ * than a badly chosen axis.
+ */
+function readRange(url) {
+  const from = (url.searchParams.get("from") || "").trim();
+  const to = (url.searchParams.get("to") || "").trim();
+  if (SAFE_DATE.test(from) && SAFE_DATE.test(to) && from <= to) {
+    // Inclusive of the whole end day: someone asking for the 3rd to the 3rd means that day, not a
+    // zero-width window.
+    const where = `timestamp >= toDateTime('${from} 00:00:00') AND timestamp < toDateTime('${to} 00:00:00') + INTERVAL '1' DAY`;
+    const spanDays = (Date.parse(to + "T00:00:00Z") - Date.parse(from + "T00:00:00Z")) / 86400000 + 1;
+    return {
+      kind: "custom",
+      from,
+      to,
+      where,
+      bucket: spanDays <= 2 ? "1' HOUR" : "1' DAY",
+      label: from === to ? from : `${from} to ${to}`,
+    };
+  }
+
+  const key = url.searchParams.get("range") || "";
+  const preset = PRESETS.find((p) => p[0] === key) || PRESETS.find((p) => p[0] === "7d");
+  const hours = preset[2];
+  const bucket =
+    hours <= 2 ? "5' MINUTE" : hours <= 12 ? "15' MINUTE" : hours <= 48 ? "1' HOUR" : "1' DAY";
+  return {
+    kind: "preset",
+    key: preset[0],
+    where: `timestamp > toDateTime(now()) - INTERVAL '${hours * 60}' MINUTE`,
+    bucket,
+    label: preset[1].replace(/^Last /, "last "),
+  };
+}
+
 /** The filters the page offers, mapped to the blob columns they constrain. */
 const FILTERS = [
   { key: "event", col: "blob1", label: "Event" },
@@ -150,8 +232,8 @@ function readFilters(url) {
 }
 
 /** Builds the SQL WHERE fragment for the active filters. */
-function whereClause(active, since) {
-  const parts = [`timestamp > ${since}`];
+function whereClause(active, rangeWhere) {
+  const parts = [rangeWhere];
   for (const f of FILTERS) {
     const vals = active[f.key];
     if (!vals || !vals.length) continue;
@@ -165,9 +247,15 @@ function whereClause(active, since) {
 }
 
 /** The current state as a query string, with one dimension replaced. */
-function queryWith(active, days, overrides = {}) {
+function queryWith(active, range, overrides = {}) {
   const p = new URLSearchParams();
-  p.set("days", String(overrides.days ?? days));
+  const r = overrides.range || range;
+  if (r.kind === "custom") {
+    p.set("from", r.from);
+    p.set("to", r.to);
+  } else {
+    p.set("range", r.key);
+  }
   for (const f of FILTERS) {
     const vals = f.key in overrides ? overrides[f.key] : active[f.key];
     for (const v of vals || []) p.append(f.key, v);
@@ -178,14 +266,14 @@ function queryWith(active, days, overrides = {}) {
 }
 
 /** A link that REPLACES a dimension with a single value — what clicking a chart row means. */
-function only(active, days, key, value) {
-  return queryWith(active, days, { [key]: [value] });
+function only(active, range, key, value) {
+  return queryWith(active, range, { [key]: [value] });
 }
 
 /** A link that removes one value from a dimension, leaving the rest — the badge's x. */
-function without(active, days, key, value) {
+function without(active, range, key, value) {
   const rest = (active[key] || []).filter((v) => v !== value);
-  return queryWith(active, days, { [key]: rest });
+  return queryWith(active, range, { [key]: rest });
 }
 
 async function stats(request, env) {
@@ -207,7 +295,7 @@ async function stats(request, env) {
   }
 
   const url = new URL(request.url);
-  const days = Math.min(90, Math.max(1, Number(url.searchParams.get("days")) || 7));
+  const range = readRange(url);
   const active = readFilters(url);
 
   // Streamed, so the shell and a skeleton arrive immediately.
@@ -226,7 +314,7 @@ async function stats(request, env) {
 
   (async () => {
     try {
-      send(await body(env, days, active));
+      send(await body(env, range, active));
     } catch (e) {
       send(`<p class="warn">Rendering failed: ${escapeHtml(String(e).slice(0, 200))}</p>`);
     } finally {
@@ -239,12 +327,9 @@ async function stats(request, env) {
 }
 
 /** Runs every query and renders the result body. */
-async function body(env, days, active) {
-  const since = `toDateTime(now()) - INTERVAL '${days}' DAY`;
-  const where = whereClause(active, since);
-  // Hourly buckets for a short window, daily beyond it: 90 days of hourly points is 2160 columns of
-  // noise, and one day of daily points is a single bar.
-  const bucket = days <= 2 ? "1' HOUR" : "1' DAY";
+async function body(env, range, active) {
+  const where = whereClause(active, range.where);
+  const bucket = range.bucket;
 
   // SUM(_sample_interval), never count().
   //
@@ -284,7 +369,7 @@ async function body(env, days, active) {
       // opening — and the count is the cheapest possible answer to "is this even represented".
       q(`SELECT blob1 AS event, blob2 AS provider, blob4 AS version, blob5 AS os, blob6 AS arch,
                 SUM(_sample_interval) AS n
-         FROM oculus_telemetry WHERE timestamp > ${since}
+         FROM oculus_telemetry WHERE ${range.where}
          GROUP BY event, provider, version, os, arch LIMIT 600`),
     ]);
 
@@ -301,9 +386,9 @@ async function body(env, days, active) {
   // query) and the results (which are the query's answer). The header and the form controls are
   // deliberately left alone — replacing the form would close whatever popover is open and discard
   // focus, which is precisely the "page forgot what I was doing" that the swap exists to avoid.
-  return filterBar(facets.rows, days, active) +
+  return filterBar(facets.rows, range, active) +
     `<div id="results">` +
-    content({ days, byEvent, failures, versions, platforms, total, timing, series, active }) +
+    content({ range, byEvent, failures, versions, platforms, total, timing, series, active }) +
     `</div>`;
 }
 
@@ -644,6 +729,13 @@ h1{font-family:var(--font-display);font-weight:400;font-size:2rem;margin:0;lette
 .opt input:focus-visible+.tick{outline:2px solid var(--accent-fg);outline-offset:1px}
 .opt .name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .opt .cnt{font-size:.72rem;color:var(--muted);font-variant-numeric:tabular-nums}
+.pop.dates{min-width:13rem;padding:.6rem}
+.dt{display:flex;align-items:center;justify-content:space-between;gap:.6rem;font-size:.8rem;
+ padding:.25rem 0}
+.dt span{color:var(--muted)}
+.dt input{font:inherit;font-size:.8rem;padding:.25rem .4rem;border-radius:7px;
+ border:1px solid var(--border);background:var(--bg);color:var(--fg)}
+.pop .note{font-size:.72rem;color:var(--muted);margin:.5rem 0 0;line-height:1.4}
 .popclear{display:block;margin-top:.25rem;padding:.4rem .5rem;border-top:1px solid var(--border-sub);
  font-size:.78rem;color:var(--muted-med);text-decoration:none;text-align:center}
 .popclear:hover{color:var(--accent-fg)}
@@ -756,7 +848,7 @@ function skeleton() {
  * loaded, and a URL that fully describes the view — which is what makes a filtered dashboard
  * something you can send to someone.
  */
-function filterBar(facetRows, days, active) {
+function filterBar(facetRows, range, active) {
   // Count each value across the window. Facet rows are grouped tuples, so one row contributes its
   // weight to every dimension it names.
   const counts = {};
@@ -803,7 +895,7 @@ function filterBar(facetRows, days, active) {
 <div class="opts">${options || '<p class="empty">nothing in this window</p>'}</div>
 ${
   chosen.length
-    ? `<a class="popclear" href="${escapeHtml(queryWith(active, days, { [f.key]: [] }))}">Clear ${escapeHtml(
+    ? `<a class="popclear" href="${escapeHtml(queryWith(active, range, { [f.key]: [] }))}">Clear ${escapeHtml(
         f.label.toLowerCase()
       )}</a>`
     : ""
@@ -811,14 +903,29 @@ ${
 </div></details>`;
   };
 
-  const ranges = [
-    [1, "24 hours"],
-    [7, "7 days"],
-    [30, "30 days"],
-    [90, "90 days"],
-  ]
-    .map(([d, l]) => `<option value="${d}"${d === days ? " selected" : ""}>Last ${l}</option>`)
-    .join("");
+  const rangeOpts = PRESETS.map(
+    ([k, label]) =>
+      `<option value="${k}"${range.kind === "preset" && range.key === k ? " selected" : ""}>${label}</option>`
+  ).join("");
+
+  // A custom window sits alongside the presets rather than replacing them: presets answer "what is
+  // happening now", which is most visits, and a date pair answers "what happened on Tuesday", which
+  // no preset can express. Native date inputs, so there is still no script involved.
+  const custom = `<details class="facet${range.kind === "custom" ? " active" : ""}">
+<summary><span class="plus" aria-hidden="true">+</span><span class="dim">Dates</span>${
+    range.kind === "custom"
+      ? `<span class="div"></span><span class="badge">${escapeHtml(range.label)}</span>`
+      : ""
+  }</summary>
+<div class="pop dates">
+<label class="dt"><span>From</span><input type="date" name="from" value="${
+    range.kind === "custom" ? escapeHtml(range.from) : ""
+  }"></label>
+<label class="dt"><span>To</span><input type="date" name="to" value="${
+    range.kind === "custom" ? escapeHtml(range.to) : ""
+  }"></label>
+<p class="note">A complete pair overrides the preset. Clearing either returns to it.</p>
+</div></details>`;
 
   const statusOpts = [
     ["", "Any outcome"],
@@ -831,21 +938,24 @@ ${
   const anyActive = FILTERS.some((f) => (active[f.key] || []).length) || !!active.status;
 
   return `<form class="filters" method="get" id="f">
-<select class="range" name="days" aria-label="Time range">${ranges}</select>
+<select class="range" name="range" aria-label="Time range"${
+    range.kind === "custom" ? " disabled" : ""
+  }>${rangeOpts}</select>
+${custom}
 ${FILTERS.map(facet).join("")}
 <select class="range" name="status" aria-label="Outcome">${statusOpts}</select>
 <button class="go" type="submit">Apply</button>
-${anyActive ? `<a class="reset" href="?days=${days}">Reset <span aria-hidden="true">&times;</span></a>` : ""}
-</form><div id="chips">${activeChips(active, days)}</div>`;
+${anyActive ? `<a class="reset" href="?range=${range.kind === "preset" ? range.key : "7d"}">Reset <span aria-hidden="true">&times;</span></a>` : ""}
+</form><div id="chips">${activeChips(active, range)}</div>`;
 }
 
 /** Active values as removable chips, so the current query is legible without opening a popover. */
-function activeChips(active, days) {
+function activeChips(active, range) {
   const chips = [];
   for (const f of FILTERS) {
     for (const v of active[f.key] || []) {
       chips.push(
-        `<a class="chip" href="${escapeHtml(without(active, days, f.key, v))}"><b>${f.label}</b> ${escapeHtml(
+        `<a class="chip" href="${escapeHtml(without(active, range, f.key, v))}"><b>${f.label}</b> ${escapeHtml(
           v
         )}<span>&times;</span></a>`
       );
@@ -853,7 +963,7 @@ function activeChips(active, days) {
   }
   if (active.status) {
     chips.push(
-      `<a class="chip" href="${escapeHtml(queryWith(active, days, { status: "" }))}"><b>Outcome</b> ${escapeHtml(
+      `<a class="chip" href="${escapeHtml(queryWith(active, range, { status: "" }))}"><b>Outcome</b> ${escapeHtml(
         active.status
       )}<span>&times;</span></a>`
     );
@@ -878,12 +988,12 @@ The ingest endpoint is unaffected by all of them.</footer></main></body></html>`
   );
 }
 
-function content({ days, byEvent, failures, versions, platforms, total, timing, series, active }) {
+function content({ range, byEvent, failures, versions, platforms, total, timing, series, active }) {
   const failedTotal = byEvent.rows.reduce((a, r) => a + num(r.failed), 0);
   const eventTotal = byEvent.rows.reduce((a, r) => a + num(r.n), 0);
   const rate = eventTotal ? (failedTotal / eventTotal) * 100 : 0;
   const points = series.rows.map((r) => ({ n: num(r.n), failed: num(r.failed) }));
-  const link = (key) => (r) => only(active, days, key, r[key]);
+  const link = (key) => (r) => only(active, range, key, r[key]);
 
   return `<div class="cards">
   <div class="card accent"><b>${fmt(total.installs)}</b><span>installs seen</span></div>
@@ -892,7 +1002,7 @@ function content({ days, byEvent, failures, versions, platforms, total, timing, 
   <div class="card"><b>${fmt(versions.rows.length)}</b><span>versions live</span></div>
 </div>
 
-<h2>Activity — last ${days} day${days === 1 ? "" : "s"}</h2>
+<h2>Activity — ${escapeHtml(range.label)}</h2>
 <div class="panel">${areaChart(points)}
 <div class="legend"><span><i style="background:var(--gold-bright)"></i>events · peak ${fmt(
     Math.max(0, ...points.map((p) => p.n))
@@ -926,14 +1036,14 @@ ${rows(failures.rows, (r) => `<tr><td>${escapeHtml(r.event)}</td>
 <div class="panel tbl"><table><tr><th>version</th><th>installs</th><th>events</th></tr>
 ${rows(versions.rows, (r) => `<tr><td class="mono">${
     r.version
-      ? `<a href="${escapeHtml(only(active, days, "version", r.version))}">${escapeHtml(r.version)}</a>`
+      ? `<a href="${escapeHtml(only(active, range, "version", r.version))}">${escapeHtml(r.version)}</a>`
       : "unknown"
   }</td><td class="n">${fmt(r.installs)}</td><td class="n">${fmt(r.events)}</td></tr>`)}</table></div>
 
 <h2>Platforms</h2>
 <div class="panel tbl"><table><tr><th>os</th><th>arch</th><th>installs</th></tr>
 ${rows(platforms.rows, (r) => `<tr>
-<td><a href="${escapeHtml(only(active, days, "os", r.os))}">${escapeHtml(r.os)}</a></td>
+<td><a href="${escapeHtml(only(active, range, "os", r.os))}">${escapeHtml(r.os)}</a></td>
 <td class="mono">${escapeHtml(r.arch)}</td><td class="n">${fmt(r.installs)}</td></tr>`)}</table></div>
 
 <footer>Counts are SUM(_sample_interval), not count(): Analytics Engine samples under load and

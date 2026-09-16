@@ -471,3 +471,103 @@ test("the facet list is multi-select, counted, and reachable without script", as
     globalThis.fetch = realFetch;
   }
 });
+
+// ---- time range ---------------------------------------------------------------------------------
+
+test("presets reach hour and minute granularity, not just days", async () => {
+  // "days", minimum one, could not express the window this page is most often opened for: something
+  // just broke, what changed. A day of data buries the last twenty minutes.
+  const { sql } = await capture("?range=2h");
+  const q = sql.find((s) => s.includes("blob1 AS event"));
+  assert.match(q, /INTERVAL '120' MINUTE/, "a 2-hour window did not reach the query");
+
+  const short = await capture("?range=15m");
+  assert.match(
+    short.sql.find((s) => s.includes("blob1 AS event")),
+    /INTERVAL '15' MINUTE/,
+    "the shortest preset must be minutes, or the page cannot answer a question about right now"
+  );
+});
+
+test("the chart bucket scales with the window", async () => {
+  // Fixed buckets produce a chart that is either 2160 columns of noise or a single bar, and both
+  // read as broken rather than as a badly chosen axis.
+  const hour = await capture("?range=1h");
+  assert.match(
+    hour.sql.find((s) => s.includes("toStartOfInterval")),
+    /INTERVAL '5' MINUTE/,
+    "an hour bucketed coarser than minutes is a handful of bars"
+  );
+  const quarter = await capture("?range=90d");
+  assert.match(
+    quarter.sql.find((s) => s.includes("toStartOfInterval")),
+    /INTERVAL '1' DAY/,
+    "90 days bucketed hourly is 2160 points"
+  );
+});
+
+test("an explicit date range overrides the preset and includes the whole end day", async () => {
+  const { sql } = await capture("?from=2026-09-01&to=2026-09-03&range=1h");
+  const q = sql.find((s) => s.includes("blob1 AS event"));
+  assert.match(q, /timestamp >= toDateTime\('2026-09-01 00:00:00'\)/);
+  assert.match(
+    q,
+    /timestamp < toDateTime\('2026-09-03 00:00:00'\) \+ INTERVAL '1' DAY/,
+    "the end day must be included: asking for the 1st to the 3rd means through the 3rd, and an " +
+      "exclusive bound silently drops a day of data"
+  );
+  assert.doesNotMatch(q, /INTERVAL '60' MINUTE/, "the preset should not also apply");
+});
+
+test("a single-day range is that day, not a zero-width window", async () => {
+  const { sql } = await capture("?from=2026-09-03&to=2026-09-03");
+  const q = sql.find((s) => s.includes("blob1 AS event"));
+  assert.match(q, /toDateTime\('2026-09-03 00:00:00'\) \+ INTERVAL '1' DAY/);
+});
+
+test("a hostile or malformed date never reaches the SQL", async () => {
+  // from/to are concatenated into the query like every other filter, so they are restricted to an
+  // exact calendar-date shape rather than escaped.
+  for (const bad of [
+    "2026-09-01'; DROP TABLE oculus_telemetry; --",
+    "' OR '1'='1",
+    "2026-9-1",
+    "yesterday",
+    "2026-09-01T00:00:00Z",
+  ]) {
+    const { sql } = await capture(`?from=${encodeURIComponent(bad)}&to=2026-09-03`);
+    const joined = sql.join("\n");
+    assert.doesNotMatch(joined, /DROP|OR '1'='1/i, `${JSON.stringify(bad)} reached the query`);
+    assert.ok(
+      !joined.includes(bad),
+      `${JSON.stringify(bad)} was interpolated verbatim instead of falling back to the preset`
+    );
+    assert.match(joined, /INTERVAL '10080' MINUTE/, "a rejected range must fall back to the default");
+  }
+});
+
+test("a backwards range falls back rather than querying nothing", async () => {
+  const { sql } = await capture("?from=2026-09-30&to=2026-09-01");
+  assert.match(
+    sql.join("\n"),
+    /INTERVAL '10080' MINUTE/,
+    "from after to yields an empty window and an empty dashboard, which reads as 'no activity' " +
+      "rather than 'that range is backwards'"
+  );
+});
+
+test("the range control offers presets and a date pair, and reflects the active one", async () => {
+  const preset = await capture("?range=6h");
+  assert.match(preset.body, /<option value="6h" selected>/, "the active preset is not reflected back");
+  assert.match(preset.body, /<option value="15m"/, "the minute presets are missing");
+  assert.match(preset.body, /name="from"/, "there is no way to enter an explicit range");
+
+  const custom = await capture("?from=2026-09-01&to=2026-09-03");
+  assert.match(custom.body, /value="2026-09-01"/, "the chosen dates are not shown back");
+  assert.match(
+    custom.body,
+    /<select class="range" name="range" aria-label="Time range" disabled>/,
+    "with an explicit range active the preset select must be disabled, or the page shows two " +
+      "controls disagreeing about which window is displayed"
+  );
+});
