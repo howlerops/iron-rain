@@ -293,6 +293,49 @@ jobs:
             exit 1
           fi
           echo "telemetry.ironrain.app is serving and sends no CORS headers"
+      # The dashboard's queries have NEVER been run against a real Analytics Engine.
+      #
+      # Every test mocks fetch, so the SQL itself — function names, GROUP BY shapes, argMax, the
+      # quantile call — has only ever been checked by reading it. If any clause is invalid the page
+      # renders its "query failed" warning and nothing anywhere would say so: the deploy is green,
+      # the endpoint is up, and the dashboard is simply broken for whoever opens it next.
+      #
+      # This logs in with the same password a human uses and asserts the page contains real rendered
+      # sections rather than the failure notice. Skipped when the secrets are absent, so a fork or a
+      # half-configured account does not fail the deploy.
+      - name: the dashboard's SQL must actually run
+        env:
+          PW: ${{ secrets.TELEMETRY_STATS_PASSWORD }}
+        run: |
+          if [ -z "$PW" ]; then
+            echo "TELEMETRY_STATS_PASSWORD not set — skipping the live dashboard check."
+            exit 0
+          fi
+          for i in $(seq 1 12); do
+            code=$(curl -s -o /tmp/stats.html -w "%{http_code}" --max-time 25 \
+              -u "ci:$PW" "https://telemetry.ironrain.app/stats?range=30d" || echo "000")
+            echo "attempt $i: HTTP $code"
+            [ "$code" = "200" ] && break
+            sleep 10
+          done
+          if [ "$code" != "200" ]; then
+            echo "/stats did not return 200 (got $code) — the dashboard is unreachable."
+            exit 1
+          fi
+          if grep -qi "Analytics Engine query failed" /tmp/stats.html; then
+            echo "The dashboard rendered its query-failure notice. The SQL is invalid against the"
+            echo "real Analytics Engine — which no unit test can catch, because they all mock fetch."
+            sed -n 's/.*query failed: \([^<]*\).*/  reason: \1/p' /tmp/stats.html | head -1
+            exit 1
+          fi
+          for marker in "Ingest key rollover" "Activity —" "Events" "installs seen"; do
+            grep -q "$marker" /tmp/stats.html || {
+              echo "the rendered page is missing the \"$marker\" section"
+              exit 1
+            }
+          done
+          echo "/stats renders against live data: every query returned."
+
       - name: the OLD endpoint must still accept telemetry
         # Same regression, and worse here: DefaultEndpoint is a single URL with no fallback list, so
         # every build already in the field posts to this address forever. It going quiet raises no
