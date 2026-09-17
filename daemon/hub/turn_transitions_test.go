@@ -109,6 +109,12 @@ func TestLateInputsDoNotResurrectAClosedTurn(t *testing.T) {
 				return ts.State == protocol.StatusIdle
 			})
 
+			m.mu.Lock()
+			lastEventBefore := m.turnLastEvent
+			toolAtBefore := m.turnToolAt
+			m.mu.Unlock()
+			time.Sleep(2 * time.Millisecond) // so a clock that DOES move is measurably different
+
 			tc.do(m)
 
 			// The phase is the state machine's own record of whether a turn is open. Read directly
@@ -124,11 +130,30 @@ func TestLateInputsDoNotResurrectAClosedTurn(t *testing.T) {
 			phase := m.turnPhase
 			toolsAfter := len(m.turnTools)
 			kidsAfter := len(m.turnKids)
+			// The liveness clocks are what noteTurnEvent and turnOnChildEvent actually write, and
+			// therefore the only thing those two rows can corrupt. Checking turnPhase for them
+			// asserted against functions that cannot assign it — the row passed with the guard
+			// removed, which is how two of these survived a round of "fixing" the table.
+			lastEventAfter := m.turnLastEvent
+			toolAtAfter := m.turnToolAt
 			m.mu.Unlock()
 			if phase != "" {
 				t.Fatalf("%s re-opened the turn (phase %q).\n\n%s\n\nNothing is working on this "+
 					"session, so nothing will ever close it again: the client spins until the app "+
 					"is restarted.", tc.name, phase, tc.why)
+			}
+
+			// A closed turn's liveness clocks must not advance. They feed the stall detector and the
+			// reconciler, so a late event nudging them forward makes the NEXT turn look like it has
+			// just progressed when nothing has.
+			if !lastEventAfter.Equal(lastEventBefore) {
+				t.Errorf("%s moved turnLastEvent on a closed turn (%v → %v).\n\n%s\n\nThe next "+
+					"turn inherits a progress clock that already looks fresh.",
+					tc.name, lastEventBefore, lastEventAfter, tc.why)
+			}
+			if !toolAtAfter.Equal(toolAtBefore) {
+				t.Errorf("%s moved turnToolAt on a closed turn (%v → %v).\n\n%s",
+					tc.name, toolAtBefore, toolAtAfter, tc.why)
 			}
 
 			// A closed turn holds no live tool or child state. closeTurn nils turnTools on the way

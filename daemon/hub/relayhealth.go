@@ -85,8 +85,11 @@ func (h *Hub) RelayHealth() protocol.RelayHealth {
 			out.Relays = append(out.Relays, *st)
 		}
 	}
-	// No sort: h.relays.order is append-only under the same mutex, so iterating it already yields
-	// configuration order. A sort.SliceStable with an always-false comparator used to sit here and
-	// did nothing at all — dead code implying a guarantee it was not providing.
+	// No sort, and no ordering claim beyond this: h.relays.order is append-only under the mutex, so
+	// iteration is stable — but the order is FIRST-TOUCH, set by whichever per-relay goroutine
+	// reported first, not the order they were configured in. The previous comment here claimed
+	// configuration order, which the code does not provide; before that a sort.SliceStable with an
+	// always-false comparator sat here doing nothing at all. If configuration order ever matters,
+	// seed the map from splitRelays at startup rather than sorting after the fact.
 	return out
 }

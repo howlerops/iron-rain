@@ -43,12 +43,18 @@ install_schedule() {
   <!-- Through a LOGIN SHELL, not the script directly.
        launchd runs jobs with a minimal PATH that does not include the Go toolchain, so invoking the
        script directly made every scheduled run die on "go: command not found" — silently, while
-       `launchctl list` showed the job installed. Verified: the first night's run failed 3/3 that
-       way. A login shell sources the same profile an interactive run would. -->
+       the job still showed as installed. Verified: the first night's run failed 3/3 that way.
+       A login shell sources the same profile an interactive run would.
+       (No backticks in this comment: the heredoc below is UNQUOTED so $LABEL and $REPO expand, which
+       means a backtick here would run a command at install time and paste its output into the
+       plist. That happened.) -->
   <key>ProgramArguments</key>
   <array>
     <string>${SHELL:-/bin/zsh}</string><string>-lc</string>
-    <string>exec '$REPO/scripts/telemetry-soak.sh' 3</string>
+    <!-- The path is passed as \$0 rather than interpolated into the shell string, so an apostrophe
+         anywhere in it cannot break the quoting. -->
+    <string>exec "\$0" 3</string>
+    <string>$REPO/scripts/telemetry-soak.sh</string>
   </array>
   <key>StartCalendarInterval</key><dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>17</integer></dict>
   <!-- The Mac is often asleep at 03:17; without this the run is skipped entirely rather than
@@ -74,8 +80,21 @@ PLIST_EOF
 
 [ "${1:-}" = "--install-schedule" ] && { install_schedule; exit $?; }
 
+case "${1:-}" in
+  -h|--help)
+    sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    exit 0
+    ;;
+esac
+
 ITERATIONS="${1:-3}"
 mkdir -p "$(dirname "$LOG")"
+
+# A soak that drives nothing must not report health. `telemetry-soak.sh nonsense` previously ran
+# zero turns and exited 0 with "0 passed, 0 failed", which is indistinguishable from success.
+case "$ITERATIONS" in
+  ''|*[!0-9]*|0) log "FAIL iteration count must be a positive integer, got: ${ITERATIONS:-(empty)}"; exit 2 ;;
+esac
 
 if [ ! -f "$PAIRING" ]; then
   log "FAIL no $PAIRING — the daemon writes it at startup; is oculusd running?"
@@ -123,7 +142,7 @@ trap 'rm -rf "$WORKDIR"' EXIT
 
 pass=0; fail=0
 log "soak: $ITERATIONS iteration(s) against $WS"
-for i in $(seq 1 "$ITERATIONS"); do
+for ((i = 1; i <= ITERATIONS; i++)); do
   prompt="${PROMPTS[$(( (i - 1) % ${#PROMPTS[@]} ))]}"
   start=$(date +%s)
   if (cd "$REPO/daemon" && go run ./cmd/turn-smoke \

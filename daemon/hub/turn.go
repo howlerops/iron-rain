@@ -326,8 +326,13 @@ func (m *managedSession) turnOnTool(t protocol.SessionTool) {
 // closeTurn ends the turn in a terminal state (idle | error | abandoned) and stops its loops.
 // Idempotent: only the first close wins. This is the DAEMON's own verdict path (the reconciler, a
 // dead event stream) — see closeTurnFrom for why that distinction matters.
-func (m *managedSession) closeTurn(state, reason string) {
-	m.closeTurnFrom(state, reason, false)
+// closeTurn ends the open turn and reports whether there WAS one to end.
+//
+// The boolean exists because callers need to know: a caller that must notify the user cannot read
+// turnPhase first and then call this — the turn can close in the gap, and both paths then decline to
+// notify, which is exactly the silent budget stop this return value was added to make impossible.
+func (m *managedSession) closeTurn(state, reason string) bool {
+	return m.closeTurnFrom(state, reason, false)
 }
 
 // closeTurnFrom is closeTurn with the source of the close. providerDriven means the provider itself
@@ -336,11 +341,11 @@ func (m *managedSession) closeTurn(state, reason string) {
 // Every other close (probe-abandonment, stream death, reconciled idle) is the daemon's own
 // conclusion, and nothing else in the system knows about it: that is the path that used to end
 // silently, leaving a dead agent rendering as "running" forever with no feed entry and no push.
-func (m *managedSession) closeTurnFrom(state, reason string, providerDriven bool) {
+func (m *managedSession) closeTurnFrom(state, reason string, providerDriven bool) bool {
 	m.mu.Lock()
 	if m.turnPhase == "" {
 		m.mu.Unlock()
-		return
+		return false
 	}
 	m.turnPhase = ""
 	stop := m.turnStopLoop
@@ -442,6 +447,7 @@ func (m *managedSession) closeTurnFrom(state, reason string, providerDriven bool
 	if state == protocol.StatusError || state == protocol.StatusAbandoned {
 		log.Printf("turn: session %s closed %s: %s", m.sess.ID(), state, reason)
 	}
+	return true
 }
 
 // publishVerdict makes the end of a turn visible OUTSIDE the session's own subscribers. turn.state is

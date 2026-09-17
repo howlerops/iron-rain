@@ -261,11 +261,26 @@ func TestSimAWedgedTurnCanStillBeStopped(t *testing.T) {
 	if err := sim.Stop(t.Context()); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	if sim.Stops() != 1 {
-		t.Fatalf("Stop reached the provider %d times, want 1", sim.Stops())
+
+	// The turn must end BECAUSE of the abort, which needs_you cannot demonstrate.
+	//
+	// Accepting any terminal state made this test unable to fail: WedgedBusy reaches needs_you on
+	// its own through the nudge ladder in about half a second, well inside the window, so a
+	// completely broken Stop still "passed" — the accepted state arrived by the path
+	// TestSimWedgedTurnEndsAsNeedsYouNotError already covers. Proven by mutation: neutering
+	// agentsim.Stop left this green. needs_you is excluded and the nudge count checked, so the only
+	// way through is an abort that actually worked.
+	ts := awaitState(t, frames, 3*time.Second, protocol.StatusIdle, protocol.StatusAbandoned,
+		protocol.StatusError, protocol.StatusNeedsYou)
+	if ts.State == protocol.StatusNeedsYou {
+		t.Fatalf("the turn ended as needs_you, which is where the nudge ladder lands a wedged turn "+
+			"on its own — that says nothing about whether the abort worked (nudges spent: %d)",
+			len(sim.Nudges()))
 	}
-	awaitState(t, frames, 3*time.Second, protocol.StatusIdle, protocol.StatusNeedsYou,
-		protocol.StatusAbandoned, protocol.StatusError)
+	if n := len(sim.Nudges()); n > 0 {
+		t.Fatalf("the turn ended after %d nudge(s), so the stall ladder got there first and the "+
+			"abort path is still untested", n)
+	}
 }
 
 // Scenario 7 — the provider is unreachable: probes are REFUSED, not slow.

@@ -170,12 +170,18 @@ func (h *Hub) heartbeatTick() {
 				// verdict), and a direct push when there is not. Never both — the phone buzzing twice
 				// for one stop, with two wordings of the same fact, is what the previous fix removed.
 				reason := fmt.Sprintf("stopped at its $%.2f budget (spent $%.2f)", budget, cost)
-				m.mu.Lock()
-				turnOpen := m.turnPhase != ""
-				m.mu.Unlock()
-				m.closeTurn(protocol.StatusNeedsYou, reason)
-				if !turnOpen {
-					h.pushAgentStalled(m.sess.ID(), label, reason)
+				// closeTurn REPORTS whether it closed anything, rather than being asked beforehand.
+				//
+				// Reading turnPhase first and acting after releasing the lock reintroduced the very
+				// bug this branch exists to fix, just in a narrower window: a turn that ends between
+				// the read and the call leaves both paths declining to notify. The return value
+				// removes the gap — there is no interval in which the answer can change.
+				if !m.closeTurn(protocol.StatusNeedsYou, reason) {
+					// No turn to close, so nothing has announced this. publishVerdict rather than a
+					// bare push: a push alone is transient and leaves no activity entry, no needs-you
+					// inbox item and no lastStatus, so the stop vanishes the moment the notification
+					// is dismissed — and the next heartbeat has no record that it already fired.
+					m.publishVerdict(protocol.StatusNeedsYou, reason, false)
 				}
 				h.broadcastHeartbeat(m, hbExhausted, nudgeN, done, total, cost, budget)
 			}

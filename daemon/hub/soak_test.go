@@ -300,6 +300,16 @@ func TestSoakSeveredStreamNeverProducesAFalseTimeout(t *testing.T) {
 	if testing.Short() {
 		t.Skip("soak: severs live TCP connections and runs for several seconds")
 	}
+	// Compress the verdict windows, or this test cannot fail.
+	//
+	// The production unreachable window is two minutes and each round waits four seconds, so the
+	// daemon could not have declared an agent unreachable inside the observation window however
+	// broken it was — the headline assertion ("a severed stream never produces a false timeout")
+	// was asserting something physically unable to occur. Compressed, a wrong verdict has time to
+	// appear, which is what makes the absence of one evidence.
+	hub.CompressTurnWindowsForTest(t, 800*time.Millisecond, 2*time.Second, 200*time.Millisecond,
+		100*time.Millisecond)
+
 	const rounds = 6
 	var severed, reconnected int
 

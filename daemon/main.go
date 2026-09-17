@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/howlerops/oculus/daemon/transport"
 	"golang.org/x/term"
 	"html"
 	"io"
@@ -28,6 +29,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -705,7 +707,6 @@ func relayHost(relayURL, serverID string, hostPriv []byte, srv *server.Server, h
 	backoff := time.Second
 	relayFailures := 0 // consecutive registration failures, for a bounded log trail
 	for {
-		start := time.Now()
 		// ServeHostKey, not ServeHost: it answers the relay's proof-of-possession challenge, which is
 		// the only thing that makes the relay-side check worth anything. The relay verifies a host
 		// ONLY when the host opts in — deliberately, so daemons already in the field are not locked
@@ -716,13 +717,29 @@ func relayHost(relayURL, serverID string, hostPriv []byte, srv *server.Server, h
 		// It degrades rather than fails: a relay not yet redeployed ignores the offer, and a key that
 		// doesn't match serverID falls back to an unproven registration, so this cannot break remote
 		// access on its own.
-		// Registered, as far as this daemon can tell: ServeHostKey blocks once the relay has accepted
-		// the host slot, so reaching the call is not evidence — returning quickly from it is evidence
-		// of the opposite. The optimistic mark is corrected below if it comes straight back.
-		h.SetRelayConnected(relayURL)
-		err := relay.ServeHostKey(ctx, relayURL, serverID, hostPriv, relay.DefaultKeepalive, srv.ServeConn)
-		if time.Since(start) > 5*time.Second {
-			backoff = time.Second // served a client (or waited on one) — re-register immediately
+		// Registration is judged by whether the DIAL succeeded, not by how long the call ran.
+		//
+		// ServeHostKey dials, then hands the socket to this callback — so the callback running at
+		// all is proof the host slot was granted. The previous test was elapsed time: anything
+		// returning inside five seconds counted as a failure. That is wrong in the ordinary case,
+		// because the app races LAN and every relay and cancels the losers mid-handshake, so a
+		// perfectly healthy registration routinely ends in well under five seconds. The daemon then
+		// logged "remote access is unavailable", flipped relay health to down, and — because the
+		// short branch never reset the backoff — ratcheted re-registration delay toward 30s, during
+		// which the relay slot really was empty and clients really were refused. A diagnostic that
+		// manufactures the outage it reports is worse than none.
+		var registered atomic.Bool
+		serve := func(cctx context.Context, mc transport.MsgConn) error {
+			registered.Store(true)
+			h.SetRelayConnected(relayURL) // marked HERE, once it is actually true
+			return srv.ServeConn(cctx, mc)
+		}
+		err := relay.ServeHostKey(ctx, relayURL, serverID, hostPriv, relay.DefaultKeepalive, serve)
+		if registered.Load() {
+			// The slot was held. Whatever ended the serve loop — a client finishing, a losing race
+			// being cancelled, the relay restarting — is not a registration failure, so re-register
+			// immediately rather than backing off.
+			backoff = time.Second
 			relayFailures = 0
 			continue
 		}

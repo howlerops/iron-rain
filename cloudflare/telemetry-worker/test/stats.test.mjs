@@ -584,7 +584,7 @@ test("the rollover panel says whether enforcing the key is safe yet", async () =
   const realFetch = globalThis.fetch;
   const withRows = (rows) => async (_u, init) =>
     new Response(
-      JSON.stringify({ data: String(init?.body || "").includes("MAX(double4)") ? rows : [] }),
+      JSON.stringify({ data: String(init?.body || "").includes("argMax(double4") ? rows : [] }),
       { status: 200 }
     );
   const render = async (rows) => {
@@ -600,17 +600,17 @@ test("the rollover panel says whether enforcing the key is safe yet", async () =
 
   try {
     const mixed = await render([
-      { install: "a", ever_keyed: 1 },
-      { install: "b", ever_keyed: 1 },
-      { install: "c", ever_keyed: 0 },
-      { install: "d", ever_keyed: 0 },
+      { install: "a", keyed_now: 1 },
+      { install: "b", keyed_now: 1 },
+      { install: "c", keyed_now: 0 },
+      { install: "d", keyed_now: 0 },
     ]);
     assert.match(mixed, /2 installs have not sent the key/,
       "a fleet that has not rolled must say so in numbers, not just show a bar");
     assert.match(mixed, /would drop their telemetry silently/,
       "the consequence of enforcing early is the whole point of the panel");
 
-    const done = await render([{ install: "a", ever_keyed: 1 }, { install: "b", ever_keyed: 1 }]);
+    const done = await render([{ install: "a", keyed_now: 1 }, { install: "b", keyed_now: 1 }]);
     assert.match(done, /INGEST_STRICT can be set/,
       "a fully rolled fleet must say enforcing is now safe, or the flip never happens");
     assert.doesNotMatch(done, /have not sent the key/);
@@ -619,7 +619,7 @@ test("the rollover panel says whether enforcing the key is safe yet", async () =
   }
 });
 
-test("an install that upgraded mid-window counts once, as keyed", async () => {
+test("an install is classified by its LATEST key state", async () => {
   // The first version grouped by keyed and counted distinct installs per group, which does not
   // partition the fleet: an install that sent unkeyed rows before upgrading and keyed rows after
   // appeared in BOTH groups. Summing them double-counted it, and — the part that mattered — kept
@@ -629,8 +629,8 @@ test("an install that upgraded mid-window counts once, as keyed", async () => {
   globalThis.fetch = async (_u, init) =>
     new Response(
       JSON.stringify({
-        data: String(init?.body || "").includes("MAX(double4)")
-          ? [{ install: "upgraded-midway", ever_keyed: 1 }]
+        data: String(init?.body || "").includes("argMax(double4")
+          ? [{ install: "upgraded-midway", keyed_now: 1 }]
           : [],
       }),
       { status: 200 }
@@ -656,10 +656,10 @@ test("a truncated install list is disclosed, not presented as the fleet", async 
   // At the query's cap the real fleet is larger than what came back, and "0 installs have not sent
   // the key" out of a truncated sample is precisely the wrong thing to act on.
   const realFetch = globalThis.fetch;
-  const rows = Array.from({ length: 5000 }, (_, i) => ({ install: `i${i}`, ever_keyed: 1 }));
+  const rows = Array.from({ length: 5000 }, (_, i) => ({ install: `i${i}`, keyed_now: 1 }));
   globalThis.fetch = async (_u, init) =>
     new Response(
-      JSON.stringify({ data: String(init?.body || "").includes("MAX(double4)") ? rows : [] }),
+      JSON.stringify({ data: String(init?.body || "").includes("argMax(double4") ? rows : [] }),
       { status: 200 }
     );
   try {
@@ -696,12 +696,17 @@ test("the swap re-syncs the form to the URL it just loaded", () => {
       "this a chip click leaves the box ticked while the URL says the filter is gone — and the " +
       "next Apply silently puts it back."
   );
-  assert.match(script, /querySelectorAll\('select'\)/, "selects are not re-synced");
-  assert.match(script, /input\[type=date\]/, "date inputs are not re-synced");
+  assert.match(script, /querySelectorAll\('select, input\[type=date\]'\)/, "selects/dates are not re-synced");
   assert.ok(
-    script.includes("if (sel.endsWith('summary') && det && det.open) continue"),
+    script.includes("if (next && sum && !det.open)"),
     "an OPEN popover must be skipped when refreshing the triggers, or re-syncing collapses the " +
       "menu the user is currently choosing from"
+  );
+  assert.ok(
+    script.includes("'.facet[data-dim=\"' + det.dataset.dim + '\"]'"),
+    "facets must be paired by DIMENSION. Pairing two NodeLists by index breaks the moment the two " +
+      "forms hold different facet sets — which happens whenever a dimension has no values in the " +
+      "window — and writes each pill's label onto the next popover along."
   );
   assert.ok(
     !/form\.innerHTML\s*=/.test(script),
@@ -712,11 +717,15 @@ test("the swap re-syncs the form to the URL it just loaded", () => {
 
 test("the Reset and Clear links are refreshed, not left stale", () => {
   const script = src.slice(src.indexOf("const ENHANCE = `"), src.indexOf("/** The CSP hash"));
-  assert.match(
-    script,
-    /'\.facet > summary', '\.reset', '\.popclear'/,
+  assert.ok(
+    script.includes(".querySelector('.popclear')") && script.includes(".querySelector('.reset')"),
     "these links live inside the form, which is never re-rendered, so their hrefs still carry the " +
       "pre-swap query — clicking Reset would restore a state the user already left"
+  );
+  assert.ok(
+    script.includes("clear.setAttribute('href', nextClear.getAttribute('href'))"),
+    "the per-facet Clear link must be refreshed independently of its trigger: it goes stale even " +
+      "while the popover is open, and an open popover's trigger is deliberately left alone"
   );
 });
 
@@ -806,4 +815,72 @@ test("a non-ASCII stats password authenticates", async () => {
   assert.notEqual(res.status, 401,
     "a non-ASCII password was refused, so the dashboard cannot be opened at all with one set");
   assert.equal(res.status, 503, "should reach the setup page (analytics token deliberately unset)");
+});
+
+test("every facet carries its dimension, so the client can pair by identity", async () => {
+  // The string assertions above prove the CLIENT pairs by data-dim. This proves the SERVER emits it
+  // — without which that lookup silently matches nothing and the triggers simply stop updating.
+  //
+  // Needs real facet rows: filterBar omits a dimension entirely when it has no values, which is the
+  // very behaviour that broke index-pairing in the first place.
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (_u, init) =>
+    new Response(
+      JSON.stringify({
+        data: String(init?.body || "").includes("GROUP BY event, provider")
+          ? [{ event: "a.b", provider: "p", version: "1", os: "darwin", arch: "arm64", n: 5 }]
+          : [],
+      }),
+      { status: 200 }
+    );
+  try {
+    const res = await worker.fetch(
+      new Request("https://telemetry.test/stats?range=7d", {
+        headers: { Authorization: "Basic " + btoa("x:hunter2") },
+      }),
+      envWith()
+    );
+    const body = await res.text();
+    for (const dim of ["event", "provider", "version", "os", "arch", "dates"]) {
+      assert.ok(
+        body.includes(`data-dim="${dim}"`),
+        `the ${dim} facet has no data-dim, so the swap cannot pair it and its pill goes stale`
+      );
+    }
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("a dimension with no values is omitted — the case that broke index pairing", async () => {
+  // This is the input that made position-based pairing wrong: daemon.start and session.restart are
+  // recorded with an empty provider, so a short window containing only those has no provider values
+  // and filterBar drops that facet entirely. The two forms then hold different facet SETS.
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (_u, init) =>
+    new Response(
+      JSON.stringify({
+        data: String(init?.body || "").includes("GROUP BY event, provider")
+          ? [{ event: "daemon.start", provider: "", version: "1", os: "darwin", arch: "arm64", n: 5 }]
+          : [],
+      }),
+      { status: 200 }
+    );
+  try {
+    const res = await worker.fetch(
+      new Request("https://telemetry.test/stats?range=15m", {
+        headers: { Authorization: "Basic " + btoa("x:hunter2") },
+      }),
+      envWith()
+    );
+    const body = await res.text();
+    assert.ok(body.includes('data-dim="event"'), "the populated facet should still render");
+    assert.ok(
+      !body.includes('data-dim="provider"'),
+      "a dimension with no values must be omitted — if this ever starts rendering, the premise " +
+        "behind identity pairing has changed and the pairing code should be revisited"
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });

@@ -381,7 +381,13 @@ async function body(env, range, active) {
       //
       // MAX(double4) is 1 if this install has EVER sent the key in the window, which is the question
       // actually being asked. The classification is then done once, in JS, over distinct installs.
-      q(`SELECT blob7 AS install, MAX(double4) AS ever_keyed
+      // The install's LATEST state, not whether it was ever keyed.
+      //
+      // MAX(double4) answers "has this install sent a valid key at any point in the window", which
+      // is the wrong question after a key rotation or a daemon downgrade: an install that stopped
+      // sending a valid key still counted as keyed, so the panel reported 100% and advised turning
+      // on enforcement that would immediately start dropping its reports.
+      q(`SELECT blob7 AS install, argMax(double4, timestamp) AS keyed_now
          FROM oculus_telemetry WHERE ${range.where} AND blob8 != ''
          GROUP BY install LIMIT 5000`),
       // Facets come from the WINDOW, not the current filter: a list that only offers what is
@@ -517,6 +523,17 @@ function dur(ms) {
   const m = Math.floor(n / 60_000);
   const rest = Math.round((n % 60_000) / 1000);
   return rest ? `${m}m ${rest}s` : `${m}m`;
+}
+
+/** A filter link, or plain text when the filter layer would reject the value.
+ *
+ * readFilters drops anything failing SAFE_VALUE, so linking such a value produces a control that
+ * looks live and does nothing when clicked. Shared by the bars and the tables — the gate was
+ * originally added to bars() alone, which left the Versions and Platforms cells still linking. */
+function filterLink(value, href, extraClass = "") {
+  const text = escapeHtml(value);
+  if (!value || !SAFE_VALUE.test(String(value))) return text;
+  return `<a${extraClass ? ` class="${extraClass}"` : ""} href="${escapeHtml(href)}">${text}</a>`;
 }
 
 function rows(list, cells) {
@@ -664,30 +681,49 @@ const ENHANCE = `
       for (const el of form.querySelectorAll('input[type=checkbox]')) {
         el.checked = want.getAll(el.name).includes(el.value);
       }
-      for (const el of form.querySelectorAll('select')) {
-        el.value = want.get(el.name) || '';
-      }
-      for (const el of form.querySelectorAll('input[type=date]')) {
-        el.value = want.get(el.name) || '';
+      // Selects and dates take the SERVER's resolved value when the URL omits the parameter.
+      //
+      // Blanking them instead drove the range <select> to selectedIndex -1 — it has no option with
+      // value "" — so the control went empty while the page below it showed the default window.
+      for (const el of form.querySelectorAll('select, input[type=date]')) {
+        const v = want.get(el.name);
+        if (v !== null) { el.value = v; continue; }
+        const fresh = doc.getElementById('f');
+        const mirror = fresh && fresh.querySelector('[name="' + el.name + '"]');
+        el.value = mirror ? mirror.value : '';
       }
       // The facet triggers show the active values, and the Reset/Clear links carry the old query.
       // They live inside the form too, so take them from the freshly rendered document.
       const freshForm = doc.getElementById('f');
       if (freshForm) {
-        for (const sel of ['.facet > summary', '.reset', '.popclear']) {
-          const now = form.querySelectorAll(sel);
-          const next = freshForm.querySelectorAll(sel);
-          for (let i = 0; i < now.length && i < next.length; i++) {
-            // Skip a popover the user currently has open: rewriting its trigger collapses it.
-            const det = now[i].closest('details');
-            if (sel.endsWith('summary') && det && det.open) continue;
-            now[i].innerHTML = next[i].innerHTML;
-            if (next[i].getAttribute('href')) now[i].setAttribute('href', next[i].getAttribute('href'));
-            if (det && next[i].closest('details')) {
-              det.className = next[i].closest('details').className;
-            }
+        // Paired by DIMENSION, never by position.
+        //
+        // filterBar omits a facet entirely when its dimension has no values in the window, so the
+        // two forms can hold different facet SETS — and matching NodeLists by index then wrote each
+        // pill's label onto the next popover along. The visible result was a trigger reading
+        // "Version" whose checkboxes were still name="provider", and a "Clear" link that re-added
+        // the filter a chip had just removed. data-dim makes the pairing explicit.
+        for (const det of form.querySelectorAll('.facet[data-dim]')) {
+          // Concatenation, not a template literal: this whole script lives inside one, so a
+          // nested \${...} would be interpolated when ENHANCE is defined rather than at runtime.
+          const next = freshForm.querySelector('.facet[data-dim="' + det.dataset.dim + '"]');
+          const sum = det.querySelector(':scope > summary');
+          // A popover the user has open must not be rewritten — that collapses the menu mid-choice.
+          if (next && sum && !det.open) {
+            sum.innerHTML = next.querySelector(':scope > summary').innerHTML;
+            det.className = next.className;
           }
+          // The per-facet Clear link carries a query string and goes stale even while the popover
+          // is open, so it is refreshed independently of the trigger.
+          const clear = det.querySelector('.popclear');
+          const nextClear = next && next.querySelector('.popclear');
+          if (clear && nextClear) clear.setAttribute('href', nextClear.getAttribute('href'));
+          else if (clear && next && !nextClear) clear.remove();
         }
+        const reset = form.querySelector('.reset');
+        const nextReset = freshForm.querySelector('.reset');
+        if (reset && nextReset) reset.setAttribute('href', nextReset.getAttribute('href'));
+        else if (reset && !nextReset) reset.remove();
       }
     } catch (e) {
       if (seq === inflight) location.assign(url);
@@ -981,7 +1017,7 @@ function filterBar(facetRows, range, active) {
       .join("");
     const more = chosen.length > 2 ? `<span class="badge">+${chosen.length - 2}</span>` : "";
 
-    return `<details class="facet${chosen.length ? " active" : ""}">
+    return `<details class="facet${chosen.length ? " active" : ""}" data-dim="${f.key}">
 <summary><span class="plus" aria-hidden="true">+</span><span class="dim">${f.label}</span>${
       chosen.length ? `<span class="div"></span>${badges}${more}` : ""
     }</summary>
@@ -1005,7 +1041,7 @@ ${
   // A custom window sits alongside the presets rather than replacing them: presets answer "what is
   // happening now", which is most visits, and a date pair answers "what happened on Tuesday", which
   // no preset can express. Native date inputs, so there is still no script involved.
-  const custom = `<details class="facet${range.kind === "custom" ? " active" : ""}">
+  const custom = `<details class="facet${range.kind === "custom" ? " active" : ""}" data-dim="dates">
 <summary><span class="plus" aria-hidden="true">+</span><span class="dim">Dates</span>${
     range.kind === "custom"
       ? `<span class="div"></span><span class="badge">${escapeHtml(range.label)}</span>`
@@ -1137,15 +1173,13 @@ ${rows(failures.rows, (r) => `<tr><td>${escapeHtml(r.event)}</td>
 <h2>Versions</h2>
 <div class="panel tbl"><table><tr><th>version</th><th>installs</th><th>events</th></tr>
 ${rows(versions.rows, (r) => `<tr><td class="mono">${
-    r.version
-      ? `<a href="${escapeHtml(only(active, range, "version", r.version))}">${escapeHtml(r.version)}</a>`
-      : "unknown"
+    r.version ? filterLink(r.version, only(active, range, "version", r.version)) : "unknown"
   }</td><td class="n">${fmt(r.installs)}</td><td class="n">${fmt(r.events)}</td></tr>`)}</table></div>
 
 <h2>Platforms</h2>
 <div class="panel tbl"><table><tr><th>os</th><th>arch</th><th>installs</th></tr>
 ${rows(platforms.rows, (r) => `<tr>
-<td><a href="${escapeHtml(only(active, range, "os", r.os))}">${escapeHtml(r.os)}</a></td>
+<td>${filterLink(r.os, only(active, range, "os", r.os))}</td>
 <td class="mono">${escapeHtml(r.arch)}</td><td class="n">${fmt(r.installs)}</td></tr>`)}</table></div>
 
 <footer>Counts are SUM(_sample_interval), not count(): Analytics Engine samples under load and
@@ -1159,7 +1193,7 @@ function rolloverPanel(rows) {
   // an install that upgraded during the window counts once, as keyed.
   let keyed = 0;
   let unkeyed = 0;
-  for (const r of rows) (num(r.ever_keyed) > 0 ? keyed++ : unkeyed++);
+  for (const r of rows) (num(r.keyed_now) > 0 ? keyed++ : unkeyed++);
   const total = keyed + unkeyed;
   if (!total) return `<p class="empty">no data for this selection</p>`;
 
