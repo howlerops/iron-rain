@@ -301,6 +301,9 @@ func TestSimFanoutParentOutlivesItsChildren(t *testing.T) {
 	go m.run()
 
 	var sawKids int
+	// The running count from the most recent NON-terminal frame; see the assertion below for why
+	// the terminal frame cannot answer this question.
+	var lastRunningBeforeClose int
 	deadline := time.After(3 * time.Second)
 	for {
 		select {
@@ -318,10 +321,25 @@ func TestSimFanoutParentOutlivesItsChildren(t *testing.T) {
 			if running > sawKids {
 				sawKids = running
 			}
+			if ts.State != protocol.StatusIdle && ts.State != protocol.StatusError &&
+				ts.State != protocol.StatusAbandoned && ts.State != protocol.StatusNeedsYou {
+				lastRunningBeforeClose = running
+			}
 			if ts.State == protocol.StatusIdle {
+				// Asserted on the frame BEFORE the close, not on the closing frame.
+				//
+				// closeTurn seals every unfinished child as done on its way out, and turnKids holds
+				// POINTERS, so by the time the idle frame is built `running` is zero whatever
+				// happened beforehand. Checking it there asserted a property the code could not
+				// violate — the seal guaranteed the answer. The last pre-terminal frame is the one
+				// the seal has not rewritten.
+				if lastRunningBeforeClose > 0 {
+					t.Fatalf("the parent turn closed while %d child(ren) were still running in the "+
+						"frame immediately before — their output arrives after the turn the client "+
+						"already rendered as finished", lastRunningBeforeClose)
+				}
 				if running > 0 {
-					t.Fatalf("the parent turn closed with %d children still running — their output "+
-						"arrives after the turn the client already rendered as finished", running)
+					t.Fatalf("the closing frame itself still reports %d running children", running)
 				}
 				if sawKids < 2 {
 					t.Fatalf("only ever saw %d concurrent children; this scenario spawns 10, so the "+

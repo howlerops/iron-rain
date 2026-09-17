@@ -114,13 +114,33 @@ func TestLateInputsDoNotResurrectAClosedTurn(t *testing.T) {
 			// The phase is the state machine's own record of whether a turn is open. Read directly
 			// rather than through the wire here: the point of this table is the MACHINE, and a
 			// resurrection that emitted no frame would still be a resurrection.
+			//
+			// The phase alone is NOT enough for every row. noteTurnEvent, turnOnChildEvent and
+			// turnOnTool cannot assign turnPhase at all, so for those rows the phase check asserts
+			// something the functions structurally cannot violate — it passes with their guards
+			// removed. What those three CAN corrupt is the state a later turn inherits, so they are
+			// checked on that instead.
 			m.mu.Lock()
 			phase := m.turnPhase
+			toolsAfter := len(m.turnTools)
+			kidsAfter := len(m.turnKids)
 			m.mu.Unlock()
 			if phase != "" {
 				t.Fatalf("%s re-opened the turn (phase %q).\n\n%s\n\nNothing is working on this "+
 					"session, so nothing will ever close it again: the client spins until the app "+
 					"is restarted.", tc.name, phase, tc.why)
+			}
+
+			// A closed turn holds no live tool or child state. closeTurn nils turnTools on the way
+			// out, so anything repopulating it here is state a subsequent turn would inherit: a
+			// phantom outstanding tool or a child card that spins with nothing behind it.
+			if toolsAfter != 0 {
+				t.Fatalf("%s left %d tool(s) on a closed turn.\n\n%s\n\nThe next turn inherits "+
+					"them as outstanding work that will never complete.", tc.name, toolsAfter, tc.why)
+			}
+			if kidsAfter != 0 {
+				t.Fatalf("%s left %d sub-agent(s) on a closed turn.\n\n%s\n\nThey render as "+
+					"running cards with no agent behind them.", tc.name, kidsAfter, tc.why)
 			}
 
 			// And no further turn.state may be published — a client that already rendered the turn

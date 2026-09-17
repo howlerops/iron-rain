@@ -26,7 +26,12 @@ LOG="$HOME/.oculus/logs/soak.log"
 LABEL="com.howlerops.ironrain.soak"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 
-log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG"; }
+# Under launchd, stdout is ALREADY redirected to $LOG, so teeing there too wrote every line twice.
+# Tee only when stdout is a terminal (an interactive run, where you want both).
+log() {
+  line="$(date '+%Y-%m-%d %H:%M:%S') $*"
+  if [ -t 1 ]; then printf '%s\n' "$line" | tee -a "$LOG"; else printf '%s\n' "$line"; fi
+}
 
 install_schedule() {
   mkdir -p "$(dirname "$PLIST")" "$(dirname "$LOG")"
@@ -35,8 +40,16 @@ install_schedule() {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>$LABEL</string>
+  <!-- Through a LOGIN SHELL, not the script directly.
+       launchd runs jobs with a minimal PATH that does not include the Go toolchain, so invoking the
+       script directly made every scheduled run die on "go: command not found" — silently, while
+       `launchctl list` showed the job installed. Verified: the first night's run failed 3/3 that
+       way. A login shell sources the same profile an interactive run would. -->
   <key>ProgramArguments</key>
-  <array><string>$REPO/scripts/telemetry-soak.sh</string><string>3</string></array>
+  <array>
+    <string>${SHELL:-/bin/zsh}</string><string>-lc</string>
+    <string>exec '$REPO/scripts/telemetry-soak.sh' 3</string>
+  </array>
   <key>StartCalendarInterval</key><dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>17</integer></dict>
   <!-- The Mac is often asleep at 03:17; without this the run is skipped entirely rather than
        deferred, and the dashboard shows a gap that looks like a broken pipeline. -->
@@ -46,7 +59,17 @@ install_schedule() {
 </dict></plist>
 PLIST_EOF
   launchctl unload "$PLIST" 2>/dev/null
-  launchctl load "$PLIST" && log "scheduled: $LABEL nightly at 03:17 (log: $LOG)"
+  launchctl load "$PLIST" 2>/dev/null
+  # `launchctl load` exits 0 in every failure mode — malformed plist, missing path, already loaded,
+  # previously disabled. Verified on this machine. So confirm the job is actually registered rather
+  # than trusting the status, or --install-schedule reports success while nothing is scheduled.
+  if launchctl list 2>/dev/null | grep -q "$LABEL"; then
+    log "scheduled: $LABEL nightly at 03:17 (log: $LOG)"
+  else
+    log "FAILED to schedule $LABEL — launchctl reported success but the job is not registered."
+    log "  Try: launchctl bootstrap gui/\$(id -u) \"$PLIST\""
+    return 1
+  fi
 }
 
 [ "${1:-}" = "--install-schedule" ] && { install_schedule; exit $?; }
@@ -59,12 +82,31 @@ if [ ! -f "$PAIRING" ]; then
   exit 1
 fi
 
-# Read the credentials out of the daemon's own pairing file. They never appear in the process list:
-# turn-smoke takes them as arguments, so they are passed through the environment and expanded by the
-# shell at exec time rather than being echoed anywhere.
-PUB=$(python3 -c "import json,sys;print(json.load(open('$PAIRING'))['pub'])")
-SECRET=$(python3 -c "import json,sys;print(json.load(open('$PAIRING'))['secret'])")
-WS=$(python3 -c "import json,sys;print(json.load(open('$PAIRING'))['ws'])")
+# Read the credentials out of the daemon's own pairing file.
+#
+# NOTE, because the comment here used to claim the opposite: turn-smoke takes -secret as a command
+# line FLAG, so the pairing secret IS visible in the process list to any local process for the life
+# of the turn. That is the same secret already sitting in ~/.oculus/pairing.json mode 0600, so on a
+# single-user Mac it changes little — but "never appears in the process list" was simply untrue and
+# is the kind of claim that stops the next person checking.
+# Read all three in one parse and fail loudly if any is missing. The file is rewritten on every
+# daemon start, so a run that lands mid-write previously got empty strings and failed later with an
+# opaque handshake error instead of saying what was wrong.
+CREDS=$(python3 - "$PAIRING" <<'PYEOF' 2>/dev/null
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    pub, secret, ws = d["pub"], d["secret"], d["ws"]
+except Exception:
+    sys.exit(1)
+if not (pub and secret and ws):
+    sys.exit(1)
+print(pub); print(secret); print(ws)
+PYEOF
+) || { log "FAIL $PAIRING is unreadable or incomplete (daemon restarting?) — nothing to drive"; exit 1; }
+PUB=$(printf '%s' "$CREDS" | sed -n 1p)
+SECRET=$(printf '%s' "$CREDS" | sed -n 2p)
+WS=$(printf '%s' "$CREDS" | sed -n 3p)
 
 # Varied prompts, because a soak that sends one identical trivial prompt measures one code path and
 # reports a duration distribution with no width to it.

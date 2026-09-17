@@ -719,3 +719,91 @@ test("the Reset and Clear links are refreshed, not left stale", () => {
       "pre-swap query — clicking Reset would restore a state the user already left"
   );
 });
+
+test("the activity chart positions points in time, so an outage looks like one", async () => {
+  // Analytics Engine returns no row for an empty bucket, so a quiet period is a GAP rather than a
+  // run of zeroes. Spacing points by array index drew the buckets either side of a six-hour silence
+  // adjacent — the one period worth seeing rendered as uninterrupted activity.
+  const realFetch = globalThis.fetch;
+  const rows = [
+    { t: "2026-09-01 00:00:00", n: 100, failed: 0 },
+    { t: "2026-09-01 01:00:00", n: 100, failed: 0 },
+    // six-hour hole: no rows at all
+    { t: "2026-09-01 07:00:00", n: 100, failed: 0 },
+    { t: "2026-09-01 08:00:00", n: 100, failed: 0 },
+  ];
+  globalThis.fetch = async (_u, init) =>
+    new Response(
+      JSON.stringify({ data: String(init?.body || "").includes("toStartOfInterval") ? rows : [] }),
+      { status: 200 }
+    );
+  try {
+    const res = await worker.fetch(
+      new Request("https://telemetry.test/stats?range=24h", {
+        headers: { Authorization: "Basic " + btoa("x:hunter2") },
+      }),
+      envWith()
+    );
+    const body = await res.text();
+    const path = body.match(/<path d="(M[^"]+)" fill="none" stroke="var\(--gold-bright\)"/);
+    assert.ok(path, "no events line was drawn");
+    const xs = [...path[1].matchAll(/[ML]([\d.]+),/g)].map((m) => Number(m[1]));
+    assert.equal(xs.length, 4);
+
+    const gapWidth = xs[2] - xs[1];
+    const normalWidth = xs[1] - xs[0];
+    assert.ok(
+      gapWidth > normalWidth * 3,
+      `the six-hour gap spans ${gapWidth.toFixed(1)} units against ${normalWidth.toFixed(1)} for a ` +
+        `one-hour step. Positioned by index they would be equal, and a total outage would read as ` +
+        `continuous activity.`
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("a value the filter layer would reject is not rendered as a link", async () => {
+  // readFilters drops anything failing SAFE_VALUE, so an event name with a space rendered as a link
+  // that silently did nothing when clicked — the worst kind of dead control, because it looks live.
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (_u, init) =>
+    new Response(
+      JSON.stringify({
+        data: String(init?.body || "").includes("blob1 AS event")
+          ? [{ event: "has a space", n: 10, failed: 0 }, { event: "ok.name", n: 5, failed: 0 }]
+          : [],
+      }),
+      { status: 200 }
+    );
+  try {
+    const res = await worker.fetch(
+      new Request("https://telemetry.test/stats", {
+        headers: { Authorization: "Basic " + btoa("x:hunter2") },
+      }),
+      envWith()
+    );
+    const body = await res.text();
+    assert.match(body, /<span class="bar-label"[^>]*>has a space<\/span>/,
+      "an unfilterable value must render as plain text, not a link that does nothing");
+    assert.match(body, /<a class="bar-label"[^>]*>ok\.name<\/a>/,
+      "a legitimate value must still be clickable");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("a non-ASCII stats password authenticates", async () => {
+  // atob yields one character per BYTE (Latin-1); browsers send credentials UTF-8 encoded, so any
+  // non-ASCII character decoded to mojibake and the dashboard was simply unreachable.
+  const pw = "sürf-pässwörd-ü";
+  const utf8 = new TextEncoder().encode("x:" + pw);
+  const header = "Basic " + btoa(String.fromCharCode(...utf8));
+  const res = await worker.fetch(
+    new Request("https://telemetry.test/stats", { headers: { Authorization: header } }),
+    envWith({ STATS_PASSWORD: pw, CF_ANALYTICS_TOKEN: undefined })
+  );
+  assert.notEqual(res.status, 401,
+    "a non-ASCII password was refused, so the dashboard cannot be opened at all with one set");
+  assert.equal(res.status, 503, "should reach the setup page (analytics token deliberately unset)");
+});

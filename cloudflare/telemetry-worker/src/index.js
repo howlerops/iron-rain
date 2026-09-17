@@ -350,7 +350,11 @@ async function body(env, range, active) {
          FROM oculus_telemetry WHERE ${where} GROUP BY version ORDER BY installs DESC LIMIT 25`),
       q(`SELECT blob5 AS os, blob6 AS arch, COUNT(DISTINCT blob7) AS installs
          FROM oculus_telemetry WHERE ${where} GROUP BY os, arch ORDER BY installs DESC LIMIT 20`),
-      q(`SELECT COUNT(DISTINCT blob7) AS installs, SUM(_sample_interval) AS events
+      // versions is counted HERE, unlimited — the versions table below carries LIMIT 25, so counting
+      // its rows made the card read exactly 25 forever once there were more, which looks like a
+      // stable figure rather than a truncated one.
+      q(`SELECT COUNT(DISTINCT blob7) AS installs, SUM(_sample_interval) AS events,
+                COUNT(DISTINCT blob4) AS versions
          FROM oculus_telemetry WHERE ${where}`),
       q(`SELECT blob2 AS provider,
                 quantileWeighted(0.5)(double1, _sample_interval) AS p50,
@@ -385,18 +389,29 @@ async function body(env, range, active) {
       //
       // Counted, because a facet list without counts makes you guess which values are worth
       // opening — and the count is the cheapest possible answer to "is this even represented".
+      // ORDER BY before LIMIT, or the cut is arbitrary.
+      //
+      // Without it the 600-row truncation dropped an unpredictable subset, so which values appeared
+      // in the filter bar could change between two reloads of the same window, and the count beside
+      // each value was summed from whatever happened to come back. Ordering by weight makes the cut
+      // deterministic and drops only the smallest groups.
       q(`SELECT blob1 AS event, blob2 AS provider, blob4 AS version, blob5 AS os, blob6 AS arch,
                 SUM(_sample_interval) AS n
          FROM oculus_telemetry WHERE ${range.where}
-         GROUP BY event, provider, version, os, arch LIMIT 600`),
+         GROUP BY event, provider, version, os, arch ORDER BY n DESC LIMIT 600`),
     ]);
 
   const failed = [byEvent, failures, versions, platforms, installs, timing, series, rollover, facets]
     .find((r) => r.error);
   if (failed) {
-    return `<div id="chips"></div><div id="results"><p class="warn">The Analytics Engine query failed: ${escapeHtml(
-      failed.error
-    )}</p></div>`;
+    // Keep the toolbar. Replacing the entire body left no control to change the range or clear a
+    // filter, so recovering from a query that fails for ONE window meant hand-editing the URL.
+    return (
+      filterBar(facets.error ? [] : facets.rows, range, active) +
+      `<div id="results"><p class="warn">The Analytics Engine query failed: ${escapeHtml(
+        failed.error
+      )}</p></div>`
+    );
   }
 
   const total = installs.rows[0] || {};
@@ -434,7 +449,11 @@ async function sqlQuery(env, sql) {
 function checkBasic(header, password) {
   let decoded = "";
   try {
-    decoded = atob(header.slice("Basic ".length).trim());
+    // atob returns one CHARACTER per byte (Latin-1). The browser sends the credentials UTF-8
+    // encoded, so a password containing any non-ASCII character decoded to mojibake and could
+    // never match — the dashboard was simply unreachable, with no diagnostic anywhere.
+    const bytes = Uint8Array.from(atob(header.slice("Basic ".length).trim()), (c) => c.charCodeAt(0));
+    decoded = new TextDecoder().decode(bytes);
   } catch {
     return false;
   }
@@ -530,7 +549,18 @@ function areaChart(points, { w = 1040, h = 150 } = {}) {
   // "when did they spike", not "how do they compare in volume to successes", which the failure-rate
   // card already answers.
   const failMax = Math.max(1, ...points.map((p) => p.failed));
-  const x = (i) => (i / (points.length - 1)) * w;
+
+  // x is TIME, not array position.
+  //
+  // Analytics Engine returns no row for a bucket with no events, so an outage is a GAP in the data
+  // rather than a run of zeroes. Spacing points evenly by index drew the buckets either side of a
+  // six-hour silence adjacent to each other — the one period worth seeing rendered as continuous
+  // activity. Positioning by timestamp makes the gap visible as the flat span it is.
+  const ts = points.map((p) => p.t).filter((t) => Number.isFinite(t) && t > 0);
+  const timed = ts.length === points.length && ts[ts.length - 1] > ts[0];
+  const t0 = timed ? ts[0] : 0;
+  const span = timed ? ts[ts.length - 1] - t0 : 1;
+  const x = (i) => (timed ? ((points[i].t - t0) / span) * w : (i / (points.length - 1)) * w);
   const y = (v, scale) => h - (v / scale) * (h - 8) - 2;
 
   const line = (key, scale) =>
@@ -560,7 +590,14 @@ function bars(list, { label, value, sub, href }) {
     .map((r) => {
       const pct = ((num(value(r)) / top) * 100).toFixed(1);
       const name = escapeHtml(label(r));
-      const cell = href
+      // Only link a value the filter layer will actually accept.
+      //
+      // readFilters drops anything failing SAFE_VALUE, so an event name containing a space or a
+      // quote rendered as a link that silently did nothing when clicked — the worst kind of dead
+      // control, because it looks live. Unlinkable values still render, just as plain text.
+      const raw = String(label(r) ?? "");
+      const linkable = href && SAFE_VALUE.test(raw);
+      const cell = linkable
         ? `<a class="bar-label" href="${escapeHtml(href(r))}" title="filter by ${name}">${name}</a>`
         : `<span class="bar-label" title="${name}">${name}</span>`;
       return `<div class="bar">${cell}
@@ -1049,14 +1086,19 @@ function content({ range, byEvent, failures, versions, platforms, total, timing,
   const failedTotal = byEvent.rows.reduce((a, r) => a + num(r.failed), 0);
   const eventTotal = byEvent.rows.reduce((a, r) => a + num(r.n), 0);
   const rate = eventTotal ? (failedTotal / eventTotal) * 100 : 0;
-  const points = series.rows.map((r) => ({ n: num(r.n), failed: num(r.failed) }));
+  // Carry the bucket timestamp, so the chart can place points in TIME rather than by array index.
+  const points = series.rows.map((r) => ({
+    t: Date.parse(String(r.t).replace(" ", "T") + "Z") / 1000 || num(r.t),
+    n: num(r.n),
+    failed: num(r.failed),
+  }));
   const link = (key) => (r) => only(active, range, key, r[key]);
 
   return `<div class="cards">
   <div class="card accent"><b>${fmt(total.installs)}</b><span>installs seen</span></div>
   <div class="card"><b>${fmt(total.events)}</b><span>events</span></div>
   <div class="card"><b class="${failedTotal ? "bad" : ""}">${rate.toFixed(1)}%</b><span>failure rate</span></div>
-  <div class="card"><b>${fmt(versions.rows.length)}</b><span>versions live</span></div>
+  <div class="card"><b>${fmt(total.versions)}</b><span>versions live</span></div>
 </div>
 
 <h2>Activity — ${escapeHtml(range.label)}</h2>

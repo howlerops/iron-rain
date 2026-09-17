@@ -1,7 +1,6 @@
 package hub
 
 import (
-	"sort"
 	"sync"
 	"time"
 
@@ -86,8 +85,8 @@ func (h *Hub) RelayHealth() protocol.RelayHealth {
 			out.Relays = append(out.Relays, *st)
 		}
 	}
-	// order is append-only and already deterministic; this only matters if a state was added
-	// concurrently by two goroutines racing the same new URL, which sort makes harmless.
-	sort.SliceStable(out.Relays, func(i, j int) bool { return false })
+	// No sort: h.relays.order is append-only under the same mutex, so iterating it already yields
+	// configuration order. A sort.SliceStable with an always-false comparator used to sit here and
+	// did nothing at all — dead code implying a guarantee it was not providing.
 	return out
 }

@@ -165,7 +165,7 @@ func serve(args []string) error {
 	publicURL := fs.String("public-url", "", "reachable base ws/wss URL for the pairing QR (e.g. wss://x.ngrok-free.app); default derives a LAN URL from --addr")
 	name := fs.String("name", "", "human name for this desktop shown in the app (default: hostname)")
 	slackWebhook := fs.String("slack-webhook", "", "Slack Incoming Webhook URL to mirror agent events to a channel (or set it in ~/.oculus/slack.json)")
-	relayURL := fs.String("relay", defaultRelayURL, "comma-separated relay ws URLs for remote access from anywhere (empty = LAN-only). The app races them + LAN; order is preference. Default: Cloudflare DO relay, then Fly fallback.")
+	relayURL := fs.String("relay", defaultRelayURL, "comma-separated relay ws URLs for remote access from anywhere (empty = LAN-only). The app races them + LAN; order is preference. Default: the shared Cloudflare Durable-Objects relay.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
