@@ -98,6 +98,9 @@ func (m *managedSession) openTurn(detail string) {
 	m.turnProbeFails = 0
 	m.turnNudges = 0
 	m.userInterrupted = false
+	// A new turn re-arms the budget ceiling. Without this a session that was stopped once could
+	// never be stopped again after its budget was raised — the latch would still read "handled".
+	m.budgetStopped = false
 	// Clear the OUTAGE state too, not just the counters.
 	//
 	// These are per-outage, and an outage cannot outlive the turn it happened in. Left set, a new
@@ -450,12 +453,21 @@ func (m *managedSession) closeTurnFrom(state, reason string, providerDriven bool
 	return true
 }
 
-// publishVerdict makes the end of a turn visible OUTSIDE the session's own subscribers. turn.state is
+// publishVerdict is the ordinary path: a verdict that a user stop should suppress.
+func (m *managedSession) publishVerdict(state, reason string, providerDriven bool) {
+	m.publishVerdictFrom(state, reason, providerDriven, false)
+}
+
+// publishVerdictFrom makes the end of a turn visible OUTSIDE the session's own subscribers. turn.state is
 // transient and session-scoped; without this a turn the daemon ended by itself changed nothing a
 // user can see: session.list kept serving "running" (lastStatus was never written), the Activity
 // feed had no entry, and no push went out — an agent could die on a sleeping Mac and every surface
 // still showed it working.
-func (m *managedSession) publishVerdict(state, reason string, providerDriven bool) {
+// publishVerdict records and announces a turn's ending. daemonInitiated marks a verdict the DAEMON
+// reached on its own — today, the heartbeat's budget stop — which must not be suppressed by the
+// user-stop guard below: someone who interrupted a turn and then crossed their spend ceiling still
+// needs telling, and that combination is reachable inside a single 25s heartbeat window.
+func (m *managedSession) publishVerdictFrom(state, reason string, providerDriven, daemonInitiated bool) {
 	if m.hub == nil {
 		return
 	}
@@ -487,7 +499,12 @@ func (m *managedSession) publishVerdict(state, reason string, providerDriven boo
 	// is the human's own doing: record the state, but don't page them about an error they caused. The
 	// same goes for an interrupt — which used to page anyway, because only Stop set a flag and
 	// interrupt reached this code looking exactly like a spontaneous agent failure.
-	if m.userStopped || m.userInterrupted {
+	//
+	// daemonInitiated is exempt. A spend ceiling is not something the user caused by pressing Stop,
+	// and this rewrite is why exempting the LATER guard alone was not enough: downgrading the
+	// verdict to idle here cleared `stuck`, so the needs-you push had already been decided against
+	// by the time that guard ran. Two suppressions, one intent — both have to know the difference.
+	if (m.userStopped || m.userInterrupted) && !daemonInitiated {
 		failed, stuck, status = false, false, protocol.StatusIdle
 	}
 	m.lastStatus = status
@@ -501,7 +518,7 @@ func (m *managedSession) publishVerdict(state, reason string, providerDriven boo
 		label = m.meta.workspaceName
 	}
 	project := m.meta.cwd
-	stopped := m.userStopped || m.userInterrupted
+	stopped := !daemonInitiated && (m.userStopped || m.userInterrupted)
 	m.mu.Unlock()
 
 	// Retire the loop run HERE too, not only on the provider-driven path.

@@ -142,11 +142,21 @@ func (h *Hub) heartbeatTick() {
 		// the work in flight is what is spending it. Autonomy is disarmed too, so the session is not
 		// immediately nudged back into spending.
 		if cost >= budget && st != hbDone && st != hbErrored {
+			// A dedicated latch, not the derived state.
+			//
+			// This used to read m.hbState — which line 94 has ALREADY overwritten with this tick's
+			// derived state, and deriveState returns hbExhausted for the same cost >= budget
+			// condition the branch is gated on. So the guard nullified itself: the first tick that
+			// saw the overspend concluded it had already handled it, skipped the stop entirely, and
+			// left autonomous TRUE. Reachable whenever a session is over budget before autonomy is
+			// switched on — the toggle sets autonomous without touching cost, so every tick
+			// afterwards sees "already stopped" and the ceiling never fires at all.
 			m.mu.Lock()
-			alreadyStopped := m.hbState == hbExhausted
+			alreadyStopped := m.budgetStopped
 			if !alreadyStopped {
 				m.autonomous = false
 				m.hbState = hbExhausted
+				m.budgetStopped = true
 			}
 			m.mu.Unlock()
 			if !alreadyStopped {
@@ -181,7 +191,9 @@ func (h *Hub) heartbeatTick() {
 					// bare push: a push alone is transient and leaves no activity entry, no needs-you
 					// inbox item and no lastStatus, so the stop vanishes the moment the notification
 					// is dismissed — and the next heartbeat has no record that it already fired.
-					m.publishVerdict(protocol.StatusNeedsYou, reason, false)
+					// daemonInitiated: a spend ceiling is not a user stop, and must not be swallowed
+					// by the suppression that exists for one.
+					m.publishVerdictFrom(protocol.StatusNeedsYou, reason, false, true)
 				}
 				h.broadcastHeartbeat(m, hbExhausted, nudgeN, done, total, cost, budget)
 			}

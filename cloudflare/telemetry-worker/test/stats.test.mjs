@@ -884,3 +884,39 @@ test("a dimension with no values is omitted — the case that broke index pairin
     globalThis.fetch = realFetch;
   }
 });
+
+test("the Versions and Platforms tables also refuse to link an unfilterable value", async () => {
+  // The gate was added to bars() only, so these two tables kept emitting raw anchors — and nothing
+  // caught it: reverting both call sites left the entire suite green. A fix with no test is a fix
+  // that comes back.
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (_u, init) => {
+    const sql = String(init?.body || "");
+    const data = sql.includes("blob4 AS version")
+      ? [{ version: "1.0 beta", installs: 1, events: 5 }, { version: "1.0.1", installs: 2, events: 9 }]
+      : sql.includes("blob5 AS os")
+        ? [{ os: "weird os", arch: "arm64", installs: 1 }, { os: "darwin", arch: "arm64", installs: 3 }]
+        : [];
+    return new Response(JSON.stringify({ data }), { status: 200 });
+  };
+  try {
+    const res = await worker.fetch(
+      new Request("https://telemetry.test/stats", {
+        headers: { Authorization: "Basic " + btoa("x:hunter2") },
+      }),
+      envWith()
+    );
+    const body = await res.text();
+
+    assert.doesNotMatch(body, /<a[^>]*>1\.0 beta<\/a>/,
+      "a version the filter layer rejects is still rendered as a link that does nothing");
+    assert.match(body, />1\.0 beta</, "the value should still be shown, just not linked");
+    assert.match(body, /<a[^>]*>1\.0\.1<\/a>/, "a legitimate version must remain clickable");
+
+    assert.doesNotMatch(body, /<a[^>]*>weird os<\/a>/,
+      "an os the filter layer rejects is still rendered as a dead link");
+    assert.match(body, /<a[^>]*>darwin<\/a>/, "a legitimate os must remain clickable");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

@@ -15,7 +15,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.com/howlerops/oculus/daemon/transport"
 	"golang.org/x/term"
 	"html"
 	"io"
@@ -29,7 +28,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -717,30 +715,33 @@ func relayHost(relayURL, serverID string, hostPriv []byte, srv *server.Server, h
 		// It degrades rather than fails: a relay not yet redeployed ignores the offer, and a key that
 		// doesn't match serverID falls back to an unproven registration, so this cannot break remote
 		// access on its own.
-		// Registration is judged by whether the DIAL succeeded, not by how long the call ran.
+		// REVERTED to the elapsed-time heuristic, deliberately, after two attempts to improve it.
 		//
-		// ServeHostKey dials, then hands the socket to this callback — so the callback running at
-		// all is proof the host slot was granted. The previous test was elapsed time: anything
-		// returning inside five seconds counted as a failure. That is wrong in the ordinary case,
-		// because the app races LAN and every relay and cancels the losers mid-handshake, so a
-		// perfectly healthy registration routinely ends in well under five seconds. The daemon then
-		// logged "remote access is unavailable", flipped relay health to down, and — because the
-		// short branch never reset the backoff — ratcheted re-registration delay toward 30s, during
-		// which the relay slot really was empty and clients really were refused. A diagnostic that
-		// manufactures the outage it reports is worse than none.
-		var registered atomic.Bool
-		serve := func(cctx context.Context, mc transport.MsgConn) error {
-			registered.Store(true)
-			h.SetRelayConnected(relayURL) // marked HERE, once it is actually true
-			return srv.ServeConn(cctx, mc)
-		}
-		err := relay.ServeHostKey(ctx, relayURL, serverID, hostPriv, relay.DefaultKeepalive, serve)
-		if registered.Load() {
-			// The slot was held. Whatever ended the serve loop — a client finishing, a losing race
-			// being cancelled, the relay restarting — is not a registration failure, so re-register
-			// immediately rather than backing off.
-			backoff = time.Second
+		// The replacement judged registration by whether the serve callback ran. Three independent
+		// problems, all demonstrated:
+		//
+		//   1. The branch reset the backoff and continued with NO sleep — the elapsed-time test had
+		//      been the only thing bounding this loop. A relay that accepts the dial and then closes
+		//      produced ~3,300 re-dials per second, silently, against our own relay. Measured.
+		//   2. The premise was false. relay.go calls websocket.Accept BEFORE the host slot is claimed,
+		//      so the callback running proves the socket upgraded, not that the slot was granted.
+		//   3. It never called SetRelayFailed on that path, so relay health reported "connected"
+		//      throughout an outage — replacing a false "unavailable" with a false "fine", in the one
+		//      panel whose entire purpose is telling those apart.
+		//
+		// What it fixed was a LOG LINE: the app races LAN and relays and cancels the losers, so short
+		// sessions are normal and this occasionally claims "remote access is unavailable" when it is
+		// not. That is noise. A dial storm and a lying health panel are not, and trading the first for
+		// the second twice is enough. KNOWN ISSUE, left in place on purpose: the false-alarm log and
+		// the un-reset backoff it causes. Fixing it properly needs relay.ServeHostKey to report that
+		// the SLOT was claimed — a signal that does not exist today — rather than anything inferable
+		// from this side of the call.
+		start := time.Now()
+		err := relay.ServeHostKey(ctx, relayURL, serverID, hostPriv, relay.DefaultKeepalive, srv.ServeConn)
+		if time.Since(start) > 5*time.Second {
+			backoff = time.Second // served a client (or waited on one) — re-register immediately
 			relayFailures = 0
+			h.SetRelayConnected(relayURL)
 			continue
 		}
 		// Say why remote access is not working.

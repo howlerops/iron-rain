@@ -371,22 +371,17 @@ async function body(env, range, active) {
       // This is the fact that decides when INGEST_STRICT can be switched on, and without it that
       // decision is a guess — which is how enabling the key came to reject every report for a day.
       // blob8 is written by the ingest path as "keyed"/"unkeyed".
-      // One row per install, not per (install, keyed) group.
+      // One row per install, carrying that install's LATEST key state.
       //
-      // Grouping by keyed and counting distinct installs in each group does NOT partition the fleet:
-      // an install that upgraded mid-window sent unkeyed rows before and keyed rows after, so it is
-      // counted in BOTH. Summing the two then double-counts it, and — worse for the only decision
-      // this panel exists to support — it keeps "unkeyed" non-zero forever, so the panel can never
-      // say enforcing is safe no matter how completely the fleet has rolled.
+      // Two things this is NOT. It is not GROUP BY keyed with a distinct count per group: that does
+      // not partition the fleet, because an install that changed state mid-window appears in both
+      // groups — double-counted, and "unkeyed" then stays non-zero forever so the panel can never
+      // say enforcing is safe. And it is not MAX(double4): that answers "ever sent a valid key",
+      // which is the wrong question after a key rotation or a daemon downgrade, where an install
+      // that has STOPPED sending one would still count as keyed and the panel would advise
+      // enforcement that immediately starts dropping its reports.
       //
-      // MAX(double4) is 1 if this install has EVER sent the key in the window, which is the question
-      // actually being asked. The classification is then done once, in JS, over distinct installs.
-      // The install's LATEST state, not whether it was ever keyed.
-      //
-      // MAX(double4) answers "has this install sent a valid key at any point in the window", which
-      // is the wrong question after a key rotation or a daemon downgrade: an install that stopped
-      // sending a valid key still counted as keyed, so the panel reported 100% and advised turning
-      // on enforcement that would immediately start dropping its reports.
+      // argMax by timestamp is the install's most recent state, which is the question being asked.
       q(`SELECT blob7 AS install, argMax(double4, timestamp) AS keyed_now
          FROM oculus_telemetry WHERE ${range.where} AND blob8 != ''
          GROUP BY install LIMIT 5000`),
@@ -715,15 +710,30 @@ const ENHANCE = `
           }
           // The per-facet Clear link carries a query string and goes stale even while the popover
           // is open, so it is refreshed independently of the trigger.
+          //
+          // Symmetric on purpose. Removing it when the fresh document lacks it, with no branch that
+          // ever puts it back, destroyed the control permanently the first time a filter set
+          // emptied — Clear and Reset both vanished for the rest of the session, and the only way
+          // back was a full reload. A one-way removal is not a refresh.
           const clear = det.querySelector('.popclear');
           const nextClear = next && next.querySelector('.popclear');
           if (clear && nextClear) clear.setAttribute('href', nextClear.getAttribute('href'));
-          else if (clear && next && !nextClear) clear.remove();
+          else if (clear && !nextClear) clear.remove();
+          else if (!clear && nextClear) {
+            const pop = det.querySelector('.pop');
+            if (pop) pop.appendChild(document.importNode(nextClear, true));
+          }
+          // A facet the fresh document omits entirely has no counterpart to copy from, so nothing
+          // above touches it and its Clear link keeps the pre-swap query — the same stale-link bug
+          // this loop exists to prevent, arriving through the one case that made index-pairing
+          // wrong in the first place. Drop the whole facet; the next full load rebuilds it.
+          if (!next && !det.open) det.remove();
         }
         const reset = form.querySelector('.reset');
         const nextReset = freshForm.querySelector('.reset');
         if (reset && nextReset) reset.setAttribute('href', nextReset.getAttribute('href'));
         else if (reset && !nextReset) reset.remove();
+        else if (!reset && nextReset) form.appendChild(document.importNode(nextReset, true));
       }
     } catch (e) {
       if (seq === inflight) location.assign(url);
@@ -1189,8 +1199,8 @@ enough to matter.</footer>`;
 
 /** How much of the fleet sends the ingest key — the fact that decides when it can be enforced. */
 function rolloverPanel(rows) {
-  // Each row is one install with ever_keyed = 1 or 0, so these two are disjoint by construction and
-  // an install that upgraded during the window counts once, as keyed.
+  // Each row is one install with keyed_now = 1 or 0 — its most recent state — so the two groups are
+  // disjoint by construction and an install that changed state during the window counts once.
   let keyed = 0;
   let unkeyed = 0;
   for (const r of rows) (num(r.keyed_now) > 0 ? keyed++ : unkeyed++);

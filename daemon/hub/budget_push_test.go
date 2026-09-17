@@ -113,3 +113,133 @@ func TestBudgetStopNotifiesWhenNoTurnIsOpen(t *testing.T) {
 	case <-time.After(150 * time.Millisecond):
 	}
 }
+
+// A session already over budget when autonomy is switched on must still be stopped.
+//
+// The guard used to read m.hbState, which the same tick had just overwritten with the derived state
+// — and deriveState returns hbExhausted for the same cost >= budget condition the branch is gated
+// on. So the guard answered its own question: the first tick that saw the overspend concluded it had
+// already handled it, skipped the stop, and left autonomy ON. Reachable simply by enabling autonomy
+// on a session that has already spent past the ceiling, which touches neither cost nor activity.
+func TestBudgetStopFiresWhenAutonomyIsEnabledAfterOverspending(t *testing.T) {
+	got := make(chan push.Notification, 8)
+	h := New()
+	h.notifier = &prRecordingNotifier{got: got}
+	h.pushTokens = []string{"dev"}
+	h.SetNotifyPrefsPath(t.TempDir() + "/notify.json")
+
+	m := newManagedSession(h, &prFakeSess{ch: make(chan agent.Event)}, sessionMeta{})
+	m.mu.Lock()
+	m.budgetUSD = 1.00
+	m.costUSD = 1.25
+	m.autonomous = false                              // not yet enrolled
+	m.lastActivity = time.Now().Add(-2 * time.Minute) // idle long enough to derive exhausted
+	m.mu.Unlock()
+
+	h.mu.Lock()
+	h.sessions[m.sess.ID()] = m
+	h.mu.Unlock()
+
+	// A tick while NOT autonomous still stamps hbState — that is what poisoned the old guard.
+	h.heartbeatTick()
+
+	m.mu.Lock()
+	m.autonomous = true // the user flips the toggle; cost and activity are untouched
+	m.mu.Unlock()
+
+	h.heartbeatTick()
+
+	if _, ok := nextPush(t, got); !ok {
+		t.Fatal("enabling autonomy on a session already past its budget never fired the ceiling. " +
+			"The agent is now running unattended with no spend limit in effect, and the user was " +
+			"told nothing — the toggle they just set reports itself as on.")
+	}
+	m.mu.Lock()
+	auto := m.autonomous
+	m.mu.Unlock()
+	if auto {
+		t.Error("autonomy is still enabled after the budget stop")
+	}
+}
+
+// Raising the budget must re-arm the ceiling.
+//
+// The latch is per-turn and cleared by openTurn. Without that clearing a session stopped once could
+// never be stopped again however much it went on to spend — the guard would still read "handled",
+// which is the failure mode the latch was introduced to remove, just deferred by one stop.
+func TestARaisedBudgetRearmsTheCeiling(t *testing.T) {
+	got := make(chan push.Notification, 8)
+	h := New()
+	h.notifier = &prRecordingNotifier{got: got}
+	h.pushTokens = []string{"dev"}
+	h.SetNotifyPrefsPath(t.TempDir() + "/notify.json")
+
+	m := newManagedSession(h, &prFakeSess{ch: make(chan agent.Event)}, sessionMeta{})
+	m.mu.Lock()
+	m.autonomous = true
+	m.budgetUSD = 1.00
+	m.costUSD = 1.25
+	m.lastActivity = time.Now()
+	m.mu.Unlock()
+
+	h.mu.Lock()
+	h.sessions[m.sess.ID()] = m
+	h.mu.Unlock()
+
+	h.heartbeatTick()
+	if _, ok := nextPush(t, got); !ok {
+		t.Fatal("the first budget stop did not fire")
+	}
+
+	// The user raises the ceiling and starts new work.
+	m.mu.Lock()
+	m.budgetUSD = 2.00
+	m.autonomous = true
+	m.mu.Unlock()
+	m.openTurn("more work")
+	m.mu.Lock()
+	m.costUSD = 2.50 // and blows through the new ceiling too
+	m.lastActivity = time.Now()
+	m.mu.Unlock()
+
+	h.heartbeatTick()
+	if _, ok := nextPush(t, got); !ok {
+		t.Fatal("the raised budget was never enforced: the per-turn latch was not cleared, so this " +
+			"session can never be stopped again no matter what it spends")
+	}
+}
+
+// An interrupted session that then trips its budget must still be told.
+//
+// publishVerdict suppresses on userStopped/userInterrupted, which is right for an ordinary verdict:
+// a user who stopped a turn does not need a notification about the turn they just stopped. It is
+// wrong for a spend ceiling, which is the daemon's own conclusion — and the two coincide inside a
+// single 25s heartbeat window, so this is reachable rather than theoretical.
+func TestAnInterruptedSessionStillReportsItsBudgetStop(t *testing.T) {
+	got := make(chan push.Notification, 8)
+	h := New()
+	h.notifier = &prRecordingNotifier{got: got}
+	h.pushTokens = []string{"dev"}
+	h.SetNotifyPrefsPath(t.TempDir() + "/notify.json")
+
+	m := newManagedSession(h, &prFakeSess{ch: make(chan agent.Event)}, sessionMeta{})
+	m.mu.Lock()
+	m.autonomous = true
+	m.budgetUSD = 1.00
+	m.costUSD = 1.25
+	m.lastActivity = time.Now()
+	m.userInterrupted = true // the user hit Stop moments before the tick
+	m.mu.Unlock()
+
+	h.mu.Lock()
+	h.sessions[m.sess.ID()] = m
+	h.mu.Unlock()
+
+	h.heartbeatTick()
+
+	if _, ok := nextPush(t, got); !ok {
+		t.Fatal("a session that was interrupted and then crossed its spend ceiling reported " +
+			"nothing. The user-stop suppression is for the turn the user stopped, not for a money " +
+			"limit the daemon enforced afterwards.")
+	}
+}

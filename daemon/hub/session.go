@@ -298,12 +298,17 @@ type managedSession struct {
 	lastNudge        time.Time       // for the nudge cooldown
 	lastCheckpoint   int             // token count at the last handoff-checkpoint nudge
 	hbState          string          // last derived heartbeat state (for change detection)
-	maxNudges        int             // give-up bound (0 = default)
-	budgetUSD        float64         // cost ceiling for autonomous nudging (0 = default)
-	lastHandoffMtime int64           // mtime of the handoff file at last index (skip re-index if unchanged)
-	model            string          // active model id ("" = provider default)
-	modelProvider    string          // sub-provider/backend for the model
-	pendingContext   string          // one-shot note prepended to the FIRST user prompt (multi-repo layout)
+	// budgetStopped latches the money-ceiling stop for THIS turn. Deliberately separate from
+	// hbState: that field is recomputed every tick from the same condition the stop is gated on, so
+	// using it as the "already handled" guard made the guard answer its own question. Cleared by
+	// openTurn so a raised budget re-arms.
+	budgetStopped    bool
+	maxNudges        int     // give-up bound (0 = default)
+	budgetUSD        float64 // cost ceiling for autonomous nudging (0 = default)
+	lastHandoffMtime int64   // mtime of the handoff file at last index (skip re-index if unchanged)
+	model            string  // active model id ("" = provider default)
+	modelProvider    string  // sub-provider/backend for the model
+	pendingContext   string  // one-shot note prepended to the FIRST user prompt (multi-repo layout)
 
 	seg genui.Segmenter // incremental scanner for ```iron:ui``` generative-UI fences in assistant text
 

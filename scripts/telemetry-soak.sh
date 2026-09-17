@@ -93,8 +93,20 @@ mkdir -p "$(dirname "$LOG")"
 # A soak that drives nothing must not report health. `telemetry-soak.sh nonsense` previously ran
 # zero turns and exited 0 with "0 passed, 0 failed", which is indistinguishable from success.
 case "$ITERATIONS" in
-  ''|*[!0-9]*|0) log "FAIL iteration count must be a positive integer, got: ${ITERATIONS:-(empty)}"; exit 2 ;;
+  ''|*[!0-9]*) log "FAIL iteration count must be a positive integer, got: ${ITERATIONS:-(empty)}"; exit 2 ;;
 esac
+# Normalise base 10 BEFORE the arithmetic loop uses it.
+#
+# Two bugs shared one cause. The digit check admitted "00", which is not zero to a glob but runs no
+# turns and exits 0 — "0 passed, 0 failed", the exact false-health report the check exists to
+# prevent. And `for ((i=1; i<=ITERATIONS; i++))` parses a leading zero as OCTAL, so "08" and "09"
+# abort the loop as invalid numbers. 10# forces base 10, and the range check then catches zero
+# however it was spelled.
+ITERATIONS=$((10#$ITERATIONS))
+if [ "$ITERATIONS" -lt 1 ]; then
+  log "FAIL iteration count must be at least 1, got: $1"
+  exit 2
+fi
 
 if [ ! -f "$PAIRING" ]; then
   log "FAIL no $PAIRING — the daemon writes it at startup; is oculusd running?"
