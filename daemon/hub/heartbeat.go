@@ -157,12 +157,26 @@ func (h *Hub) heartbeatTick() {
 					log.Printf("heartbeat: could not stop %s at its budget: %v", m.sess.ID(), err)
 				}
 				cancel()
-				// One event, one push. closeTurn → publishVerdict already pushes for a NeedsYou verdict,
-				// and this branch pushed again directly: the user's phone buzzed twice for one budget
-				// stop, with two different wordings of the same fact. The richer wording is the one worth
-				// keeping, so it goes through closeTurn and the direct push is gone.
-				m.closeTurn(protocol.StatusNeedsYou,
-					fmt.Sprintf("stopped at its $%.2f budget (spent $%.2f)", budget, cost))
+				// One event, one push — but only closeTurn can deliver it when a turn is actually open.
+				//
+				// closeTurnFrom returns immediately when turnPhase is empty, so routing the
+				// notification exclusively through it made a money-ceiling stop SILENT whenever the
+				// turn had already ended between ticks: autonomy was disarmed, the log recorded it,
+				// and the person who set a spend limit on an unattended agent was never told. That is
+				// the case this reaches most often for short loop turns, which finish well inside the
+				// 25s tick.
+				//
+				// So: closeTurn when there is a turn (its wording is richer and it carries the
+				// verdict), and a direct push when there is not. Never both — the phone buzzing twice
+				// for one stop, with two wordings of the same fact, is what the previous fix removed.
+				reason := fmt.Sprintf("stopped at its $%.2f budget (spent $%.2f)", budget, cost)
+				m.mu.Lock()
+				turnOpen := m.turnPhase != ""
+				m.mu.Unlock()
+				m.closeTurn(protocol.StatusNeedsYou, reason)
+				if !turnOpen {
+					h.pushAgentStalled(m.sess.ID(), label, reason)
+				}
 				h.broadcastHeartbeat(m, hbExhausted, nudgeN, done, total, cost, budget)
 			}
 			continue

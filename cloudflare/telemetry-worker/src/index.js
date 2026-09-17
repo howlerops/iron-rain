@@ -367,8 +367,19 @@ async function body(env, range, active) {
       // This is the fact that decides when INGEST_STRICT can be switched on, and without it that
       // decision is a guess — which is how enabling the key came to reject every report for a day.
       // blob8 is written by the ingest path as "keyed"/"unkeyed".
-      q(`SELECT blob8 AS keyed, COUNT(DISTINCT blob7) AS installs, SUM(_sample_interval) AS events
-         FROM oculus_telemetry WHERE ${range.where} AND blob8 != '' GROUP BY keyed`),
+      // One row per install, not per (install, keyed) group.
+      //
+      // Grouping by keyed and counting distinct installs in each group does NOT partition the fleet:
+      // an install that upgraded mid-window sent unkeyed rows before and keyed rows after, so it is
+      // counted in BOTH. Summing the two then double-counts it, and — worse for the only decision
+      // this panel exists to support — it keeps "unkeyed" non-zero forever, so the panel can never
+      // say enforcing is safe no matter how completely the fleet has rolled.
+      //
+      // MAX(double4) is 1 if this install has EVER sent the key in the window, which is the question
+      // actually being asked. The classification is then done once, in JS, over distinct installs.
+      q(`SELECT blob7 AS install, MAX(double4) AS ever_keyed
+         FROM oculus_telemetry WHERE ${range.where} AND blob8 != ''
+         GROUP BY install LIMIT 5000`),
       // Facets come from the WINDOW, not the current filter: a list that only offers what is
       // already selected is a dead end you cannot back out of.
       //
@@ -603,6 +614,44 @@ const ENHANCE = `
       if (!r) { location.assign(url); return; }
       results.innerHTML = r.innerHTML;
       chips.innerHTML = c ? c.innerHTML : '';
+
+      // Re-sync the form to the URL that was just loaded.
+      //
+      // The form's nodes are deliberately NOT replaced — replacing them closes whatever popover is
+      // open and drops focus, which is the whole reason only two regions swap. But its checkbox and
+      // select state is URL-derived, so without this the form and the URL silently disagree the
+      // moment a chip or a bar row is clicked: remove a filter via its chip and the checkbox stays
+      // ticked, so the next Apply puts the filter straight back. Syncing the VALUES, rather than the
+      // nodes, keeps both properties.
+      const want = new URLSearchParams(new URL(url, location.origin).search);
+      for (const el of form.querySelectorAll('input[type=checkbox]')) {
+        el.checked = want.getAll(el.name).includes(el.value);
+      }
+      for (const el of form.querySelectorAll('select')) {
+        el.value = want.get(el.name) || '';
+      }
+      for (const el of form.querySelectorAll('input[type=date]')) {
+        el.value = want.get(el.name) || '';
+      }
+      // The facet triggers show the active values, and the Reset/Clear links carry the old query.
+      // They live inside the form too, so take them from the freshly rendered document.
+      const freshForm = doc.getElementById('f');
+      if (freshForm) {
+        for (const sel of ['.facet > summary', '.reset', '.popclear']) {
+          const now = form.querySelectorAll(sel);
+          const next = freshForm.querySelectorAll(sel);
+          for (let i = 0; i < now.length && i < next.length; i++) {
+            // Skip a popover the user currently has open: rewriting its trigger collapses it.
+            const det = now[i].closest('details');
+            if (sel.endsWith('summary') && det && det.open) continue;
+            now[i].innerHTML = next[i].innerHTML;
+            if (next[i].getAttribute('href')) now[i].setAttribute('href', next[i].getAttribute('href'));
+            if (det && next[i].closest('details')) {
+              det.className = next[i].closest('details').className;
+            }
+          }
+        }
+      }
     } catch (e) {
       if (seq === inflight) location.assign(url);
     } finally {
@@ -1064,14 +1113,20 @@ enough to matter.</footer>`;
 
 /** How much of the fleet sends the ingest key — the fact that decides when it can be enforced. */
 function rolloverPanel(rows) {
-  const by = Object.fromEntries(rows.map((r) => [String(r.keyed || ""), r]));
-  const keyed = num(by.keyed?.installs);
-  const unkeyed = num(by.unkeyed?.installs);
+  // Each row is one install with ever_keyed = 1 or 0, so these two are disjoint by construction and
+  // an install that upgraded during the window counts once, as keyed.
+  let keyed = 0;
+  let unkeyed = 0;
+  for (const r of rows) (num(r.ever_keyed) > 0 ? keyed++ : unkeyed++);
   const total = keyed + unkeyed;
   if (!total) return `<p class="empty">no data for this selection</p>`;
 
   const pct = ((keyed / total) * 100).toFixed(0);
   const done = unkeyed === 0;
+  // Saturation is disclosed rather than presented as a fact: at the cap the real fleet is larger
+  // than this, and "0 installs predate the key" out of a truncated list is exactly the wrong thing
+  // to act on.
+  const capped = rows.length >= 5000;
   return `<div class="bars">
 <div class="bar"><span class="bar-label">sending the key</span>
 <span class="bar-track"><span class="bar-fill" style="width:${(keyed / total) * 100}%"></span></span>
@@ -1081,11 +1136,15 @@ function rolloverPanel(rows) {
 <span class="bar-val">${fmt(unkeyed)} install${unkeyed === 1 ? "" : "s"}</span></div>
 </div>
 <p class="note">${
-    done
-      ? `${pct}% — every install seen in this window sends the key. INGEST_STRICT can be set; ` +
-        `until it is, the key filters nothing.`
-      : `${pct}% — ${fmt(unkeyed)} install${unkeyed === 1 ? "" : "s"} predate the key. Setting ` +
-        `INGEST_STRICT now would drop their telemetry silently: the daemon does not surface a ` +
-        `failed report, so the data would simply stop and read as a quiet fleet.`
+    capped
+      ? `More than ${fmt(rows.length)} installs reported in this window, which is the query's limit — ` +
+        `these counts are a truncated sample and should not be used to decide on enforcement.`
+      : done
+        ? `${pct}% — every install seen in this window sends the key. INGEST_STRICT can be set; ` +
+          `until it is, the key filters nothing. Check a window long enough to include installs ` +
+          `that report infrequently.`
+        : `${pct}% — ${fmt(unkeyed)} install${unkeyed === 1 ? "" : "s"} have not sent the key in ` +
+          `this window. Setting INGEST_STRICT now would drop their telemetry silently: the daemon ` +
+          `does not surface a failed report, so the data would simply stop and read as a quiet fleet.`
   }</p>`;
 }

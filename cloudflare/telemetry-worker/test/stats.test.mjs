@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import worker from "../src/index.js";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "src", "index.js"), "utf8");
 
 // The /stats page is a credentialled view of account data served from the same Worker as the ingest
 // endpoint. Two things therefore have to hold: it must not be readable without the password, and it
@@ -580,7 +584,7 @@ test("the rollover panel says whether enforcing the key is safe yet", async () =
   const realFetch = globalThis.fetch;
   const withRows = (rows) => async (_u, init) =>
     new Response(
-      JSON.stringify({ data: String(init?.body || "").includes("blob8 AS keyed") ? rows : [] }),
+      JSON.stringify({ data: String(init?.body || "").includes("MAX(double4)") ? rows : [] }),
       { status: 200 }
     );
   const render = async (rows) => {
@@ -596,19 +600,122 @@ test("the rollover panel says whether enforcing the key is safe yet", async () =
 
   try {
     const mixed = await render([
-      { keyed: "keyed", installs: 3, events: 900 },
-      { keyed: "unkeyed", installs: 2, events: 400 },
+      { install: "a", ever_keyed: 1 },
+      { install: "b", ever_keyed: 1 },
+      { install: "c", ever_keyed: 0 },
+      { install: "d", ever_keyed: 0 },
     ]);
-    assert.match(mixed, /2 installs predate the key/,
+    assert.match(mixed, /2 installs have not sent the key/,
       "a fleet that has not rolled must say so in numbers, not just show a bar");
     assert.match(mixed, /would drop their telemetry silently/,
       "the consequence of enforcing early is the whole point of the panel");
 
-    const done = await render([{ keyed: "keyed", installs: 4, events: 1200 }]);
+    const done = await render([{ install: "a", ever_keyed: 1 }, { install: "b", ever_keyed: 1 }]);
     assert.match(done, /INGEST_STRICT can be set/,
       "a fully rolled fleet must say enforcing is now safe, or the flip never happens");
-    assert.doesNotMatch(done, /predate the key/);
+    assert.doesNotMatch(done, /have not sent the key/);
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+test("an install that upgraded mid-window counts once, as keyed", async () => {
+  // The first version grouped by keyed and counted distinct installs per group, which does not
+  // partition the fleet: an install that sent unkeyed rows before upgrading and keyed rows after
+  // appeared in BOTH groups. Summing them double-counted it, and — the part that mattered — kept
+  // "not yet" permanently non-zero, so the panel could never say enforcing was safe however
+  // completely the fleet had rolled. The query now returns one row per install.
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (_u, init) =>
+    new Response(
+      JSON.stringify({
+        data: String(init?.body || "").includes("MAX(double4)")
+          ? [{ install: "upgraded-midway", ever_keyed: 1 }]
+          : [],
+      }),
+      { status: 200 }
+    );
+  try {
+    const res = await worker.fetch(
+      new Request("https://telemetry.test/stats", {
+        headers: { Authorization: "Basic " + btoa("x:hunter2") },
+      }),
+      envWith()
+    );
+    const body = await res.text();
+    assert.match(body, /100% — every install seen in this window sends the key/,
+      "an install that has ever sent the key must count as keyed; counting it in both groups " +
+        "blocks the enforcement decision permanently");
+    assert.doesNotMatch(body, /have not sent the key/);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("a truncated install list is disclosed, not presented as the fleet", async () => {
+  // At the query's cap the real fleet is larger than what came back, and "0 installs have not sent
+  // the key" out of a truncated sample is precisely the wrong thing to act on.
+  const realFetch = globalThis.fetch;
+  const rows = Array.from({ length: 5000 }, (_, i) => ({ install: `i${i}`, ever_keyed: 1 }));
+  globalThis.fetch = async (_u, init) =>
+    new Response(
+      JSON.stringify({ data: String(init?.body || "").includes("MAX(double4)") ? rows : [] }),
+      { status: 200 }
+    );
+  try {
+    const res = await worker.fetch(
+      new Request("https://telemetry.test/stats", {
+        headers: { Authorization: "Basic " + btoa("x:hunter2") },
+      }),
+      envWith()
+    );
+    const body = await res.text();
+    assert.match(body, /truncated sample/, "saturation is presented as a complete count");
+    assert.doesNotMatch(body, /INGEST_STRICT can be set/,
+      "a truncated sample must not advise enabling enforcement");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// ---- the swap's form/URL contract ----------------------------------------------------------------
+//
+// These assert on the SCRIPT SOURCE, which is weaker than driving a browser and is deliberately
+// chosen anyway: node:test has no DOM, and the alternative is no coverage at all for the only part
+// of this page that is not server-rendered. The behaviour itself was verified in Chromium — chip
+// click unticks the box and Apply no longer re-adds the filter; bar-row click ticks it and Apply
+// preserves it — and these guard the mechanism that makes that true.
+
+test("the swap re-syncs the form to the URL it just loaded", () => {
+  const script = src.slice(src.indexOf("const ENHANCE = `"), src.indexOf("/** The CSP hash"));
+
+  assert.match(
+    script,
+    /el\.checked = want\.getAll\(el\.name\)\.includes\(el\.value\)/,
+    "checkbox state is not re-synced after a swap. The form's state is URL-derived, so without " +
+      "this a chip click leaves the box ticked while the URL says the filter is gone — and the " +
+      "next Apply silently puts it back."
+  );
+  assert.match(script, /querySelectorAll\('select'\)/, "selects are not re-synced");
+  assert.match(script, /input\[type=date\]/, "date inputs are not re-synced");
+  assert.ok(
+    script.includes("if (sel.endsWith('summary') && det && det.open) continue"),
+    "an OPEN popover must be skipped when refreshing the triggers, or re-syncing collapses the " +
+      "menu the user is currently choosing from"
+  );
+  assert.ok(
+    !/form\.innerHTML\s*=/.test(script),
+    "the form's nodes must not be replaced wholesale — that closes popovers and drops focus, " +
+      "which is the reason only two regions swap in the first place"
+  );
+});
+
+test("the Reset and Clear links are refreshed, not left stale", () => {
+  const script = src.slice(src.indexOf("const ENHANCE = `"), src.indexOf("/** The CSP hash"));
+  assert.match(
+    script,
+    /'\.facet > summary', '\.reset', '\.popclear'/,
+    "these links live inside the form, which is never re-rendered, so their hrefs still carry the " +
+      "pre-swap query — clicking Reset would restore a state the user already left"
+  );
 });
